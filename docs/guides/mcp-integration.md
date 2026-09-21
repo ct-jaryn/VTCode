@@ -155,6 +155,14 @@ callers can type the result shape without an extra round trip.
 > provider lacks streaming, fall back to a stdio wrapper until the server adopts the reference
 > implementation.
 
+### Baizhi web research with an API key
+
+The [Baizhi Agent Toolkit guide](baizhi-mcp.md) shows how to configure an
+optional hosted Streamable HTTP provider for web search, page reading, and
+structured extraction using `api_key_env` and a provider-specific tool
+allowlist. It includes configuration inspection steps and the limits of
+local validation.
+
 ### Memcode long-term memory over OAuth
 
 [Memcode](https://memcode.in) exposes an optional hosted Streamable HTTP server
