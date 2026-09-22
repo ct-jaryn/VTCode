@@ -2,7 +2,7 @@ use anyhow::{Context, bail};
 use std::collections::HashMap;
 use vtcode_commons::paths::ensure_path_within_workspace_resolved;
 use vtcode_core::config::constants::tools;
-use vtcode_core::tools::handlers::task_tracking::split_task_description_metadata;
+use vtcode_core::tools::handlers::task_tracking::{short_task_description, split_task_description_metadata};
 use vtcode_core::tools::registry::ToolRegistry;
 use vtcode_ui::tui::app::{InlineHandle, PlanContent};
 
@@ -297,6 +297,54 @@ fn build_task_item(description: &str, completed: bool, step_files: &[String]) ->
     item
 }
 
+/// Max bytes for the derived tracker title. Keeps the panel/transcript header
+/// to a single scannable phrase.
+const TRACKER_TITLE_MAX_BYTES: usize = 60;
+
+/// Derive a descriptive tracker title from the approved plan.
+///
+/// The plan file stem is a generated codename (`1789108823046-jolly-forest`),
+/// which reads as a random name in the TODO panel header and says nothing about
+/// the work. Prefer the plan summary's leading clause; fall back to the first
+/// task's short description and only then to the humanized file stem.
+fn descriptive_tracker_title(
+    plan: &PlanContent,
+    plan_file: &std::path::Path,
+    fallback_items: &[serde_json::Value],
+) -> String {
+    let clause = leading_title_clause(&plan.summary);
+    if !clause.is_empty() {
+        return vtcode_commons::formatting::truncate_byte_budget(&clause, TRACKER_TITLE_MAX_BYTES, "…");
+    }
+    for item in fallback_items {
+        let description = item.get("description").and_then(|value| value.as_str()).unwrap_or_default();
+        let short = short_task_description(description);
+        let short = short.trim();
+        if !short.is_empty() {
+            return vtcode_commons::formatting::truncate_byte_budget(short, TRACKER_TITLE_MAX_BYTES, "…");
+        }
+    }
+    let stem = plan_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Implementation Plan");
+    crate::agent::runloop::tool_output::humanize_tracker_title(stem)
+}
+
+/// Leading clause of the plan summary: the text before the first sentence end,
+/// em/en dash, or clause separator (`:`, `;`). Falls back to the whole trimmed
+/// line when no separator is present.
+fn leading_title_clause(summary: &str) -> String {
+    let first_line = summary.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let mut cut = first_line.len();
+    for separator in [". ", " — ", " – ", " - ", ": ", "; "] {
+        if let Some(index) = first_line.find(separator) {
+            cut = cut.min(index);
+        }
+    }
+    first_line[..cut].trim().trim_end_matches([',', ';', ':']).to_string()
+}
+
 fn task_items_from_plan(plan: &PlanContent) -> Vec<serde_json::Value> {
     let mut items = Vec::new();
     let mut index_by_description = HashMap::new();
@@ -371,7 +419,7 @@ pub(crate) async fn create_task_tracker_from_active_plan(
         .context("task_tracker is unavailable; approved-plan execution is blocked")?;
     let args = serde_json::json!({
         "action": "create",
-        "title": plan.title,
+        "title": descriptive_tracker_title(&plan, &plan_file, &items),
         "items": items,
     });
 
@@ -413,9 +461,77 @@ pub(crate) async fn create_task_tracker_from_active_plan(
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanContent, resolve_tracker_file_response, task_items_from_plan};
+    use super::{
+        PlanContent, descriptive_tracker_title, leading_title_clause, resolve_tracker_file_response,
+        task_items_from_plan,
+    };
     use serde_json::json;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn leading_title_clause_stops_at_first_separator() {
+        assert_eq!(
+            leading_title_clause("Refine `README.md` so it matches the CLI surface: add new flow, tighten prose."),
+            "Refine `README.md` so it matches the CLI surface"
+        );
+        assert_eq!(leading_title_clause("Ship the change — rationale follows"), "Ship the change");
+        assert_eq!(leading_title_clause("Fix cache miss."), "Fix cache miss.");
+        assert_eq!(leading_title_clause(""), "");
+    }
+
+    #[test]
+    fn descriptive_tracker_title_prefers_summary_over_codename() {
+        let plan = PlanContent::from_markdown(
+            "1789108823046-jolly-forest".to_string(),
+            "## Summary\nRefine `README.md` so it matches the current CLI surface: add the exec resume flow.\n",
+            None,
+        );
+
+        let title = descriptive_tracker_title(&plan, Path::new("/plans/1789108823046-jolly-forest.md"), &[]);
+
+        assert_eq!(title, "Refine `README.md` so it matches the current CLI surface");
+        assert!(!title.contains("Jolly"), "the generated codename must not surface: {title}");
+    }
+
+    #[test]
+    fn descriptive_tracker_title_bounds_long_summaries() {
+        let plan = PlanContent::from_markdown(
+            "1789108823046-jolly-forest".to_string(),
+            "## Summary\nImplement a very long refactor across many modules and services that keeps going without a separator\n",
+            None,
+        );
+
+        let title = descriptive_tracker_title(&plan, Path::new("/plans/1789108823046-jolly-forest.md"), &[]);
+
+        assert!(title.len() <= 60 + '…'.len_utf8(), "title must stay bounded: {title:?}");
+        assert!(title.ends_with('…'), "bounded title keeps the ellipsis marker: {title:?}");
+    }
+
+    #[test]
+    fn descriptive_tracker_title_falls_back_to_first_item_before_codename() {
+        let plan = PlanContent::from_markdown("1789108823046-jolly-forest".to_string(), "## Scope\n", None);
+        assert!(plan.summary.trim().is_empty(), "fixture must keep the summary empty");
+        let items = vec![
+            json!({"description": "Add vtcode exec resume to the Commands section – document the resume contract", "status": "pending"}),
+        ];
+
+        let title = descriptive_tracker_title(&plan, Path::new("/plans/1789108823046-jolly-forest.md"), &items);
+
+        assert_eq!(title, "Add vtcode exec resume to the Commands section");
+        assert!(!title.contains("Jolly"), "the generated codename must not surface: {title}");
+    }
+
+    #[test]
+    fn descriptive_tracker_title_falls_back_to_humanized_stem() {
+        // Headings only: the parser leaves `summary` empty, so the generated
+        // codename stem is humanized instead of surfacing as the raw file stem.
+        let plan = PlanContent::from_markdown("1789108823046-jolly-forest".to_string(), "## Scope\n", None);
+        assert!(plan.summary.trim().is_empty(), "fixture must keep the summary empty");
+
+        let title = descriptive_tracker_title(&plan, Path::new("/plans/1789108823046-jolly-forest.md"), &[]);
+
+        assert_eq!(title, "Jolly Forest");
+    }
 
     #[test]
     fn tracker_response_resolves_workspace_relative_path() {

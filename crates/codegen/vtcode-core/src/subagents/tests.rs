@@ -86,6 +86,42 @@ fn test_child_record(
     }
 }
 
+fn test_background_record(
+    spec: &SubagentSpec,
+    id: &str,
+    status: BackgroundSubprocessStatus,
+    desired_enabled: bool,
+    exec_session_id: &str,
+) -> BackgroundRecord {
+    let now = Utc::now();
+    BackgroundRecord {
+        id: id.to_string(),
+        agent_name: spec.name.clone(),
+        display_label: subagent_display_label(spec),
+        description: spec.description.clone(),
+        source: spec.source.label(),
+        color: spec.color.clone(),
+        session_id: "session-background-demo".to_string(),
+        exec_session_id: exec_session_id.to_string(),
+        desired_enabled,
+        status,
+        created_at: now,
+        updated_at: now,
+        started_at: Some(now),
+        ended_at: None,
+        pid: Some(42),
+        prompt: "Report readiness once.".to_string(),
+        summary: None,
+        error: None,
+        archive_path: None,
+        transcript_path: None,
+        max_turns: Some(4),
+        model_override: None,
+        reasoning_override: None,
+        restart_attempts: 0,
+    }
+}
+
 fn write_test_background_subagent(workspace_root: &std::path::Path) {
     let agent_dir = workspace_root.join(".vtcode/agents");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -1490,6 +1526,152 @@ async fn spawn_background_subprocess_rejects_conflicting_active_record_settings(
 }
 
 #[tokio::test]
+async fn wait_for_background_returns_stopped_record_immediately() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Stopped, false, ""),
+        );
+    }
+
+    let entry = controller
+        .wait_for_background(std::slice::from_ref(&record_id), Some(50))
+        .await
+        .expect("wait")
+        .expect("stopped record should complete immediately");
+    assert_eq!(entry.id, record_id);
+    assert_eq!(entry.status, BackgroundSubprocessStatus::Stopped);
+}
+
+#[tokio::test]
+async fn wait_for_background_times_out_on_running_record() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(
+                &spec,
+                &record_id,
+                BackgroundSubprocessStatus::Running,
+                true,
+                "exec-session-missing",
+            ),
+        );
+    }
+
+    let entry = controller
+        .wait_for_background(std::slice::from_ref(&record_id), Some(50))
+        .await
+        .expect("wait");
+    assert!(entry.is_none(), "running record should time out, not hallucinate completion");
+}
+
+#[tokio::test]
+async fn wait_for_background_is_fail_closed_for_unknown_and_empty_targets() {
+    let temp = TempDir::new().expect("tempdir");
+    let controller =
+        SubagentController::new(test_controller_config(temp.path().to_path_buf(), VTCodeConfig::default()))
+            .await
+            .expect("controller");
+
+    assert!(
+        controller
+            .wait_for_background(&["background-missing".to_string()], Some(10))
+            .await
+            .expect("wait")
+            .is_none()
+    );
+    assert!(controller.wait_for_background(&[], Some(10)).await.expect("wait").is_none());
+}
+
+/// The unified `agent wait` surface must return a settled target in either
+/// scope promptly, instead of blocking out a still-running target in the
+/// other. A running delegated child plus an already-stopped background
+/// subprocess must resolve on the background entry well before the child's
+/// (5s) timeout would expire.
+#[tokio::test]
+async fn agent_wait_returns_settled_background_entry_without_waiting_out_delegated_child() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = Arc::new(
+        SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+            .await
+            .expect("controller"),
+    );
+
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let background_id = background_record_id(spec.name.as_str());
+    let delegated_spec = vtcode_config::builtin_subagents()
+        .into_iter()
+        .find(|spec| spec.name == "default")
+        .expect("default");
+    {
+        let mut state = controller.state.write().await;
+        state.children.insert(
+            "delegated-running".to_string(),
+            test_child_record(
+                "delegated-running",
+                "session-delegated",
+                "parent-session",
+                &delegated_spec,
+                SubagentStatus::Running,
+                1,
+                None,
+            ),
+        );
+        state.background_children.insert(
+            background_id.clone(),
+            test_background_record(&spec, &background_id, BackgroundSubprocessStatus::Stopped, false, ""),
+        );
+    }
+
+    let registry = crate::tools::registry::ToolRegistry::new(temp.path().to_path_buf()).await;
+    registry.set_subagent_controller(Arc::clone(&controller));
+
+    let started = std::time::Instant::now();
+    let response = registry
+        .agent_executor(serde_json::json!({
+            "action": "wait",
+            "ids": ["delegated-running", background_id],
+            "timeout_ms": 5_000
+        }))
+        .await
+        .expect("agent wait");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "settled background target must not wait out the delegated child: {elapsed:?}"
+    );
+    assert_eq!(response["completed"], serde_json::json!(true));
+    assert_eq!(response["entry"]["id"], serde_json::json!(background_id));
+    assert_eq!(response["entry"]["status"], serde_json::json!("stopped"));
+}
+
+#[tokio::test]
 async fn resume_preserves_captured_runtime_overrides() {
     let temp = TempDir::new().expect("tempdir");
     let controller =
@@ -2366,4 +2548,235 @@ async fn wait_returns_first_terminal_child() {
         .expect("terminal child");
     assert_eq!(result.id, "second");
     assert_eq!(result.status, SubagentStatus::Completed);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn background_clean_exit_zero_becomes_stopped_without_restart() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    cfg.subagents.background.auto_restore = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+
+    let workspace = controller.config.workspace_root.clone();
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_with_sandbox_and_background(
+            "exec-clean-exit".to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "exit 0".to_string()],
+            workspace,
+            Default::default(),
+            false,
+            true,
+        )
+        .await
+        .expect("clean exec session");
+    wait_for_exec_exit(&controller.config.exec_sessions, "exec-clean-exit").await;
+
+    let created_at = Utc::now();
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            "background-clean".to_string(),
+            BackgroundRecord {
+                id: "background-clean".to_string(),
+                agent_name: "demo".to_string(),
+                display_label: "demo".to_string(),
+                description: "demo".to_string(),
+                source: "test".to_string(),
+                color: None,
+                session_id: "session-clean".to_string(),
+                exec_session_id: "exec-clean-exit".to_string(),
+                desired_enabled: true,
+                status: BackgroundSubprocessStatus::Running,
+                created_at,
+                updated_at: created_at,
+                started_at: Some(created_at),
+                ended_at: None,
+                pid: None,
+                prompt: "demo".to_string(),
+                summary: None,
+                error: None,
+                archive_path: None,
+                transcript_path: None,
+                max_turns: None,
+                model_override: None,
+                reasoning_override: None,
+                restart_attempts: 0,
+            },
+        );
+    }
+
+    let entries = controller.refresh_background_processes().await.expect("refresh");
+    let entry = entries.iter().find(|e| e.id == "background-clean").expect("clean entry");
+    // Clean `exit 0` must surface as Stopped (matching `exited (0)`), not Error,
+    // and must not consume the restart budget.
+    assert_eq!(entry.status, BackgroundSubprocessStatus::Stopped);
+    assert!(entry.error.is_none());
+    assert!(!entry.desired_enabled);
+    let state = controller.state.read().await;
+    let record = state.background_children.get("background-clean").expect("record");
+    assert_eq!(record.restart_attempts, 0);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn background_nonzero_exit_becomes_error_when_restore_disabled() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    cfg.subagents.background.auto_restore = false;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+
+    let workspace = controller.config.workspace_root.clone();
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_with_sandbox_and_background(
+            "exec-failing-exit".to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            workspace,
+            Default::default(),
+            false,
+            true,
+        )
+        .await
+        .expect("failing exec session");
+    wait_for_exec_exit(&controller.config.exec_sessions, "exec-failing-exit").await;
+
+    let created_at = Utc::now();
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            "background-failing".to_string(),
+            BackgroundRecord {
+                id: "background-failing".to_string(),
+                agent_name: "demo".to_string(),
+                display_label: "demo".to_string(),
+                description: "demo".to_string(),
+                source: "test".to_string(),
+                color: None,
+                session_id: "session-failing".to_string(),
+                exec_session_id: "exec-failing-exit".to_string(),
+                desired_enabled: true,
+                status: BackgroundSubprocessStatus::Running,
+                created_at,
+                updated_at: created_at,
+                started_at: Some(created_at),
+                ended_at: None,
+                pid: None,
+                prompt: "demo".to_string(),
+                summary: None,
+                error: None,
+                archive_path: None,
+                transcript_path: None,
+                max_turns: None,
+                model_override: None,
+                reasoning_override: None,
+                restart_attempts: 0,
+            },
+        );
+    }
+
+    let entries = controller.refresh_background_processes().await.expect("refresh");
+    let entry = entries.iter().find(|e| e.id == "background-failing").expect("failing entry");
+    // Asymmetric oracle vs exit 0: non-zero must stay Error with diagnostic,
+    // never collapse to a clean Stopped.
+    assert_eq!(entry.status, BackgroundSubprocessStatus::Error);
+    assert!(entry.error.as_deref().is_some_and(|e| e.contains('1')));
+    assert!(entry.desired_enabled);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn background_graceful_stop_stays_stopped_while_process_drains() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+
+    let workspace = controller.config.workspace_root.clone();
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_with_sandbox_and_background(
+            "exec-long-running".to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+            workspace,
+            Default::default(),
+            false,
+            true,
+        )
+        .await
+        .expect("long exec session");
+
+    let created_at = Utc::now();
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            "background-stopping".to_string(),
+            BackgroundRecord {
+                id: "background-stopping".to_string(),
+                agent_name: "demo".to_string(),
+                display_label: "demo".to_string(),
+                description: "demo".to_string(),
+                source: "test".to_string(),
+                color: None,
+                session_id: "session-stopping".to_string(),
+                exec_session_id: "exec-long-running".to_string(),
+                // Graceful stop sets this optimistically before SIGTERM drains.
+                desired_enabled: false,
+                status: BackgroundSubprocessStatus::Stopped,
+                created_at,
+                updated_at: created_at,
+                started_at: Some(created_at),
+                ended_at: Some(created_at),
+                pid: None,
+                prompt: "demo".to_string(),
+                summary: None,
+                error: None,
+                archive_path: None,
+                transcript_path: None,
+                max_turns: None,
+                model_override: None,
+                reasoning_override: None,
+                restart_attempts: 0,
+            },
+        );
+    }
+
+    let entries = controller.refresh_background_processes().await.expect("refresh");
+    // Must not resurrect to Running while the process still drains; TUI stays
+    // non-interfering and the `Exited` arm finalizes later.
+    let entry = entries.iter().find(|e| e.id == "background-stopping").expect("stopping entry");
+    assert_eq!(entry.status, BackgroundSubprocessStatus::Stopped);
+    let state = controller.state.read().await;
+    let record = state.background_children.get("background-stopping").expect("record");
+    assert_eq!(record.status, BackgroundSubprocessStatus::Stopped);
+    assert!(!record.desired_enabled);
+
+    controller.config.exec_sessions.close_session("exec-long-running").await.ok();
+}
+
+async fn wait_for_exec_exit(exec_sessions: &ExecSessionManager, session_id: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(snapshot) = exec_sessions.snapshot_session(session_id).await
+                && snapshot.exit_code.is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("exec session should exit");
 }

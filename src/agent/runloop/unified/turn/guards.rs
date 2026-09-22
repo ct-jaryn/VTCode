@@ -1114,8 +1114,9 @@ mod tests {
     #[tokio::test]
     async fn build_search_triplets_do_not_trip_listing_convergence() {
         // Distinct `rg` queries are semantically distinct questions, so three
-        // of them must not schedule recovery even though they share one
-        // coarse inspection family.
+        // of them must not schedule recovery. They carry no coarse inspection
+        // family (`rg`/`grep` are excluded from coarse grouping because their
+        // first positional is the search pattern, not a path root).
         let mut backing = TestTurnProcessingBacking::new(120).await;
         let mut ctx = backing.turn_processing_context();
         let mut tracker = LoopTracker::new();
@@ -1134,6 +1135,46 @@ mod tests {
             );
         }
         assert_eq!(tracker.max_coarse_listing_count(), 0);
+
+        let outcome = super::handle_turn_balancer(&mut ctx, 6, &mut tracker, 120, 3).await;
+        assert!(matches!(outcome, TurnHandlerOutcome::Continue));
+        assert!(!ctx.is_recovery_active());
+    }
+
+    #[tokio::test]
+    async fn same_pattern_search_repeats_do_not_trip_early_recovery() {
+        // Regression for turn_1303/turn_1304 (`exec::inspection::grep::enum ×5`)
+        // and turn_1291 (`exec::inspection::rg::pub ×5`): five distinct
+        // successful searches sharing one pattern across different files/flags
+        // are legitimate research. With `rg`/`grep` excluded from coarse
+        // grouping they must not enter the low-signal ledger and must not
+        // schedule early recovery.
+        let mut backing = TestTurnProcessingBacking::new(120).await;
+        let mut ctx = backing.turn_processing_context();
+        let mut tracker = LoopTracker::new();
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"stdout": "src/lib.rs:1:hit"}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for query in [
+            "rg -n 'pub enum Commands' src/ -A 40",
+            "rg -n 'pub enum Commands' crates/codegen/vtcode-core/src/cli/args/mod.rs -A 50",
+            "rg -n 'pub enum Commands' crates/codegen/vtcode-core/src/cli/args/mod.rs -A 600",
+            "rg -n 'pub enum Provider|Gemini|OpenAI' crates/codegen/vtcode-llm/src",
+            "rg -n 'pub enum SecretCommand|Add|List' crates/codegen/vtcode-core/src/cli/args/secret.rs",
+        ] {
+            update_repetition_tracker(
+                &mut tracker,
+                &success,
+                tool_names::EXEC_COMMAND,
+                &json!({"cmd": query, "command": query, "action": "run"}),
+            );
+        }
+        assert_eq!(tracker.max_coarse_listing_count(), 0);
+        assert_eq!(tracker.max_low_signal_count(), 0);
+        assert_eq!(tracker.dominant_churn(), None);
 
         let outcome = super::handle_turn_balancer(&mut ctx, 6, &mut tracker, 120, 3).await;
         assert!(matches!(outcome, TurnHandlerOutcome::Continue));

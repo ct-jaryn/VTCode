@@ -22,7 +22,8 @@ use super::mouse_selection::MouseSelectionState;
 use super::reflow::is_info_box_line;
 use super::status_requires_shimmer;
 use super::{
-    ActiveOverlay, InlinePromptSuggestionState, Session, SuggestedPromptState,
+    ActiveOverlay, InlinePromptSuggestionState, MouseDragTarget, Session, SuggestedPromptState,
+    action::Action,
     modal::{ModalListState, ModalSearchState, ModalState, WizardModalState},
 };
 use crate::tui::config::constants::ui;
@@ -83,6 +84,32 @@ impl Session {
         } else {
             self.show_copy_failure_notification();
         }
+    }
+
+    /// Dismiss any in-progress or completed mouse text selection.
+    ///
+    /// Returns whether a visible selection was actually cleared. Clicking any
+    /// UI target (file link, overlay control, bottom panel, jump affordance)
+    /// and pressing Esc while idle both route through this so the highlight
+    /// never lingers on screen after the user has moved on.
+    ///
+    /// This is the single dismissal boundary for a mouse interaction: it also
+    /// clears the drag target and the edge auto-scroll the drag armed. Leaving
+    /// either set would keep scrolling the transcript (or keep routing drags to
+    /// the selection path) after the highlight is gone — reachable by pressing
+    /// Esc mid-drag with the button still held. `MouseSelectionState::clear`
+    /// drops the click history too, so a dismissal cannot arm a stale
+    /// double-click.
+    pub(crate) fn clear_mouse_selection(&mut self) -> bool {
+        let had_selection = self.mouse_selection.has_selection || self.mouse_selection.is_selecting;
+        if !had_selection {
+            return false;
+        }
+        self.mouse_selection.clear();
+        self.mouse_drag_target = MouseDragTarget::None;
+        self.cancel_drag_auto_scroll();
+        self.mark_dirty();
+        true
     }
 
     pub(crate) fn clear_suggested_prompt_state(&mut self) {
@@ -414,7 +441,7 @@ impl Session {
             self.mark_thinking_run_starts_dirty();
         }
         let shimmer_active = if self.appearance.should_animate_progress_status() {
-            self.is_shimmer_active()
+            self.is_shimmer_active() || self.background_status_shimmer_active()
         } else {
             false
         };
@@ -571,8 +598,52 @@ impl Session {
             .unwrap_or(0)
     }
 
+    pub(crate) fn has_active_foreground_pty(&self) -> bool {
+        self.active_pty_session_count() > 0
+    }
+
+    /// Record the number of live background tasks from the latest local-agents
+    /// refresh. Background work is asynchronous: it drives the global loading
+    /// shimmer but must never look like an in-flight turn, so this is kept out
+    /// of [`Self::is_running_activity`].
+    pub(crate) fn set_background_activity_count(&mut self, count: usize) {
+        if self.background_activity_count != count {
+            self.background_activity_count = count;
+            self.mark_dirty();
+        }
+    }
+
+    pub(crate) fn has_background_activity(&self) -> bool {
+        self.background_activity_count > 0
+    }
+
+    /// Input-status indicator while background tasks run. The wording contains
+    /// a shimmer needle (`running `) so [`status_requires_shimmer`] animates it
+    /// through the shared loading path.
+    pub(crate) fn background_activity_status_text(&self) -> Option<String> {
+        self.has_background_activity().then(|| {
+            format!(
+                "Running {} background task{}...",
+                self.background_activity_count,
+                if self.background_activity_count == 1 { "" } else { "s" }
+            )
+        })
+    }
+
+    pub(crate) fn background_shortcut_label(&self) -> &str {
+        self.primary_binding_label(Action::BackgroundOperation).unwrap_or("Ctrl+B")
+    }
+
+    pub(crate) fn foreground_pty_background_hint(&self) -> Option<String> {
+        // The shared foreground counter covers both PTY and pipe exec sessions
+        // (see `ExecSessionManager::insert_session`); the name stays `pty` for
+        // surgical compatibility with existing callers.
+        self.has_active_foreground_pty()
+            .then(|| format!("{} background", self.background_shortcut_label()))
+    }
+
     fn active_pty_status_text(&self) -> Option<&'static str> {
-        (self.active_pty_session_count() > 0).then_some(ACTIVE_PTY_STATUS_TEXT)
+        self.has_active_foreground_pty().then_some(ACTIVE_PTY_STATUS_TEXT)
     }
 
     pub(crate) fn has_status_spinner(&self) -> bool {
@@ -592,6 +663,16 @@ impl Session {
 
     pub(crate) fn is_shimmer_active(&self) -> bool {
         self.has_status_spinner() || self.thinking_spinner.is_active
+    }
+
+    /// Whether live background tasks must keep the loading shimmer animating.
+    ///
+    /// Kept out of [`Self::is_shimmer_active`] so a long-lived background task
+    /// does not pin the cursor to steady mode; the tick handler ORs this with
+    /// the turn shimmer instead, and short-circuiting avoids updating the
+    /// shared shimmer phase twice in one tick.
+    pub(crate) fn background_status_shimmer_active(&self) -> bool {
+        self.has_background_activity()
     }
 
     pub(crate) fn use_steady_cursor(&self) -> bool {

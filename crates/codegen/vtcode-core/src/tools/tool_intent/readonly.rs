@@ -14,8 +14,9 @@ use std::path::Path;
 /// mode must not reject that pattern (checkpoint turn_810).
 const READONLY_UNIFIED_EXEC_COMMANDS: &[&str] = &[
     "rg", "ls", "cat", "diff", "find", "wc", "grep", "egrep", "fgrep", "head", "tail", "sort", "uniq", "bat", "sed",
-    "cut", "tr", "ast-grep", "sg", "echo", "pwd", "printf", "true", "false", "test", "cd", "fd", "tree", "which",
-    "stat", "file", "du", "df", "realpath", "basename", "dirname", "nl", "column", "jq", "date", "whoami", "uname",
+    "awk", "cut", "tr", "ast-grep", "sg", "echo", "pwd", "printf", "true", "false", "test", "cd", "fd", "tree",
+    "which", "stat", "file", "du", "df", "realpath", "basename", "dirname", "nl", "column", "jq", "date", "whoami",
+    "uname",
 ];
 
 pub fn is_readonly_base_command(command: &str) -> bool {
@@ -377,6 +378,68 @@ mod tests {
     #[test]
     fn readonly_command_session_rejects_destructive_and_chain() {
         assert!(!is_readonly_command_session_command(&run_cmd("ls -la && rm foo.txt")));
+    }
+
+    #[test]
+    fn awk_range_print_is_readonly() {
+        // Regression shapes from the blocked README session: `awk` paging
+        // must not count as blind-editing mutations.
+        for command in [
+            "awk 'NR>=40 && NR<=140' README.md",
+            "awk 'NR>=297 && NR<=312' README.md",
+            "awk 'NR>=291 && NR<=296' README.md | cut -c1-150",
+            "awk -F: '{print $1}' README.md",
+            "awk -F, '{print $2}' data.csv",
+            "awk -v limit=10 'NR<=limit' README.md",
+            "awk -- '{print $1}' README.md",
+            "awk -- '{print $1}' -- -weird",
+            // `systime()` only reads the clock — must not be confused with
+            // `system()`. Absolute paths resolve via file_name().
+            "awk 'BEGIN{print systime()}' README.md",
+            "/usr/bin/awk 'NR>=1 && NR<=5' README.md",
+            "awk 'NR>=1 && NR<=5' README.md | sort",
+        ] {
+            assert!(is_readonly_command_session_command(&run_cmd(command)), "expected readonly command: {command}");
+        }
+    }
+
+    #[test]
+    fn awk_write_primitives_stay_mutating() {
+        for command in [
+            "awk '{print > \"out.txt\"}' README.md",
+            "awk '{print >> \"out.txt\"}' README.md",
+            "awk '{print | \"sort\"}' README.md",
+            "awk '\"sort\" | getline line' README.md",
+            "awk 'BEGIN{system(\"touch out\")}' README.md",
+            "awk 'BEGIN{SYSTEM (\"id\")}' README.md",
+            "awk 'BEGIN{System(\"id\")}' README.md",
+            "awk 'BEGIN{system\t(\"id\")}' README.md",
+            // gawk indirect calls and directives can execute or load code,
+            // including a `system` name smuggled via `-v`. Fail closed.
+            "awk -v f=system 'BEGIN{@f(\"id\")}' README.md",
+            "awk 'BEGIN{@s(\"id\")}' README.md",
+            "awk '@include \"x.awk\"' README.md",
+            "awk '@load \"ext\"' README.md",
+            "awk '{print \"a@b\"}' README.md",
+            // Bare `>` comparisons and `|` alternations are indistinguishable
+            // from redirection/pipes without a full parser — fail closed.
+            "awk '$3>100' README.md",
+            "awk '/error|warning/' README.md",
+            "awk -i inplace '{print}' README.md",
+            "awk -f program.awk README.md",
+            "awk --source '{print}' README.md",
+            "awk -l injail '{print}' README.md",
+            "awk --profile '{print}' README.md",
+            "awk -W dump-variables '{print}' README.md",
+            "awk --posix '{print}' README.md",
+            "awk -F:",
+            "awk",
+            "awk -v",
+            // Shell-level redirection stays mutating even with a safe program.
+            "awk 'NR>=1' README.md > out.txt",
+        ] {
+            assert!(!is_readonly_command_session_command(&run_cmd(command)), "expected mutating command: {command}");
+        }
     }
 
     #[test]

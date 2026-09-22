@@ -1652,7 +1652,9 @@ impl ExecSessionManager {
                     launch_mode,
                     background_slot_reserved,
                 ));
-                if backend == ExecSessionBackend::Pty && launch_mode.sets_foreground_session() {
+                // Foreground PTY and pipe sessions both support Ctrl+B backgrounding,
+                // so both increment the shared foreground counter driving the TUI hint.
+                if launch_mode.sets_foreground_session() {
                     self.count_foreground_pty_session(&record);
                 }
                 entry.insert(Arc::clone(&record));
@@ -2163,6 +2165,31 @@ mod tests {
 
         assert_eq!(manager.request_foreground_background(), None);
         manager.close_session("foreground-complete").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(all(unix, feature = "tui"))]
+    async fn foreground_pipe_session_counts_for_background_hint() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let foreground_count = Arc::new(AtomicUsize::new(0));
+        manager.set_foreground_pty_counter(Arc::clone(&foreground_count));
+
+        manager
+            .create_pipe_session(
+                "foreground-pipe".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+                workspace_root,
+                HashMap::new(),
+            )
+            .await?;
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 1);
+
+        manager.close_session("foreground-pipe").await?;
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 0);
         Ok(())
     }
 

@@ -206,6 +206,8 @@ fn native_terminal_setup_messages(terminal_type: TerminalType) -> Vec<String> {
         TerminalType::ITerm2 => {
             lines.push("Optional macOS shortcut: set Left/Right Option to \"Esc+\" in Profiles -> Keys.".to_string());
             lines.extend(crate::terminal_setup::features::notifications::get_notification_instructions(terminal_type));
+            lines.push(String::new());
+            lines.extend(crate::terminal_setup::terminals::iterm2::profile_icon_instructions());
         }
         TerminalType::Ghostty | TerminalType::Kitty | TerminalType::WezTerm => {
             lines.extend(crate::terminal_setup::features::notifications::get_notification_instructions(terminal_type));
@@ -232,11 +234,17 @@ fn guidance_only_messages(terminal_type: TerminalType) -> Vec<String> {
             "Configure Shift+Enter or newline shortcuts through X resources or your window manager.".to_string(),
             "Use your terminal bell settings if you want completion alerts.".to_string(),
         ],
-        TerminalType::WindowsTerminal => vec![
-            "VT Code does not currently advertise guided setup for Windows Terminal.".to_string(),
-            "Configure Shift+Enter or multiline bindings in Windows Terminal settings if you need them.".to_string(),
-            "Use the terminal bell or profile alert settings for notifications.".to_string(),
-        ],
+        TerminalType::WindowsTerminal => {
+            let mut lines = vec![
+                "VT Code does not currently advertise guided setup for Windows Terminal.".to_string(),
+                "Configure Shift+Enter or multiline bindings in Windows Terminal settings if you need them."
+                    .to_string(),
+                "Use the terminal bell or profile alert settings for notifications.".to_string(),
+                String::new(),
+            ];
+            lines.extend(crate::terminal_setup::terminals::windows_terminal::profile_icon_instructions());
+            lines
+        }
         TerminalType::Hyper => vec![
             "VT Code does not currently advertise guided setup for Hyper.".to_string(),
             "Configure multiline bindings or plugins directly in `.hyper.js`.".to_string(),
@@ -278,9 +286,26 @@ mod tests {
     }
 
     #[test]
+    fn iterm2_native_messages_advertise_profile_icon() {
+        let iterm_lines = native_terminal_setup_messages(TerminalType::ITerm2);
+        assert!(iterm_lines.iter().any(|line| line.contains("install-iterm2-icon")));
+
+        let wezterm_lines = native_terminal_setup_messages(TerminalType::WezTerm);
+        assert!(!wezterm_lines.iter().any(|line| line.contains("install-iterm2-icon")));
+    }
+
+    #[test]
     fn guidance_only_messages_cover_terminal_app() {
         let lines = guidance_only_messages(TerminalType::TerminalApp);
         assert!(lines.iter().any(|line| line.contains("does not auto-configure")));
         assert!(lines.iter().any(|line| line.contains("Use Option as Meta Key")));
+    }
+
+    #[test]
+    fn windows_terminal_guidance_mentions_profile_icon() {
+        let lines = guidance_only_messages(TerminalType::WindowsTerminal);
+        let joined = lines.join("\n");
+        assert!(joined.contains("icon"));
+        assert!(joined.contains(".png"));
     }
 }

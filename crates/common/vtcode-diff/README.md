@@ -38,7 +38,13 @@ Features:
 
 Practical Myers is the default algorithm. Computation and intraline refinement
 have separate timeouts, and costly intraline work is skipped for large inputs.
-The presentation architecture was informed by the open-source Codex terminal
-diff design; this crate is an independent implementation for VT Code.
+
+## Acknowledgments
+
+The presentation architecture and underlying ideas (unified and side-by-side
+terminal previews with intraline emphasis) were informed by
+[OpenAI Codex](https://github.com/openai/codex), licensed under Apache-2.0.
+This crate is an independent implementation for VT Code; no Codex source code
+was copied.
 
 Licensed under MIT or Apache-2.0, at your option.

@@ -287,6 +287,13 @@ model_id_table! {
         display: "Grok 4.6 (Merge Gateway)",
         description: "xAI Grok 4.6 accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
+    MergeGatewayXaiGrok47 {
+        provider: MergeGateway,
+        id: models::merge_gateway::XAI_GROK_4_7,
+        parse: [models::merge_gateway::XAI_GROK_4_7],
+        display: "Grok 4.7 (Merge Gateway)",
+        description: "xAI Grok 4.7 accessed through Merge Gateway's OpenAI-compatible endpoint",
+    },
     MergeGatewayMinimaxH3 {
         provider: MergeGateway,
         id: models::merge_gateway::MINIMAX_H3,
@@ -636,6 +643,13 @@ model_id_table! {
         display: "Grok 4.6",
         description: "xAI's flagship reasoning model with reasoning_effort support (500k context)",
     },
+    XaiGrok47 {
+        provider: XAI,
+        id: models::xai::GROK_4_7,
+        parse: [models::xai::GROK_4_7],
+        display: "Grok 4.7",
+        description: "xAI's flagship reasoning model with reasoning_effort support (500k context)",
+    },
     // Vercel AI Gateway models (ids use the gateway's native `vendor/model` format)
     VercelAnthropicClaudeSonnet5 {
         provider: Vercel,
@@ -706,6 +720,13 @@ model_id_table! {
         parse: [models::vercel::MINIMAX_M3],
         display: "MiniMax M3 (Vercel AI Gateway)",
         description: "MiniMax M3 model served through the Vercel AI Gateway",
+    },
+    VercelSpacexaiGrok47 {
+        provider: Vercel,
+        id: models::vercel::SPACEXAI_GROK_4_7,
+        parse: [models::vercel::SPACEXAI_GROK_4_7],
+        display: "Grok 4.7 (Vercel AI Gateway)",
+        description: "xAI Grok 4.7 reasoning model served through the Vercel AI Gateway",
     },
 }
 

@@ -884,7 +884,18 @@ pub(super) fn process_key_with_clipboard_image_reader(
             Some(InlineEvent::CyclePrimaryAgentPrevious)
         }
         KeyCode::Esc => {
-            if session.has_active_overlay() {
+            // A visible text selection is the innermost dismissible state, so a
+            // single Esc clears the highlight instead of arming the rewind
+            // double-press. Overlay, interrupt, and cancel precedence is
+            // preserved: those states are checked first.
+            if !session.has_active_overlay()
+                && !session.is_running_activity()
+                && session.active_pty_session_count() == 0
+                && session.core.clear_mouse_selection()
+            {
+                session.core.last_escape_press = None;
+                None
+            } else if session.has_active_overlay() {
                 session.close_overlay();
                 session.core.last_escape_press = None;
                 None
@@ -3278,6 +3289,58 @@ mod tests {
         assert!(event.is_none(), "Ctrl+U should not emit an event");
         assert!(session.core.input_manager.content().is_empty(), "Ctrl+U should clear the buffer");
         assert!(session.has_active_overlay(), "modal should remain open after Ctrl+U");
+    }
+
+    #[test]
+    fn escape_dismisses_transcript_selection_before_interrupt() {
+        let mut session = build_session();
+        session.core.mouse_selection.set_selection((1, 1), (8, 1));
+
+        let event = session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(event.is_none(), "dismissing a selection consumes Esc, got {event:?}");
+        assert!(!session.core.mouse_selection.has_selection, "Esc must clear the highlight");
+    }
+
+    #[test]
+    fn viewer_control_click_dismisses_stale_transcript_selection() {
+        let mut session = build_session();
+        add_compact_activity(&mut session, 47, "printf dismiss");
+        let _ = session.process_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+
+        // A completed selection left over from the transcript must not survive a
+        // click on a viewer control that owns that click.
+        session.core.mouse_selection.set_selection((1, 1), (8, 1));
+        assert!(session.core.mouse_selection.has_selection);
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|frame| session.render(frame)).expect("render review");
+        let close_column = (0..80)
+            .find(|column| {
+                session
+                    .tool_output_viewer_state()
+                    .is_some_and(|viewer| viewer.close_control_contains(*column, 0))
+            })
+            .expect("rendered review title should expose a close hit region");
+
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+        session.handle_event(
+            CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: close_column,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &events,
+            None,
+        );
+
+        assert!(session.tool_output_viewer_state().is_none(), "close control must still act");
+        assert!(
+            !session.core.mouse_selection.has_selection,
+            "clicking a viewer control must dismiss the stale highlight"
+        );
     }
 
     #[test]

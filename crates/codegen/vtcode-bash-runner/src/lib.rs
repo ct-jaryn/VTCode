@@ -50,12 +50,11 @@ pub use background::{BackgroundCommandManager, BackgroundTaskHandle, BackgroundT
 pub use executor::DryRunCommandExecutor;
 #[cfg(feature = "exec-events")]
 pub use executor::EventfulExecutor;
+#[cfg(feature = "std-process")]
+pub use executor::ProcessCommandExecutor;
 #[cfg(feature = "pure-rust")]
 pub use executor::PureRustCommandExecutor;
-pub use executor::{
-    CommandCategory, CommandExecutor, CommandInvocation, CommandOutput, CommandStatus, ProcessCommandExecutor,
-    ShellKind,
-};
+pub use executor::{CommandCategory, CommandExecutor, CommandInvocation, CommandOutput, CommandStatus, ShellKind};
 
 // Policy types
 pub use policy::{AllowAllPolicy, CommandPolicy, WorkspaceGuardPolicy};

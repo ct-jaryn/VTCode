@@ -13,6 +13,12 @@ The following asset is currently embedded:
 | Source (Workspace) | Embedded Destination | Purpose |
 |-------------------|---------------------|---------|
 | `docs/modules/vtcode_docs_map.md` | `docs/vtcode_docs_map.md` (in crate build output) | Documentation map for self-documentation |
+| `resources/icons/vtcode-profile-120.png` | `resources/icons/vtcode-profile-120.png` (in crate build output) | Embedded iTerm2 profile/tab artwork |
+
+> When the workspace source is absent (published crate tarball, docs.rs, Nix),
+> `build.rs` writes an empty placeholder at the destination so the
+> `include_bytes!` call sites still compile. In-repo builds embed the real
+> artwork.
 
 ## **How It Works**
 

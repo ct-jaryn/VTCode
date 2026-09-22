@@ -2,7 +2,63 @@
 
 use anyhow::{Context, Result};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Name of the VT Code iTerm2 profile shipped for tab-icon support.
+/// Distinctive so the one-shot profile switch never hijacks an unrelated
+/// user profile with a generic name.
+pub const ITERM2_PROFILE_NAME: &str = "VT Code";
+
+/// Filename of the shipped iTerm2 dynamic profile.
+pub const ITERM2_DYNAMIC_PROFILE_FILENAME: &str = "vtcode.json";
+
+/// Profile `Icon` mode selecting a custom image.
+///
+/// Best-effort mapping from observed behavior: a default profile stores
+/// `Icon = 1` and renders the built-in foreground-app glyph, while the
+/// preferences offer custom / built-in / none. If a future iTerm2 maps the
+/// custom mode elsewhere, only this constant changes.
+pub const ITERM2_ICON_MODE_CUSTOM: u8 = 2;
+
+/// iTerm2 DynamicProfiles directory under `home`.
+///
+/// iTerm2 loads JSON profiles from this directory live with no restart.
+/// The directory may not exist yet; callers create it on install.
+pub fn iterm2_dynamic_profiles_dir(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("iTerm2")
+        .join("DynamicProfiles")
+}
+
+/// Installed dynamic-profile path under `home`.
+pub fn installed_iterm2_profile_path(home: &Path) -> PathBuf {
+    iterm2_dynamic_profiles_dir(home).join(ITERM2_DYNAMIC_PROFILE_FILENAME)
+}
+
+/// Pure gate for the one-shot iTerm2 profile switch.
+///
+/// Switch only for a real iTerm2 session outside tmux (proprietary
+/// sequences do not pass through multiplexers) with the shipped profile
+/// installed, so removing the profile file disables the switch.
+pub fn should_apply_iterm2_profile(iterm_session: bool, tmux_session: bool, profile_installed: bool) -> bool {
+    iterm_session && !tmux_session && profile_installed
+}
+
+/// Environment plus install gate evaluated against the live process.
+///
+/// Combines [`should_apply_iterm2_profile`] with `ITERM_SESSION_ID` /
+/// `TMUX` detection and the installed-profile check, so all callers share
+/// one gating decision.
+pub fn should_apply_iterm2_profile_now() -> bool {
+    let iterm_session = env::var("ITERM_SESSION_ID").is_ok();
+    let tmux_session = env::var("TMUX").is_ok();
+    let installed = dirs::home_dir()
+        .map(|home| installed_iterm2_profile_path(&home))
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    should_apply_iterm2_profile(iterm_session, tmux_session, installed)
+}
 
 /// Supported terminal emulators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,5 +450,25 @@ mod tests {
         assert!(is_ghostty_terminal(Some("Ghostty"), None));
         assert!(is_ghostty_terminal(None, Some("xterm-ghostty")));
         assert!(!is_ghostty_terminal(Some("WezTerm"), Some("xterm-256color")));
+    }
+
+    #[test]
+    fn iterm2_profile_paths_stay_under_dynamic_profiles() {
+        let first = installed_iterm2_profile_path(Path::new("/Users/demo"));
+        let second = installed_iterm2_profile_path(Path::new("/home/other"));
+
+        assert_eq!(first, PathBuf::from("/Users/demo/Library/Application Support/iTerm2/DynamicProfiles/vtcode.json"));
+        assert_eq!(second, PathBuf::from("/home/other/Library/Application Support/iTerm2/DynamicProfiles/vtcode.json"));
+        assert!(!ITERM2_PROFILE_NAME.is_empty());
+        assert!(ITERM2_DYNAMIC_PROFILE_FILENAME.ends_with(".json"));
+    }
+
+    #[test]
+    fn iterm2_profile_switch_requires_session_without_tmux_and_installed_profile() {
+        assert!(should_apply_iterm2_profile(true, false, true));
+        assert!(!should_apply_iterm2_profile(false, false, true));
+        assert!(!should_apply_iterm2_profile(true, true, true));
+        assert!(!should_apply_iterm2_profile(true, false, false));
+        assert!(!should_apply_iterm2_profile(false, false, false));
     }
 }

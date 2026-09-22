@@ -130,8 +130,8 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/development/fuzzing.md`
   - **Content**: Fuzzing Guide
-  - **Topics**: Scope, Basic Commands, Corpus and Artifacts, Reproducing a Crash, Coverage (Optional)
-  - **User Questions**: "What can you tell me about Fuzzing Guide?", "How does Scope work?", "How does Basic Commands work?"
+  - **Topics**: Scope, Oracles, Fuzzer-first fixes, Basic Commands, Corpus and Artifacts
+  - **User Questions**: "What can you tell me about Fuzzing Guide?", "How does Scope work?", "How does Oracles work?"
 
 - **File**: `docs/development/MODEL_ADDITION_CHECKLIST.md`
   - **Content**: Model Addition Checklist
@@ -171,6 +171,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: Rust-Specific Performance Principles for VT Code
   - **Topics**: Table of Contents, Core Insight: Rust Is Not Faster Than C/C++ — It Is *Safer While Being Equally Fast*, Destructive Move Semantics, Aliasing Guarantees (`noalias`), Immutable by Default & `const` Semantics
   - **User Questions**: "What can you tell me about Rust-Specific Performance Principles for VT Code?", "How does Table of Contents work?", "How does Core Insight: Rust Is Not Faster Than C/C++ — It Is *Safer While Being Equally Fast* work?"
+
+- **File**: `docs/development/sandboxing-basics-reference.md`
+  - **Content**: Sandboxing Basics — Reference Notes
+  - **Topics**: Source (not vendored), Why this matters to VT Code, Distilled principles (in our own words), Short attributed quotations, How VT Code applies it
+  - **User Questions**: "What can you tell me about Sandboxing Basics — Reference Notes?", "How does Source (not vendored) work?", "How does Why this matters to VT Code work?"
 
 - **File**: `docs/development/session-persistence.md`
   - **Content**: Session Event Persistence
@@ -411,6 +416,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Overview, Architecture, Configuration, Transport Types, Security
   - **User Questions**: "What can you tell me about MCP Integration Guide for VT Code?", "How does Overview work?", "How does Architecture work?"
 
+- **File**: `docs/guides/memcode-mcp.md`
+  - **Content**: Memcode MCP
+  - **Topics**: 1. Register VT Code as an OAuth client, 2. Configure the provider, 3. Sign in and verify, Recommended agent policy, Disconnect
+  - **User Questions**: "What can you tell me about Memcode MCP?", "How does 1. Register VT Code as an OAuth client work?", "How does 2. Configure the provider work?"
+
 - **File**: `docs/guides/minimax-integration.md`
   - **Content**: MiniMax Integration Guide
   - **Topics**: Overview, Configuration Options, Supported Features, Limitations, Example Usage
@@ -488,7 +498,7 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/guides/terminal-optimization.md`
   - **Content**: VT Code Terminal Optimization Guide
-  - **Topics**: Table of Contents, Theme and Appearance, Line Break Options, Paste Handling, Notification Setup
+  - **Topics**: Table of Contents, Theme and Appearance, Profile Icon, Line Break Options, Paste Handling
   - **User Questions**: "What can you tell me about VT Code Terminal Optimization Guide?", "How does Table of Contents work?", "How does Theme and Appearance work?"
 
 - **File**: `docs/guides/UPDATE_SYSTEM.md`
@@ -828,6 +838,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Overview, Context Engineering vs Prompt Engineering, VT Code's Three Context Primitives, Accuracy Optimization Loop, Core Principles
   - **User Questions**: "What can you tell me about Context Engineering in VT Code?", "How does Overview work?", "How does Context Engineering vs Prompt Engineering work?"
 
+- **File**: `docs/compose/spec/continuation-end-turn-ux.md`
+  - **Content**: Continuation End-Turn UX + Classifiers
+  - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks
+  - **User Questions**: "What can you tell me about Continuation End-Turn UX + Classifiers?", "How does Report work?", "How does [S1] Problem work?"
+
 - **File**: `docs/harness/CORE_BELIEFS.md`
   - **Content**: Core Beliefs
   - **Topics**: 1. Humans Steer, Agents Execute, 2. Repository as System of Record, 3. Progressive Disclosure, 4. Agent Legibility Over Human Aesthetics, 5. Enforce Invariants, Not Implementations
@@ -945,7 +960,7 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/compose/spec/plan-mode-tracker-continuity.md`
   - **Content**: Planning Workflow + Tracker Continuity (Dedupe, Scope/Task, Continuation, Progress)
-  - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks
+  - **Topics**: Report, [S1] Problem, [S2] Design, Follow-up (2026-09-21) — auto-continue directive misread as a user stay signal, [S3] Out of Scope
   - **User Questions**: "What can you tell me about Planning Workflow + Tracker Continuity (Dedupe, Scope/Task, Continuation, Progress)?", "How does Report work?", "How does [S1] Problem work?"
 
 - **File**: `docs/compose/spec/planning-verify-commands.md`

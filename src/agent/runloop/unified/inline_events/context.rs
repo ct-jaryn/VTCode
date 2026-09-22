@@ -400,13 +400,37 @@ impl<'a> InlineEventContext<'a> {
                 );
             }
             ExecSessionAction::GracefulTerminate => {
-                if let Err(error) = exec_sessions.terminate_session(&session_id).await {
-                    return self.render_exec_session_error(&session_id, error);
+                // Coordinate with the runloop's live backend state before
+                // signalling. Terminating an already-exited session is a
+                // no-op kill that would misreport as a fresh termination;
+                // surface the truthful `exited (code)` status instead and
+                // retain the preview for inspection. `is_session_completed`
+                // also clears focus/pending promotion so the composer stops
+                // routing input to a dead session.
+                match exec_sessions.is_session_completed(&session_id).await {
+                    Ok(Some(code)) => {
+                        let _ = exec_sessions.background_session_snapshot(&session_id).await;
+                        self.state.renderer().line(
+                            MessageStyle::Info,
+                            &format!(
+                                "Exec session {session_id} already exited ({code}); output retained. Use ForceTerminateOrClose to close it."
+                            ),
+                        )?;
+                    }
+                    Ok(None) => {
+                        if let Err(error) = exec_sessions.terminate_session(&session_id).await {
+                            return self.render_exec_session_error(&session_id, error);
+                        }
+                        // Peek the retained preview so the drawer/inspect path
+                        // shows output captured up to termination.
+                        let _ = exec_sessions.background_session_snapshot(&session_id).await;
+                        self.state.renderer().line(
+                            MessageStyle::Info,
+                            &format!("Requested graceful termination for exec session {session_id}."),
+                        )?;
+                    }
+                    Err(error) => return self.render_exec_session_error(&session_id, error),
                 }
-                self.state.renderer().line(
-                    MessageStyle::Info,
-                    &format!("Requested graceful termination for exec session {session_id}."),
-                )?;
             }
             ExecSessionAction::ForceTerminateOrClose => {
                 let already_exited = match exec_sessions.force_terminate_or_close(&session_id).await {
@@ -456,13 +480,13 @@ impl<'a> InlineEventContext<'a> {
         let metadata = &snapshot.metadata;
         self.state.renderer().line(
             MessageStyle::Info,
-            &format!("Exec session {}: {}", metadata.id.as_str(), exec_session_command_label(metadata)),
+            &format!("Exec session {}: {}", metadata.id.as_str(), metadata.command_label()),
         )?;
         self.state.renderer().line(
             MessageStyle::Output,
             &format!(
                 "Status: {} · cwd {} · pid {}",
-                exec_session_status(metadata),
+                metadata.status_label(),
                 metadata.working_dir.as_deref().unwrap_or("unknown"),
                 metadata.child_pid.map_or_else(|| "-".to_string(), |pid| pid.to_string())
             ),
@@ -492,23 +516,6 @@ impl<'a> InlineEventContext<'a> {
     }
 }
 
-fn exec_session_command_label(metadata: &vtcode_core::tools::types::VTCodeExecSession) -> String {
-    std::iter::once(metadata.command.as_str())
-        .chain(metadata.args.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn exec_session_status(metadata: &vtcode_core::tools::types::VTCodeExecSession) -> String {
-    match metadata.lifecycle_state {
-        Some(vtcode_core::tools::types::VTCodeSessionLifecycleState::Running) => "running".to_string(),
-        Some(vtcode_core::tools::types::VTCodeSessionLifecycleState::Exited) => metadata
-            .exit_code
-            .map_or_else(|| "exited".to_string(), |code| format!("exited ({code})")),
-        None => "unknown".to_string(),
-    }
-}
-
 fn bounded_preview_or_placeholder(preview: &str) -> &str {
     if preview.trim().is_empty() {
         "(no output yet)"
@@ -520,8 +527,8 @@ fn bounded_preview_or_placeholder(preview: &str) -> &str {
 fn exec_session_modal_lines(snapshot: &vtcode_core::tools::exec_session::ExecSessionUiSnapshot) -> Vec<String> {
     let metadata = &snapshot.metadata;
     vec![
-        format!("Command: {}", exec_session_command_label(metadata)),
-        format!("Status: {}", exec_session_status(metadata)),
+        format!("Command: {}", metadata.command_label()),
+        format!("Status: {}", metadata.status_label()),
         format!("Working dir: {}", metadata.working_dir.as_deref().unwrap_or("unknown")),
         format!("PID: {}", metadata.child_pid.map_or_else(|| "-".to_string(), |pid| pid.to_string())),
         format!("Preview:\n{}", bounded_preview_or_placeholder(&snapshot.preview)),

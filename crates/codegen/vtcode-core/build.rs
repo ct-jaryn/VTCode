@@ -7,7 +7,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const EMBEDDED_ASSETS: &[(&str, &str)] = &[("docs/modules/vtcode_docs_map.md", "docs/vtcode_docs_map.md")];
+const EMBEDDED_ASSETS: &[(&str, &str)] = &[
+    ("docs/modules/vtcode_docs_map.md", "docs/vtcode_docs_map.md"),
+    ("resources/icons/vtcode-profile-120.png", "resources/icons/vtcode-profile-120.png"),
+];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_docsrs = env::var_os("DOCS_RS").is_some();
@@ -44,17 +47,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (relative, dest_relative) in EMBEDDED_ASSETS {
         let source = workspace_dir.join(relative);
+        let destination = assets_out_dir.join(dest_relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
         if !source.exists() {
+            // Published crates ship without workspace-root assets, so the
+            // `include_bytes!`/`include_str!` call sites must still find a
+            // (placeholder) file at the OUT_DIR destination. Without this,
+            // `cargo package` verification compiles from the tarball and fails
+            // with ENOENT on the missing asset.
             println!("cargo:warning=skipping missing embedded asset `{}`", relative);
+            fs::write(&destination, b"")?;
             continue;
         }
 
         println!("cargo:rerun-if-changed={}", source.display());
 
-        let destination = assets_out_dir.join(dest_relative);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let _copied_bytes = fs::copy(&source, &destination)?;
     }
 

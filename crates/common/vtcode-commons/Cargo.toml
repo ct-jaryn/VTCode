@@ -26,6 +26,7 @@ default = []
 [dependencies]
 vtcode-diff = { workspace = true, features = ["serde"] }
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 hashbrown = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }

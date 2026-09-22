@@ -8,6 +8,7 @@
 
 [![License](https://img.shields.io/badge/License-MIT_OR_Apache--2.0-30363D?style=flat-square)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.93.0-30363D?style=flat-square)](./docs/development/DEVELOPMENT_SETUP.md)
+[![Version](https://img.shields.io/badge/Version-0.164.2-30363D?style=flat-square)](https://github.com/vinhnx/VTCode/releases)
 [![Agent Skills](https://img.shields.io/badge/Agent_Skills-BFB38F?style=flat-square)](https://agentskills.io/)
 [![Agent Client Protocol](https://img.shields.io/badge/Agent_Client_Protocol-383B73?style=flat-square&logo=zedindustries&logoColor=white)](./docs/guides/zed-acp.md)
 [![Model Context Protocol](https://img.shields.io/badge/Model_Context_Protocol-A63333?style=flat-square&logo=modelcontextprotocol&logoColor=white)](./docs/guides/mcp-integration.md)
@@ -60,9 +61,9 @@
 VT Code is an open-source terminal coding agent written in Rust: one static
 binary for quick interactive sessions and long-running autonomous work alike,
 no IDE required, no context left behind. It is a **harness, not just an LLM
-wrapper**: the model reasons; the runtime supplies everything else: tools,
-context, sandboxing, state, and **verification**: turning raw model output
-into safe, reviewable progress, entirely in your terminal.
+wrapper**: the model reasons, and the runtime supplies tools, context,
+sandboxing, state, and **verification** — turning raw model output into safe,
+reviewable progress.
 
 The full documentation catalog lives in the
 [docs overview](./docs/README.md).
@@ -86,10 +87,8 @@ The full documentation catalog lives in the
 
 ## Why VT Code
 
-VT Code is built for work that takes more than one prompt. The model reasons;
-the **harness** supplies everything else — context, tools, safeguards, state,
-and verification — so long tasks stay dependable and reviewable from the first
-prompt to the final diff.
+VT Code is built for work that takes more than one prompt: long tasks stay
+dependable and reviewable from the first prompt to the final diff.
 
 In practice, that means:
 
@@ -104,7 +103,7 @@ In practice, that means:
 | **Setup and teardown stay manual**       | Lifecycle hooks run shell commands on session and tool events; workspace hooks need explicit approval first. [Hooks guide](./docs/guides/hooks-guide.md)                                                                                                                                        |
 | **Edits drift from project conventions** | Project instructions (`AGENTS.md`) are loaded into every turn, so the agent codes to your rules instead of rediscovering them. [Getting started](./docs/user-guide/getting-started.md)                                                                                                          |
 | **Interactive only is not enough**       | Headless `vtcode exec` with JSON events, scheduled tasks via `vtcode schedule`, and isolated eval worktrees support CI, cron, and agent-to-agent flows. [Full automation](./docs/guides/full-automation.md)                                                                                     |
-| **One provider locks you in**            | Built-in adapters for Gemini, OpenAI, Anthropic, DeepSeek, xAI, Meta, NVIDIA NIM, and more — plus gateways such as OpenRouter and GitHub Copilot, OpenAI-compatible custom providers, local inference via Ollama, LM Studio, and llama.cpp, and a `providers_whitelist` for air-gapped setups. [Providers](./docs/providers/PROVIDER_GUIDES.md) |
+| **One provider locks you in**            | Built-in adapters for Gemini, OpenAI, Anthropic, DeepSeek, xAI, Meta, NVIDIA NIM, StepFun, and more — plus gateways such as OpenRouter and GitHub Copilot, OpenAI-compatible custom providers, local inference via Ollama, LM Studio, and llama.cpp, and a `providers_whitelist` for air-gapped setups. [Providers](./docs/providers/PROVIDER_GUIDES.md) |
 
 The result is a terminal-native workflow that is:
 
@@ -155,19 +154,12 @@ graph LR
     LOOP <--> MODELS
 ```
 
-- **Entry points:** the TUI, headless `exec`/`ask`, cron schedules, and
-  editors over ACP all drive the same loop.
-- **Harness:** context assembly, policy checks, and sandboxing wrap every
-  model turn; the `ThreadEvent` log records everything for replay and
-  rollback.
-- **Extensions and models:** attach without patching the core; swap providers
-  without touching your workflow.
-
-For contributors, the layers map to workspace crates: entry points live in
-`vtcode` (`src/`) and `vtcode-acp`; the harness is `vtcode-core` with
-`vtcode-safety` for policy and sandboxing; the `ThreadEvent` contract is
-`vtcode-exec-events`; extensions are `vtcode-mcp`, `vtcode-skills`, and
-`vtcode-agent-plugins`; provider clients live in `vtcode-llm`.
+The TUI, headless `exec`/`ask`, cron schedules, and editors over ACP all drive
+the same loop. For contributors, the layers map to workspace crates: entry
+points in `vtcode` (`src/`) and `vtcode-acp`; the harness in `vtcode-core`
+with `vtcode-safety` for policy and sandboxing; the `ThreadEvent` contract in
+`vtcode-exec-events`; extensions in `vtcode-mcp`, `vtcode-skills`, and
+`vtcode-agent-plugins`; provider clients in `vtcode-llm`.
 
 For layer-by-layer details, extension seams, and internal composition rules,
 see the [Architecture guide](./docs/ARCHITECTURE.md).
@@ -178,7 +170,7 @@ see the [Architecture guide](./docs/ARCHITECTURE.md).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vinhnx/vtcode/main/scripts/install.sh | bash
-# or: brew trust vinhnx/tap && brew install vinhnx/tap/vtcode
+# or: brew install vinhnx/tap/vtcode
 # or: cargo install vtcode
 ```
 
@@ -249,13 +241,15 @@ A second tier handles session lifecycle and day-to-day operations:
 | Command                              | Purpose                                                                               |
 | ------------------------------------ | ------------------------------------------------------------------------------------- |
 | `vtcode continue`                    | Resume the last session, or fork it into a new one with `--session-id`                |
+| `vtcode exec resume`                 | Continue a finished headless run with a follow-up prompt: `--last` or a session id    |
 | `vtcode schedule`                    | Durable recurring prompts, by cron or one-shot; `install-service` survives restarts   |
 | `vtcode secret`                      | Store provider API keys in your OS keyring, never in shell history or workspace files |
 | `vtcode models`                      | Inspect, test, and compare providers and models                                       |
 | `vtcode snapshots` / `vtcode revert` | List and roll back to workspace snapshots                                             |
 | `vtcode tool-policy`                 | Allow or deny specific tools per workspace                                            |
 | `vtcode trajectory`                  | Pretty-print run logs for debugging and audits                                        |
-| `vtcode skills` / `vtcode plugins` / `vtcode mcp` | Manage skills, agent plugins, and MCP servers                            |
+| `vtcode skills` / `vtcode plugins`   | Manage skills and agent plugins                                                       |
+| `vtcode mcp`                         | Connect and manage MCP servers                                                        |
 
 `vtcode analyze`, `vtcode check`, `vtcode schema tools`, `vtcode dependencies`
 (alias `deps`), `vtcode config`, `vtcode man`, and `vtcode update` round out
@@ -270,18 +264,21 @@ the operator surface, with editor/agent bridges (`vtcode acp`, `vtcode a2a`,
 vtcode review
 
 # Weekly dependency audit (Mondays 09:00) as a durable cron job
-vtcode schedule create --cron "0 9 * * 1" --prompt "check for outdated deps and open an issue if any have CVEs"
+vtcode schedule create --name "weekly-dep-audit" --cron "0 9 * * 1" --prompt "check for outdated deps and open an issue if any have CVEs"
 
 # Resume yesterday's session and fork it for a new experiment
 vtcode continue --session-id <id>
+
+# Continue the last headless run with a follow-up prompt
+vtcode exec resume --last "continue the refactor"
 
 # See exactly what the agent did in the last run
 vtcode trajectory
 ```
 
-Headless `exec` usage is covered in the
-[exec mode guide](./docs/user-guide/exec-mode.md); durable cron schedules in
-the [scheduled tasks guide](./docs/user-guide/scheduled-tasks.md).
+To pick up a specific exec session by id, use `vtcode exec resume <session-id> "..."`.
+Headless `exec` usage: [exec mode guide](./docs/user-guide/exec-mode.md).
+Durable cron schedules: [scheduled tasks guide](./docs/user-guide/scheduled-tasks.md).
 
 ## Documentation
 

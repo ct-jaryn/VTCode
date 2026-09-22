@@ -11,7 +11,7 @@
 - `CommandExecutor` trait = primary abstraction for new backends.
 - `CommandPolicy` trait = execution gate. `WorkspaceGuardPolicy` enforces boundaries.
 - Preserve command shape through admission: direct argv executes without shell reconstruction; shell scripts require explicit validated syntax and never fall back from malformed argv.
-- Feature flags: `dry-run`, `pure-rust`, `exec-events`, `serde-errors`.
+- Feature flags: `dry-run`, `pure-rust`, `exec-events`, `serde-errors`. Every type reachable from a `serde-errors` payload must carry the same `cfg_attr` derive — a private helper field (for example `CommandForm` inside `CommandInvocation`) without it breaks `cargo check --all-features` while default-feature builds stay green.
 - `process_group` uses safe `nix` wrappers (`Pid::from_raw`, `signal::killpg`, `setpgid` in `pre_exec`); there is no `unsafe` here. Unsafe env mutation is centralized in `vtcode-commons::env_lock`, serialized by a process-wide mutex.
 
 ## Testing

@@ -141,6 +141,37 @@ pub(crate) fn openrouter_presets() -> Vec<ModelPreset> {
             context_window: Some(500_000),
         },
         ModelPreset {
+            id: "openrouter/x-ai/grok-4.7".to_string(),
+            model: "x-ai/grok-4.7".to_string(),
+            display_name: "Grok 4.7 (OpenRouter)".to_string(),
+            description: "xAI Grok 4.7 flagship reasoning model for long-running agents via OpenRouter".to_string(),
+            provider: Provider::OpenRouter,
+            default_reasoning_effort: ReasoningEffortLevel::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::Low,
+                    description: "Fast".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::Medium,
+                    description: "Balanced".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::High,
+                    description: "Deep (default)".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::XHigh,
+                    description: "Maximum depth".to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            context_window: Some(500_000),
+        },
+        ModelPreset {
             id: "openrouter/xiaomi/mimo-v2.5".to_string(),
             model: "xiaomi/mimo-v2.5".to_string(),
             display_name: "MiMo-V2.5 (OpenRouter)".to_string(),

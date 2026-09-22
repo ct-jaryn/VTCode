@@ -1678,6 +1678,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 // incomplete tracker work + recoverable turn end → queue the next
                 // turn instead of nudging the user. Verification blocks keep their
                 // existing recovery path first (handled below).
+                // Set when tracker auto-queue was eligible but could not
+                // resume (queue full / cross-turn budget exhausted) while
+                // incomplete tracker steps remain. The exhausted-path info
+                // line is the single user-facing nudge; suppress the generic
+                // blocked-handoff "Type continue" stack and blocked placeholder
+                // for this recoverable budget end.
+                let mut tracker_auto_continue_exhausted = false;
                 {
                     use crate::agent::runloop::unified::turn::tool_outcomes::helpers as tracker_continue;
                     let planning_active = tool_registry.is_planning_active();
@@ -1738,11 +1745,23 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     // planning ends (budget/safety-cap/tool-free recovery) queue
                     // another turn. Completed planning turns may be interview or
                     // approval handoffs and must wait for the user. Never auto-approves.
+                    // Empty-fallback guard: deterministic `PLANNING_COMPLETED_FALLBACK_RESPONSE`
+                    // turns (no LLM synthesis, no tools) increment a consecutive
+                    // counter; after MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE the
+                    // gate closes so 32 empty turns cannot re-queue forever
+                    // (session-vtcode-20260921T045723Z).
                     let plan_auto_continue_enabled = planning_active && tracker_kill_switch;
                     let plan_state = tool_registry.planning_workflow_state();
                     let plan_ready_for_approval = planning_active
                         && crate::agent::runloop::unified::planning_workflow::persisted_plan_is_ready(&plan_state)
                             .await;
+                    let final_text_is_empty_fallback =
+                        final_text.as_deref().is_some_and(tracker_continue::is_plan_empty_fallback_text);
+                    if final_text_is_empty_fallback {
+                        session_stats.record_plan_empty_fallback();
+                    } else {
+                        session_stats.reset_plan_empty_fallbacks();
+                    }
                     let should_queue_plan = tracker_continue::should_queue_plan_mode_auto_continue(
                         plan_auto_continue_enabled,
                         planning_active,
@@ -1751,13 +1770,16 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         blocked_reason,
                         is_verification_block,
                         max_turns,
+                        session_stats.consecutive_plan_empty_fallbacks(),
                     );
                     if should_queue_plan {
                         let follow_up = tracker_continue::plan_mode_continue_follow_up();
-                        let directive = "Plan-mode auto-continue: planning remains active and no validated plan is ready for approval. \
+                        let directive = format!(
+                            "{} planning remains active and no validated plan is ready for approval. \
                              Continue read-only research/synthesis toward one compact `<proposed_plan>` now; \
-                             do not ask the user to resume and do not implement."
-                            .to_string();
+                             do not ask the user to resume and do not implement.",
+                            tracker_continue::PLAN_MODE_AUTO_CONTINUE_MARKER
+                        );
                         let budget_remaining = session_stats.plan_continuation_turns() < max_turns;
                         let queued = budget_remaining
                             && match runtime.try_queue_follow_up_input(follow_up) {
@@ -1782,8 +1804,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     );
                                     let _ = renderer.line(
                                         MessageStyle::Info,
-                                        "[i] Plan-mode auto-continue queue full; planning remains active. Type `continue` to resume planning.",
+                                        "[i] Plan-mode auto-continue could not resume automatically; planning remains active. Type `continue` to resume planning.",
                                     );
+                                    tracker_auto_continue_exhausted = true;
                                     false
                                 }
                             };
@@ -1798,6 +1821,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                 MessageStyle::Info,
                                 "[i] Plan-mode auto-continue budget exhausted; planning remains active. Type `continue` to resume planning.",
                             );
+                            tracker_auto_continue_exhausted = true;
                         }
                         if planning_active && !plan_ready_for_approval {
                             let _ = renderer
@@ -1834,8 +1858,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     tracing::warn!(%err, "Tracker auto-continue queue full; falling through to turn end");
                                     let _ = renderer.line(
                                         MessageStyle::Info,
-                                        "[i] Tracker auto-continue queue full; incomplete tracker steps remain. Type `continue` to resume.",
+                                        "[i] Tracker auto-continue could not resume automatically; incomplete tracker steps remain. Type `continue` to resume remaining steps.",
                                     );
+                                    tracker_auto_continue_exhausted = true;
                                     false
                                 }
                             };
@@ -1848,8 +1873,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         if !budget_remaining {
                             let _ = renderer.line(
                                 MessageStyle::Info,
-                                "[i] Tracker auto-continue budget exhausted; incomplete tracker steps remain. Type `continue` to resume.",
+                                "[i] Tracker auto-continue budget exhausted; incomplete tracker steps remain. Type `continue` to resume remaining steps.",
                             );
+                            tracker_auto_continue_exhausted = true;
                         }
                     } else if planning_active && plan_ready_for_approval && turn_completed {
                         session_stats.reset_plan_continuation_budget();
@@ -1857,6 +1883,20 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             renderer.line(MessageStyle::Info, &tracker_continue::plan_progress_line("", true, 0, 0));
                     } else if planning_active && !plan_ready_for_approval && !turn_completed && !should_queue_plan {
                         // Blocked planning without auto-queue: compact status only.
+                        // When the empty-fallback cap fired, name it explicitly so
+                        // the user knows why auto-continue stopped instead of
+                        // seeing 32 silent `research/synthesis` lines.
+                        if session_stats.consecutive_plan_empty_fallbacks()
+                            >= tracker_continue::MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE
+                        {
+                            let _ = renderer.line(
+                                MessageStyle::Info,
+                                &format!(
+                                    "[i] Plan-mode auto-continue stopped after {} empty turns with no synthesis; planning remains active. Type `continue` or re-state the request to resume.",
+                                    session_stats.consecutive_plan_empty_fallbacks()
+                                ),
+                            );
+                        }
                         let _ =
                             renderer.line(MessageStyle::Info, &tracker_continue::plan_progress_line("", false, 0, 0));
                     } else if !planning_active && incomplete.as_ref().is_none_or(|items| items.is_empty()) {
@@ -1873,6 +1913,12 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     let base = reason.as_deref().unwrap_or("Turn blocked due to repeated failing behavior.");
                     let is_verification_block = base
                         .contains(crate::agent::runloop::unified::turn::turn_loop::PENDING_VERIFICATION_BLOCK_REASON);
+                    // Recoverable tracker/plan budget ends that already printed
+                    // the exhausted auto-continue info line must not stack a
+                    // second "Type continue" blocked-handoff nudge.
+                    let suppress_blocked_nudge = tracker_auto_continue_exhausted
+                        && !is_verification_block
+                        && verification_gate::tracker_auto_continue_is_recoverable_block(Some(base));
                     let max_failures = verification_gate::verification_max_consecutive_failures(vt_cfg.as_ref());
                     let escalated = session_stats.verification_consecutive_failures() >= max_failures;
                     // Autonomous cross-turn recovery for verification blocks:
@@ -1984,16 +2030,26 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         last_turn_diagnostics.as_ref(),
                         &session_stats.sorted_tools(),
                     );
-                    write_blocked_handoff_after_checkpoint(
-                        &config.workspace,
-                        &harness_snapshot.session_id,
-                        &summary,
-                        checkpoint_outcome.blocked_handoff_resume(),
-                        &mut renderer,
-                        harness_emitter.as_ref(),
-                        Some(&handle),
-                        tool_registry.is_planning_active(),
-                    );
+                    if !suppress_blocked_nudge {
+                        write_blocked_handoff_after_checkpoint(
+                            &config.workspace,
+                            &harness_snapshot.session_id,
+                            &summary,
+                            checkpoint_outcome.blocked_handoff_resume(),
+                            &mut renderer,
+                            harness_emitter.as_ref(),
+                            Some(&handle),
+                            tool_registry.is_planning_active(),
+                        );
+                    } else {
+                        // Keep forensics artifacts without the user-nudge stack.
+                        super::blocked_handoff::persist_blocked_handoff_quiet(
+                            &config.workspace,
+                            &harness_snapshot.session_id,
+                            &summary,
+                            tool_registry.is_planning_active(),
+                        );
+                    }
                 }
                 match &outcome_result {
                     RunLoopTurnLoopResult::Completed { .. } => {
@@ -2029,9 +2085,16 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         // `continue` re-blocks on the next turn. Name the mode
                         // switch explicitly; the transcript lines written above
                         // carry the full reasoning. Never auto-switch here.
+                        // Plan-mode guidance wins over the tracker-exhausted
+                        // hint because it names the actionable mode switch.
                         if tool_registry.is_planning_active() {
                             handle.set_placeholder(Some(
                                 "Plan blocked (read-only) · `continue` to keep planning, `/mode build` to implement..."
+                                    .to_string(),
+                            ));
+                        } else if tracker_auto_continue_exhausted {
+                            handle.set_placeholder(Some(
+                                "Tracker auto-continue exhausted · Type 'continue' to resume remaining steps..."
                                     .to_string(),
                             ));
                         } else {

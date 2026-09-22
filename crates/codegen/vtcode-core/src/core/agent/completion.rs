@@ -29,12 +29,46 @@ pub fn tracker_final_text_is_safety_handoff(text: &str) -> bool {
         || lower.contains("denied by tool policy")
         || lower.contains("execution denied by policy")
         || lower.contains("blocked by tool policy")
+        // Verification-gate recaps are outer-loop true handoffs: in-turn
+        // tracker continuation must not race past an anti-blind checkpoint
+        // that `should_queue_tracker_auto_continue` will refuse to auto-queue.
+        || lower.contains("verification is still pending")
+        || lower.contains("unverified assistant responses")
+        || lower.contains("anti-blind")
+        || lower.contains("verification gate")
     {
         return true;
     }
     // Pure budget/recovery recaps ("blocked by turn budget", "tool loop
     // budget exhausted", …) are not user handoffs.
     false
+}
+
+/// Shared recoverable status-recap vocabulary for tracker continuation.
+///
+/// Used by the binary in-turn override and outer blocked-reason classifier
+/// tests so session/production budget phrases cannot drift between surfaces.
+/// Lowercase input expected.
+pub fn recoverable_status_recap_phrasing(lower: &str) -> bool {
+    lower.contains("turn budget")
+        || lower.contains("preview budget")
+        || lower.contains("tool preview budget")
+        || lower.contains("wall clock")
+        || lower.contains("safety cap")
+        || lower.contains("recovery fallback")
+        || lower.contains("recovery could not confirm")
+        || lower.contains("recovery exhausted")
+        || lower.contains("recovery was exhausted")
+        || lower.contains("tool budget")
+        || lower.contains("tool loop")
+        || lower.contains("tool-call budget")
+        || lower.contains("tool follow-up")
+        || lower.contains("read cap")
+        || lower.contains("work budget")
+        || lower.contains("max tool")
+        || lower.contains("per-turn tool")
+        || lower.contains("budget exhausted")
+        || lower.contains("budget ran out")
 }
 
 /// True when final assistant text asks the user for a decision/confirmation.
@@ -293,6 +327,12 @@ mod tests {
         assert!(tracker_final_text_is_safety_handoff(
             "Blocked action: exec_command is denied by workspace tool policy."
         ));
+        assert!(tracker_final_text_is_safety_handoff(
+            "Turn blocked after repeated unverified assistant responses; verification is still pending."
+        ));
+        assert!(tracker_final_text_is_safety_handoff(
+            "Anti-blind checkpoint remains; verification is still pending."
+        ));
         assert!(!tracker_final_text_is_safety_handoff(
             "## Status\nBlocked by turn budget. Next step: read design/diff.rs."
         ));
@@ -301,6 +341,9 @@ mod tests {
         ));
         assert!(!tracker_final_text_is_safety_handoff(
             "Tool loop budget exhausted; continuing next turn with remaining tracker steps."
+        ));
+        assert!(!tracker_final_text_is_safety_handoff(
+            "Fix 1 partially applied, needs verification; next step is cargo check."
         ));
         // Bare tool-policy mention is not a handoff; explicit denial still is.
         assert!(!tracker_final_text_is_safety_handoff("Reviewed tool policy docs; next step is the tracker patch."));
@@ -312,6 +355,35 @@ mod tests {
         // Policy denial wins even when a budget is also mentioned.
         assert!(tracker_final_text_is_safety_handoff("Tool budget exhausted; denied by policy for exec_command."));
         assert!(tracker_final_text_is_safety_handoff("Turn budget hit, then permission denied for the write."));
+    }
+
+    #[test]
+    fn recoverable_status_recap_phrasing_covers_session_budget_recaps() {
+        for phrase in [
+            "blocked by the turn's preview budget",
+            "tool budget ran out",
+            "hit the per-file read cap",
+            "preview budget exhausted",
+            "tool loop budget exhausted",
+            "recovery fallback",
+            "reached the safety cap",
+            "work budget exhausted",
+        ] {
+            assert!(
+                recoverable_status_recap_phrasing(&phrase.to_ascii_lowercase()),
+                "must treat as recoverable: {phrase}"
+            );
+        }
+        for phrase in [
+            "permission denied for exec_command",
+            "verification is still pending",
+            "needs a user decision",
+        ] {
+            assert!(
+                !recoverable_status_recap_phrasing(&phrase.to_ascii_lowercase()),
+                "must not treat as recoverable budget phrasing: {phrase}"
+            );
+        }
     }
 
     #[test]

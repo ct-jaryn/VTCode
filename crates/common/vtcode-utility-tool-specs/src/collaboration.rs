@@ -11,7 +11,7 @@ pub fn agent_parameters() -> Value {
             "action": {
                 "type": "string",
                 "enum": ["spawn", "spawn_subprocess", "send_input", "resume", "wait", "close"],
-                "description": "spawn: delegate a scoped task to a child agent (requires message). spawn_subprocess: launch a managed background subprocess for long-running daemons (requires message). send_input: send follow-up input to a running child (requires id + message or items). resume: reopen a completed or closed child from saved context (requires id). wait: block the current foreground turn until one or more children reach a terminal state (requires ids). close: cancel and free a child's tool budget (requires id)."
+                "description": "spawn: delegate a scoped task to a child agent (requires message). spawn_subprocess: launch a managed background subprocess for long-running daemons (requires message). send_input: send follow-up input to a running child (requires id + message or items). resume: reopen a completed or closed child from saved context (requires id). wait: block the current foreground turn until one or more children reach a terminal state, including managed background subprocess ids (requires ids). close: cancel and free a child's tool budget (requires id)."
             },
             "agent_type": {"type": "string", "description": "spawn or spawn_subprocess: subagent type or name to run."},
             "message": {"type": "string", "description": "spawn or spawn_subprocess: task prompt. send_input: follow-up prompt for the child."},
@@ -30,7 +30,7 @@ pub fn agent_parameters() -> Value {
             "ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "wait: child agent ids to wait for. Blocks the current foreground turn until one target reaches a terminal state or the wait times out."
+                "description": "wait: child agent ids to wait for, including managed background subprocess ids (background-<name>). Blocks the current foreground turn until one target reaches a terminal state or the wait times out."
             },
             "timeout_ms": {
                 "type": "integer",
@@ -123,7 +123,7 @@ pub fn wait_agent_parameters() -> Value {
             "ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Child agent ids to wait for. This blocks the current foreground turn until one target reaches a terminal state or the wait times out."
+                "description": "Child agent ids to wait for, including managed background subprocess ids (background-<name>). This blocks the current foreground turn until one target reaches a terminal state or the wait times out."
             },
             "timeout_ms": {
                 "type": "integer",
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(
             wait["properties"]["ids"]["description"],
             json!(
-                "Child agent ids to wait for. This blocks the current foreground turn until one target reaches a terminal state or the wait times out."
+                "Child agent ids to wait for, including managed background subprocess ids (background-<name>). This blocks the current foreground turn until one target reaches a terminal state or the wait times out."
             )
         );
         assert_eq!(

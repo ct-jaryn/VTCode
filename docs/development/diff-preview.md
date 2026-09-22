@@ -102,5 +102,7 @@ User-facing behavior for long diffs in the TUI:
 
 Spec: `docs/compose/spec/tui-diff-auto-expand.md`.
 
-The presentation architecture was informed by the open-source Codex terminal
-diff design. VT Code's implementation and state model remain independent.
+The presentation architecture was informed by the open-source
+[Codex](https://github.com/openai/codex) terminal diff design (Apache-2.0).
+VT Code's implementation and state model remain independent; no Codex source
+code was copied.

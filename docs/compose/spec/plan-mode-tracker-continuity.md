@@ -1,7 +1,7 @@
 ---
 feature: plan-mode-tracker-continuity
 status: delivered
-updated: 2026-09-18
+updated: 2026-09-21
 branch: feat/plan-mode-tracker-continuity
 commits: 592c4f227..0fdad640e
 ---
@@ -79,6 +79,35 @@ pub(crate) fn plan_mode_recoverable_block(reason: &str) -> bool
 ### Config
 
 No new keys. Plan-mode auto-continue reuses `[agent.harness.continuation].auto_continue_tracker` + `cross_turn_turns`.
+
+## Follow-up (2026-09-21) — auto-continue directive misread as a user stay signal
+
+Regression against the S2C contract: the harness-generated plan-mode
+auto-continue follow-up (`plan_mode_continue_follow_up()`) contains the phrase
+`do not implement`, which normalizes to the `STAY_PHRASES` entry of the same
+name. The exit trigger (`maybe_handle_planning_exit_trigger`) checks stay intent
+first, so it classified the machine directive delivered as a mid-turn User
+message as a genuine stay signal — breaking the turn before any provider
+request, publishing `PLANNING_COMPLETED_TURN_FALLBACK_REASON`, and re-queueing
+the identical directive each outer turn (session
+`session-vtcode-20260921T045723Z_452479-85724`, 34 blocked turns / 67 fallback
+events). Intended behavior: `should_queue_plan_mode_auto_continue` completes a
+planning turn only toward synthesis, never toward an immediate re-break.
+
+Fix: a single shared `PLAN_MODE_AUTO_CONTINUE_MARKER` const in
+`tool_outcomes/helpers.rs` is emitted by both plan-mode auto-continue producers
+(outer-loop turn queue + resume continuation) and read by the exit trigger,
+which early-returns `PlanningTransition::None` for a marker-bearing last user
+message. Both producers call `plan_mode_continue_follow_up()`, so both are
+covered.
+
+Verification (final tree):
+
+- `cargo nextest run -p vtcode -E 'test(/exit_trigger|plan_mode_auto_continue|plan_mode_continue/)'` — PASS (8)
+- `cargo nextest run -p vtcode -E 'test(/turn_loop|planning_workflow/)'` — PASS (236)
+- `cargo nextest run -p vtcode-core -E 'test(/planning|plan_intent|stay_intent/)'` — PASS (134)
+- `cargo nextest run -p vtcode --no-fail-fast` — 3193/3195 PASS; 2 failures are `startup::` env tests needing `~/Library/Application Support` writes (sandbox-denied), unrelated
+- Negative control: disabling the guard fails the loop-level regression with the production symptom (Blocked + `PLANNING_COMPLETED_TURN_FALLBACK_REASON`, 0 provider requests)
 
 ## [S3] Out of Scope
 

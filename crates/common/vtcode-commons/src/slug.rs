@@ -80,6 +80,23 @@ pub fn create_with_prefix(prefix: &str) -> String {
     format!("{}-{}", prefix, create())
 }
 
+/// Whether a display title looks like a humanized generated codename
+/// (`"Jolly Forest"` from `1789108823046-jolly-forest`).
+///
+/// Generated slugs are always `{adjective}-{noun}` from the fixed tables
+/// above, so the humanized form is exactly two Title-Case words drawn from
+/// those tables. User titles (`"Release"`, `"Release Notes"`) do not match
+/// both tables and pass through as descriptive.
+pub fn is_humanized_codename(title: &str) -> bool {
+    let words: Vec<&str> = title.split_whitespace().collect();
+    if words.len() != 2 {
+        return false;
+    }
+    let adjective = words[0].to_ascii_lowercase();
+    let noun = words[1].to_ascii_lowercase();
+    ADJECTIVES.contains(&adjective.as_str()) && NOUNS.contains(&noun.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +133,15 @@ mod tests {
         let slugs: Vec<String> = (0..100).map(|_| create()).collect();
         let unique_count = slugs.iter().collect::<hashbrown::HashSet<_>>().len();
         assert!(unique_count > 50, "Expected mostly unique slugs");
+    }
+
+    #[test]
+    fn test_is_humanized_codename_detects_generated_names() {
+        assert!(is_humanized_codename("Jolly Forest"));
+        assert!(is_humanized_codename("Kind Lagoon"));
+        assert!(!is_humanized_codename("Release"));
+        assert!(!is_humanized_codename("Release Notes"));
+        assert!(!is_humanized_codename("Refine README"));
+        assert!(!is_humanized_codename(""));
     }
 }

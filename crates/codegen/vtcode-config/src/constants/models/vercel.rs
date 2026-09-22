@@ -15,6 +15,7 @@ pub const GOOGLE_GEMINI_3_8_FLASH: &str = "google/gemini-3.8-flash";
 pub const DEEPSEEK_FLASH: &str = "deepseek/deepseek-v4.1-flash";
 pub const MOONSHOTAI_KIMI_K3: &str = "moonshotai/kimi-k3";
 pub const MINIMAX_M3: &str = "minimax/minimax-m3";
+pub const SPACEXAI_GROK_4_7: &str = "spacexai/grok-4.7";
 
 pub const DEFAULT_MODEL: &str = ANTHROPIC_CLAUDE_SONNET_5;
 
@@ -33,6 +34,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     DEEPSEEK_FLASH,
     MOONSHOTAI_KIMI_K3,
     MINIMAX_M3,
+    SPACEXAI_GROK_4_7,
 ];
 
 /// Models on the gateway that do not emit reasoning traces.

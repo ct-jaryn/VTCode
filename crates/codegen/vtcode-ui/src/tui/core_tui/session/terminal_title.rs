@@ -5,9 +5,10 @@ use crate::tui::config::constants::ui;
 
 use super::Session;
 
+use vtcode_commons::ansi_codes::{set_iterm2_profile, set_terminal_title_and_icon};
+use vtcode_commons::terminal_detection::{ITERM2_PROFILE_NAME, should_apply_iterm2_profile_now};
+
 const MAX_TITLE_LENGTH: usize = 128;
-const OSC_SET_WINDOW_TITLE: &str = "\u{1b}]0;";
-const OSC_TERMINATOR: &str = "\u{7}";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalTitleItem {
@@ -247,11 +248,37 @@ fn strip_header_value(value: &str, prefix: &str) -> Option<String> {
     }
 }
 
+fn terminal_title_sequence(title: &str) -> String {
+    set_terminal_title_and_icon(title)
+}
+
 fn write_terminal_title(title: &str) -> std::io::Result<()> {
     let mut stdout = std::io::stdout();
-    stdout.write_all(OSC_SET_WINDOW_TITLE.as_bytes())?;
-    stdout.write_all(title.as_bytes())?;
-    stdout.write_all(OSC_TERMINATOR.as_bytes())?;
+    stdout.write_all(terminal_title_sequence(title).as_bytes())?;
+    stdout.flush()
+}
+
+/// One-shot switch to the installed VT Code iTerm2 profile, if applicable.
+///
+/// Called once at TUI startup (never on title updates): the profile carries
+/// the tab icon, and repeated switches would fight manual profile changes
+/// mid-session. Sessions without the installed profile file are untouched,
+/// so deleting it uninstalls the behavior.
+pub(crate) fn apply_iterm2_profile_once() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    if !should_apply_iterm2_profile_now() {
+        return;
+    }
+    if let Err(error) = write_iterm2_profile_switch() {
+        tracing::debug!(%error, "failed to switch to iTerm2 profile");
+    }
+}
+
+fn write_iterm2_profile_switch() -> std::io::Result<()> {
+    let mut stdout = std::io::stdout();
+    stdout.write_all(set_iterm2_profile(ITERM2_PROFILE_NAME).as_bytes())?;
     stdout.flush()
 }
 
@@ -315,7 +342,7 @@ fn normalize_title_part(value: &str) -> String {
 mod tests {
     use super::{
         Session, TerminalTitleStatus, is_stripped_terminal_title_char, normalize_title_part, sanitize_terminal_title,
-        truncate_title,
+        terminal_title_sequence, truncate_title,
     };
 
     fn session_for_title_tests() -> Session {
@@ -449,5 +476,26 @@ mod tests {
     #[test]
     fn normalize_title_part_collapses_spacing_and_case() {
         assert_eq!(normalize_title_part(" Main   Branch "), "main branch");
+    }
+
+    #[test]
+    fn title_sequence_sets_icon_before_title() {
+        assert_eq!(terminal_title_sequence("demo-project"), "\u{1b}]1;demo-project\u{7}\u{1b}]2;demo-project\u{7}");
+    }
+
+    #[test]
+    fn title_sequence_clear_resets_both_icon_and_title() {
+        assert_eq!(terminal_title_sequence(""), "\u{1b}]1;\u{7}\u{1b}]2;\u{7}");
+    }
+
+    #[test]
+    fn title_sequence_carries_sanitized_asymmetric_title() {
+        let sanitized =
+            sanitize_terminal_title("alpha\u{1b}]0;bad\u{7}\u{202e} beta").expect("title should survive sanitization");
+        assert_eq!(sanitized, "alpha ]0;bad beta");
+        assert_eq!(
+            terminal_title_sequence(&sanitized),
+            "\u{1b}]1;alpha ]0;bad beta\u{7}\u{1b}]2;alpha ]0;bad beta\u{7}"
+        );
     }
 }

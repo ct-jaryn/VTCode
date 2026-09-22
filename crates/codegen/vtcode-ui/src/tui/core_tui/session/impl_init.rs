@@ -174,6 +174,9 @@ impl Session {
             // --- PTY Session Management ---
             active_pty_sessions: None,
 
+            // --- Background Activity ---
+            background_activity_count: 0,
+
             // --- Keybinding store ---
             bindings: bindings.unwrap_or_default(),
 

@@ -94,6 +94,8 @@ pub enum ModelId {
     MergeGatewayDeepseekFlash,
     /// xAI Grok 4.6 through Merge Gateway
     MergeGatewayXaiGrok46,
+    /// xAI Grok 4.7 through Merge Gateway
+    MergeGatewayXaiGrok47,
     /// MiniMax H3 through Merge Gateway
     MergeGatewayMinimaxH3,
     /// Moonshot Kimi K3 through Merge Gateway
@@ -255,6 +257,8 @@ pub enum ModelId {
     OpenRouterMoonshotaiKimiK3,
     /// Grok 4.6 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter
     OpenRouterXAiGrok46,
+    /// Grok 4.7 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter
+    OpenRouterXAiGrok47,
     /// MiMo-V2.5 - Xiaomi's omnimodal agentic model for complex software engineering via OpenRouter
     OpenRouterXiaomiMimoV25,
     /// MiMo-V2.5-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter
@@ -283,9 +287,13 @@ pub enum ModelId {
     VercelMoonshotaiKimiK3,
     /// MiniMax M3 served through the Vercel AI Gateway
     VercelMinimaxM3,
+    /// Grok 4.7 served through the Vercel AI Gateway
+    VercelSpacexaiGrok47,
     // xAI models
     /// Grok 4.6 - xAI's flagship reasoning model with reasoning_effort support (500k context)
     XaiGrok46,
+    /// Grok 4.7 - xAI's flagship reasoning model with reasoning_effort support (500k context)
+    XaiGrok47,
 
     /// User-defined model not in the hardcoded catalog.
     /// Carries the provider key string and model identifier string.

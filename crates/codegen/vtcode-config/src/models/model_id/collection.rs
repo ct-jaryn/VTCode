@@ -50,6 +50,7 @@ impl ModelId {
             ModelId::MergeGatewayAnthropicClaudeOpus5,
             ModelId::MergeGatewayAnthropicClaudeSonnet5,
             ModelId::MergeGatewayXaiGrok46,
+            ModelId::MergeGatewayXaiGrok47,
             ModelId::MergeGatewayMinimaxH3,
             ModelId::MergeGatewayMoonshotKimiK3,
             ModelId::MergeGatewayThinkingMachinesInkling,
@@ -112,6 +113,7 @@ impl ModelId {
             ModelId::OpenRouterZaiGlm53Flash,
             // xAI models
             ModelId::XaiGrok46,
+            ModelId::XaiGrok47,
             // Vercel AI Gateway models
             ModelId::VercelAnthropicClaudeSonnet5,
             ModelId::VercelAnthropicClaudeOpus5,
@@ -123,6 +125,7 @@ impl ModelId {
             ModelId::VercelDeepseekFlash,
             ModelId::VercelMoonshotaiKimiK3,
             ModelId::VercelMinimaxM3,
+            ModelId::VercelSpacexaiGrok47,
         ];
         models.extend(Self::openrouter_models());
         let mut seen = HashSet::new();

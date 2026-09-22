@@ -147,6 +147,13 @@ impl<'a> InlineEventLoop<'a> {
         // recorded but does not abandon the remaining buffered events; it is
         // surfaced only after the drain finishes.
         let mut drain_error = None;
+        // A burst of buffered events (large paste, resize storm, held key) is
+        // the async analogue of Redis request pipelining: every `try_recv` is
+        // immediately ready, so draining without yielding monopolizes the
+        // runtime worker and starves I/O and other tasks. Yield after a batch
+        // to stay fair while keeping batching for the common small drain.
+        const BUFFERED_EVENTS_PER_YIELD: usize = 32;
+        let mut drained_since_yield = 0usize;
         while let Ok(event) = session.events.try_recv() {
             match self.process_buffered_event(event).await {
                 Ok(InlineLoopAction::Continue) => {}
@@ -162,6 +169,12 @@ impl<'a> InlineEventLoop<'a> {
                     }
                     drain_error.get_or_insert(err);
                 }
+            }
+
+            drained_since_yield += 1;
+            if drained_since_yield >= BUFFERED_EVENTS_PER_YIELD {
+                drained_since_yield = 0;
+                tokio::task::yield_now().await;
             }
         }
         if let Some(err) = drain_error {

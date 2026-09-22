@@ -517,6 +517,7 @@ impl Session {
                             .is_some_and(|viewer| viewer.close_control_contains(mouse_event.column, mouse_event.row))
                         {
                             self.close_tool_output_viewer();
+                            self.core.clear_mouse_selection();
                             self.mark_dirty();
                             return;
                         }
@@ -527,6 +528,7 @@ impl Session {
                             if let Some(viewer) = self.tool_output_viewer_state_mut() {
                                 viewer.toggle_render_mode();
                             }
+                            self.core.clear_mouse_selection();
                             self.mark_dirty();
                             return;
                         }
@@ -549,7 +551,7 @@ impl Session {
                             mouse_event.row,
                             mouse_event.modifiers,
                         )) {
-                            self.core.mouse_selection.clear_click_history();
+                            self.core.clear_mouse_selection();
                             return;
                         }
 
@@ -559,6 +561,7 @@ impl Session {
                             let width = self.core.transcript_width.max(1);
                             let height = self.core.transcript_rows.max(1);
                             self.open_tool_output_viewer(width, height, Some(review_anchor));
+                            self.core.clear_mouse_selection();
                             return;
                         }
 
@@ -574,7 +577,7 @@ impl Session {
                                 mouse_event.row,
                                 mouse_event.modifiers,
                             )) {
-                                self.core.mouse_selection.clear_click_history();
+                                self.core.clear_mouse_selection();
                                 return;
                             }
 
@@ -606,12 +609,12 @@ impl Session {
 
                         if self.has_active_overlay() && self.handle_active_overlay_click(mouse_event, events, callback)
                         {
-                            self.core.mouse_selection.clear_click_history();
+                            self.core.clear_mouse_selection();
                             return;
                         }
 
                         if self.handle_bottom_panel_click(mouse_event) {
-                            self.core.mouse_selection.clear_click_history();
+                            self.core.clear_mouse_selection();
                             return;
                         }
 
@@ -629,7 +632,7 @@ impl Session {
                             && mouse_event.row < pill.y.saturating_add(pill.height)
                             && self.core.jump_to_last_change()
                         {
-                            self.core.mouse_selection.clear_click_history();
+                            self.core.clear_mouse_selection();
                             self.core.mouse_drag_target = MouseDragTarget::None;
                             self.mark_dirty();
                             events::emit_inline_event(
@@ -644,7 +647,7 @@ impl Session {
                             && self.core.footer_jump_contains(mouse_event.column, mouse_event.row)
                             && self.core.jump_to_last_change()
                         {
-                            self.core.mouse_selection.clear_click_history();
+                            self.core.clear_mouse_selection();
                             self.core.mouse_drag_target = MouseDragTarget::None;
                             self.mark_dirty();
                             events::emit_inline_event(

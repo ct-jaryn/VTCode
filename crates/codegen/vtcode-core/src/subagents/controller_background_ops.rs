@@ -37,6 +37,11 @@ use vtcode_config::subagents::SUBAGENT_HARD_CONCURRENCY_LIMIT;
 )]
 use super::*;
 
+/// Poll cadence for [`SubagentController::wait_for_background`]. Background
+/// records have no completion `Notify` (unlike delegated child records), so
+/// the wait refreshes on a bounded interval instead of an event.
+const BACKGROUND_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 impl SubagentController {
     /// Returns status entries for all tracked background subprocesses.
     pub async fn background_status_entries(&self) -> Vec<BackgroundSubprocessEntry> {
@@ -255,12 +260,29 @@ impl SubagentController {
 
         match snapshot.lifecycle_state {
             Some(crate::tools::types::VTCodeSessionLifecycleState::Running) => {
+                // A graceful stop sets `desired_enabled=false` optimistically
+                // while SIGTERM drains. Do not resurrect `Stopped` back to
+                // `Running` during that grace window; the `Exited` arm below
+                // finalizes once the backend confirms exit.
+                if !record.desired_enabled && matches!(record.status, BackgroundSubprocessStatus::Stopped) {
+                    return Ok(None);
+                }
                 record.status = BackgroundSubprocessStatus::Running;
                 record.ended_at = None;
                 record.error = None;
             }
             Some(crate::tools::types::VTCodeSessionLifecycleState::Exited) | None => {
                 record.ended_at.get_or_insert(Utc::now());
+                // A clean `exit 0` is successful completion, not a crash.
+                // It must not trigger auto-restore and must surface as
+                // `Stopped` so the runloop/drawer agree with the exec
+                // session's `exited (0)` status.
+                if matches!(snapshot.exit_code, Some(0)) {
+                    record.desired_enabled = false;
+                    record.status = BackgroundSubprocessStatus::Stopped;
+                    record.error = None;
+                    return Ok(None);
+                }
                 if record.desired_enabled
                     && self.config.vt_cfg.subagents.background.auto_restore
                     && record.restart_attempts < 1
@@ -315,6 +337,16 @@ impl SubagentController {
         snapshot: &crate::tools::types::VTCodeExecSession,
         _config: &SubagentControllerConfig,
     ) {
+        // Defensive: a retained `Some(0)` snapshot must never surface as
+        // `Error`. This covers paths that bypass the early clean-exit return
+        // above (e.g. restart budget already exhausted).
+        if matches!(snapshot.exit_code, Some(0)) {
+            record.desired_enabled = false;
+            record.status = BackgroundSubprocessStatus::Stopped;
+            record.error = None;
+            record.ended_at.get_or_insert(Utc::now());
+            return;
+        }
         if record.desired_enabled {
             record.status = BackgroundSubprocessStatus::Error;
             record.error = Some(match snapshot.exit_code {
@@ -323,6 +355,62 @@ impl SubagentController {
             });
         } else {
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.error = None;
+        }
+    }
+
+    /// Blocks until one of the target background subprocesses reaches a
+    /// terminal state (`Stopped`/`Error`) or the timeout expires.
+    ///
+    /// This is the background counterpart to the delegated
+    /// [`SubagentController::wait`]: managed subprocesses previously had no
+    /// model-visible wait path, so the main orchestrator could only observe
+    /// completion via manual `/subprocesses` polling or the Local Agents
+    /// drawer. Unknown ids resolve to `Ok(None)` (fail-closed) rather than
+    /// an error so the unified `agent action=wait` dispatcher can race this
+    /// alongside the delegated wait without hallucinating completion.
+    pub async fn wait_for_background(
+        &self,
+        targets: &[String],
+        timeout_ms: Option<u64>,
+    ) -> Result<Option<BackgroundSubprocessEntry>> {
+        if targets.is_empty() {
+            return Ok(None);
+        }
+        let _ = self.refresh_background_processes().await?;
+        for target in targets {
+            if let Ok(entry) = self.background_status_for(target).await
+                && matches!(entry.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
+            {
+                return Ok(Some(entry));
+            }
+        }
+        let known = {
+            let state = self.state.read().await;
+            targets.iter().any(|target| state.background_children.contains_key(target))
+        };
+        if !known {
+            return Ok(None);
+        }
+
+        let timeout = std::time::Duration::from_millis(
+            timeout_ms.unwrap_or_else(|| self.config.vt_cfg.subagents.default_timeout_seconds.saturating_mul(1000)),
+        );
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            tokio::time::sleep(remaining.min(BACKGROUND_WAIT_POLL_INTERVAL)).await;
+            let _ = self.refresh_background_processes().await?;
+            for target in targets {
+                if let Ok(entry) = self.background_status_for(target).await
+                    && matches!(entry.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
+                {
+                    return Ok(Some(entry));
+                }
+            }
         }
     }
 
@@ -336,6 +424,7 @@ impl SubagentController {
                 .ok_or_else(|| anyhow!("Unknown background subprocess {target}"))?;
             record.desired_enabled = false;
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.error = None;
             record.updated_at = Utc::now();
             record.ended_at = Some(Utc::now());
             (record.agent_name.clone(), record.exec_session_id.clone())
@@ -368,6 +457,7 @@ impl SubagentController {
                 .ok_or_else(|| anyhow!("Unknown background subprocess {target}"))?;
             record.desired_enabled = false;
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.error = None;
             record.updated_at = Utc::now();
             record.ended_at = Some(Utc::now());
             (record.agent_name.clone(), record.exec_session_id.clone())

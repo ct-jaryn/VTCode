@@ -64,7 +64,15 @@ protocol-valid) so one dump cannot evict whole turns from the fork. Flat
 summaries and hierarchical bands share one capacity-retry contract
 (`generate_summary_with_capacity_retry`): on a context-capacity rejection the
 request is retried with progressively halved budgets, skipped when a retry
-cannot shrink the input. Local summaries are bounded on output with
+cannot shrink the input. When the window is unknown (`None` budget) the first
+fork is verbatim, but the retry derives a fallback budget from the failing
+attempt (`input_tokens / 2`) so it can still shrink instead of resending the
+identical fork. Empty provider summaries fail with a diagnostic
+(`provider returned an empty summary`) rather than producing an empty
+`Previous conversation summary:` history. All summary failures carry route
+diagnostics (`provider / model`, `input_tokens`, `budget`) in the error chain
+so `/compact` reports the actionable cause instead of only
+`Failed to generate compaction summary`. Local summaries are bounded on output with
 `bound_compacted_history_to_context`; native provider responses are passed
 through unchanged because their retained items and opaque compaction state are
 the canonical next context window. The native endpoint is responsible for

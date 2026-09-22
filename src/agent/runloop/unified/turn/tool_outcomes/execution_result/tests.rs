@@ -905,6 +905,27 @@ fn build_subagent_memory_update_aggregates_structured_child_results() {
 }
 
 #[test]
+fn build_subagent_memory_update_ignores_background_subprocess_entries() {
+    // `agent wait` returns managed background subprocess entries with the same
+    // `completed`/`entry` envelope as delegated children. Their readiness text
+    // is not a delegated summary and must not enter session memory.
+    let output = serde_json::json!({
+        "completed": true,
+        "entry": {
+            "agent_name": "background-demo",
+            "desired_enabled": false,
+            "status": "stopped",
+            "summary": "[demo-background-subagent] ready pid=123"
+        }
+    });
+
+    assert!(
+        build_subagent_memory_update(&output).is_none(),
+        "background subprocess completion must not become a delegated memory note"
+    );
+}
+
+#[test]
 fn build_subagent_memory_update_falls_back_to_raw_summary() {
     let output = serde_json::json!({
         "status": "completed",

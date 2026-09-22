@@ -5,6 +5,11 @@
     reason = "validated diff indexes and UTF-8 token boundaries are structural invariants"
 )]
 //! Bounded structured text diffs and renderer-neutral preview rows.
+//!
+//! The presentation architecture and underlying ideas (unified and side-by-side
+//! terminal previews with intraline emphasis) were informed by
+//! [OpenAI Codex](https://github.com/openai/codex) (Apache-2.0). This crate is
+//! an independent implementation for VT Code; no Codex source code was copied.
 
 use similar::{ChangeTag, TextDiff};
 use std::collections::VecDeque;
@@ -2241,5 +2246,155 @@ mod tests {
         let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
         assert!(rendered.iter().any(|line| line.starts_with("- old")));
         assert!(rendered.iter().any(|line| line.starts_with("+ new")));
+    }
+
+    #[test]
+    fn generative_small_docs_round_trip_across_algorithms_and_unified() {
+        // Matklad-style oracle fuzzing in the small: a humble deterministic
+        // PRNG is enough to shake out tricky interactions. Generate tiny docs
+        // from a swarmed line alphabet (small, overlapping inputs beat huge
+        // uniform ones) and cross-check Myers vs Patience vs Histogram plus a
+        // unified format/parse round-trip.
+        const LINE_ALPHABET: [&str; 6] = ["a\n", "b\n", "c\n", "alpha\n", "beta\n", "x\n"];
+        let mut rng = SwarmRng::new(0x9E37_79B9_7F4A_7C15);
+        // Re-use buffers across iterations (static allocation in the small).
+        let mut alphabet: Vec<&str> = Vec::with_capacity(LINE_ALPHABET.len());
+        let mut old_text = String::with_capacity(64);
+        let mut new_text = String::with_capacity(64);
+
+        // Hand-picked asymmetric boundaries first: order swaps and empty sides
+        // catch what symmetric fixtures miss.
+        let seeds: [(&str, &str); 5] = [
+            ("a\n", "b\n"),
+            ("a\nb\n", "b\na\n"),
+            ("", "x\n"),
+            ("x\n", ""),
+            ("a\na\n", "a\n"),
+        ];
+        for (old, new) in seeds {
+            assert_generative_oracles(old, new);
+        }
+
+        for _ in 0..1024 {
+            alphabet.clear();
+            alphabet.extend(LINE_ALPHABET);
+            rng.shuffle_str(&mut alphabet);
+            let alphabet_len = rng.range(1, alphabet.len() + 1);
+            alphabet.truncate(alphabet_len);
+
+            gen_doc(&mut rng, &alphabet, &mut old_text);
+            gen_doc(&mut rng, &alphabet, &mut new_text);
+            assert_generative_oracles(&old_text, &new_text);
+        }
+    }
+
+    fn assert_generative_oracles(old: &str, new: &str) {
+        let options_for = |algorithm: DiffAlgorithm| DiffOptions {
+            context_lines: 100,
+            algorithm,
+            ..DiffOptions::default()
+        };
+        let myers = DiffDocument::between(old, new, options_for(DiffAlgorithm::Myers));
+        let patience = DiffDocument::between(old, new, options_for(DiffAlgorithm::Patience));
+        let histogram = DiffDocument::between(old, new, options_for(DiffAlgorithm::Histogram));
+
+        if old == new {
+            assert!(myers.hunks.is_empty(), "identical docs must yield no hunks: {old:?}");
+            assert!(patience.hunks.is_empty(), "identical docs must yield no hunks: {old:?}");
+            assert!(histogram.hunks.is_empty(), "identical docs must yield no hunks: {old:?}");
+            return;
+        }
+
+        // Oracle 1: applying hunks to the old side must reconstruct both sides.
+        let (myers_old, myers_new) = apply_hunks(&myers.hunks);
+        assert_eq!(myers_old, old, "Myers hunks do not reconstruct old side for {old:?} -> {new:?}");
+        assert_eq!(myers_new, new, "Myers hunks do not reconstruct new side for {old:?} -> {new:?}");
+
+        // Oracle 2 (`regex` vs `regex_lite`): all algorithms must agree on the
+        // applied result even when hunk splitting differs.
+        let (patience_old, patience_new) = apply_hunks(&patience.hunks);
+        let (histogram_old, histogram_new) = apply_hunks(&histogram.hunks);
+        assert_eq!(
+            (patience_old.as_str(), patience_new.as_str()),
+            (old, new),
+            "Patience mis-reconstructs {old:?} -> {new:?}"
+        );
+        assert_eq!(
+            (histogram_old.as_str(), histogram_new.as_str()),
+            (old, new),
+            "Histogram mis-reconstructs {old:?} -> {new:?}"
+        );
+
+        // Oracle 3: unified format/parse round-trip preserves the applied result.
+        let formatted = format_unified_hunks(&myers.hunks, &options_for(DiffAlgorithm::Myers));
+        let reparsed = DiffDocument::from_unified(&formatted).expect("formatted hunks must parse");
+        let (re_old, re_new) = apply_hunks(&reparsed.hunks);
+        assert_eq!(
+            (re_old.as_str(), re_new.as_str()),
+            (old, new),
+            "unified round-trip diverges for {old:?} -> {new:?}"
+        );
+        assert_eq!(
+            (reparsed.stats.additions, reparsed.stats.deletions),
+            (myers.stats.additions, myers.stats.deletions),
+            "unified round-trip changed change counts for {old:?} -> {new:?}"
+        );
+    }
+
+    fn apply_hunks(hunks: &[DiffHunk]) -> (String, String) {
+        let mut old = String::new();
+        let mut new = String::new();
+        for line in hunks.iter().flat_map(|hunk| &hunk.lines) {
+            match line.kind {
+                DiffLineKind::Context => {
+                    old.push_str(&line.text);
+                    new.push_str(&line.text);
+                }
+                DiffLineKind::Deletion => old.push_str(&line.text),
+                DiffLineKind::Addition => new.push_str(&line.text),
+            }
+        }
+        (old, new)
+    }
+
+    fn gen_doc(rng: &mut SwarmRng, alphabet: &[&str], result: &mut String) {
+        result.clear();
+        let count = rng.range(0, 8);
+        for _ in 0..count {
+            let line = alphabet[rng.range(0, alphabet.len())];
+            result.push_str(line);
+        }
+    }
+
+    /// Minimal deterministic PRNG (splitmix64): no new dependencies, stable CI.
+    struct SwarmRng {
+        state: u64,
+    }
+
+    impl SwarmRng {
+        const fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut value = self.state;
+            value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            value ^ (value >> 31)
+        }
+
+        fn range(&mut self, low: usize, high: usize) -> usize {
+            assert!(low < high, "empty range");
+            let span = high - low;
+            low + (self.next_u64() as usize % span)
+        }
+
+        fn shuffle_str(&mut self, items: &mut [&str]) {
+            for index in (1..items.len()).rev() {
+                let other = self.range(0, index + 1);
+                items.swap(index, other);
+            }
+        }
     }
 }

@@ -128,8 +128,8 @@ fn test_provider_defaults() {
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::Ollama), ModelId::OllamaGptOss20b);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::ZAI), ModelId::ZaiGlm53);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::OpenCodeGo), ModelId::OpenCodeGoMinimaxM3);
-    assert_eq!(ModelId::default_orchestrator_for_provider(Provider::XAI), ModelId::XaiGrok46);
-    assert_eq!(ModelId::default_single_for_provider(Provider::XAI), ModelId::XaiGrok46);
+    assert_eq!(ModelId::default_orchestrator_for_provider(Provider::XAI), ModelId::XaiGrok47);
+    assert_eq!(ModelId::default_single_for_provider(Provider::XAI), ModelId::XaiGrok47);
     assert_eq!(
         ModelId::default_orchestrator_for_provider(Provider::MergeGateway),
         ModelId::MergeGatewayDefaultRouting
@@ -266,7 +266,7 @@ fn test_models_for_provider() {
     assert!(nvidia_models.contains(&ModelId::NvidiaNemotron3Super120bA12b));
 
     let merge_gateway_models = ModelId::models_for_provider(Provider::MergeGateway);
-    assert_eq!(merge_gateway_models.len(), 18);
+    assert_eq!(merge_gateway_models.len(), 19);
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayDefaultRouting));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayGoogleGemini38Flash));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayAnthropicClaudeFable51));
@@ -275,6 +275,7 @@ fn test_models_for_provider() {
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayMetaMuseSpark13));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt6Astra));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayAnthropicClaudeHaiku4520251001));
+    assert!(merge_gateway_models.contains(&ModelId::MergeGatewayXaiGrok47));
 
     let openrouter_models = ModelId::models_for_provider(Provider::OpenRouter);
     assert!(openrouter_models.contains(&ModelId::OpenRouterMetaMuseGlimmer30b));

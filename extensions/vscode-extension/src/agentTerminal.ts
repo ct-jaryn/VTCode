@@ -126,7 +126,8 @@ export class VtcodeTerminalManager implements vscode.Disposable {
         const terminalOptions: vscode.ExtensionTerminalOptions = {
             name: options.title,
             iconPath:
-                options.icon ?? new vscode.ThemeIcon("comment-discussion"),
+                options.icon ??
+                vscode.Uri.joinPath(this.context.extensionUri, "media", "vtcode-terminal.png"),
             pty: managed,
         };
         const terminal = vscode.window.createTerminal(terminalOptions);

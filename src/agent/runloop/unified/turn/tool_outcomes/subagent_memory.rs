@@ -145,6 +145,11 @@ fn extract_completed_subagent_entries(output: &serde_json::Value) -> Vec<&serde_
 
     if output.get("completed").and_then(serde_json::Value::as_bool) == Some(true)
         && let Some(entry) = output.get("entry")
+        // Managed background subprocess entries share the `completed`/`entry`
+        // shape with delegated children, but they carry `desired_enabled`
+        // (a field no delegated entry has). Their status/readiness text is
+        // not a delegated summary and must not become a session-memory note.
+        && entry.get("desired_enabled").is_none()
     {
         entries.push(entry);
     }

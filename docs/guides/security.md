@@ -159,7 +159,17 @@ Platform behavior is explicit:
   filtering, kernel 5.13+). `VTCODE_LINUX_SANDBOX_EXECUTABLE` may override the
   helper with an external binary speaking the same protocol. A restrictive
   policy fails closed if Landlock is unavailable or the restrictions cannot be
-  applied.
+  applied. Filesystem grants exclude `/proc`/`/sys` so `/proc/self/fd`
+  reopen escapes stay denied, and `/dev` is never granted wholesale (only
+  `/dev/null`, `/dev/zero`, and entropy sources). Seccomp blocks escalation
+  primitives including `ptrace`, `kcmp`, BPF, `perf_event_open`, `userfaultfd`,
+  the `io_uring` trio, process-VM inspection, file-handle syscalls
+  (`open_by_handle_at`, `name_to_handle_at`), namespace creation
+  (`unshare`, `setns`, namespace `clone` flags, `clone3`), and terminal
+  injection ioctls (`TIOCSTI`, `TIOCSCTTY`); blocked numbers cover their
+  x32-aliased variants and mismatched architectures are killed outright.
+  Hostname allowlists fail closed because BPF cannot inspect `connect()`
+  destinations.
 - macOS preserves full-network and blocked-network modes. Hostname allowlists
   are rejected unless exact enforcement is available; Seatbelt profiles are
   not treated as a reliable third-party domain-filtering contract.
@@ -372,6 +382,7 @@ Stay informed about security updates:
 ## Additional Resources
 
 - [Security Model](../security/SECURITY_MODEL.md) - Complete security architecture
+- [Sandboxing Basics Reference](../development/sandboxing-basics-reference.md) - Distilled reference notes on discretionary privilege dropping with the VT Code applicability mapping
 - [Tool Policies](../modules/vtcode_tools_policy.md) - Command execution policies
 - [CWE-88: Argument Injection](https://cwe.mitre.org/data/definitions/88.html)
 - [OWASP Command Injection](https://owasp.org/www-community/attacks/Command_Injection)
@@ -383,6 +394,7 @@ VT Code's security model is informed by:
 - Trail of Bits research on AI agent security
 - Anthropic's safety guidelines
 - OpenAI Codex execution policy
+- Emilua's software sandboxing basics ([reference notes](../development/sandboxing-basics-reference.md), [original article](https://blog.emilua.org/2025/01/12/software-sandboxing-basics/))
 - Industry best practices for command execution
 
 ---

@@ -125,7 +125,21 @@ pub(crate) async fn handle_manage_subprocesses(
             if !controller.background_subagents_enabled() || controller.configured_default_background_agent().is_none()
             {
                 if ctx.renderer.supports_inline_ui() {
+                    // Refresh first so retained exec sessions appear in the
+                    // drawer instead of being hidden behind setup guidance.
+                    // The drawer empty state already surfaces the opt-in
+                    // line; emitting the 3-line transcript guidance as well
+                    // duplicates it, and a double Ctrl+B press (tmux prefix)
+                    // would duplicate it twice (6 lines) ahead of the exec
+                    // session block. Keep transcript guidance text-mode only.
+                    if let Err(error) =
+                        refresh_local_agents(ctx.handle, Some(&controller), ctx.tool_registry.exec_session_manager())
+                            .await
+                    {
+                        tracing::warn!(%error, "Failed to refresh local agents before opening subprocesses");
+                    }
                     ctx.handle.show_local_agents();
+                    return Ok(SlashCommandControl::Continue);
                 }
                 render_background_setup_guidance(&mut ctx)?;
                 return Ok(SlashCommandControl::Continue);

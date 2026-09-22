@@ -686,15 +686,20 @@ cargo test --lib  # Runs all #[tokio::test] tests
 
 ### Tokio Runtime
 
-VT Code uses the default tokio runtime (work-stealing scheduler, multiple OS threads):
+VT Code builds one multi-threaded runtime in `src/main.rs` and reuses it for
+both startup-context resolution and the long-lived agent loop:
 
 ```rust
-#[tokio::main]
-async fn main() {
-    // Default: multi-threaded runtime
-    // All async code runs here
+let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+runtime_builder.enable_all().thread_name("vtcode-rt-worker");
+if let Some(workers) = vtcode_commons::runtime_diagnostics::configured_worker_threads() {
+    runtime_builder.worker_threads(workers);
 }
+let runtime = runtime_builder.build().context("failed to build Tokio runtime")?;
 ```
+
+Worker threads are named `vtcode-rt-worker` so profiles and `spawn_blocking`
+traces are attributable to VT Code.
 
 **For custom runtime config:**
 ```rust
@@ -703,6 +708,28 @@ async fn main() {
     // Explicitly set 4 worker threads
 }
 ```
+
+#### Runtime diagnostics and tuning
+
+`vtcode_commons::runtime_diagnostics` exposes stable
+`tokio::runtime::RuntimeMetrics` counters without requiring the
+`tokio_unstable` cfg:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `VTCODE_RUNTIME_METRICS` | unset | `1`/`true`/`yes`/`on`/`debug` enables the boot snapshot plus a 60s periodic snapshot at `DEBUG` on target `vtcode.runtime`. |
+| `VTCODE_RUNTIME_WORKERS` | unset | Positive integer worker-thread count for the main runtime. Unset keeps one worker per core. Lower it to reserve cores for non-Tokio background work (see the [fast-Tokio isolation guidance](https://dial9-rs.github.io/blog/principles-for-fast-tokio-applications/)). |
+| `VTCODE_STARTUP_TRACE` | unset | `1` enables the existing startup trace and implies runtime diagnostics. |
+
+The snapshot reports `workers`, `alive_tasks`, `global_queue_depth`, and
+`worker_busy_ms`. In a healthy application the global (injection) queue stays
+close to empty; a consistently deep queue means work is being scheduled from
+outside runtime workers or local queues are overflowing.
+
+Per-worker local-queue depth, steal/overflow counts, blocking-pool depth, and
+poll-time/schedule-latency histograms are gated behind
+`RUSTFLAGS="--cfg tokio_unstable"` in current Tokio and stay opt-in follow-up
+work.
 
 ### Timeouts
 

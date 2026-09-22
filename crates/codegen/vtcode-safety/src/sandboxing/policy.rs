@@ -445,17 +445,44 @@ impl ResourceLimits {
     }
 }
 
+/// Version of the seccomp blocklist schema compiled into this binary.
+///
+/// Bump when `BLOCKED_SYSCALLS` gains or loses an entry so launcher logs
+/// (see `linux_seccomp::apply_seccomp_filter`) can distinguish which policy
+/// a trace came from.
+pub const SECCOMP_PROFILE_VERSION: u32 = 1;
+
 /// Syscalls that should be blocked in seccomp-bpf profiles.
 ///
 /// Following the field guide: "A tight seccomp profile blocks syscalls that expand
 /// kernel attack surface or enable escalation."
+///
+/// This is a blocklist (deny-list), not a whitelist. Per the sandboxing-basics
+/// analysis (Emilua 2025), blocklists are inherently fragile: new kernel syscalls,
+/// multiarch numberings, and the x32 ABI (`__X32_SYSCALL_BIT`) can bypass naive
+/// filters. `linux_seccomp::primary_rules` therefore installs both the native
+/// number and its x32-aliased variant on x86_64, and the launcher kills
+/// mismatched architectures outright (`SECCOMP_RET_KILL_PROCESS` via
+/// seccompiler arch validation). Prefer Landlock for filesystem policy and keep
+/// this list focused on escalation/escape primitives.
+///
+/// Group labels mirror the Kafel-inspired families from that analysis
+/// (`Debug`, `FilesystemHandle`, `IoUring`, `ProcessVm`, ...) so future
+/// whitelist work can promote one family at a time.
 pub const BLOCKED_SYSCALLS: &[&str] = &[
-    // Debugging/tracing - can be used to escape sandboxes
+    // Debug/inspection - can be used to escape sandboxes or leak process state
     "ptrace",
+    "kcmp",
+    "pidfd_getfd",
+    "process_madvise",
+    "process_mrelease",
     // Mounting - can change filesystem namespace
     "mount",
     "umount",
     "umount2",
+    // FilesystemHandle - file-handle escapes around path-based policy
+    "open_by_handle_at",
+    "name_to_handle_at",
     // Kernel module loading
     "init_module",
     "finit_module",
@@ -469,7 +496,12 @@ pub const BLOCKED_SYSCALLS: &[&str] = &[
     "perf_event_open",
     // Userfaultfd - can be used for race conditions
     "userfaultfd",
-    // Process VM operations
+    // IoUring - widely distrusted for untrusted code; see
+    // https://security.googleblog.com/2023/06/learnings-from-kctf-vrps-42-linux.html
+    "io_uring_setup",
+    "io_uring_enter",
+    "io_uring_register",
+    // ProcessVm - cross-process memory inspection/writes
     "process_vm_readv",
     "process_vm_writev",
     // Reboot/power
@@ -487,8 +519,6 @@ pub const BLOCKED_SYSCALLS: &[&str] = &[
     "keyctl",
     // IO permission
     "ioperm",
-    "iopl",
-    // Raw I/O port access
     "iopl",
     // Acct - process accounting manipulation
     "acct",
@@ -1470,11 +1500,30 @@ mod tests {
 
     #[test]
     fn test_blocked_syscalls_constant() {
-        // Verify key dangerous syscalls are in the list
-        assert!(BLOCKED_SYSCALLS.contains(&"ptrace"));
-        assert!(BLOCKED_SYSCALLS.contains(&"mount"));
-        assert!(BLOCKED_SYSCALLS.contains(&"kexec_load"));
-        assert!(BLOCKED_SYSCALLS.contains(&"bpf"));
-        assert!(BLOCKED_SYSCALLS.contains(&"perf_event_open"));
+        // Verify key dangerous syscalls are in the list, including the
+        // sandboxing-basics additions (ptrace-adjacent inspection, io_uring,
+        // file-handle escapes). Asymmetric: both a classic entry and each new
+        // family must be present.
+        for must_block in [
+            "ptrace",
+            "kcmp",
+            "pidfd_getfd",
+            "mount",
+            "open_by_handle_at",
+            "name_to_handle_at",
+            "kexec_load",
+            "bpf",
+            "perf_event_open",
+            "userfaultfd",
+            "io_uring_setup",
+            "io_uring_enter",
+            "io_uring_register",
+            "process_vm_readv",
+            "process_madvise",
+            "unshare",
+            "setns",
+        ] {
+            assert!(BLOCKED_SYSCALLS.contains(&must_block), "missing {must_block}");
+        }
     }
 }

@@ -217,7 +217,7 @@ impl Session {
                         mouse_event.row,
                         mouse_event.modifiers,
                     )) {
-                        self.mouse_selection.clear_click_history();
+                        self.clear_mouse_selection();
                         return;
                     }
 
@@ -228,7 +228,7 @@ impl Session {
                             mouse_event.row,
                             mouse_event.modifiers,
                         )) {
-                            self.mouse_selection.clear_click_history();
+                            self.clear_mouse_selection();
                             return;
                         }
 
@@ -258,12 +258,12 @@ impl Session {
                     }
 
                     if self.has_active_overlay() && self.handle_active_overlay_click(mouse_event, events, callback) {
-                        self.mouse_selection.clear_click_history();
+                        self.clear_mouse_selection();
                         return;
                     }
 
                     if self.handle_bottom_panel_click(mouse_event) {
-                        self.mouse_selection.clear_click_history();
+                        self.clear_mouse_selection();
                         return;
                     }
 
@@ -281,7 +281,7 @@ impl Session {
                         && mouse_event.row < pill.y.saturating_add(pill.height)
                         && self.jump_to_last_change()
                     {
-                        self.mouse_selection.clear_click_history();
+                        self.clear_mouse_selection();
                         self.mouse_drag_target = MouseDragTarget::None;
                         self.emit_inline_event(&InlineEvent::JumpToLastChange, events, callback);
                         return;
@@ -291,7 +291,7 @@ impl Session {
                         && self.footer_jump_contains(mouse_event.column, mouse_event.row)
                         && self.jump_to_last_change()
                     {
-                        self.mouse_selection.clear_click_history();
+                        self.clear_mouse_selection();
                         self.mouse_drag_target = MouseDragTarget::None;
                         self.emit_inline_event(&InlineEvent::JumpToLastChange, events, callback);
                         return;

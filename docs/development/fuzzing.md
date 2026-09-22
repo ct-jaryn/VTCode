@@ -7,9 +7,38 @@ This guide describes local fuzz testing for VT Code with `cargo-fuzz`.
 Current fuzz targets focus on security parser surfaces in `vtcode-core`:
 
 - `shell_parser`: `command_safety::shell_parser` parsing paths
+- `dangerous_commands`: `command_safety::dangerous_commands` classification invariants
 - `exec_policy_parser`: `exec_policy::PolicyParser` (simple/TOML/JSON)
 - `exec_policy_command_validation`: `exec_policy::command_validation::validate_command`
 - `unified_path_validation`: `tools::validation::unified_path::validate_and_resolve_path`
+
+Stable-toolchain generative tests (no nightly required) live next to the code:
+
+- `vtcode-diff`: `generative_small_docs_round_trip_across_algorithms_and_unified`
+  cross-checks `Myers` vs `Patience` vs `Histogram` plus a unified
+  format/parse round-trip on tiny swarmed inputs.
+
+## Oracles
+
+`no-panic` alone rarely finds logic bugs. Prefer differential oracles:
+
+- `shell_parser`: lenient `parse_shell_commands` must equal strict
+  `parse_shell_commands_tree_sitter` whenever the strict parse is non-empty;
+  `parse_bash_lc_commands(["bash", "-lc", script])` must equal
+  `parse_shell_commands(script)` (`Ok -> Some`, `Err -> None`).
+- `dangerous_commands`: classification is deterministic; encoded PowerShell is
+  both dangerous and approval-gated; a dangerous parsed sub-command taints its
+  `bash -c/-lc/-ilc` wrapper and unparseable inline scripts fail closed.
+- `unified_path_validation`: an `Ok` resolved path must stay inside the
+  canonicalized workspace root.
+- `vtcode-diff`: applying hunks must reconstruct both sides across all
+  algorithms, and `format -> from_unified` must preserve the applied result.
+
+## Fuzzer-first fixes
+
+When a pest dodges the fuzzers, treat it as a fuzzer bug first: extend the
+oracle or generator to catch it (plus a minimized seed in
+`fuzz/corpus/<target>/`), and only then land the fix and unit test.
 
 ## Prerequisites
 

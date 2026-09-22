@@ -11,6 +11,17 @@
 //! - **Policy**: What can code touch (SandboxPolicy enum)
 //! - **Lifecycle**: What survives between runs (session-scoped approvals)
 //!
+//! Compartment topology (sandboxing-basics actor model): the broker
+//! (`SandboxManager` + `vtcode sandbox-exec` launcher) owns every grant; each
+//! sandboxed child is a leaf worker. Workers never forward capabilities to
+//! each other — there is no `SCM_RIGHTS` passing between sandboxed processes,
+//! only parent↔child pipes the broker created. File descriptors behave as
+//! capabilities except for `ioctl`s, so terminal injection (`TIOCSTI`,
+//! `TIOCSCTTY`) is denied in seccomp while general TTY ioctls stay available
+//! for PTY sessions. Privileges only ever decrease (`PR_SET_NO_NEW_PRIVS` +
+//! Landlock `restrict_self` + seccomp); namespaces are never used as the
+//! sandbox mechanism.
+//!
 //! Key components:
 //! - **SandboxPolicy**: Configurable isolation levels (ReadOnly, WorkspaceWrite, DangerFullAccess)
 //! - **SandboxManager**: Transforms command specifications into sandboxed execution environments
@@ -63,6 +74,6 @@ pub use linux::{apply_sandbox_restrictions, landlock_supported};
 pub use manager::{SandboxManager, SandboxTransformError};
 pub use permissions::{AdditionalPermissions, SandboxPermissions};
 pub use policy::{
-    BLOCKED_SYSCALLS, DEFAULT_SENSITIVE_PATHS, FILTERED_SYSCALLS, NetworkAllowlistEntry, ResourceLimits, SandboxPolicy,
-    SeccompProfile, SensitivePath, WritableRoot, default_sensitive_paths,
+    BLOCKED_SYSCALLS, DEFAULT_SENSITIVE_PATHS, FILTERED_SYSCALLS, NetworkAllowlistEntry, ResourceLimits,
+    SECCOMP_PROFILE_VERSION, SandboxPolicy, SeccompProfile, SensitivePath, WritableRoot, default_sensitive_paths,
 };

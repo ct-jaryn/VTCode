@@ -457,11 +457,17 @@ fn handle_ide_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashCo
 
 #[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]
 fn handle_terminal_setup_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashCommandOutcome> {
-    if !args.is_empty() {
-        renderer.line(MessageStyle::Error, "Usage: /terminal-setup (no arguments supported yet)")?;
-        return Ok(SlashCommandOutcome::Handled);
+    match args.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(SlashCommandOutcome::StartTerminalSetup),
+        "install-iterm2-icon" => {
+            vtcode_core::terminal_setup::terminals::iterm2::run_profile_icon_install(renderer)?;
+            Ok(SlashCommandOutcome::Handled)
+        }
+        _ => {
+            renderer.line(MessageStyle::Error, "Usage: /terminal-setup [install-iterm2-icon]")?;
+            Ok(SlashCommandOutcome::Handled)
+        }
     }
-    Ok(SlashCommandOutcome::StartTerminalSetup)
 }
 
 #[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]

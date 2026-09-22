@@ -11,11 +11,15 @@
 //! [`super::SandboxManager`]):
 //!
 //! - **Reads**: allowed everywhere except sensitive credential paths
-//!   (`~/.ssh`, cloud configs, …). Landlock rules are additive grants, so the
-//!   exclusion is implemented by enumerating the filesystem and granting every
-//!   subtree that does not intersect a sensitive path. Directory *listings* of
-//!   ungranted ancestors (`ls ~`, `ls /`) fail; files beneath granted
-//!   subtrees stay readable.
+//!   (`~/.ssh`, cloud configs, …) and virtual filesystems (`/proc`, `/sys`).
+//!   Landlock rules are additive grants, so the exclusion is implemented by
+//!   enumerating the filesystem and granting every subtree that does not
+//!   intersect a sensitive path. Directory *listings* of ungranted ancestors
+//!   (`ls ~`, `ls /`) fail; files beneath granted subtrees stay readable.
+//!   `/proc`/`/sys` stay ungranted so `/proc/self/fd` reopen-with-different-mode
+//!   escapes stay denied (FDs-as-capabilities). `/dev` is never granted
+//!   wholesale (`/dev/fd` → `/proc/self/fd`); only `/dev/null`, `/dev/zero`,
+//!   and entropy sources are granted explicitly.
 //! - **Writes**: denied everywhere except writable roots (workspace-write) or
 //!   `/dev/null` (read-only). Unlike Seatbelt, Landlock has no deny rules, so
 //!   `.git`/`.vtcode` inside writable roots cannot be subtracted at the kernel
@@ -204,6 +208,24 @@ fn compute_rules(
     Ok(rules)
 }
 
+/// Virtual filesystems never granted read access.
+///
+/// Per the sandboxing-basics analysis, file descriptors cannot be modeled as
+/// capabilities when a sandboxed process can reopen `/proc/self/fd/N` with a
+/// different mode. Landlock grants are additive, so granting `/` or `/proc`
+/// wholesale would re-admit that escape. `/proc` and `/sys` are excluded from
+/// read grants entirely (fail closed for those subtrees); explicit device
+/// nodes in [`EXPLICIT_DEV_READ_GRANTS`] cover the compatibility cases.
+const VIRTUAL_FS_ROOTS: &[&str] = &["/proc", "/sys"];
+
+/// Device nodes explicitly granted read access.
+///
+/// `/dev` is never granted wholesale: a wholesale grant would re-admit
+/// `/dev/fd` (a symlink to `/proc/self/fd`) and sensitive device nodes.
+/// These four are the compatibility set legacy code expects
+/// (`/dev/null`, `/dev/zero`, entropy sources).
+const EXPLICIT_DEV_READ_GRANTS: &[&str] = &["/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"];
+
 /// Effective sensitive paths with read blocking, expanded to absolute paths.
 fn read_blocked_paths(policy: &SandboxPolicy, policy_cwd: &Path) -> Vec<PathBuf> {
     policy
@@ -216,11 +238,13 @@ fn read_blocked_paths(policy: &SandboxPolicy, policy_cwd: &Path) -> Vec<PathBuf>
 
 /// Compute the read-grant rule paths: enumerate the filesystem from `/` and
 /// `$HOME`, granting every subtree that does not intersect a sensitive path.
+///
+/// Virtual filesystems (`/proc`, `/sys`) are always treated as exclusions so
+/// `/proc/self/fd` reopen escapes stay denied, and `/dev` wholesale grants
+/// are replaced with [`EXPLICIT_DEV_READ_GRANTS`].
 fn compute_read_rule_paths(policy: &SandboxPolicy, policy_cwd: &Path) -> Result<Vec<PathBuf>> {
-    let sensitive = read_blocked_paths(policy, policy_cwd);
-    if sensitive.is_empty() {
-        return Ok(vec![PathBuf::from("/")]);
-    }
+    let mut exclusions = read_blocked_paths(policy, policy_cwd);
+    exclusions.extend(VIRTUAL_FS_ROOTS.iter().map(PathBuf::from));
 
     let mut roots = vec![PathBuf::from("/")];
     if let Some(home) = dirs::home_dir()
@@ -228,7 +252,8 @@ fn compute_read_rule_paths(policy: &SandboxPolicy, policy_cwd: &Path) -> Result<
     {
         roots.push(home);
     }
-    let grants = enumerate_read_grants(&roots, &sensitive)?;
+    let mut grants = enumerate_read_grants(&roots, &exclusions)?;
+    restrict_dev_grants(&mut grants);
     if grants.len() > MAX_LANDLOCK_RULES {
         bail!(
             "Landlock read enumeration produced {} rules (cap {MAX_LANDLOCK_RULES}); refusing to continue",
@@ -236,6 +261,24 @@ fn compute_read_rule_paths(policy: &SandboxPolicy, policy_cwd: &Path) -> Result<
         );
     }
     Ok(grants)
+}
+
+/// Replace wholesale `/dev` grants with explicit device-node grants.
+///
+/// A grant on `/dev` (or any path beneath it other than the explicit set)
+/// would re-admit `/dev/fd` → `/proc/self/fd` and unrelated device nodes, so
+/// those grants are dropped and only existing explicit nodes are kept.
+fn restrict_dev_grants(grants: &mut Vec<PathBuf>) {
+    let dev_root = Path::new("/dev");
+    grants.retain(|path| {
+        !path_within(path, dev_root) || EXPLICIT_DEV_READ_GRANTS.iter().any(|grant| path == Path::new(grant))
+    });
+    for candidate in EXPLICIT_DEV_READ_GRANTS {
+        let path = PathBuf::from(candidate);
+        if path.exists() && !grants.contains(&path) {
+            grants.push(path);
+        }
+    }
 }
 
 /// Case-insensitive component-boundary containment: does `path` lie within
@@ -441,6 +484,46 @@ mod tests {
     fn write_grants_read_only_is_dev_null_only() {
         let paths = compute_write_rule_paths(&SandboxPolicy::read_only(), Path::new("/tmp"));
         assert_eq!(paths, vec![PathBuf::from("/dev/null")]);
+    }
+
+    #[test]
+    fn restrict_dev_grants_replaces_wholesale_dev_with_explicit_nodes() {
+        // Asymmetric oracle: wholesale /dev (and /dev/fd → /proc/self/fd)
+        // must go; explicit compatibility nodes must stay.
+        let mut grants = vec![
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/dev"),
+            PathBuf::from("/dev/sda"),
+            PathBuf::from("/dev/fd"),
+            PathBuf::from("/dev/null"),
+        ];
+        restrict_dev_grants(&mut grants);
+
+        assert!(!grants.iter().any(|g| g.as_os_str() == "/dev"), "wholesale /dev grant survives: {grants:?}");
+        assert!(!grants.iter().any(|g| g.as_os_str() == "/dev/sda"), "device node grant survives: {grants:?}");
+        assert!(!grants.iter().any(|g| g.as_os_str() == "/dev/fd"), "/dev/fd grant survives: {grants:?}");
+        assert!(grants.iter().any(|g| g.as_os_str() == "/usr/bin"), "unrelated grant lost: {grants:?}");
+        assert!(grants.iter().any(|g| g.as_os_str() == "/dev/null"), "explicit /dev/null grant lost: {grants:?}");
+        for candidate in EXPLICIT_DEV_READ_GRANTS {
+            let path = PathBuf::from(candidate);
+            if path.exists() {
+                assert!(grants.contains(&path), "existing explicit node {candidate} missing: {grants:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn virtual_fs_roots_cover_fd_reopen_escape() {
+        assert!(VIRTUAL_FS_ROOTS.contains(&"/proc"), "proc exclusion lost: {VIRTUAL_FS_ROOTS:?}");
+        assert!(VIRTUAL_FS_ROOTS.contains(&"/sys"), "sys exclusion lost: {VIRTUAL_FS_ROOTS:?}");
+        assert!(
+            EXPLICIT_DEV_READ_GRANTS.contains(&"/dev/null"),
+            "dev/null compatibility grant lost: {EXPLICIT_DEV_READ_GRANTS:?}"
+        );
+        assert!(
+            !EXPLICIT_DEV_READ_GRANTS.iter().any(|g| *g == "/dev/fd" || *g == "/dev"),
+            "explicit grants must not re-admit /dev/fd: {EXPLICIT_DEV_READ_GRANTS:?}"
+        );
     }
 
     #[test]

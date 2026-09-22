@@ -93,21 +93,30 @@ impl IncrementalSystemPrompt {
         context: &SystemPromptContext,
         agent_config: Option<&vtcode_config::core::AgentConfig>,
     ) -> String {
-        let mut write_guard = self.cached_prompt.write().await;
-
-        // Double-check after acquiring write lock
-        if write_guard.base_prompt_hash == base_prompt_hash
-            && write_guard.context_hash == context_hash
-            && !write_guard.content.is_empty()
+        // Re-check under a short read lock: another task may have published a
+        // matching prompt while we were scheduled.
         {
-            return write_guard.content.clone();
+            let read_guard = self.cached_prompt.read().await;
+            if read_guard.base_prompt_hash == base_prompt_hash
+                && read_guard.context_hash == context_hash
+                && !read_guard.content.is_empty()
+            {
+                return read_guard.content.clone();
+            }
         }
 
-        // Build the new prompt
+        // Assemble the prompt outside the cache lock. Instruction discovery
+        // performs filesystem I/O, and holding the lock across awaits would
+        // serialize every concurrent rebuild behind it; keeping the critical
+        // section to the publish step is the fast-Tokio guidance ("do not hold
+        // the lock while performing I/O or awaiting another future").
+        // Concurrent duplicate builds are harmless because cache validity is
+        // keyed by the base-prompt/context hash pair.
         let new_content = self.build_prompt_content(base_system_prompt, context, agent_config).await;
 
-        // Update cache
-        write_guard.content = new_content.clone();
+        // Publish under a minimal write critical section.
+        let mut write_guard = self.cached_prompt.write().await;
+        write_guard.content.clone_from(&new_content);
         write_guard.base_prompt_hash = base_prompt_hash;
         write_guard.context_hash = context_hash;
 

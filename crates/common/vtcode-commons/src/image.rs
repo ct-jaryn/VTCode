@@ -111,6 +111,54 @@ pub fn encode_to_base64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
+/// Maximum accepted image file size (20 MB).
+pub const MAX_IMAGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+fn image_too_large_error(len: u64) -> anyhow::Error {
+    anyhow::anyhow!("Image file too large: {len} bytes (max {}MB)", MAX_IMAGE_FILE_BYTES / (1024 * 1024))
+}
+
+/// Read an image file into base64 form inside one blocking segment.
+///
+/// Stat, size check, read, and base64 encoding all run in a single
+/// `spawn_blocking` hop instead of chained `tokio::fs` calls plus an on-worker
+/// encode of up to 20 MB. Batching here keeps the shared blocking pool from
+/// seeing two round-trips per file and keeps the base64 encode off the runtime
+/// workers (fast-Tokio: batch blocking work, avoid long polls).
+async fn read_image_file_blocking(path: &Path) -> Result<ImageData> {
+    let owned_path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || read_image_file_blocking_inner(&owned_path))
+        .await
+        .context("image read task failed")?
+}
+
+fn read_image_file_blocking_inner(path: &Path) -> Result<ImageData> {
+    // Fail fast on oversized regular files before reading them into memory.
+    // `metadata.len()` is 0 for pipes/character devices, so those still fall
+    // through to the read + post-read size check below.
+    if let Ok(metadata) = std::fs::metadata(path)
+        && metadata.is_file()
+        && metadata.len() > MAX_IMAGE_FILE_BYTES
+    {
+        return Err(image_too_large_error(metadata.len()));
+    }
+
+    let file_contents =
+        std::fs::read(path).with_context(|| format!("Failed to read image file: {}", path.display()))?;
+
+    if file_contents.len() as u64 > MAX_IMAGE_FILE_BYTES {
+        return Err(image_too_large_error(file_contents.len() as u64));
+    }
+
+    let mime_type = detect_mime_type_from_extension(path)?;
+    Ok(ImageData {
+        base64_data: encode_to_base64(&file_contents),
+        mime_type,
+        file_path: path.display().to_string(),
+        size: file_contents.len() as u64,
+    })
+}
+
 /// Reads an image file from the local filesystem and converts it to base64 format.
 ///
 /// Validates the path for traversal attacks and checks the file extension
@@ -128,23 +176,7 @@ pub async fn read_image_file<P: AsRef<Path>>(file_path: P) -> Result<ImageData> 
         return Err(anyhow::anyhow!("Unsupported image extension for path: {}", path.display()));
     }
 
-    let file_contents = tokio::fs::read(path)
-        .await
-        .with_context(|| format!("Failed to read image file: {}", path.display()))?;
-
-    if file_contents.len() > 20 * 1024 * 1024 {
-        return Err(anyhow::anyhow!("Image file too large: {} bytes (max 20MB)", file_contents.len()));
-    }
-
-    let mime_type = detect_mime_type_from_extension(path)?;
-    let base64_data = encode_to_base64(&file_contents);
-
-    Ok(ImageData {
-        base64_data,
-        mime_type,
-        file_path: path.display().to_string(),
-        size: file_contents.len() as u64,
-    })
+    read_image_file_blocking(path).await
 }
 
 /// Reads an image file from an absolute path (or already validated path) and
@@ -159,21 +191,58 @@ pub async fn read_image_file_any_path<P: AsRef<Path>>(file_path: P) -> Result<Im
         return Err(anyhow::anyhow!("Unsupported image extension for path: {}", path.display()));
     }
 
-    let file_contents = tokio::fs::read(path)
-        .await
-        .with_context(|| format!("Failed to read image file: {}", path.display()))?;
+    read_image_file_blocking(path).await
+}
 
-    if file_contents.len() > 20 * 1024 * 1024 {
-        return Err(anyhow::anyhow!("Image file too large: {} bytes (max 20MB)", file_contents.len()));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    const PNG_MAGIC: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    #[tokio::test]
+    async fn read_image_file_returns_encoded_bytes_and_mime() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pixel.png");
+        std::fs::write(&path, PNG_MAGIC).expect("write image");
+
+        let data = read_image_file_any_path(&path).await.expect("read image");
+
+        assert_eq!(data.mime_type, "image/png");
+        assert_eq!(data.size, PNG_MAGIC.len() as u64);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&data.base64_data)
+            .expect("valid base64");
+        assert_eq!(decoded, PNG_MAGIC);
     }
 
-    let mime_type = detect_mime_type_from_extension(path)?;
-    let base64_data = encode_to_base64(&file_contents);
+    #[tokio::test]
+    async fn read_image_file_rejects_oversized_file_before_encoding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("huge.png");
+        // Sparse file just over the cap: rejected by the metadata guard so the
+        // contents are never read or encoded.
+        let file = std::fs::File::create(&path).expect("create image");
+        file.set_len(MAX_IMAGE_FILE_BYTES + 1).expect("set length");
+        drop(file);
 
-    Ok(ImageData {
-        base64_data,
-        mime_type,
-        file_path: path.display().to_string(),
-        size: file_contents.len() as u64,
-    })
+        let err = read_image_file_any_path(&path)
+            .await
+            .expect_err("oversized image must be rejected");
+        assert!(err.to_string().contains("too large"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn read_image_file_any_path_rejects_unsupported_extension() {
+        let err = read_image_file_any_path("notes.txt")
+            .await
+            .expect_err("unsupported extension must be rejected");
+        assert!(err.to_string().contains("Unsupported image extension"));
+    }
+
+    #[test]
+    fn detect_mime_type_from_data_recognizes_png_magic() {
+        assert_eq!(detect_mime_type_from_data(PNG_MAGIC), "image/png");
+    }
 }

@@ -637,7 +637,11 @@ impl Session {
             spans.push(Span::styled("Alt+S", key));
             spans.push(Span::styled(" agents", label));
             spans.push(dot.clone());
-            spans.push(Span::styled("Ctrl+B", key));
+            spans.push(Span::styled(self.background_shortcut_label().to_owned(), key));
+            spans.push(Span::styled(" background", label));
+        } else if self.has_active_foreground_pty() {
+            spans.push(Span::styled("  │  ", dim));
+            spans.push(Span::styled(self.background_shortcut_label().to_owned(), key));
             spans.push(Span::styled(" background", label));
         }
 

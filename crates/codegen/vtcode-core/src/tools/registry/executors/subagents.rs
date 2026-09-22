@@ -138,10 +138,43 @@ impl ToolRegistry {
                 .collect::<Vec<_>>();
             let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64);
             self.execute_subagent_call(move |controller| async move {
-                let entry = controller.wait(&targets, timeout_ms).await?;
+                // `agent wait` spans two scopes: delegated child threads
+                // (`state.children`) and managed background subprocesses
+                // (`state.background_children`). Race both under one deadline
+                // so a target that settles in either scope wins immediately,
+                // instead of waiting out a still-running target in the other
+                // scope or consuming the timeout once per scope. Unknown ids
+                // in both scopes stay `completed: false` with no entry
+                // (fail-closed).
+                //
+                // Both futures are cancel-safe: each re-reads state on every
+                // loop iteration and holds no lock across `.await`.
+                let delegated_wait = controller.wait(&targets, timeout_ms);
+                let background_wait = controller.wait_for_background(&targets, timeout_ms);
+                tokio::pin!(delegated_wait);
+                tokio::pin!(background_wait);
+
+                tokio::select! {
+                    result = &mut delegated_wait => {
+                        if let Some(entry) = result? {
+                            return Ok(json!({ "completed": true, "entry": entry }));
+                        }
+                        if let Some(entry) = (&mut background_wait).await? {
+                            return Ok(json!({ "completed": true, "entry": entry }));
+                        }
+                    }
+                    result = &mut background_wait => {
+                        if let Some(entry) = result? {
+                            return Ok(json!({ "completed": true, "entry": entry }));
+                        }
+                        if let Some(entry) = (&mut delegated_wait).await? {
+                            return Ok(json!({ "completed": true, "entry": entry }));
+                        }
+                    }
+                }
                 Ok(json!({
-                    "completed": entry.is_some(),
-                    "entry": entry,
+                    "completed": false,
+                    "entry": None::<Value>,
                 }))
             })
             .await

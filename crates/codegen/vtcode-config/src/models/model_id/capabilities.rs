@@ -333,7 +333,10 @@ impl ModelId {
                 | ModelId::MergeGatewayMoonshotKimiK3
                 | ModelId::OllamaGlm53Cloud
                 | ModelId::XaiGrok46
+                | ModelId::XaiGrok47
                 | ModelId::MergeGatewayXaiGrok46
+                | ModelId::MergeGatewayXaiGrok47
+                | ModelId::VercelSpacexaiGrok47
         )
     }
 
@@ -416,7 +419,9 @@ impl ModelId {
             ModelId::HuggingFaceGlm53Together => "5.3",
             // xAI models
             ModelId::XaiGrok46 => "4.6",
+            ModelId::XaiGrok47 => "4.7",
             ModelId::MergeGatewayXaiGrok46 => "4.6",
+            ModelId::MergeGatewayXaiGrok47 => "4.7",
             // Qwen models
             ModelId::MergeGatewayDefaultRouting => "routing",
             ModelId::MergeGatewayAnthropicClaudeOpus5 => "5",
@@ -441,6 +446,7 @@ impl ModelId {
             ModelId::VercelDeepseekFlash => "4.1",
             ModelId::VercelMoonshotaiKimiK3 => "k3",
             ModelId::VercelMinimaxM3 => "M3",
+            ModelId::VercelSpacexaiGrok47 => "4.7",
             _ => "unknown",
         }
     }

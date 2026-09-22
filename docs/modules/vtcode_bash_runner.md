@@ -52,7 +52,8 @@ surface and runtime behaviour:
 -   `dry-run` – enables the `DryRunCommandExecutor` for log-only validation and
     activates the `dry_run` example.
 -   `serde-errors` – derives `Serialize`/`Deserialize` for `CommandInvocation`,
-    `CommandStatus`, and `CommandOutput` so invocations can be persisted or
+    `CommandStatus`, and `CommandOutput` (plus reachable `CommandCategory`,
+    `ShellKind`, and the private `CommandForm`) so invocations can be persisted or
     logged as structured payloads.
 -   `exec-events` – provides the `EventfulExecutor` wrapper that converts command
     invocations into `vtcode-exec-events` telemetry.

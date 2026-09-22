@@ -5,7 +5,7 @@ use vtcode_core::subagents::{
     SubagentStatus, SubagentStatusEntry, SubagentThreadSnapshot,
 };
 use vtcode_core::tools::exec_session::ExecSessionManager;
-use vtcode_core::tools::types::{VTCodeExecSession, VTCodeSessionLifecycleState};
+use vtcode_core::tools::types::VTCodeExecSession;
 use vtcode_core::{CommandExecutionStatus, ThreadEvent, ThreadItemDetails, ToolCallStatus};
 use vtcode_ui::tui::app::{InlineHandle, LocalAgentEntry, LocalAgentKind};
 
@@ -118,11 +118,11 @@ async fn build_local_agent_entries(
             metadata.started_at,
             LocalAgentEntry {
                 id: metadata.id.as_str().to_string(),
-                display_label: exec_session_command_label(&metadata),
+                display_label: metadata.command_label(),
                 agent_name: "exec-session".to_string(),
                 color: None,
                 kind: LocalAgentKind::ExecSession,
-                status: exec_session_status(&metadata),
+                status: metadata.status_label(),
                 summary: Some(exec_session_summary(&metadata)),
                 preview: snapshot.preview,
                 transcript_path: None,
@@ -132,23 +132,6 @@ async fn build_local_agent_entries(
 
     entries.sort_by(|left, right| right.0.cmp(&left.0));
     entries.into_iter().map(|(_, entry)| entry).collect()
-}
-
-fn exec_session_command_label(metadata: &VTCodeExecSession) -> String {
-    std::iter::once(metadata.command.as_str())
-        .chain(metadata.args.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn exec_session_status(metadata: &VTCodeExecSession) -> String {
-    match metadata.lifecycle_state {
-        Some(VTCodeSessionLifecycleState::Running) => "running".to_string(),
-        Some(VTCodeSessionLifecycleState::Exited) => metadata
-            .exit_code
-            .map_or_else(|| "exited".to_string(), |code| format!("exited ({code})")),
-        None => "unknown".to_string(),
-    }
 }
 
 fn exec_session_summary(metadata: &VTCodeExecSession) -> String {

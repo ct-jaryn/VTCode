@@ -143,3 +143,46 @@ fn zero_height_transcript_area_never_arms_auto_scroll() {
     session.update_drag_auto_scroll(10, 0);
     assert!(session.drag_auto_scroll.is_none(), "zero-height area must not arm auto-scroll");
 }
+
+#[test]
+fn escape_mid_drag_dismisses_selection_and_disarms_auto_scroll() {
+    let mut session = content_session();
+    let (transcript_area, _rendered) = rendered_transcript_lines(&mut session, VIEW_ROWS);
+    let last_row = transcript_area.y + transcript_area.height.saturating_sub(1);
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    session.handle_event(
+        mouse_event(MouseEventKind::Down(MouseButton::Left), transcript_area.x + 2, transcript_area.y + 1),
+        &tx,
+        None,
+    );
+    session.handle_event(
+        mouse_event(MouseEventKind::Drag(MouseButton::Left), transcript_area.x + 2, last_row),
+        &tx,
+        None,
+    );
+    assert!(session.mouse_selection.has_selection, "drag must have produced a selection");
+    assert!(session.drag_auto_scroll.is_some(), "dragging to the bottom edge must arm auto-scroll before Esc");
+
+    let event = session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(event.is_none(), "Esc must be consumed by the dismissal, got {event:?}");
+
+    assert!(!session.mouse_selection.has_selection, "Esc must clear the highlight");
+    assert!(
+        session.drag_auto_scroll.is_none(),
+        "dismissal must disarm edge auto-scroll so the transcript stops scrolling"
+    );
+    assert!(matches!(session.mouse_drag_target, MouseDragTarget::None), "dismissal must release the drag target");
+
+    // A later drag event must not resurrect the cleared interaction.
+    session.scroll_to_top();
+    let before = session.scroll_manager.offset();
+    session.handle_event(
+        mouse_event(MouseEventKind::Drag(MouseButton::Left), transcript_area.x + 2, last_row),
+        &tx,
+        None,
+    );
+    assert!(session.drag_auto_scroll.is_none(), "a released drag must not re-arm auto-scroll");
+    assert!(!session.mouse_selection.has_selection);
+    assert_eq!(session.scroll_manager.offset(), before);
+}

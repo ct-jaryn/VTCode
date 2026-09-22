@@ -179,5 +179,21 @@ pub(crate) fn vercel_presets() -> Vec<ModelPreset> {
             supported_in_api: true,
             context_window: Some(512_000),
         },
+        ModelPreset {
+            id: "vercel/spacexai/grok-4.7".to_string(),
+            model: vercel_models::SPACEXAI_GROK_4_7.to_string(),
+            display_name: "Grok 4.7 (Vercel AI Gateway)".to_string(),
+            description:
+                "xAI Grok 4.7 flagship reasoning model for long-running agents served through the Vercel AI Gateway."
+                    .to_string(),
+            provider: Provider::Vercel,
+            default_reasoning_effort: ReasoningEffortLevel::High,
+            supported_reasoning_efforts: Vec::new(),
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            context_window: Some(500_000),
+        },
     ]
 }

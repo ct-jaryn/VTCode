@@ -3,7 +3,7 @@
 VT Code has two independent tool-display settings:
 
 - `ui.tool_output_mode` controls how command and tool result bodies are truncated or spooled.
-- `ui.tool_display_mode` controls the transition summaries shown before those bodies. It defaults to `compact`; contiguous successful command/PTY calls share a compact activity row while successful `task_tracker` updates show header plus the single current-task row (`  ▶ …`, bold theme `primary` accent) in compact transcript mode and header plus truncated tree (max 30 rows + `… N more`) in expanded mode (the full tree stays on the TODO panel body). Task status surfaces through text styling only: done rows strike through, italicize, and dim; blocked rows use the `warning` token.
+- `ui.tool_display_mode` controls the transition summaries shown before those bodies. It defaults to `compact`; contiguous successful command/PTY calls share a compact activity row while successful `task_tracker` updates show header plus the single current-task row (`  ▶ …`, bold theme `primary` accent) in compact transcript mode and header plus truncated tree (max 30 rows + `… N more`) in expanded mode (the full tree stays on the TODO panel body). Task status surfaces through text styling only: done rows strike through, italicize, and dim; blocked rows use the `warning` token. Each visible row is bounded to one short description (`TRACKER_ROW_DESCRIPTION_MAX_BYTES`, `…` when longer) so long step bodies do not wrap; the untruncated text stays in the structured checklist payload.
 
 ```toml
 [ui]

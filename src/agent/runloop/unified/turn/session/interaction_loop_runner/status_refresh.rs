@@ -116,6 +116,12 @@ async fn refresh_runtime_counters(ctx: &mut StatusRefreshContext<'_>, state: &mu
         let entries = controller.status_entries().await;
         crate::agent::runloop::ui::sync_active_subagent_badges(ctx.header_context, ctx.handle, &entries);
         let delegated_count = entries.iter().filter(|entry| !entry.status.is_terminal()).count();
+        // Keep this predicate in sync with `visible_background_local_agents` in
+        // `session_setup/ui/local_agents.rs`: Starting/Running always count;
+        // Error counts only while still desired so a failed task stays visible
+        // until dismissed. Freshness comes from the background refresh loop
+        // (`refresh_local_agents` every ~2s), so read cached entries here to
+        // avoid duplicate exec-session snapshots on the status cadence.
         let background_count = controller
             .background_status_entries()
             .await
@@ -129,10 +135,14 @@ async fn refresh_runtime_counters(ctx: &mut StatusRefreshContext<'_>, state: &mu
                     && matches!(entry.status, vtcode_core::subagents::BackgroundSubprocessStatus::Error))
             })
             .count();
-        delegated_count + background_count
+        // Raw background exec sessions (Ctrl+B) have no subagent controller
+        // record but still drive the global shimmer via `SetLocalAgents`;
+        // count live ones here so the status line agrees with the drawer.
+        let exec_background_count = live_exec_background_count(ctx.tool_registry).await;
+        delegated_count + background_count + exec_background_count
     } else {
         crate::agent::runloop::ui::sync_active_subagent_badges(ctx.header_context, ctx.handle, &[]);
-        0
+        live_exec_background_count(ctx.tool_registry).await
     };
     status_line::update_thread_context(state.input_status_state, ctx.active_thread_label, local_agent_count);
 
@@ -141,6 +151,25 @@ async fn refresh_runtime_counters(ctx: &mut StatusRefreshContext<'_>, state: &mu
         vtcode_core::compaction::effective_context_budget(ctx.vt_cfg, ctx.provider_client, &effective_model);
     let context_used_tokens = ctx.context_manager.current_token_usage();
     status_line::update_context_budget(state.input_status_state, context_used_tokens, context_limit_tokens);
+}
+
+/// Live raw background exec sessions (Ctrl+B). Mirrors the `ExecSession`
+/// branch of `LocalAgentEntry::is_loading` (`status == "running"`) via the
+/// canonical lifecycle state so the status line agrees with the drawer and
+/// global shimmer. Bounded by `MAX_BACKGROUND_PROCESSES` (3).
+async fn live_exec_background_count(tool_registry: &ToolRegistry) -> usize {
+    tool_registry
+        .exec_session_manager()
+        .background_session_snapshots()
+        .await
+        .into_iter()
+        .filter(|snapshot| {
+            matches!(
+                snapshot.metadata.lifecycle_state,
+                Some(vtcode_core::tools::types::VTCodeSessionLifecycleState::Running)
+            )
+        })
+        .count()
 }
 
 async fn refresh_status_line(

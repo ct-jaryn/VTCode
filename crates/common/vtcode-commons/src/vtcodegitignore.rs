@@ -133,21 +133,26 @@ impl Default for VTCodeGitignore {
     }
 }
 
-/// Global .vtcodegitignore instance for easy access
-static VTCODE_GITIGNORE: once_cell::sync::Lazy<tokio::sync::RwLock<Arc<VTCodeGitignore>>> =
-    once_cell::sync::Lazy::new(|| tokio::sync::RwLock::new(Arc::new(VTCodeGitignore::default())));
+/// Global .vtcodegitignore instance for easy access.
+///
+/// Read-mostly: `should_exclude_file`/`filter_paths` are called per file while
+/// `reload_vtcode_gitignore` swaps the whole matcher. A `tokio::sync::RwLock`
+/// would put atomic contention and an async lock acquisition on the read path;
+/// `ArcSwap` keeps reads lock-free (the article's "beware RWLock contention"
+/// guidance) while preserving atomic whole-value replacement.
+static VTCODE_GITIGNORE: once_cell::sync::Lazy<arc_swap::ArcSwap<VTCodeGitignore>> =
+    once_cell::sync::Lazy::new(|| arc_swap::ArcSwap::from_pointee(VTCodeGitignore::default()));
 
 /// Initialize the global .vtcodegitignore instance
 pub async fn initialize_vtcode_gitignore() -> Result<()> {
     let gitignore = VTCodeGitignore::new().await?;
-    let mut global_gitignore = VTCODE_GITIGNORE.write().await;
-    *global_gitignore = Arc::new(gitignore);
+    VTCODE_GITIGNORE.store(Arc::new(gitignore));
     Ok(())
 }
 
 /// Snapshot the global .vtcodegitignore instance.
 pub async fn snapshot_global_vtcode_gitignore() -> Arc<VTCodeGitignore> {
-    VTCODE_GITIGNORE.read().await.clone()
+    VTCODE_GITIGNORE.load_full()
 }
 
 /// Check if a file should be excluded by the global .vtcodegitignore

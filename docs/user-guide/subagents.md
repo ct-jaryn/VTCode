@@ -610,7 +610,7 @@ For a minimal demo pair, see [background-subagent-demo.md](../examples/backgroun
 
 Delegated child threads keep their own history. VT Code can continue them with follow-up input instead of starting from scratch. The runtime exposes `send_input`, `resume_agent`, `wait_agent`, and `close_agent` to the model for this purpose.
 
-`wait_agent` is a foreground wait on delegated child threads: it blocks the current turn until a child finishes or the timeout expires. Managed background subprocesses are different; launch them with `spawn_background_subprocess` and manage them with `Ctrl+B`, `/subprocesses`, the sidebar, or `Alt+S` instead of `wait_agent`.
+`wait_agent` blocks the current turn until a child finishes or the timeout expires. It accepts delegated child thread ids and managed background subprocess ids (`background-<name>`): launch long-lived helpers with `spawn_background_subprocess`, then await their `Stopped`/`Error` completion with `wait_agent` when the main orchestrator needs their result. `Ctrl+B`, `/subprocesses`, the sidebar, and `Alt+S` remain the human inspection and termination surface.
 
 ## Choose Between Main Thread And Subagents
 

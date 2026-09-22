@@ -114,6 +114,14 @@ pub(crate) struct SessionStats {
     /// Bounded plan-mode auto-continue turns (recoverable blocked planning
     /// ends when no plan is approval-ready). Independent of tracker budget.
     plan_continuation_turns: u8,
+    /// Consecutive plan-mode turns that ended with the deterministic empty
+    /// fallback (`PLANNING_COMPLETED_FALLBACK_RESPONSE`: no LLM synthesis, no
+    /// tool activity). Breaks the self-loop observed in
+    /// session-vtcode-20260921T045723Z where 32 empty turns each re-queued
+    /// auto-continue and ended `Blocked` with zero progress. Reset on any
+    /// turn with LLM text or tool activity; capped by
+    /// `MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE`.
+    consecutive_plan_empty_fallbacks: u8,
     /// Consecutive failed harness auto-verifications this stall episode.
     /// Incremented by [`Self::record_verification_auto_failure`], reset by
     /// [`Self::record_verification_auto_success`] and every
@@ -667,6 +675,20 @@ impl SessionStats {
 
     pub(crate) fn reset_plan_continuation_budget(&mut self) {
         self.plan_continuation_turns = 0;
+        self.consecutive_plan_empty_fallbacks = 0;
+    }
+
+    pub(crate) fn consecutive_plan_empty_fallbacks(&self) -> u8 {
+        self.consecutive_plan_empty_fallbacks
+    }
+
+    pub(crate) fn record_plan_empty_fallback(&mut self) -> u8 {
+        self.consecutive_plan_empty_fallbacks = self.consecutive_plan_empty_fallbacks.saturating_add(1);
+        self.consecutive_plan_empty_fallbacks
+    }
+
+    pub(crate) fn reset_plan_empty_fallbacks(&mut self) {
+        self.consecutive_plan_empty_fallbacks = 0;
     }
 
     /// Record a failed harness auto-verification of `command`, keeping a

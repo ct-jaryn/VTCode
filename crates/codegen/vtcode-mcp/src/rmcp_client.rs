@@ -337,6 +337,9 @@ impl RmcpClient {
                     match reader.read(&mut chunk).await {
                         Ok(0) => break,
                         Ok(bytes_read) => {
+                            // `.get(..bytes_read)` runs once per 1 KiB chunk to build the
+                            // slice; the hot per-byte scan below is already bounds-check
+                            // free, so keep the safe accessor here.
                             for byte in chunk.get(..bytes_read).unwrap_or_default() {
                                 if *byte == b'\n' {
                                     if !line.is_empty() || truncated {

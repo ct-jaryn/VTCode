@@ -56,6 +56,7 @@ pub struct CommandInvocation {
     pub(crate) touched_paths: Vec<PathBuf>,
 }
 
+#[cfg_attr(feature = "serde-errors", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 enum CommandForm {
     DirectArgv(Vec<String>),
@@ -556,4 +557,28 @@ fn aggregate_output(output: &CommandOutput) -> String {
         combined.push_str(output.stderr.trim());
     }
     combined
+}
+
+#[cfg(all(test, feature = "serde-errors"))]
+mod serde_tests {
+    use super::{CommandForm, CommandInvocation, CommandOutput, CommandStatus};
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+
+    /// Compile-time assertion that a type satisfies the `serde-errors`
+    /// contract; the oracle is that this module fails to compile when a derive
+    /// is missing, which is exactly how `--all-features` broke previously.
+    fn assert_serde<T: Serialize + DeserializeOwned>() {}
+
+    /// Every type reachable from a serialized payload must derive the same
+    /// features. `CommandInvocation` derives under `serde-errors`, so its
+    /// private `CommandForm` (and the output/status types) must as well, or
+    /// `cargo check --all-features` fails.
+    #[test]
+    fn serde_error_types_satisfy_serialize_and_deserialize() {
+        assert_serde::<CommandInvocation>();
+        assert_serde::<CommandForm>();
+        assert_serde::<CommandOutput>();
+        assert_serde::<CommandStatus>();
+    }
 }

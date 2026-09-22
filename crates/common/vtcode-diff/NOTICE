@@ -1,0 +1,13 @@
+vtcode-diff attribution notice
+==============================
+
+This crate's presentation architecture and underlying ideas (unified and
+side-by-side terminal diff previews with intraline emphasis) were informed by
+OpenAI Codex (https://github.com/openai/codex), which is licensed under
+Apache-2.0 (https://github.com/openai/codex/blob/main/LICENSE).
+
+vtcode-diff is an independent implementation for VT Code; no Codex source
+code was copied.
+
+vtcode-diff itself is licensed under MIT OR Apache-2.0, at your option.
+See the workspace LICENSE files and the crate README for details.

@@ -56,6 +56,7 @@ pub mod provider;
 pub mod reasoning;
 pub mod reference;
 pub mod retry;
+pub mod runtime_diagnostics;
 pub mod sanitizer;
 pub mod serde_helpers;
 pub mod slug;

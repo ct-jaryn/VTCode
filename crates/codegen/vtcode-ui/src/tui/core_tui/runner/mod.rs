@@ -271,6 +271,7 @@ where
         .push_keyboard_enhancement_flags(&mut stderr, keyboard_flags);
 
     session.update_terminal_title();
+    super::session::terminal_title::apply_iterm2_profile_once();
 
     let backend = CrosstermBackend::new(stderr);
     let mut terminal = Terminal::new(backend).context("failed to initialize inline terminal")?;

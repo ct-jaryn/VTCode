@@ -20,7 +20,7 @@ Universal model-facing behavior is compiled in `crates/codegen/vtcode-core/src/p
 - Treat the sandbox/exec boundary as a primary adversarial surface: use sandbox-aware launch paths and add adversarial regression coverage for command injection, path/symlink escape, environment leakage, and fail-closed behavior.
 - **All built-in themes must meet WCAG AA 4.5:1 contrast** for foreground and all accent fields against background. Validate with `cargo nextest run -p vtcode-ui -E 'test(theme)'`. See `.vtcode/memory/gotchas.md` for catppuccin-latte special-case.
 - **Every new major feature must update docs**: user-facing behavior → `docs/development/` guide + a table row/section in the relevant quick-reference; agent-facing tool surface → prompt guidance (`crates/codegen/vtcode-core/src/prompts/guidelines.rs`) + schema (`crates/common/vtcode-utility-tool-specs`); runtime contract → `vtcode-exec-events::ThreadEvent`. No feature is "done" until the docs it changes are updated and the AGENTS.md detailed-guides links still resolve.
-- Leave docs/project/TODO.md intact, it's for owner attention only. When you are working, ignore its contents unless you are the project owner.
+- Leave docs/project/TODO.md intact, it's for owner attention only. When you are working, ignore its contents unless you are the project owner. Don't read or modify it.
 
 ## Self-Debugging (VT Code fixing itself)
 

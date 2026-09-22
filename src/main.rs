@@ -258,11 +258,18 @@ fn bootstrap_main() -> Result<BootstrapOutcome> {
     // resolution and the main agent run loop.  Previously a single-threaded
     // runtime was created here and a second multi-threaded one later in main(),
     // which duplicated thread-pool and I/O-driver setup.
+    //
+    // Worker threads are named so profilers/`spawn_blocking` traces are
+    // attributable to VT Code. `VTCODE_RUNTIME_WORKERS` optionally reserves
+    // cores for co-located non-Tokio work; unset keeps the default
+    // one-worker-per-core behaviour.
     let runtime_phase = vtcode_commons::startup_trace::phase_started();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("failed to build Tokio runtime")?;
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    runtime_builder.enable_all().thread_name("vtcode-rt-worker");
+    if let Some(workers) = vtcode_commons::runtime_diagnostics::configured_worker_threads() {
+        runtime_builder.worker_threads(workers);
+    }
+    let runtime = runtime_builder.build().context("failed to build Tokio runtime")?;
     vtcode_commons::startup_trace::record_phase("runtime_creation", runtime_phase);
     tracing::debug!(
         target = "vtcode.startup",
@@ -272,6 +279,15 @@ fn bootstrap_main() -> Result<BootstrapOutcome> {
 
     #[cfg(feature = "profiling")]
     hotpath::tokio_runtime!(runtime.handle());
+
+    // Step 1 of the fast-Tokio principles: measure first. Capture a boot
+    // snapshot of stable runtime counters and, when diagnostics are enabled
+    // (`VTCODE_RUNTIME_METRICS=1` or `VTCODE_STARTUP_TRACE=1`), report them
+    // periodically so global-queue pressure is observable without needing
+    // tokio_unstable. Both calls are no-ops when diagnostics are off.
+    vtcode_commons::runtime_diagnostics::log_snapshot(runtime.handle(), "boot");
+    // Detached: the reporter ends when the runtime drops.
+    let _metrics_reporter = vtcode_commons::runtime_diagnostics::spawn_periodic_reporter(runtime.handle());
 
     // Start the terminal palette probe early for interactive sessions.
     // It runs on a blocking thread and overlaps with startup-context
@@ -385,6 +401,23 @@ async fn run(prepared: PreparedRun) -> Result<()> {
                 tracing::debug!(error = %err, "Failed to clean old temp spool dirs");
             }
         });
+    }
+
+    // First-run iTerm2 tab icon: install the VT Code dynamic profile so
+    // the tab shows the logo while sessions run. Best effort and
+    // idempotent; deleting DynamicProfiles/vtcode.json uninstalls.
+    // Inline (not spawned): two small reads when up to date, and the
+    // install notice must print before TUI alternate-screen entry.
+    if startup_policy.run_interactive_maintenance() {
+        match vtcode_core::terminal_setup::terminals::iterm2::ensure_profile_icon() {
+            Ok(Some(report)) => {
+                if !args.quiet {
+                    println!("Installed VT Code iTerm2 tab icon profile ({}).", report.profile_path.display());
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::debug!(error = %error, "iTerm2 tab icon install skipped"),
+        }
     }
 
     let dispatch_result = cli::dispatch(&args, &startup, print_mode).await;

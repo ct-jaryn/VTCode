@@ -363,6 +363,36 @@ pub fn strip_task_description_metadata(description: &str) -> String {
     split_task_description_metadata(description).0
 }
 
+/// One short description for a task row: the leading clause before detail
+/// separators (` — `/` – `/` - `/`: `, `; `, `. `, ` (`).
+///
+/// Plan steps often carry a long detail tail
+/// (`"Add X – document Y in Z, sourced from W"`); the TODO transcript and
+/// panel must show only `"Add X"` so each item stays on one scannable row.
+/// Inline `-> files:`/`-> verify:` suffixes are stripped first; the full text
+/// stays in structured tracker metadata.
+pub fn short_task_description(description: &str) -> String {
+    let (clean, _, _) = split_task_description_metadata(description);
+    let base = if clean.trim().is_empty() {
+        description.trim()
+    } else {
+        clean.trim()
+    };
+    let first_line = base.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let collapsed = vtcode_commons::formatting::collapse_whitespace(first_line);
+    if collapsed.is_empty() {
+        return String::new();
+    }
+    let mut cut = collapsed.len();
+    for separator in [" — ", " – ", " - ", ": ", "; ", ". ", " ("] {
+        if let Some(index) = collapsed.find(separator) {
+            cut = cut.min(index);
+        }
+    }
+    let short = collapsed[..cut].trim().trim_end_matches([',', ';', ':', '.']).trim();
+    if short.is_empty() { collapsed } else { short.to_string() }
+}
+
 fn find_inline_metadata_marker(source: &str, from: usize) -> Option<(usize, &'static str)> {
     let mut inline_ticks: Option<usize> = None;
     let mut cursor = from.min(source.len());
@@ -484,15 +514,18 @@ pub fn compact_task_tree_view_from_items(items: &[Value]) -> Vec<Value> {
             continue;
         };
         // Descriptions copied from plan steps may still carry an inline
-        // `Action -> files: [...] -> verify: [...]` suffix. Strip it for the
-        // visible row and fold it into structured metadata so the compact view
-        // never reintroduces files/verify as detail text.
+        // `Action -> files: [...] -> verify: [...]` suffix plus a long detail
+        // tail (`"Add X – document Y, sourced from Z"`). Keep only the short
+        // leading clause for the visible row and fold the rest into structured
+        // metadata so the compact view never reintroduces files/verify/detail
+        // text.
         let (clean_description, parsed_files, parsed_verify) = split_task_description_metadata(description);
-        let description = if clean_description.is_empty() {
-            description.trim().to_string()
+        let raw = if clean_description.trim().is_empty() {
+            description.trim()
         } else {
-            clean_description
+            clean_description.trim()
         };
+        let description = short_task_description(raw);
         let mut metadata = TaskStepMetadata {
             files: string_array(item.get("files")),
             outcome: item.get("outcome").and_then(Value::as_str).map(ToOwned::to_owned),
@@ -799,5 +832,38 @@ mod tests {
         assert_eq!(rows[0]["text"], "Update parser");
         assert_eq!(rows[0]["files"], json!(["src/a.rs"]));
         assert_eq!(rows[0]["verify"], json!(["cargo check"]));
+    }
+
+    #[test]
+    fn short_task_description_keeps_leading_clause_only() {
+        assert_eq!(
+            short_task_description(
+                "Add vtcode exec resume to the Commands section – document the cross-turn contract, sourced from ExecSubcommand::Resume"
+            ),
+            "Add vtcode exec resume to the Commands section"
+        );
+        assert_eq!(
+            short_task_description("Update the Everyday recipes block — add a headless example"),
+            "Update the Everyday recipes block"
+        );
+        assert_eq!(
+            short_task_description("Emit summary -> files: [src/a.rs] -> verify: [cargo check]"),
+            "Emit summary"
+        );
+        assert_eq!(short_task_description("Verify with cargo check"), "Verify with cargo check");
+        assert_eq!(short_task_description(""), "");
+    }
+
+    #[test]
+    fn compact_task_tree_view_from_items_shortens_detail_tail() {
+        let items = vec![json!({
+            "index_path": "1",
+            "description": "Add vtcode exec resume to the Commands section – document the cross-turn contract in the command table",
+            "status": "pending",
+        })];
+        let rows = compact_task_tree_view_from_items(&items);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["display"], "  └ □ Add vtcode exec resume to the Commands section");
+        assert_eq!(rows[0]["text"], "Add vtcode exec resume to the Commands section");
     }
 }

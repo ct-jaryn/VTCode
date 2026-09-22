@@ -71,14 +71,20 @@ impl AuthToken {
     fn matches(&self, presented: &str) -> bool {
         let expected = self.0.as_bytes();
         let presented = presented.as_bytes();
+        // Branch-free OR-reduction over iterators (no per-byte bounds checks).
+        // LLVM can auto-vectorize this shape; the indexed `.get(i)` form cannot
+        // prove in-bounds and stays scalar. All bytes are still visited so the
+        // comparison remains constant-time with no early exit.
+        let common_len = expected.len().min(presented.len());
+        let (expected_common, expected_tail) = expected.split_at(common_len);
+        let (presented_common, presented_tail) = presented.split_at(common_len);
         let mut difference = expected.len() ^ presented.len();
-        let comparison_len = expected.len().max(presented.len());
-
-        for index in 0..comparison_len {
-            let expected_byte = expected.get(index).copied().unwrap_or_default();
-            let presented_byte = presented.get(index).copied().unwrap_or_default();
-            difference |= usize::from(expected_byte ^ presented_byte);
-        }
+        difference |= expected_common
+            .iter()
+            .zip(presented_common.iter())
+            .fold(0_usize, |acc, (&a, &b)| acc | usize::from(a ^ b));
+        difference |= expected_tail.iter().fold(0_usize, |acc, &b| acc | usize::from(b));
+        difference |= presented_tail.iter().fold(0_usize, |acc, &b| acc | usize::from(b));
 
         difference == 0
     }

@@ -301,6 +301,9 @@ pub(crate) fn tracker_auto_continue_is_recoverable_block(reason: Option<&str>) -
         || reason.contains("safety fuse")
         || reason.contains("manual intervention")
         || reason.contains("verification is still pending")
+        || reason.contains("unverified assistant responses")
+        || reason.contains("anti-blind")
+        || reason.contains("verification gate")
         || reason.contains("context exceeded")
         || reason.contains("compaction could not reduce")
         || reason.contains("unmatched tool result")
@@ -313,21 +316,21 @@ pub(crate) fn tracker_auto_continue_is_recoverable_block(reason: Option<&str>) -
     {
         return false;
     }
-    // Recoverable production reason shapes.
-    // COMPLETED_TURN_FALLBACK_REASON / COMPLETED_TURN_NO_RESPONSE_REASON
-    // ASSISTANT_TEXT_RESPONSE_CAP_REASON / POST_TOOL_* recovery constants
-    // TOOL_LOOP_LIMIT_RECOVERY_REASON / tool-call & preview budgets
-    // PLAN_RECOVERY_EXHAUSTED_REASON ("recovery was exhausted")
+    // Recoverable production reason shapes — keep aligned with
+    // `completion::recoverable_status_recap_phrasing` plus outer-only
+    // harness constants (text-cap / no-response / safety-cap wording).
     reason.contains("recovery fallback")
         || reason.contains("recovery could not confirm")
         || reason.contains("recovery exhausted")
         || reason.contains("recovery was exhausted")
         || reason.contains("reached the safety cap")
+        || reason.contains("safety cap")
         || reason.contains("preview budget")
         || reason.contains("tool preview budget")
         || reason.contains("turn budget")
         || reason.contains("tool budget")
         || reason.contains("tool loop budget")
+        || reason.contains("tool loop")
         || reason.contains("tool-call budget")
         || reason.contains("tool follow-up")
         || reason.contains("wall clock")
@@ -337,7 +340,9 @@ pub(crate) fn tracker_auto_continue_is_recoverable_block(reason: Option<&str>) -
         || reason.contains("max tool")
         || reason.contains("per-turn tool")
         || reason.contains("read cap")
+        || reason.contains("work budget")
         || reason.contains("budget exhausted")
+        || reason.contains("budget ran out")
 }
 
 /// Pure gate for outer-loop tracker auto-continue after a turn end.
@@ -393,6 +398,22 @@ pub(crate) fn should_queue_tracker_resume_continuation(
 /// plan is not yet ready for approval. Ordinary completed planning turns are
 /// never auto-continued (they may be interview or approval handoffs). Never
 /// auto-approves.
+///
+/// `consecutive_empty_fallbacks` breaks the empty-turn self-loop: turns that
+/// end with the deterministic `PLANNING_COMPLETED_FALLBACK_RESPONSE` (no LLM
+/// synthesis, no tool activity) must not re-queue forever. After
+/// [`MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE`] consecutive empties the gate
+/// closes and the user must `continue` manually.
+pub(crate) const MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE: u8 = 2;
+
+/// Stable marker of the deterministic empty-turn fallback text in
+/// `turn_loop::PLANNING_COMPLETED_FALLBACK_RESPONSE`. Matched by substring so
+/// the gate stays pure (no cross-module constant import) and robust to
+/// surrounding file-list appends.
+pub(crate) fn is_plan_empty_fallback_text(text: &str) -> bool {
+    text.contains("without a final plan synthesis") && text.contains("do NOT re-read files already read this turn")
+}
+
 pub(crate) fn should_queue_plan_mode_auto_continue(
     auto_continue_enabled: bool,
     planning_active: bool,
@@ -401,11 +422,15 @@ pub(crate) fn should_queue_plan_mode_auto_continue(
     blocked_reason: Option<&str>,
     is_verification_block: bool,
     cross_turn_turns: u8,
+    consecutive_empty_fallbacks: u8,
 ) -> bool {
     if !auto_continue_enabled || !planning_active || cross_turn_turns == 0 {
         return false;
     }
     if plan_ready_for_approval || is_verification_block || turn_completed {
+        return false;
+    }
+    if consecutive_empty_fallbacks >= MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE {
         return false;
     }
     blocked_reason.is_some_and(plan_mode_recoverable_block)
@@ -492,12 +517,19 @@ pub(crate) fn plan_progress_line(
     }
 }
 
+/// Stable opening marker for the harness-generated plan-mode auto-continue
+/// directive. The planning exit trigger treats any user message carrying this
+/// marker as machine-generated (not a genuine user turn), so the two sites
+/// must share one literal instead of drifting.
+pub(crate) const PLAN_MODE_AUTO_CONTINUE_MARKER: &str = "Plan-mode auto-continue:";
+
 /// Follow-up prompt for plan-mode auto-continue turns.
 pub(crate) fn plan_mode_continue_follow_up() -> String {
-    "Plan-mode auto-continue: planning is still active and no validated persisted plan is ready for approval. \
+    format!(
+        "{PLAN_MODE_AUTO_CONTINUE_MARKER} planning is still active and no validated persisted plan is ready for approval. \
 Continue read-only research/synthesis toward one compact `<proposed_plan>` now. \
 Do not ask the user to resume, do not implement, and do not auto-exit planning."
-        .to_string()
+    )
 }
 
 #[cfg(test)]
@@ -536,9 +568,9 @@ mod tracker_continue_tests {
     #[test]
     fn plan_mode_auto_continue_gate_respects_user_gates_and_budget() {
         // Ready-for-approval is a user gate.
-        assert!(!should_queue_plan_mode_auto_continue(true, true, true, true, None, false, 8));
+        assert!(!should_queue_plan_mode_auto_continue(true, true, true, true, None, false, 8, 0));
         // Ordinary completed planning turns never auto-continue (interview risk).
-        assert!(!should_queue_plan_mode_auto_continue(true, true, false, true, None, false, 8));
+        assert!(!should_queue_plan_mode_auto_continue(true, true, false, true, None, false, 8, 0));
         // Recoverable blocked planning continues.
         assert!(should_queue_plan_mode_auto_continue(
             true,
@@ -547,7 +579,8 @@ mod tracker_continue_tests {
             false,
             Some("reached the safety cap"),
             false,
-            8
+            8,
+            0
         ));
         // Planning handoff / verification / blocked-without-reason stay off.
         // Production PLANNING_COMPLETED_TURN_FALLBACK_REASON is recoverable
@@ -561,7 +594,8 @@ mod tracker_continue_tests {
                 "Planning turn ended via recovery fallback without confirming an approval-ready plan; planning remains active."
             ),
             false,
-            8
+            8,
+            0
         ));
         // Compound permission+recovery stays denied.
         assert!(!should_queue_plan_mode_auto_continue(
@@ -571,7 +605,8 @@ mod tracker_continue_tests {
             false,
             Some("recovery fallback; permission denied for exec_command"),
             false,
-            8
+            8,
+            0
         ));
         assert!(!should_queue_plan_mode_auto_continue(
             true,
@@ -580,13 +615,42 @@ mod tracker_continue_tests {
             false,
             Some("pending verification"),
             true,
-            8
+            8,
+            0
         ));
-        assert!(!should_queue_plan_mode_auto_continue(true, true, false, false, None, false, 8));
+        assert!(!should_queue_plan_mode_auto_continue(true, true, false, false, None, false, 8, 0));
         // Kill-switch / zero budget / inactive planning stay off.
-        assert!(!should_queue_plan_mode_auto_continue(false, true, false, false, Some("turn budget"), false, 8));
-        assert!(!should_queue_plan_mode_auto_continue(true, true, false, false, Some("turn budget"), false, 0));
-        assert!(!should_queue_plan_mode_auto_continue(true, false, false, false, Some("turn budget"), false, 8));
+        assert!(!should_queue_plan_mode_auto_continue(false, true, false, false, Some("turn budget"), false, 8, 0));
+        assert!(!should_queue_plan_mode_auto_continue(true, true, false, false, Some("turn budget"), false, 0, 0));
+        assert!(!should_queue_plan_mode_auto_continue(true, false, false, false, Some("turn budget"), false, 8, 0));
+    }
+
+    #[test]
+    fn plan_mode_auto_continue_stops_after_consecutive_empty_fallbacks() {
+        let reason = Some(
+            "Planning turn ended via recovery fallback without confirming an approval-ready plan; planning remains active.",
+        );
+        assert!(should_queue_plan_mode_auto_continue(true, true, false, false, reason, false, 32, 0));
+        assert!(should_queue_plan_mode_auto_continue(true, true, false, false, reason, false, 32, 1));
+        assert!(!should_queue_plan_mode_auto_continue(
+            true,
+            true,
+            false,
+            false,
+            reason,
+            false,
+            32,
+            MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE
+        ));
+        assert!(!should_queue_plan_mode_auto_continue(true, true, false, false, reason, false, 32, 3));
+    }
+
+    #[test]
+    fn detects_plan_empty_fallback_text() {
+        let empty = "Planning remains active, but this turn ended without a final plan synthesis. The research gathered above is preserved; do NOT re-read files already read this turn. Type `keep planning`.";
+        assert!(is_plan_empty_fallback_text(empty));
+        assert!(!is_plan_empty_fallback_text("Planning turn ended via recovery fallback without confirming plan."));
+        assert!(!is_plan_empty_fallback_text(""));
     }
 
     #[test]
@@ -664,6 +728,18 @@ mod tracker_continue_tests {
         )));
         assert!(tracker_auto_continue_is_recoverable_block(Some("preview budget exhausted")));
         assert!(tracker_auto_continue_is_recoverable_block(Some("Turn blocked due to repeated failing behavior.")));
+        // Session/production budget phrases from residual UX work.
+        assert!(tracker_auto_continue_is_recoverable_block(Some("Task 7 blocked by the turn's preview budget")));
+        assert!(tracker_auto_continue_is_recoverable_block(Some("tool budget ran out")));
+        assert!(tracker_auto_continue_is_recoverable_block(Some("hit the per-file read cap")));
+        assert!(tracker_auto_continue_is_recoverable_block(Some(
+            "Tool loop budget exhausted before a final response."
+        )));
+        // True handoffs stay terminal.
+        assert!(!tracker_auto_continue_is_recoverable_block(Some(
+            "Anti-blind checkpoint: verification is still pending"
+        )));
+        assert!(!tracker_auto_continue_is_recoverable_block(Some("verification gate remains open")));
         // Unknown / policy handoffs stay terminal.
         assert!(!tracker_auto_continue_is_recoverable_block(Some("some unknown block")));
         assert!(!tracker_auto_continue_is_recoverable_block(Some("exec_command is denied by permission policy")));
@@ -671,6 +747,17 @@ mod tracker_continue_tests {
             "I hit the tool-call safety fuse mid-verification"
         )));
         assert!(!tracker_auto_continue_is_recoverable_block(Some("request_user_input is required")));
+        assert!(!tracker_auto_continue_is_recoverable_block(Some(
+            "Turn blocked after repeated unverified assistant responses; verification is still pending."
+        )));
+        // Session/production recoverable vocabulary parity.
+        assert!(tracker_auto_continue_is_recoverable_block(Some("Task 7 blocked by the turn's preview budget")));
+        assert!(tracker_auto_continue_is_recoverable_block(Some("tool budget ran out")));
+        assert!(tracker_auto_continue_is_recoverable_block(Some("per-file read cap")));
+        assert!(tracker_auto_continue_is_recoverable_block(Some(
+            "Tool loop budget exhausted before a final response"
+        )));
+        assert!(tracker_auto_continue_is_recoverable_block(Some("work budget exhausted")));
     }
 
     #[test]
@@ -1827,12 +1914,21 @@ fn is_low_signal_outcome(outcome: &ToolPipelineOutcome, canonical_tool_name: &st
 /// legitimate exploration and never group.
 fn coarse_inspection_family_key(canonical_tool_name: &str, args: &serde_json::Value) -> Option<String> {
     use vtcode_core::config::constants::tools;
-    // Only shell listing/scanning commands suffer from overlapping-but-distinct
+    // Only bare directory listings suffer from overlapping-but-distinct
     // invocations (e.g. three `find` calls over the same tree with different
     // flags) that the exact family key never groups. File reads (`cat`/`head`/
-    // `tail` via shell included) and semantic search already carry precise
-    // family keys; grouping them coarsely would mislabel diverse productive
-    // exploration (different files/queries) as looping.
+    // `tail` via shell included) and semantic search (`rg`/`grep`, `code_search`)
+    // already carry precise family keys; grouping them coarsely would mislabel
+    // diverse productive exploration (different files/queries) as looping.
+    // In particular `rg`/`grep` must stay out: their first positional is the
+    // search pattern, not the search root, so five distinct queries such as
+    // `grep -n "enum Commands" ...`, `grep -rn "enum ExecSubcommand" ...`
+    // (turn_1303/turn_1304: `exec::inspection::grep::enum ×5`) or five `rg`
+    // searches for `pub` (turn_1291: `exec::inspection::rg::pub ×5`, e.g.
+    // `rg -n 'pub enum Commands' ...`) all collapse into
+    // one coarse family and get promoted to low-signal, tripping early
+    // recovery on legitimate research. Distinct patterns/paths keep distinct
+    // exact families and converge via the total low-signal guard instead.
     match canonical_tool_name {
         tools::UNIFIED_EXEC | tools::EXEC_COMMAND => {
             let command = vtcode_core::tools::command_args::command_text(args).ok()??;
@@ -1843,7 +1939,7 @@ fn coarse_inspection_family_key(canonical_tool_name: &str, args: &serde_json::Va
                 .unwrap_or(first)
                 .trim_matches(|ch| ch == '\'' || ch == '"')
                 .to_ascii_lowercase();
-            if matches!(base.as_str(), "find" | "ls" | "rg" | "grep" | "fd") {
+            if matches!(base.as_str(), "find" | "ls" | "fd") {
                 Some(format!("exec::inspection::{base}::{}", coarse_inspection_root(&command)))
             } else {
                 None
@@ -1853,12 +1949,14 @@ fn coarse_inspection_family_key(canonical_tool_name: &str, args: &serde_json::Va
     }
 }
 
-/// Extract the search-root segment of a listing/scan command: the first
+/// Extract the search-root segment of a listing command: the first
 /// non-flag argument, with surrounding quotes and trailing slashes stripped.
-/// Deliberately heuristic — an option value (`rg -A 2 pat src` → root "2")
+/// Deliberately heuristic — an option value (`ls --width 80 src` → root "80")
 /// can be picked up and fragment a family, which only makes detection more
 /// conservative. Commands with no positional argument (`ls -la`) scan the
-/// working directory and map to ".".
+/// working directory and map to ".". Only `ls`/`find`/`fd` reach this helper;
+/// `rg`/`grep` are excluded above because their first positional is the
+/// search pattern, not a path root.
 fn coarse_inspection_root(command: &str) -> String {
     let root = command
         .split_whitespace()
@@ -3663,6 +3761,68 @@ mod tests {
         assert_eq!(tracker.consecutive_navigations, 3);
     }
 
+    #[test]
+    fn awk_range_inspections_do_not_trigger_anti_blind_pressure() {
+        // Regression for session-vtcode-20260921T023834Z: six consecutive
+        // read-only `awk` page reads tripped the blind-editing gate because
+        // `awk` was missing from the read-only allow-list.
+        let mut tracker = LoopTracker::new();
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: serde_json::json!({}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+
+        for _ in 0..BLIND_EDITING_THRESHOLD {
+            update_repetition_tracker(
+                &mut tracker,
+                &success,
+                tools::EXEC_COMMAND,
+                &json!({"cmd": "awk 'NR>=297 && NR<=312' README.md"}),
+            );
+        }
+
+        assert_eq!(tracker.consecutive_mutations, 0);
+        assert!(!tracker.verification_is_pending());
+        assert!(!mutation_blocked_until_verification(
+            &tracker,
+            tools::EXEC_COMMAND,
+            &json!({"cmd": "awk 'NR>=297 && NR<=312' README.md"}),
+        ));
+    }
+
+    #[test]
+    fn awk_write_primitives_still_trigger_anti_blind_pressure() {
+        // Asymmetric counterpart: real writes (including gawk `@` indirect
+        // calls) must still count as mutations so the fix cannot
+        // over-correct into a fail-open.
+        let mut tracker = LoopTracker::new();
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: serde_json::json!({}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+
+        for _ in 0..BLIND_EDITING_THRESHOLD {
+            update_repetition_tracker(
+                &mut tracker,
+                &success,
+                tools::EXEC_COMMAND,
+                &json!({"cmd": "awk -v f=system 'BEGIN{@f(\"id\")}' README.md"}),
+            );
+        }
+
+        assert_eq!(tracker.consecutive_mutations, BLIND_EDITING_THRESHOLD);
+        assert!(tracker.verification_is_pending());
+        assert!(mutation_blocked_until_verification(
+            &tracker,
+            tools::EXEC_COMMAND,
+            &json!({"cmd": "awk '{print > \"out.txt\"}' README.md"}),
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn logged_compound_inspection_with_unix_stderr_suppression_does_not_trigger_pressure() {
@@ -4974,6 +5134,58 @@ mod tests {
             );
         }
         assert_eq!(tracker.max_coarse_listing_count(), 0);
+        // `rg`/`grep` must not enter the coarse ledger at all, so they can
+        // never be promoted to low-signal or named as dominant churn.
+        assert_eq!(tracker.max_low_signal_count(), 0);
+        assert_eq!(tracker.dominant_churn(), None);
+        assert_eq!(tracker.low_signal_tool_calls, 0);
+    }
+
+    #[test]
+    fn same_pattern_grep_searches_do_not_promote_to_low_signal() {
+        // Regression for turn_1303/turn_1304 (`exec::inspection::grep::enum ×5`)
+        // and turn_1291 (`exec::inspection::rg::pub ×5`): five distinct
+        // successful searches sharing one pattern (`enum` / `pub`) across
+        // different files/flags are legitimate research, not churn. They must
+        // not be promoted into the low-signal ledger and must not trip early
+        // recovery on their own.
+        let mut tracker = LoopTracker::new();
+        for command in [
+            "grep -n \"enum Commands\" -A 80 src/cli/mod.rs",
+            "grep -n \"enum Command\\|pub enum\" src/cli/mod.rs",
+            "grep -rn \"enum Commands\" crates/codegen/vtcode-core/src",
+            "grep -rn \"enum ExecSubcommand\" -A 30 crates/codegen/vtcode-core/src/cli/args/",
+            "grep -rn \"enum ScheduleSubcommand\" crates/codegen/vtcode-core/src/cli/args/",
+        ] {
+            update_repetition_tracker(
+                &mut tracker,
+                &successful_exec_output(),
+                tools::EXEC_COMMAND,
+                &json!({"cmd":command}),
+            );
+        }
+        assert_eq!(tracker.max_coarse_listing_count(), 0);
+        assert_eq!(tracker.max_low_signal_count(), 0);
+        assert_eq!(tracker.dominant_churn(), None);
+
+        let mut tracker = LoopTracker::new();
+        for command in [
+            "rg -n 'pub enum Commands' src/ -A 40",
+            "rg -n 'pub enum Commands' crates/codegen/vtcode-core/src/cli/args/mod.rs -A 50",
+            "rg -n 'pub enum Commands' crates/codegen/vtcode-core/src/cli/args/mod.rs -A 600",
+            "rg -n 'pub enum Provider|Gemini|OpenAI' crates/codegen/vtcode-llm/src",
+            "rg -n 'pub enum SecretCommand|Add|List' crates/codegen/vtcode-core/src/cli/args/secret.rs",
+        ] {
+            update_repetition_tracker(
+                &mut tracker,
+                &successful_exec_output(),
+                tools::EXEC_COMMAND,
+                &json!({"cmd":command}),
+            );
+        }
+        assert_eq!(tracker.max_coarse_listing_count(), 0);
+        assert_eq!(tracker.max_low_signal_count(), 0);
+        assert_eq!(tracker.dominant_churn(), None);
     }
 
     #[test]
@@ -4985,7 +5197,7 @@ mod tests {
         assert_eq!(coarse_inspection_root("ls"), ".");
         // Heuristic: an option value can be picked up as the root, which only
         // fragments families and keeps detection conservative.
-        assert_eq!(coarse_inspection_root("rg -A 2 pat src"), "2");
+        assert_eq!(coarse_inspection_root("ls --width 80 src"), "80");
     }
 
     #[test]

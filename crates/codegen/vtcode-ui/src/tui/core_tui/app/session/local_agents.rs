@@ -53,6 +53,13 @@ impl LocalAgentsState {
         &self.entries
     }
 
+    /// Number of entries still in a loading state (running subagents,
+    /// background subprocesses, or retained exec sessions). Single source for
+    /// both the drawer shimmer and the global background loading signal.
+    pub(super) fn loading_count(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.is_loading()).count()
+    }
+
     fn has_entries(&self) -> bool {
         !self.entries.is_empty()
     }

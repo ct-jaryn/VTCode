@@ -556,7 +556,18 @@ pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<Inline
 
         // --- Context-sensitive keys (too complex to rebind) ---
         KeyCode::Esc => {
-            if session.has_active_overlay() {
+            // A visible text selection is the innermost dismissible state, so a
+            // single Esc clears the highlight instead of arming the rewind
+            // double-press. Overlay, interrupt, and cancel precedence is
+            // preserved: those states are checked first.
+            if !session.has_active_overlay()
+                && !session.is_running_activity()
+                && session.active_pty_session_count() == 0
+                && session.clear_mouse_selection()
+            {
+                session.last_escape_press = None;
+                None
+            } else if session.has_active_overlay() {
                 session.close_overlay();
                 session.last_escape_press = None;
                 None

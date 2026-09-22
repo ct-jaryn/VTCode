@@ -20,9 +20,25 @@ use crate::agent::runloop::unified::planning_workflow_state::{
 };
 use crate::agent::runloop::unified::state::CtrlCState;
 use crate::agent::runloop::unified::turn::context::{TurnHandlerOutcome, TurnLoopResult};
+use crate::agent::runloop::unified::turn::tool_outcomes::helpers::PLAN_MODE_AUTO_CONTINUE_MARKER;
 
 const PLANNING_WORKFLOW_EXIT_TRIGGER_STATUS: &str = "Planning workflow: implementation intent detected from your message. Exiting planning mode and proceeding with execution.";
 pub(crate) const PLANNING_WORKFLOW_MISSING_PLAN_SYNTHESIS_DIRECTIVE: &str = "Planning recovery: implementation was requested, but no completed plan draft exists yet. Do not implement and do not ask for approval. Synthesize exactly one compact `<proposed_plan>` from the repository evidence already gathered, including Summary, numbered steps in the form `Action -> files: [path] -> verify: [command]`, Validation, and short Assumptions. Valid `verify:` examples include `cargo nextest run -p vtcode`, `cargo check --locked`, `rg -n 'symbol' src/file.rs`, `sed -n '1,40p' docs/file.md`, and `grep -n 'symbol' src/file.rs`; `run checks` and `git diff --check` are invalid. Do not emit tool calls.";
+
+/// Whether the last user message is a harness-generated plan-mode auto-continue
+/// directive rather than a genuine user submission.
+///
+/// The directive's phrase `do not implement` normalizes to the `STAY_PHRASES`
+/// entry `"do not implement"`, so `detect_planning_intent` classifies it as
+/// `StayInPlanning`. When the exit trigger consumes such a directive as a
+/// user-initiated stay signal, the turn breaks before any LLM request runs, the
+/// completed-turn fallback fires, and the outer loop re-queues another
+/// identical directive — producing the observed infinite plan-mode loop
+/// (checkpoint turn_857). The opening marker is authoritative: real users do
+/// not prefix their message with it.
+pub(crate) fn is_plan_mode_auto_continue_directive(text: &str) -> bool {
+    text.contains(PLAN_MODE_AUTO_CONTINUE_MARKER)
+}
 
 pub(crate) struct PlanningExitContext<'a> {
     pub(crate) session: &'a mut InlineSession,
@@ -101,6 +117,9 @@ pub(crate) async fn maybe_handle_planning_exit_trigger(
     };
 
     let text = last_user_msg.content.as_text();
+    if is_plan_mode_auto_continue_directive(&text) {
+        return Ok(PlanningTransition::None);
+    }
     let assistant_prompted = assistant_recently_prompted_implementation(working_history);
     let intent = detect_planning_intent(&text, assistant_prompted);
 
@@ -317,5 +336,24 @@ mod tests {
 
         assert!(matches!(result, TurnLoopResult::Completed { plan_approved_execution_pending: true }));
         assert_eq!(target, Some(PlanExecutionTarget::build(PlanExecutionContext::Current, false)));
+    }
+
+    #[test]
+    fn plan_mode_auto_continue_directive_is_not_a_user_stay_intent() {
+        let directive = crate::agent::runloop::unified::turn::tool_outcomes::helpers::plan_mode_continue_follow_up();
+        assert!(is_plan_mode_auto_continue_directive(&directive));
+
+        let normalized = vtcode_core::planning::normalize_plan_intent(&directive);
+        assert!(
+            vtcode_core::planning::matches_stay_intent(&normalized),
+            "auto-continue text must collide with the stay phrase to prove the guard matters"
+        );
+    }
+
+    #[test]
+    fn genuine_user_text_is_not_flagged_as_auto_continue() {
+        assert!(!is_plan_mode_auto_continue_directive("continue planning"));
+        assert!(!is_plan_mode_auto_continue_directive("yes, implement the plan"));
+        assert!(!is_plan_mode_auto_continue_directive("keep researching the plan"));
     }
 }

@@ -160,8 +160,14 @@ pub async fn enter_inflight(command: &str, cwd: &Path) -> Option<InFlightState> 
 
 pub async fn finish_inflight(token: InFlightToken, result: InFlightResult) {
     let key = token.0;
-    let mut inflight = IN_FLIGHT.lock().await;
-    if let Some(waiters) = inflight.remove(&key) {
+    // Remove under the lock, then notify outside it: cloning the result per
+    // waiter must not extend the critical section (fast-Tokio principle:
+    // keep lock-held work to a single map operation).
+    let waiters = {
+        let mut inflight = IN_FLIGHT.lock().await;
+        inflight.remove(&key)
+    };
+    if let Some(waiters) = waiters {
         for waiter in waiters {
             let _ = waiter.send(result.clone());
         }

@@ -1039,6 +1039,7 @@ async fn summarize_locally(
 /// path shares one retry contract.
 async fn generate_summary_with_capacity_retry(
     provider: &dyn LLMProvider,
+    model: &str,
     history: &[Message],
     instructions: &str,
     first_source: &[Message],
@@ -1049,30 +1050,63 @@ async fn generate_summary_with_capacity_retry(
 ) -> Result<String> {
     let first_tokens = first_source.iter().map(Message::estimate_tokens).sum::<usize>();
     let mut current_source: &[Message] = first_source;
+    let mut current_tokens = first_tokens;
     let mut current_budget = history_budget;
     let mut remaining_retries = max_overflow_retries;
     let mut retry_storage: Vec<Message>;
     loop {
         match collect_single_response(provider, make_request(current_source)).await {
-            Ok(response) => return Ok(response.content.unwrap_or_default().trim().to_string()),
+            Ok(response) => {
+                let summary = response.content.unwrap_or_default().trim().to_string();
+                if summary.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "{error_context} for {} / {}: provider returned an empty summary (input_tokens={current_tokens}, budget={current_budget:?})",
+                        provider.name(),
+                        model,
+                    ));
+                }
+                return Ok(summary);
+            }
             Err(error) if is_context_capacity_message(&error.to_string()) && remaining_retries > 0 => {
-                current_budget = current_budget.map(|budget| (budget / 2).max(4));
+                // With an unknown budget the bound is verbatim, so halving
+                // `None` would resend the identical fork. Derive a fallback
+                // from the failing attempt so the retry can still shrink.
+                current_budget = match current_budget {
+                    Some(budget) => Some((budget / 2).max(4)),
+                    None => Some((current_tokens / 2).max(4)),
+                };
                 retry_storage = bound_history_for_summarization(history, instructions, current_budget);
-                // A retry only helps when it actually shrinks the input: with an
-                // unknown budget (or an already-fitting history) it would resend
-                // the identical request, so propagate the original failure instead.
+                // A retry only helps when it actually shrinks the input: with
+                // an already-fitting history it would resend the identical
+                // request, so propagate the original failure instead.
                 let retry_tokens = retry_storage.iter().map(Message::estimate_tokens).sum::<usize>();
-                if retry_tokens >= first_tokens {
-                    return Err(anyhow::Error::from(error).context(error_context));
+                if retry_tokens >= current_tokens {
+                    return Err(anyhow::Error::from(error).context(format!(
+                        "{error_context} for {} / {} (input_tokens={current_tokens}, budget={current_budget:?})",
+                        provider.name(),
+                        model,
+                    )));
                 }
                 tracing::warn!(
+                    provider = provider.name(),
+                    model,
+                    input_tokens = current_tokens,
+                    retry_tokens,
+                    budget = ?current_budget,
                     error = ?error,
                     "{error_context}: input exceeded context capacity; retrying with a halved input budget"
                 );
                 current_source = &retry_storage;
+                current_tokens = retry_tokens;
                 remaining_retries -= 1;
             }
-            Err(error) => return Err(anyhow::Error::from(error).context(error_context)),
+            Err(error) => {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "{error_context} for {} / {} (input_tokens={current_tokens}, budget={current_budget:?})",
+                    provider.name(),
+                    model,
+                )));
+            }
         }
     }
 }
@@ -1090,6 +1124,7 @@ async fn generate_local_summary_with_retry(
 ) -> Result<String> {
     generate_summary_with_capacity_retry(
         provider,
+        model,
         history,
         instructions,
         summary_source,
@@ -1188,6 +1223,7 @@ async fn summarize_locally_hierarchical(
     let abstract_band = bound_history_for_summarization(&pruned_abstract, "", history_budget);
     let abstract_summary = generate_summary_with_capacity_retry(
         provider,
+        model,
         &pruned_abstract,
         "",
         &abstract_band,
@@ -1211,6 +1247,7 @@ async fn summarize_locally_hierarchical(
     let detail_band = bound_history_for_summarization(&pruned_detail, &effective_config.summary_prompt, history_budget);
     let detail_summary = generate_summary_with_capacity_retry(
         provider,
+        model,
         &pruned_detail,
         &effective_config.summary_prompt,
         &detail_band,
@@ -2090,6 +2127,19 @@ mod tests {
         stream_modes: Mutex<Vec<bool>>,
     }
 
+    /// Unknown-window summarizer (`effective_context_size == 0`) that rejects
+    /// the first summary request with a capacity error. Exercises the
+    /// `None`-budget fallback so an unbounded first fork can still shrink.
+    struct UnknownBudgetFailOnceProvider {
+        attempts: Mutex<usize>,
+        request_tokens: Mutex<Vec<usize>>,
+    }
+
+    /// Local summarizer that returns an empty summary body. An empty
+    /// compaction summary must fail with a diagnostic instead of producing
+    /// an empty `Previous conversation summary:` history.
+    struct EmptySummaryProvider;
+
     /// Capturing provider with no native support; used to assert the Local summary
     /// request carries the manual options.
     struct CapturingProvider {
@@ -2375,6 +2425,64 @@ mod tests {
 
         fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
             Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl LLMProvider for UnknownBudgetFailOnceProvider {
+        fn name(&self) -> &str {
+            "unknown-budget-fail-once"
+        }
+
+        async fn generate(&self, request: LLMRequest) -> Result<LLMResponse, LLMError> {
+            let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.request_tokens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.messages.iter().map(Message::estimate_tokens).sum());
+            *attempts += 1;
+            if *attempts == 1 {
+                return Err(LLMError::Provider {
+                    message: "maximum context length exceeded".to_string(),
+                    metadata: None,
+                });
+            }
+            Ok(LLMResponse::new("stub-model", "retried summary"))
+        }
+
+        fn supported_models(&self) -> Vec<String> {
+            vec!["stub-model".to_string()]
+        }
+
+        fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
+            Ok(())
+        }
+
+        fn effective_context_size(&self, _model: &str) -> usize {
+            0
+        }
+    }
+
+    #[async_trait]
+    impl LLMProvider for EmptySummaryProvider {
+        fn name(&self) -> &str {
+            "empty-summary"
+        }
+
+        async fn generate(&self, _request: LLMRequest) -> Result<LLMResponse, LLMError> {
+            Ok(LLMResponse::new("stub-model", "   "))
+        }
+
+        fn supported_models(&self) -> Vec<String> {
+            vec!["stub-model".to_string()]
+        }
+
+        fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
+            Ok(())
+        }
+
+        fn effective_context_size(&self, _model: &str) -> usize {
+            200_000
         }
     }
 
@@ -3240,6 +3348,7 @@ mod tests {
         };
         let summary = generate_summary_with_capacity_retry(
             &provider,
+            "stub-model",
             &history,
             "test instructions",
             &history,
@@ -3257,6 +3366,102 @@ mod tests {
         let tokens = provider.request_tokens.lock().unwrap().clone();
         assert_eq!(tokens.len(), 3);
         assert!(tokens[0] > tokens[1] && tokens[1] > tokens[2], "each retry must shrink strictly, got {tokens:?}");
+    }
+
+    #[tokio::test]
+    async fn capacity_retry_recovers_with_unknown_budget_fallback() {
+        use super::generate_summary_with_capacity_retry;
+
+        // Unknown window (`None` budget) sends the first fork verbatim. A
+        // capacity rejection must still shrink via a fallback derived from
+        // the failing attempt instead of resending the identical fork.
+        // Asymmetric vs the verbatim/no-retry case: oldest vs newest text
+        // differ so trimming the oldest is observable.
+        let history = vec![
+            Message::user(format!("oldest {}", "old ".repeat(20_000))),
+            Message::user(format!("newest {}", "new ".repeat(20_000))),
+        ];
+        let provider = UnknownBudgetFailOnceProvider {
+            attempts: Mutex::new(0),
+            request_tokens: Mutex::new(Vec::new()),
+        };
+        let summary = generate_summary_with_capacity_retry(
+            &provider,
+            "stub-model",
+            &history,
+            "test instructions",
+            &history,
+            None,
+            1,
+            "Failed to generate compaction summary",
+            |source| {
+                super::compaction_summary_request("stub-model", source, "test instructions", None, None, None, None)
+            },
+        )
+        .await
+        .expect("unknown-budget capacity error must recover via fallback");
+        assert_eq!(summary, "retried summary");
+        assert_eq!(*provider.attempts.lock().unwrap(), 2, "one failure then success");
+        let tokens = provider.request_tokens.lock().unwrap().clone();
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens[1] < tokens[0], "fallback retry must shrink, got {tokens:?}");
+    }
+
+    #[tokio::test]
+    async fn empty_summary_fails_with_diagnostic() {
+        use super::generate_summary_with_capacity_retry;
+
+        let history = sample_history();
+        let provider = EmptySummaryProvider;
+        let error = generate_summary_with_capacity_retry(
+            &provider,
+            "stub-model",
+            &history,
+            "test instructions",
+            &history,
+            Some(30_000),
+            1,
+            "Failed to generate compaction summary",
+            |source| {
+                super::compaction_summary_request("stub-model", source, "test instructions", None, None, None, None)
+            },
+        )
+        .await
+        .expect_err("empty provider summary must fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("Failed to generate compaction summary"), "outer context preserved: {message}");
+        assert!(message.contains("empty summary"), "empty cause surfaced: {message}");
+        assert!(message.contains("empty-summary"), "provider identity surfaced: {message}");
+    }
+
+    #[tokio::test]
+    async fn capacity_error_context_carries_route_diagnostics() {
+        // Tiny fitting history with a capacity failure cannot shrink, so the
+        // original failure propagates. The propagated error must carry the
+        // route diagnostics needed to debug `/compact` without guessing.
+        let history = sample_history();
+        let provider = CapacityFailOnceProvider {
+            attempts: Mutex::new(0),
+            request_tokens: Mutex::new(Vec::new()),
+            failures: 1,
+        };
+        let error = compact_history_manual(
+            &provider,
+            "stub-model",
+            &history,
+            &CompactionConfig {
+                always_summarize: true,
+                ..CompactionConfig::default()
+            },
+            &ManualCompactionOptions::default(),
+        )
+        .await
+        .expect_err("identical retry must not be attempted");
+        let message = format!("{error:#}");
+        assert!(message.contains("Failed to generate compaction summary"), "outer context: {message}");
+        assert!(message.contains("capacity-fail-once"), "provider name: {message}");
+        assert!(message.contains("stub-model"), "model name: {message}");
+        assert!(message.contains("input_tokens="), "token counts: {message}");
     }
 
     #[tokio::test]

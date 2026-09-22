@@ -297,6 +297,31 @@ impl From<VTCodePtySession> for VTCodeExecSession {
         }
     }
 }
+
+impl VTCodeExecSession {
+    /// Single owner for `Local Agents` command display (`cargo check --locked`).
+    #[must_use]
+    pub fn command_label(&self) -> String {
+        std::iter::once(self.command.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Single owner for `running` / `exited (code)` / `unknown` display so the
+    /// drawer, inspect modal, and transcript agree.
+    #[must_use]
+    pub fn status_label(&self) -> String {
+        match self.lifecycle_state {
+            Some(VTCodeSessionLifecycleState::Running) => "running".to_string(),
+            Some(VTCodeSessionLifecycleState::Exited) => self
+                .exit_code
+                .map_or_else(|| "exited".to_string(), |code| format!("exited ({code})")),
+            None => "unknown".to_string(),
+        }
+    }
+}
+
 // Default value functions
 fn default_max_items() -> usize {
     20 // Better discovery defaults while still bounded for context efficiency
@@ -312,4 +337,40 @@ fn default_write_mode() -> String {
 // Search path default
 pub fn default_search_path() -> String {
     ".".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_session(lifecycle: Option<VTCodeSessionLifecycleState>, exit_code: Option<i32>) -> VTCodeExecSession {
+        VTCodeExecSession {
+            id: "run-test".to_string().into(),
+            backend: "pipe".to_string(),
+            command: "/bin/zsh".to_string(),
+            args: vec!["-c".to_string(), "cargo check".to_string()],
+            working_dir: Some(".".to_string()),
+            background: true,
+            rows: None,
+            cols: None,
+            child_pid: Some(1),
+            started_at: None,
+            lifecycle_state: lifecycle,
+            exit_code,
+        }
+    }
+
+    #[test]
+    fn exec_status_labels_stay_asymmetric_across_lifecycle() {
+        assert_eq!(test_session(Some(VTCodeSessionLifecycleState::Running), None).status_label(), "running");
+        assert_eq!(test_session(Some(VTCodeSessionLifecycleState::Exited), Some(0)).status_label(), "exited (0)");
+        assert_eq!(test_session(Some(VTCodeSessionLifecycleState::Exited), Some(1)).status_label(), "exited (1)");
+        assert_eq!(test_session(Some(VTCodeSessionLifecycleState::Exited), None).status_label(), "exited");
+        assert_eq!(test_session(None, None).status_label(), "unknown");
+    }
+
+    #[test]
+    fn exec_command_label_joins_command_and_args() {
+        assert_eq!(test_session(None, None).command_label(), "/bin/zsh -c cargo check");
+    }
 }

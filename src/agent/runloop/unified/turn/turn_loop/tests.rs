@@ -3500,3 +3500,93 @@ async fn ensure_completed_preserves_explicit_recovery_flag() {
 
     assert!(was_fallback, "explicit recovery flag must survive even with a found final");
 }
+
+#[tokio::test]
+async fn plan_mode_auto_continue_directive_reaches_provider_without_early_exit() {
+    // Regression for checkpoint turn_857: the harness-generated plan-mode
+    // auto-continue directive contains the phrase "do not implement", which
+    // normalizes to a `STAY_PHRASES` entry. When the planning exit trigger
+    // consumed that directive as a genuine user stay message, the turn broke
+    // before any provider request, published the completed-turn fallback, and
+    // the outer loop re-queued the same directive forever.
+    #[derive(Clone)]
+    struct PlanAnsweringProvider {
+        requests: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl uni::LLMProvider for PlanAnsweringProvider {
+        fn name(&self) -> &str {
+            "openai"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn generate(&self, request: uni::LLMRequest) -> Result<uni::LLMResponse, uni::LLMError> {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            Ok(uni::LLMResponse {
+                content: Some(format!("<proposed_plan>\n{STREAMED_VALID_PLAN}\n</proposed_plan>")),
+                model: request.model,
+                tool_calls: None,
+                usage: None,
+                finish_reason: uni::FinishReason::Stop,
+                reasoning: None,
+                reasoning_details: None,
+                organization_id: None,
+                request_id: None,
+                tool_references: Vec::new(),
+                compaction: None,
+            })
+        }
+
+        fn supported_models(&self) -> Vec<String> {
+            vec!["noop-model".to_string()]
+        }
+
+        fn validate_request(&self, _request: &uni::LLMRequest) -> Result<(), uni::LLMError> {
+            Ok(())
+        }
+    }
+
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut backing = TestTurnProcessingBacking::new(4).await;
+    backing.activate_planning_for_test();
+    backing.set_provider(Box::new(PlanAnsweringProvider { requests: requests.clone() }));
+    let directive = crate::agent::runloop::unified::turn::tool_outcomes::helpers::plan_mode_continue_follow_up();
+    backing.queue_follow_up_input_for_test(&directive);
+
+    // The seeded message must be neutral: a bare `continue` is an exit alias
+    // and would end the turn before the directive is ever consumed.
+    let mut history = vec![uni::Message::user("please research the current work".to_string())];
+    let outcome = run_turn_loop(&mut history, backing.turn_loop_context())
+        .await
+        .expect("an auto-continue directive must not break the turn before a provider request");
+
+    assert!(
+        matches!(outcome.result, TurnLoopResult::Completed { .. }),
+        "the directive must run a normal plan turn, got {:?}",
+        outcome.result
+    );
+    assert!(
+        history.last().is_some_and(|message| {
+            message.role == uni::MessageRole::User
+                && crate::agent::runloop::unified::planning_workflow::exit_trigger::is_plan_mode_auto_continue_directive(
+                    &message.content.as_text(),
+                )
+        }),
+        "the directive must be steered into history as the last user message"
+    );
+    assert!(
+        requests.load(Ordering::SeqCst) >= 1,
+        "the directive must reach the provider instead of breaking the turn early"
+    );
+    assert!(
+        !history.iter().any(|message| {
+            message.role == uni::MessageRole::Assistant
+                && message.content.as_text().contains(PLANNING_COMPLETED_FALLBACK_RESPONSE)
+        }),
+        "an auto-continue directive must not publish the completed-turn fallback"
+    );
+}

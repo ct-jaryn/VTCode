@@ -72,6 +72,24 @@ pub fn merge_with_existing(existing_content: &str, new_config: &str) -> Result<S
     ConfigWriter::merge_with_markers(existing_content, new_config, ConfigFormat::Json)
 }
 
+/// Copy-paste guidance for a Windows Terminal profile icon.
+///
+/// Windows Terminal reads tab artwork from `settings.json` profiles only;
+/// no escape sequence can set it, so this stays a manual one-time step.
+pub fn profile_icon_instructions() -> Vec<String> {
+    vec![
+        "TAB ICON (profile image):".to_string(),
+        "1. Open Settings (Ctrl+,) → Open JSON file.".to_string(),
+        "2. Add a profile entry (replace the icon path with your copy of resources/icons/vtcode-profile-180.png):"
+            .to_string(),
+        "{".to_string(),
+        "  \"name\": \"VT Code\",".to_string(),
+        "  \"commandline\": \"vtcode\",".to_string(),
+        "  \"icon\": \"C:\\\\Tools\\\\vtcode-profile-180.png\"".to_string(),
+        "}".to_string(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +107,14 @@ mod tests {
         let features = vec![TerminalFeature::CopyPaste];
         let config = generate_config(&features).unwrap();
         assert!(config.contains("copyOnSelect"));
+    }
+
+    #[test]
+    fn profile_icon_instructions_show_settings_fragment() {
+        let lines = profile_icon_instructions();
+        let joined = lines.join("\n");
+        assert!(joined.contains("\"icon\""));
+        assert!(joined.contains(".png"));
+        assert!(joined.contains("VT Code"));
     }
 }

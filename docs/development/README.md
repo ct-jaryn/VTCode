@@ -18,6 +18,7 @@ Entry point for VT Code contributor workflows.
 - [Command Security Model](./COMMAND_SECURITY_MODEL.md) - Command validation and threat model.
 - [WebMCP bridge](./webmcp.md) - Authenticated browser editing, pairing, runtime adapters, and security boundaries.
 - [Security Guide](../guides/security.md) - Process sandbox boundaries, MCP inheritance, and provider diagnostic redaction.
+- [Sandboxing Basics Reference](./sandboxing-basics-reference.md) - Distilled notes on the Emilua sandboxing-basics article with the VT Code applicability mapping; consult before touching `vtcode-safety/src/sandboxing/`.
 - [Runtime Guidance](./runtime-guidance.md) - Boundary between compiled universal behavior and dynamic project instructions.
 - [vtcode Binary Gotchas](./vtcode-binary-gotchas.md) - Binary startup, runloop recovery, allocator, and request-assembly invariants.
 - [AI Tool Surface Migration](./ai-tool-surface-migration.md) - Breaking-change notes for the Codex-style default tools.

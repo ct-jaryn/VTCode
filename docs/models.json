@@ -2049,6 +2049,38 @@
           "doc_comment": "Grok 4.6 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter"
         }
       },
+      "x-ai/grok-4.7": {
+        "id": "x-ai/grok-4.7",
+        "name": "xAI: Grok 4.7",
+        "description": "Grok 4.7 is xAI's flagship reasoning model with reasoning_effort support, focused on long-running agents and complex software engineering.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 500000,
+        "cost": {
+          "input": 2e-06,
+          "output": 6e-06
+        },
+        "vtcode": {
+          "variant": "OpenRouterXAiGrok47",
+          "constant": "X_AI_GROK_4_7",
+          "vendor": "xai",
+          "display": "Grok 4.7",
+          "description": "xAI Grok 4.7 flagship reasoning model for long-running agents and software engineering via OpenRouter",
+          "efficient": false,
+          "top_tier": true,
+          "generation": "4.7",
+          "doc_comment": "Grok 4.7 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter"
+        }
+      },
       "xiaomi/mimo-v2.5-pro": {
         "id": "xiaomi/mimo-v2.5-pro",
         "name": "Xiaomi: MiMo-V2.5-Pro",
@@ -3353,6 +3385,35 @@
         },
         "is_pro": true
       },
+      "xai/grok-4.7": {
+        "id": "xai/grok-4.7",
+        "name": "Grok 4.7 (Merge Gateway)",
+        "description": "xAI Grok 4.7 served through Merge Gateway's native Responses API.",
+        "reasoning": true,
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 500000,
+        "output_tokens": 500000,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": false
+        },
+        "is_pro": true
+      },
       "minimax/minimax-h3": {
         "id": "minimax/minimax-h3",
         "name": "MiniMax H3 (Merge Gateway)",
@@ -3729,13 +3790,44 @@
     "api": "https://api.x.ai/v1",
     "name": "xAI",
     "doc": "https://docs.x.ai",
-    "default_model": "grok-4.6",
+    "default_model": "grok-4.7",
     "models": {
       "grok-4.6": {
         "id": "grok-4.6",
         "name": "Grok 4.6",
         "description": "xAI's flagship reasoning model with reasoning_effort support (500k context)",
         "version": "4.6",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 500000,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": true
+        },
+        "is_pro": true,
+        "lightweight_model": "grok-build-0.1",
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "grok-4.7": {
+        "id": "grok-4.7",
+        "name": "Grok 4.7",
+        "description": "xAI's flagship reasoning model with reasoning_effort support (500k context)",
+        "version": "4.7",
         "reasoning": true,
         "tool_call": true,
         "modalities": {
@@ -4143,6 +4235,32 @@
         "cost": {
           "input": 3e-07,
           "output": 1.2e-06
+        }
+      },
+      "spacexai/grok-4.7": {
+        "id": "spacexai/grok-4.7",
+        "name": "Grok 4.7 (Vercel AI Gateway)",
+        "description": "xAI Grok 4.7 advanced reasoning model for complex coding and long-context professional work served through the Vercel AI Gateway",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 500000,
+        "capabilities": {
+          "thinking": true,
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": true
+        },
+        "cost": {
+          "input": 1.2e-06,
+          "output": 3.6e-06
         }
       },
       "deepseek/deepseek-flash": {

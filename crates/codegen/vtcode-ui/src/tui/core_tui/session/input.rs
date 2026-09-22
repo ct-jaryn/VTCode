@@ -797,10 +797,20 @@ impl Session {
                 None => shell_hint.to_string(),
             });
         }
-        if let Some(local_agents_hint) = self.local_agents_input_status_hint() {
+        // Foreground PTY/pipe hint stays out of the shimmered `left` string so
+        // the shortcut keeps a distinct key style as a visual indicator.
+        let background_hint = self.local_agents_input_status_hint();
+        // Background tasks are asynchronous, so they surface here (not in
+        // `status_left_text`) to keep turn-busy guards off while still driving
+        // the shared loading shimmer with a visible, shimmer-eligible status.
+        // While a turn or foreground command owns the status, skip it: that
+        // status already shimmers and adding a second "Running" is noise.
+        if !self.is_running_activity()
+            && let Some(background_status) = self.background_activity_status_text()
+        {
             left = Some(match left {
-                Some(existing) => format!("{existing} · {local_agents_hint}"),
-                None => local_agents_hint,
+                Some(existing) => format!("{existing} · {background_status}"),
+                None => background_status,
             });
         }
 
@@ -812,12 +822,31 @@ impl Session {
 
         let scroll_indicator = self.build_scroll_indicator();
 
-        if left.is_none() && right.is_none() && scroll_indicator.is_none() && !self.thinking_spinner.is_active {
+        if left.is_none()
+            && background_hint.is_none()
+            && right.is_none()
+            && scroll_indicator.is_none()
+            && !self.thinking_spinner.is_active
+        {
             return None;
         }
 
         let dim_style = {
             let mut style = self.styles.default_style().add_modifier(Modifier::DIM);
+            if let Some(secondary) = self.theme.secondary.or(self.theme.foreground) {
+                style = style.fg(ratatui_color_from_ansi(secondary));
+            }
+            style
+        };
+        let key_style = {
+            let mut style = self.styles.default_style().add_modifier(Modifier::BOLD);
+            if let Some(primary) = self.theme.primary.or(self.theme.foreground) {
+                style = style.fg(ratatui_color_from_ansi(primary));
+            }
+            style
+        };
+        let label_style = {
+            let mut style = self.styles.default_style();
             if let Some(secondary) = self.theme.secondary.or(self.theme.foreground) {
                 style = style.fg(ratatui_color_from_ansi(secondary));
             }
@@ -840,6 +869,17 @@ impl Session {
             spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
             spans.push(Span::raw(" "));
             spans.push(Span::styled("Thinking", dim_style));
+        }
+
+        if let Some(hint) = background_hint.as_deref() {
+            Self::append_background_hint_spans(
+                &mut spans,
+                hint,
+                self.background_shortcut_label(),
+                dim_style,
+                key_style,
+                label_style,
+            );
         }
 
         // Build right side spans (scroll indicator + optional right content)
@@ -945,14 +985,59 @@ impl Session {
 
     fn local_agents_input_status_hint(&self) -> Option<String> {
         if self.input_uses_shell_prefix() || !self.input_manager.content().trim().is_empty() {
-            return None;
+            // A foreground PTY keeps its background hint visible even with a
+            // non-empty composer so users can discover the background
+            // shortcut mid-command.
+            return self.foreground_pty_background_hint();
         }
 
         if !self.has_local_agents() {
-            return None;
+            return self.foreground_pty_background_hint();
         }
 
-        Some("↓ or Alt+S local agents · Ctrl+B background".to_string())
+        Some(format!("↓ or Alt+S local agents · {} background", self.background_shortcut_label()))
+    }
+
+    fn append_background_hint_spans(
+        spans: &mut Vec<Span<'static>>,
+        hint: &str,
+        key_label: &str,
+        dim_style: Style,
+        key_style: Style,
+        label_style: Style,
+    ) {
+        // PTY-only hint has the exact shape "{key} background".
+        if let Some(prefix) = hint.strip_suffix(" background")
+            && prefix == key_label
+        {
+            if !spans.is_empty() {
+                spans.push(Span::styled(" · ", dim_style));
+            }
+            spans.push(Span::styled(key_label.to_owned(), key_style));
+            spans.push(Span::styled(" background", label_style));
+            return;
+        }
+        // Combined drawer hint has the exact shape
+        // "↓ or Alt+S local agents · {key} background".
+        if let Some(rest) = hint.strip_prefix("↓ or Alt+S local agents · ")
+            && let Some(prefix) = rest.strip_suffix(" background")
+            && prefix == key_label
+        {
+            if !spans.is_empty() {
+                spans.push(Span::styled(" · ", dim_style));
+            }
+            spans.push(Span::styled("↓ or ", label_style));
+            spans.push(Span::styled("Alt+S", key_style));
+            spans.push(Span::styled(" local agents", label_style));
+            spans.push(Span::styled(" · ", dim_style));
+            spans.push(Span::styled(key_label.to_owned(), key_style));
+            spans.push(Span::styled(" background", label_style));
+            return;
+        }
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", dim_style));
+        }
+        spans.push(Span::styled(hint.to_owned(), dim_style));
     }
 
     /// Builds the footer scroll indicator.

@@ -7,6 +7,7 @@ pub const ANTHROPIC_CLAUDE_SONNET_5: &str = "anthropic/claude-sonnet-5";
 pub const GOOGLE_GEMINI_3_6_FLASH: &str = "google/gemini-3.6-flash";
 pub const GOOGLE_GEMINI_3_7_FLASH: &str = "google/gemini-3.7-flash";
 pub const XAI_GROK_4_6: &str = "xai/grok-4.6";
+pub const XAI_GROK_4_7: &str = "xai/grok-4.7";
 pub const MINIMAX_H3: &str = "minimax/minimax-h3";
 pub const MOONSHOT_KIMI_K3: &str = "moonshot/kimi-k3";
 pub const THINKINGMACHINES_INKLING: &str = "thinkingmachines/inkling";
@@ -38,6 +39,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     GOOGLE_GEMINI_3_8_FLASH,
     DEEPSEEK_FLASH,
     XAI_GROK_4_6,
+    XAI_GROK_4_7,
     MINIMAX_H3,
     MOONSHOT_KIMI_K3,
     THINKINGMACHINES_INKLING,
@@ -55,6 +57,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
 pub const REASONING_EFFORT_ROUTES: &[&str] = &[
     OPENAI_GPT_5_5,
     XAI_GROK_4_6,
+    XAI_GROK_4_7,
     MOONSHOT_KIMI_K3,
     META_MUSE_SPARK_1_1,
     META_MUSE_SPARK_1_3,
@@ -88,6 +91,7 @@ pub const REASONING_MODELS: &[&str] = &[
     GOOGLE_GEMINI_3_8_FLASH,
     DEEPSEEK_FLASH,
     XAI_GROK_4_6,
+    XAI_GROK_4_7,
     MINIMAX_H3,
     MOONSHOT_KIMI_K3,
     THINKINGMACHINES_INKLING,

@@ -85,6 +85,13 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             false,
         ),
         (
+            models::merge_gateway::XAI_GROK_4_7,
+            "Grok 4.7 (Merge Gateway)",
+            "xAI Grok 4.7 through Merge Gateway",
+            500_000,
+            false,
+        ),
+        (
             models::merge_gateway::MINIMAX_H3,
             "MiniMax H3 (Merge Gateway)",
             "MiniMax H3 through Merge Gateway",

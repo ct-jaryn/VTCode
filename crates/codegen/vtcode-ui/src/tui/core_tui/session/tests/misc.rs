@@ -308,6 +308,22 @@ fn active_pty_observer_drives_compact_loading_status() {
 }
 
 #[test]
+fn background_activity_animates_loading_shimmer_without_looking_busy() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    assert!(!session.background_status_shimmer_active());
+
+    session.set_background_activity_count(2);
+    assert!(session.has_background_activity());
+    assert!(session.background_status_shimmer_active(), "live background work must animate the loading shimmer");
+    assert!(!session.is_running_activity(), "background work must never register as an in-flight turn");
+    assert_eq!(session.background_activity_status_text().as_deref(), Some("Running 2 background tasks..."));
+
+    session.set_background_activity_count(0);
+    assert!(!session.background_status_shimmer_active());
+    assert!(session.background_activity_status_text().is_none());
+}
+
+#[test]
 fn active_pty_observer_overrides_idle_stage_status() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     let active_pty_sessions = Arc::new(AtomicUsize::new(1));
@@ -710,4 +726,52 @@ fn overlay_retains_input_ownership_across_activity_transitions() {
             assert_eq!(session.input_enabled(), !next.is_busy(), "{initial:?} -> {next:?}");
         }
     }
+}
+
+#[test]
+fn clear_mouse_selection_reports_and_drops_a_visible_selection() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+
+    assert!(!session.clear_mouse_selection(), "an empty selection must report no change");
+
+    session.mouse_selection.set_selection((2, 3), (9, 3));
+    assert!(session.mouse_selection.has_selection);
+
+    assert!(session.clear_mouse_selection(), "a visible selection must report a change");
+    assert!(!session.mouse_selection.has_selection);
+    assert!(!session.mouse_selection.is_selecting);
+    assert!(!session.clear_mouse_selection(), "clearing twice is a no-op");
+}
+
+#[test]
+fn escape_dismisses_selection_before_arming_rewind() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.mouse_selection.set_selection((1, 1), (6, 1));
+
+    let event = session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(event.is_none(), "dismissing a selection consumes the key, got {event:?}");
+    assert!(!session.mouse_selection.has_selection, "Esc must clear the highlight");
+    assert_eq!(session.last_escape_press, None, "dismissal must not arm the rewind double-press");
+}
+
+#[test]
+fn escape_still_interrupts_running_activity_with_a_selection() {
+    // Asymmetric guard: the selection branch must not shadow interrupt
+    // precedence while a turn is running.
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.mouse_selection.set_selection((1, 1), (6, 1));
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Running tool: read_file".to_string()),
+        right: None,
+    });
+    assert!(session.is_running_activity(), "fixture must look like an active turn");
+
+    let event = session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(
+        matches!(event, Some(InlineEvent::Interrupt)),
+        "running activity keeps interrupt precedence, got {event:?}"
+    );
+    assert!(session.mouse_selection.has_selection, "interrupt must not silently consume the selection");
 }

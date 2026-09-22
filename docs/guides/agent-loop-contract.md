@@ -18,9 +18,12 @@ ending the turn and nudging the user to resume:
 
 - In-turn: status-only assistant text (including budget/tool-loop/recovery
   recaps) is forced to continue unless it is a true user handoff (trailing
-  question / interview ask) or a hard permission/policy/safety/credentials
-  handoff. Mid-text `?` and optional-offer closers are not handoffs while
-  tracker work remains. Planning remains terminal for tracker in-turn continue.
+  question / interview ask) or a hard permission/policy/safety/credentials/
+  **verification-pending** handoff. Mid-text `?` and optional-offer closers are
+  not handoffs while tracker work remains. Planning remains terminal for
+  tracker in-turn continue. Verification-pending recaps
+  (`verification is still pending` / `unverified assistant responses`) are
+  terminal in-turn so continuation cannot race past the anti-blind gate.
 - Cross-turn: after a Completed or recoverable Blocked turn, the session loop
   queues the next tracker implementation turn, bounded by
   `[agent.harness.continuation].cross_turn_turns` (default 32; progress-resets
@@ -28,6 +31,12 @@ ending the turn and nudging the user to resume:
   cross-turn auto-queue. Verification-blocked turns keep their own recovery path
   until that recovery is exhausted. Successful auto-queue never prints
   “Type `continue`”.
+- Exhausted-path UX: when tracker/plan auto-queue is eligible but cannot resume
+  (queue full or `cross_turn_turns` exhausted) and incomplete tracker steps
+  remain, the harness prints **one** info line and skips the generic blocked
+  handoff nudge stack / blocked TUI placeholder for that recoverable budget end.
+  True handoffs, verification escalation, and unknown blocked reasons still use
+  the normal blocked handoff.
 - Resume: sessions restored with incomplete tracker steps auto-queue one
   continuation turn after injecting remaining-step context.
 - Plan mode: while planning is active and no validated plan is ready for
@@ -39,6 +48,11 @@ ending the turn and nudging the user to resume:
   the `cross_turn_turns` episode budget; a planning episode can exhaust it for
   later tracker auto-continue until a genuine user turn resets the episode.
 - Kill-switch: `[agent.harness.continuation].auto_continue_tracker = false`.
+
+Shared classifiers live in `vtcode_core::core::agent::completion`
+(`tracker_final_text_is_safety_handoff`, `tracker_final_text_requires_user_input`,
+`recoverable_status_recap_phrasing`) so the binary runloop, outer queue, and
+AgentRunner status path cannot drift on session/production vocabulary.
 
 The closest concept mapping is:
 

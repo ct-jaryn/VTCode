@@ -398,7 +398,7 @@ mod tests {
 
         let result = manager.transform(spec, &SandboxPolicy::read_only(), Path::new("/tmp"), None);
 
-        if super::exec_env::SandboxType::LinuxLandlock.is_available() {
+        if SandboxType::LinuxLandlock.is_available() {
             assert!(matches!(result, Err(SandboxTransformError::MissingSandboxExecutable)));
         } else {
             // Kernels without Landlock fail closed even earlier.
@@ -410,17 +410,18 @@ mod tests {
     #[test]
     fn landlock_transform_rejects_hostname_allowlists() {
         let manager = SandboxManager::new();
-        if !super::exec_env::SandboxType::LinuxLandlock.is_available() {
+        if !SandboxType::LinuxLandlock.is_available() {
             return;
         }
         let launcher = LinuxSandboxLauncher::busybox(PathBuf::from("/usr/local/bin/vtcode"));
-        let policy =
-            SandboxPolicy::read_only_with_network(vec![super::policy::NetworkAllowlistEntry::https("api.example.com")]);
+        let policy = SandboxPolicy::read_only_with_network(vec![crate::sandboxing::NetworkAllowlistEntry::https(
+            "api.example.com",
+        )]);
 
         let result = manager.transform(CommandSpec::new("echo"), &policy, Path::new("/tmp"), Some(&launcher));
 
         assert!(
-            matches!(result, Err(SandboxTransformError::InvalidPolicy(message)) if message.contains("allowlist")),
+            matches!(&result, Err(SandboxTransformError::InvalidPolicy(message)) if message.contains("allowlist")),
             "allowlist must fail closed on Linux, got {result:?}"
         );
     }
@@ -429,7 +430,7 @@ mod tests {
     #[test]
     fn landlock_transform_prepends_busybox_subcommand() {
         let manager = SandboxManager::new();
-        if !super::exec_env::SandboxType::LinuxLandlock.is_available() {
+        if !SandboxType::LinuxLandlock.is_available() {
             return;
         }
         let launcher = LinuxSandboxLauncher::busybox(PathBuf::from("/usr/local/bin/vtcode"));
