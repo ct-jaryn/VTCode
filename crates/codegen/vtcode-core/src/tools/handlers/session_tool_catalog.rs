@@ -875,6 +875,11 @@ fn is_core_tool_entry(entry: &ToolCatalogEntry, config: &SessionToolsConfig) -> 
         | tools::LOAD_SKILL
         | tools::LOAD_SKILL_RESOURCE
         | tools::SEARCH_TOOLS => true,
+        // Planning keeps its read-only inspection surface on the wire even
+        // when MCP tools force deferral: session-20260923 lost GREP_FILE from
+        // the wire catalog and fell back to exec_command shell reads, blowing
+        // the preview budget with 26-38 KiB spooled previews.
+        tools::READ_FILE | tools::LIST_FILES | tools::GREP_FILE | tools::CODE_SEARCH if config.planning_active => true,
         tools::MCP_SEARCH_TOOLS | tools::MCP_GET_TOOL_DETAILS | tools::MCP_LIST_SERVERS => {
             config.deferred_tool_policy.is_client_local()
         }
@@ -2425,6 +2430,89 @@ mod tests {
             "at exactly the token budget and below the count threshold, \
             deferral does not engage (boundary is <=)"
         );
+    }
+
+    #[test]
+    fn planning_read_tools_stay_core_with_mcp_deferral() {
+        let registrations = [
+            tools::EXEC_COMMAND,
+            tools::READ_FILE,
+            tools::LIST_FILES,
+            tools::GREP_FILE,
+            tools::CODE_SEARCH,
+            tools::REQUEST_USER_INPUT,
+        ]
+        .into_iter()
+        .map(|name| {
+            registration(name)
+                .with_description("planning read tool")
+                .with_parameter_schema(empty_object_schema())
+        })
+        .chain(std::iter::once(
+            registration("mcp::context7::search")
+                .with_catalog_source(ToolCatalogSource::Mcp)
+                .with_llm_visibility(false)
+                .with_description("search docs")
+                .with_parameter_schema(empty_object_schema())
+                .with_aliases(["mcp__context7__search"]),
+        ))
+        .collect::<Vec<_>>();
+        let catalog = SessionToolCatalog::rebuild_from_registrations(registrations);
+        let planning_config = SessionToolsConfig::full_public(
+            SessionSurface::AgentRunner,
+            CapabilityLevel::CodeSearch,
+            ToolDocumentationMode::Full,
+            ToolModelCapabilities::default(),
+        )
+        .with_planning_active(true)
+        .with_deferred_tool_policy(DeferredToolPolicy::client_local(Vec::new()));
+        let planning_definitions = catalog.model_tools(planning_config);
+        for tool in [
+            tools::READ_FILE,
+            tools::LIST_FILES,
+            tools::GREP_FILE,
+            tools::CODE_SEARCH,
+        ] {
+            let definition = planning_definitions
+                .iter()
+                .find(|definition| definition.function_name() == tool)
+                .unwrap_or_else(|| panic!("missing planning definition for {tool}"));
+            assert_eq!(definition.defer_loading, None, "{tool} must stay on wire in planning even with MCP deferral");
+        }
+
+        let exec_config = SessionToolsConfig::full_public(
+            SessionSurface::AgentRunner,
+            CapabilityLevel::CodeSearch,
+            ToolDocumentationMode::Full,
+            ToolModelCapabilities::default(),
+        )
+        .with_deferred_tool_policy(DeferredToolPolicy::client_local(Vec::new()));
+        let grep_entry = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.public_name == tools::GREP_FILE)
+            .expect("missing grep catalog entry");
+        assert!(should_defer_tool_loading(grep_entry, &exec_config), "grep_file stays deferrable outside planning");
+
+        let interactive_planning_config = SessionToolsConfig::full_public(
+            SessionSurface::Interactive,
+            CapabilityLevel::CodeSearch,
+            ToolDocumentationMode::Full,
+            ToolModelCapabilities::default(),
+        )
+        .with_planning_active(true)
+        .with_deferred_tool_policy(DeferredToolPolicy::client_local(Vec::new()));
+        let interactive_definitions = catalog.model_tools(interactive_planning_config);
+        for tool in [tools::GREP_FILE, tools::CODE_SEARCH] {
+            let definition = interactive_definitions
+                .iter()
+                .find(|definition| definition.function_name() == tool)
+                .unwrap_or_else(|| panic!("missing interactive planning definition for {tool}"));
+            assert_eq!(
+                definition.defer_loading, None,
+                "{tool} must stay on wire for Interactive planning with MCP deferral (session-20260923)"
+            );
+        }
     }
 
     #[test]

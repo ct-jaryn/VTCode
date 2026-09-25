@@ -104,7 +104,9 @@ impl_openai_compat_provider!(MiMoProvider, MimoSpec, {
     }
 
     fn supports_vision(&self, model: &str) -> bool {
-        model == models::mimo::MIMO_V2_5
+        model == models::mimo::MIMO_V2_6_PRO
+            || model == models::mimo::MIMO_V2_6_FLASH
+            || model == models::mimo::MIMO_V2_6_PRO_ULTRASPEED
     }
 
     fn supports_reasoning(&self, model: &str) -> bool {
@@ -119,8 +121,9 @@ impl_openai_compat_provider!(MiMoProvider, MimoSpec, {
             .as_ref()
             .and_then(|b| b.model_supports_reasoning)
             .unwrap_or(false)
-            || requested == models::mimo::MIMO_V2_5_PRO
-            || requested == models::mimo::MIMO_V2_5
+            || requested == models::mimo::MIMO_V2_6_PRO
+            || requested == models::mimo::MIMO_V2_6_FLASH
+            || requested == models::mimo::MIMO_V2_6_PRO_ULTRASPEED
     }
 
     fn supports_reasoning_effort(&self, _model: &str) -> bool {
@@ -138,7 +141,9 @@ impl_openai_compat_provider!(MiMoProvider, MimoSpec, {
             model
         };
         match requested {
-            models::mimo::MIMO_V2_5_PRO | models::mimo::MIMO_V2_5 => 1_048_576,
+            models::mimo::MIMO_V2_6_PRO | models::mimo::MIMO_V2_6_FLASH | models::mimo::MIMO_V2_6_PRO_ULTRASPEED => {
+                1_048_576
+            }
             _ => 128_000,
         }
     }
@@ -154,7 +159,7 @@ mod tests {
     fn provider() -> MiMoProvider {
         MiMoProvider::from_config(
             Some("sk-test-key".to_string()),
-            Some("mimo-v2.5".to_string()),
+            Some("mimo-v2.6-pro".to_string()),
             Some("https://example.test/v1".to_string()),
             None,
             None,
@@ -167,7 +172,7 @@ mod tests {
         LLMRequest {
             messages: vec![Message::user("hello".to_string())].into(),
             system_prompt: Some(Arc::from("system guidance")),
-            model: "mimo-v2.5".to_string(),
+            model: "mimo-v2.6-pro".to_string(),
             max_tokens: Some(512),
             temperature: Some(0.5),
             top_p: Some(0.25),
@@ -182,7 +187,7 @@ mod tests {
     fn golden_payload_basic_shape() {
         let payload = provider().core.convert_request(&base_request()).unwrap();
 
-        assert_eq!(payload["model"], "mimo-v2.5");
+        assert_eq!(payload["model"], "mimo-v2.6-pro");
         let messages = payload["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "system");

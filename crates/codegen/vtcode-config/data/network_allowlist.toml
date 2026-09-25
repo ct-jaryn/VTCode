@@ -188,8 +188,8 @@ name     = "MiMo"
 domain   = "api.mimo.ai"
 protocol = "https"
 verify   = true
-# ACTION REQUIRED: migrate MiMo V2.5 Pro/Flash model strings before end-Jun 2026
-notes    = "MiMo V2.5 Pro/Flash"
+# ACTION REQUIRED: migrate MiMo V2.6 Pro/Flash/UltraSpeed model strings as needed
+notes    = "MiMo V2.6 Pro/Flash/UltraSpeed"
 
 [[ai_providers.cloud]]
 name     = "Atlas Cloud"

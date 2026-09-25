@@ -88,6 +88,16 @@ const DEFAULT_SPOOL_THRESHOLD: usize = 50_000; // 50KB — UI render truncation
 /// Maximum number of lines to display in code fence blocks before truncating.
 /// Kept low to prevent TUI flooding — full output is in spool files.
 const MAX_CODE_LINES: usize = 30;
+
+/// Visible stdin/stdout rows kept for an exec-session call.
+///
+/// `write_stdin` and the session readers re-render the session's captured
+/// output on every poll or wait, so a long build would otherwise repeat its
+/// whole log at each step. Ten rows plus the trailing `… +N lines` notice keep
+/// the transcript scannable; the complete capture stays in the `Ctrl+T` session
+/// viewer and the spool file, and the model still receives the full result.
+const EXEC_SESSION_OUTPUT_MAX_LINES: usize = 10;
+
 /// Size threshold (bytes) at which to skip preview entirely
 const EXTREME_OUTPUT_THRESHOLD_MB: usize = 2_000_000;
 /// Size threshold (bytes) for using new large output handler with hashed directories
@@ -766,6 +776,29 @@ fn collect_run_command_preview(content: &str) -> (SmallVec<[&str; 32]>, usize, u
     (collected, preview.total, preview.hidden_count)
 }
 
+/// Trims a streaming preview to its `cap` most recent rows.
+///
+/// Callers read the tail (last rows carry the summary, exit line, and errors),
+/// so rows are dropped from the front. Returns `true` when anything was
+/// dropped, which the caller turns into the "truncated" flag used for the
+/// hidden-lines notice. A `cap` of 0 keeps nothing rather than overflowing.
+fn trim_to_tail(lines: &mut SmallVec<[&str; 32]>, cap: usize) -> bool {
+    if lines.len() <= cap {
+        return false;
+    }
+    lines.drain(..lines.len() - cap);
+    true
+}
+
+/// Whether a tool body reports an already-running exec session's output.
+///
+/// Only the session readers: the run/launch tools (`exec_command`,
+/// `run_pty_cmd`, `unified_exec`, `exec_pty_cmd`) are routed through the
+/// bounded run-command preview by the caller before this matters.
+fn is_exec_session_tool(tool_name: Option<&str>) -> bool {
+    tool_name.is_some_and(crate::agent::runloop::unified::is_exec_session_tool_name)
+}
+
 async fn render_run_command_preview(
     renderer: &mut AnsiRenderer,
     content: &str,
@@ -1439,8 +1472,13 @@ pub(crate) async fn render_stream_section(
             || name == vtcode_core::config::constants::tools::UNIFIED_EXEC
             || name == vtcode_core::config::constants::tools::EXEC_PTY_CMD
     });
+    // Session follow-ups re-render the same captured terminal text on every
+    // poll, so their body is plain rather than re-colored: git-diff detection
+    // and LS_COLORS styling both misfire on build logs (`PASS … .rs`), and the
+    // run-command path renders the same content through a plain fence already.
+    let is_exec_session = !is_run_command && is_exec_session_tool(tool_name);
     let allow_ansi_for_tool = allow_ansi && !is_run_command;
-    let apply_line_styles = !is_run_command;
+    let apply_line_styles = !is_run_command && !is_exec_session;
 
     // Strip ANSI codes once and reuse for both diff detection and normalization.
     // This avoids scanning the same content twice when ANSI is not allowed.
@@ -1561,9 +1599,12 @@ pub(crate) async fn render_stream_section(
     let prefer_full = renderer.prefers_untruncated_output();
     let (mut lines_vec, total, mut truncated) =
         select_stream_lines_streaming(normalized_content.as_ref(), mode, tail_limit, prefer_full);
-    if prefer_full && lines_vec.len() > INLINE_STREAM_MAX_LINES {
-        let drop = lines_vec.len() - INLINE_STREAM_MAX_LINES;
-        lines_vec.drain(..drop);
+    if prefer_full && trim_to_tail(&mut lines_vec, INLINE_STREAM_MAX_LINES) {
+        truncated = true;
+    }
+    // Session follow-ups stay below the shared display budget even when the
+    // interactive TUI would otherwise accept an untruncated body.
+    if is_exec_session && trim_to_tail(&mut lines_vec, EXEC_SESSION_OUTPUT_MAX_LINES) {
         truncated = true;
     }
 
@@ -1582,18 +1623,20 @@ pub(crate) async fn render_stream_section(
     };
     if hidden > 0 {
         format_buffer.clear();
-        format_buffer.push_str(&hidden_lines_notice(
-            hidden,
-            if was_truncated_by_tokens {
-                HiddenLinesNoticeKind::TokenBudget
-            } else {
-                HiddenLinesNoticeKind::Generic
-            },
-        ));
+        // A session body is the same bounded-preview situation as a command
+        // preview, so it reuses the notice that points at the full transcript.
+        let notice_kind = if was_truncated_by_tokens {
+            HiddenLinesNoticeKind::TokenBudget
+        } else if is_exec_session {
+            HiddenLinesNoticeKind::CommandPreview
+        } else {
+            HiddenLinesNoticeKind::Generic
+        };
+        format_buffer.push_str(&hidden_lines_notice(hidden, notice_kind));
         renderer.line(MessageStyle::ToolDetail, &format_buffer)?;
     }
 
-    if should_render_as_code_block(fallback_style) && !apply_line_styles {
+    if !is_exec_session && should_render_as_code_block(fallback_style) && !apply_line_styles {
         let markdown = build_markdown_code_block(&lines_vec, None, true);
         renderer.render_markdown_output(fallback_style, &markdown)?;
     } else {
@@ -1622,13 +1665,16 @@ mod tests {
 
     use super::super::styles::{GitStyles, LsStyles};
     use super::{
-        HiddenLinesNoticeKind, MAX_LINE_LENGTH, collect_run_command_preview, diff_language_hint_from_content,
-        format_diff_line_with_gutter_and_syntax, format_diff_line_with_gutter_and_syntax_to_width,
-        format_side_by_side_row_ansi, hidden_lines_notice, highlight_diff_body_with_syntax, highlight_diff_content,
-        language_hint_for_display_line, render_diff_content_block, render_preview_line, select_render_line_style,
-        should_show_diff_gutter, strip_ansi_codes, syntax_segments_for_diff_body,
+        EXEC_SESSION_OUTPUT_MAX_LINES, HiddenLinesNoticeKind, MAX_LINE_LENGTH, collect_run_command_preview,
+        diff_language_hint_from_content, format_diff_line_with_gutter_and_syntax,
+        format_diff_line_with_gutter_and_syntax_to_width, format_side_by_side_row_ansi, hidden_lines_notice,
+        highlight_diff_body_with_syntax, highlight_diff_content, is_exec_session_tool, language_hint_for_display_line,
+        render_diff_content_block, render_preview_line, render_stream_section, select_render_line_style,
+        should_show_diff_gutter, strip_ansi_codes, syntax_segments_for_diff_body, trim_to_tail,
     };
+    use smallvec::SmallVec;
     use vtcode_core::config::ToolOutputMode;
+    use vtcode_core::config::constants::tools as tool_names;
 
     #[test]
     fn run_command_preview_uses_head_tail_three_lines() {
@@ -1659,6 +1705,226 @@ mod tests {
             hidden_lines_notice(3, HiddenLinesNoticeKind::TokenBudget),
             "[... content truncated by token budget ...]"
         );
+    }
+
+    #[test]
+    fn trim_to_tail_keeps_newest_rows() {
+        let mut lines: SmallVec<[&str; 32]> = ["l1", "l2", "l3", "l4", "l5"].iter().copied().collect();
+        assert!(trim_to_tail(&mut lines, 3));
+        assert_eq!(lines.as_slice(), ["l3", "l4", "l5"]);
+        // Already within budget: no rows dropped, so callers do not flag truncation.
+        assert!(!trim_to_tail(&mut lines, 3));
+        assert_eq!(lines.as_slice(), ["l3", "l4", "l5"]);
+    }
+
+    #[test]
+    fn trim_to_tail_zero_cap_drops_everything() {
+        let mut lines: SmallVec<[&str; 32]> = ["l1"].iter().copied().collect();
+        assert!(trim_to_tail(&mut lines, 0));
+        assert!(lines.is_empty());
+        // Empty input with a zero cap is already conformant.
+        assert!(!trim_to_tail(&mut lines, 0));
+    }
+
+    #[test]
+    fn exec_session_output_stays_within_display_budget() {
+        assert_eq!(EXEC_SESSION_OUTPUT_MAX_LINES, 10);
+        let content = (1..=40).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let borrowed = content.lines().collect::<SmallVec<[&str; 32]>>();
+        assert_eq!(borrowed.len(), 40);
+
+        let mut lines = borrowed;
+        assert!(trim_to_tail(&mut lines, EXEC_SESSION_OUTPUT_MAX_LINES));
+        assert_eq!(lines.len(), EXEC_SESSION_OUTPUT_MAX_LINES);
+        // Terminal rows (exit status, failures, summary) survive the trim.
+        assert_eq!(lines.last().copied(), Some("line 40"));
+    }
+
+    #[test]
+    fn exec_session_hidden_lines_reuse_command_preview_notice() {
+        // A bounded session body must point at the full transcript the same way
+        // a bounded command preview does, so the reader can expand it.
+        let notice = hidden_lines_notice(30, HiddenLinesNoticeKind::CommandPreview);
+        assert!(notice.contains("+30 lines"), "got: {notice}");
+        assert!(notice.contains("full transcript"), "got: {notice}");
+    }
+
+    #[test]
+    fn is_exec_session_tool_covers_session_readers_only() {
+        assert!(is_exec_session_tool(Some(tool_names::WRITE_STDIN)));
+        assert!(is_exec_session_tool(Some(tool_names::SEND_PTY_INPUT)));
+        assert!(is_exec_session_tool(Some(tool_names::READ_PTY_SESSION)));
+        // Launches are routed through the run-command preview instead.
+        assert!(!is_exec_session_tool(Some(tool_names::EXEC_COMMAND)));
+        assert!(!is_exec_session_tool(Some(tool_names::RUN_PTY_CMD)));
+        assert!(!is_exec_session_tool(Some(tool_names::UNIFIED_EXEC)));
+        assert!(!is_exec_session_tool(None));
+    }
+
+    #[tokio::test]
+    async fn exec_session_body_is_bounded_and_points_at_the_transcript() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut renderer = AnsiRenderer::with_inline_ui(InlineHandle::new_for_tests(sender), Default::default());
+        let content = (1..=40).map(|n| format!("build log line {n}")).collect::<Vec<_>>().join("\n");
+
+        let git_styles = GitStyles::new();
+        let ls_styles = LsStyles::from_env();
+
+        render_stream_section(
+            &mut renderer,
+            "",
+            &content,
+            ToolOutputMode::Compact,
+            30,
+            Some(tool_names::WRITE_STDIN),
+            &git_styles,
+            &ls_styles,
+            MessageStyle::ToolOutput,
+            false,
+            true,
+            None,
+        )
+        .await
+        .expect("session body should render");
+
+        let collected = collect_inline_output(&mut receiver);
+        let output = strip_ansi_codes(&collected);
+        let content_lines = output.lines().filter(|line| line.contains("build log line")).count();
+        assert_eq!(
+            content_lines, EXEC_SESSION_OUTPUT_MAX_LINES,
+            "session body must be capped at {EXEC_SESSION_OUTPUT_MAX_LINES} rows: {output:?}"
+        );
+        // Tail-biased: the exit/summary rows survive the trim.
+        assert!(output.contains("build log line 40"), "tail should survive: {output:?}");
+        assert!(!output.contains("build log line 1\n"), "head should be trimmed: {output:?}");
+        // The hidden-row count and the expand affordance stay discoverable.
+        assert!(output.contains("+30 lines"), "hidden count should be shown: {output:?}");
+        assert!(output.contains("full transcript"), "expand affordance should be shown: {output:?}");
+    }
+
+    #[tokio::test]
+    async fn exec_session_body_keeps_short_output_whole() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut renderer = AnsiRenderer::with_inline_ui(InlineHandle::new_for_tests(sender), Default::default());
+
+        render_stream_section(
+            &mut renderer,
+            "",
+            "line 1\nline 2\nline 3",
+            ToolOutputMode::Compact,
+            30,
+            Some(tool_names::WRITE_STDIN),
+            &GitStyles::new(),
+            &LsStyles::from_env(),
+            MessageStyle::ToolOutput,
+            false,
+            true,
+            None,
+        )
+        .await
+        .expect("short session body should render");
+
+        let collected = collect_inline_output(&mut receiver);
+        let output = strip_ansi_codes(&collected);
+        assert!(output.contains("line 1") && output.contains("line 2") && output.contains("line 3"));
+        assert!(!output.contains("truncated") && !output.contains("lines ("), "no notice expected: {output:?}");
+    }
+
+    #[tokio::test]
+    async fn exec_session_body_skips_ls_and_diff_coloring() {
+        // Build-test lines mentioning `.rs` must not pick up LS_COLORS file-type
+        // colors, and a diff-shaped session capture stays plain: the body is
+        // terminal text, not an `ls` listing or a tool diff.
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut renderer = AnsiRenderer::with_inline_ui(InlineHandle::new_for_tests(sender), Default::default());
+        let content = "PASS  [0.013s] vtcode-core/src/tools/exec_session.rs\n+let added = 1;\n-let removed = 2;\n";
+
+        render_stream_section(
+            &mut renderer,
+            "",
+            content,
+            ToolOutputMode::Compact,
+            30,
+            Some(tool_names::WRITE_STDIN),
+            &GitStyles::new(),
+            &LsStyles::from_env(),
+            MessageStyle::ToolOutput,
+            false,
+            true,
+            None,
+        )
+        .await
+        .expect("session body should render");
+
+        // Styles live on the emitted segments; `collect_inline_output` drops them,
+        // so read the inline commands directly. Both the line text and its indent
+        // prefix carry the applied style, so per-line coloring changes either.
+        let session_styles = collect_inline_line_styles(&mut receiver).await;
+        let unique: std::collections::HashSet<_> = session_styles.iter().cloned().collect();
+        assert_eq!(
+            unique.len(),
+            1,
+            "session body must use one plain style, not per-line git/ls coloring: {session_styles:?}"
+        );
+
+        // Control: the same content rendered as a real diff body does vary per
+        // line, so the assertion above cannot pass vacuously.
+        let control_styles = collect_diff_body_styles(content).await;
+        assert!(
+            control_styles.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+            "control must show per-line coloring for the assertion to mean anything: {control_styles:?}"
+        );
+    }
+
+    /// One style key per rendered body line, covering every segment on that line
+    /// (indent prefix plus text). Text alone cannot prove styling, and per-line
+    /// coloring shows up on the indent prefix even when the text stays uncolored.
+    async fn collect_inline_line_styles(
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<vtcode_core::ui::InlineCommand>,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        while let Ok(command) = receiver.try_recv() {
+            if let vtcode_core::ui::InlineCommand::AppendLine { segments, .. } = command {
+                let key = segments
+                    .iter()
+                    .filter(|segment| !segment.text.is_empty())
+                    .map(|segment| style_key(segment.style.as_ref()))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                if !key.is_empty() {
+                    lines.push(key);
+                }
+            }
+        }
+        lines
+    }
+
+    /// The same content rendered through the styled diff path, proving per-line
+    /// coloring is observable through this seam when it is applied.
+    async fn collect_diff_body_styles(content: &str) -> Vec<String> {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut renderer = AnsiRenderer::with_inline_ui(InlineHandle::new_for_tests(sender), Default::default());
+        render_stream_section(
+            &mut renderer,
+            "",
+            content,
+            ToolOutputMode::Compact,
+            30,
+            Some(vtcode_core::config::constants::tools::APPLY_PATCH),
+            &GitStyles::new(),
+            &LsStyles::from_env(),
+            MessageStyle::ToolDetail,
+            false,
+            true,
+            None,
+        )
+        .await
+        .expect("control diff body should render");
+        collect_inline_line_styles(&mut receiver).await
+    }
+
+    fn style_key(style: &vtcode_commons::ui_protocol::InlineTextStyle) -> String {
+        format!("{:?}/{:?}", style.color, style.effects)
     }
 
     #[test]

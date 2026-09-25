@@ -197,12 +197,11 @@ pub fn build_review_prompt(spec: &ReviewSpec) -> String {
     );
 
     prompt.push_str(
-        "\n## Before You Flag Something\n\n\
-         **Be certain.** If you're going to call something a bug, you need to be confident it actually is one.\n\n\
+        "\n## Reporting Findings\n\n\
+         Report every suspected bug with the concrete scenario (inputs, state, or environment) where it fails and your confidence (high, medium, or low). A lower-confidence finding with a clear scenario still helps the reader decide what to check.\n\n\
          - Only review the changes - do not review pre-existing code that wasn't modified\n\
-         - Don't flag something as a bug if you're unsure - investigate first\n\
-         - Don't invent hypothetical problems - if an edge case matters, explain the realistic scenario where it breaks\n\
-         - If you need more context to be sure, use available tools to get it\n\n\
+         - Use available tools (callers, tests, docs) to raise or lower your confidence before reporting\n\
+         - Each finding needs a realistic scenario where it breaks; do not invent hypothetical problems\n\n\
          **Don't be a zealot about style.** When checking code against conventions:\n\n\
          - Verify the code is _actually_ in violation. Don't complain about else statements if early returns are already being used correctly.\n\
          - Some \"violations\" are acceptable when they're the simplest option. A `let` statement is fine if the alternative is convoluted.\n\
@@ -228,12 +227,11 @@ pub fn build_review_prompt(spec: &ReviewSpec) -> String {
 
     prompt.push_str(
         "\n## Output\n\n\
-         1. If there is a bug, be direct and clear about why it is a bug.\n\
-         2. Clearly communicate severity of issues. Do not overstate severity.\n\
-         3. Critiques should clearly and explicitly communicate the scenarios, environments, or inputs that are necessary for the bug to arise. The comment should immediately indicate that the issue's severity depends on these factors.\n\
-         4. Your tone should be matter-of-fact and not accusatory or overly positive. It should read as a helpful AI assistant suggestion without sounding too much like a human reviewer.\n\
-         5. Write so the reader can quickly understand the issue without reading too closely.\n\
-         6. AVOID flattery, do not give any comments that are not helpful to the reader.\n",
+         1. For each finding, state why it is a bug, the scenarios, environments, or inputs needed for it to arise, its severity, and your confidence.\n\
+         2. Do not overstate severity; when severity depends on the scenario, say so up front.\n\
+         3. Keep the tone neutral and specific: describe what the code does, not the author.\n\
+         4. Write so the reader can quickly understand the issue without reading too closely.\n\
+         5. Leave out praise and comments that do not help the reader act.\n",
     );
 
     prompt
@@ -279,6 +277,17 @@ mod tests {
         assert!(prompt.contains("- src/main.rs"));
         assert!(prompt.contains("Style: security."));
         assert!(prompt.contains("Review only."));
+    }
+
+    #[test]
+    fn review_prompt_asks_for_confidence_instead_of_certainty() {
+        let spec = build_review_spec(false, None, Vec::new(), None).expect("spec");
+        let prompt = build_review_prompt(&spec);
+
+        assert!(prompt.contains("Report every suspected bug"));
+        assert!(prompt.contains("your confidence (high, medium, or low)"));
+        assert!(!prompt.contains("Be certain"));
+        assert!(!prompt.contains("if you're unsure"));
     }
 
     #[test]

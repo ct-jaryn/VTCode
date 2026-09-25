@@ -29,9 +29,6 @@ cargo install vtcode
 # Or with Homebrew
 brew trust vinhnx/tap
 brew install vinhnx/tap/vtcode
-
-# Or with NPM
-npm install -g vtcode-ai
 ```
 
 ## Quick Start

@@ -248,7 +248,7 @@ fn prune_trajectory_logs(dir: &Path, limits: TrajectoryRetention) -> anyhow::Res
     let (expired, mut retained): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| entry.modified <= age_cutoff);
     remove_files(expired);
 
-    retained.sort_by(|a, b| b.modified.cmp(&a.modified));
+    retained.sort_by_key(|a| std::cmp::Reverse(a.modified));
 
     if limits.max_files > 0 && retained.len() > limits.max_files {
         let overflow = retained.split_off(limits.max_files);

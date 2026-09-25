@@ -18,16 +18,22 @@ ENV
 
 ## Quickstart
 
-Run VT Code against the Xiaomi MiMo V2.5 Pro model (the default OpenRouter model):
+Run VT Code against the Xiaomi MiMo V2.6 Pro model (the default OpenRouter model):
 
 ```bash
-vtcode --provider openrouter --model xiaomi/mimo-v2.5-pro chat
+vtcode --provider openrouter --model xiaomi/mimo-v2.6-pro chat
 ```
 
-Or use the lightweight MiMo V2.5:
+Or use the efficient MiMo V2.6 Flash:
 
 ```bash
-vtcode --provider openrouter --model xiaomi/mimo-v2.5 chat
+vtcode --provider openrouter --model xiaomi/mimo-v2.6-flash chat
+```
+
+Or use the fastest MiMo V2.6 Pro UltraSpeed:
+
+```bash
+vtcode --provider openrouter --model xiaomi/mimo-v2.6-pro-ultraspeed chat
 ```
 
 Both commands stream responses using the OpenAI-compatible Chat Completions API and support VT Code tooling out of the box.
@@ -48,12 +54,12 @@ namespace is distinct from the official provider's bare `muse-spark-1.2` and
 
 ## Persisting configuration
 
-Add OpenRouter to your workspace `vtcode.toml` (MiMo V2.5 Pro is the default):
+Add OpenRouter to your workspace `vtcode.toml` (MiMo V2.6 Pro is the default):
 
 ```toml
 [agent]
 provider = "openrouter"
-default_model = "xiaomi/mimo-v2.5-pro"
+default_model = "xiaomi/mimo-v2.6-pro"
 ```
 
 Custom model IDs are accepted. If you reference a model not listed in `docs/models.json`, ensure it is enabled for your

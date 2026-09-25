@@ -605,6 +605,11 @@ pub(crate) async fn handle_turn_processing_result<'a>(
                 .handle_text_response(text, reasoning, reasoning_details, proposed_plan, params.response_streamed)
                 .await
         }
+        TurnProcessingResult::Refusal { reason } => {
+            tracing::warn!(reason = %reason, "Provider refused the turn; ending it without recovery retries.");
+            params.ctx.harness_state.mark_turn_refused();
+            Ok(TurnHandlerOutcome::Break(TurnLoopResult::Blocked { reason: Some(reason) }))
+        }
         TurnProcessingResult::Empty => {
             if params.ctx.is_recovery_active() && params.ctx.recovery_pass_used() {
                 let recovery_mode = if params.ctx.recovery_is_tool_free() {
@@ -847,7 +852,9 @@ mod tests {
         };
 
         assert!(matches!(outcome, TurnHandlerOutcome::Continue));
-        assert!(backing.last_history_message_contains("verification"));
+        assert!(backing.last_history_message_contains(
+            crate::agent::runloop::unified::turn::tool_outcomes::helpers::ANTI_BLIND_EDITING_DIRECTIVE
+        ));
     }
 
     #[tokio::test]
@@ -940,7 +947,7 @@ mod tests {
             "second text response should consume the first auto-recovery attempt"
         );
         assert!(
-            backing.last_history_message_contains("AUTONOMOUS VERIFICATION RECOVERY (1/"),
+            backing.last_history_message_contains("Verification recovery (1/"),
             "recovery directive must carry attempt counts"
         );
         assert!(
@@ -1341,11 +1348,46 @@ mod tests {
         assert!(matches!(outcome, TurnHandlerOutcome::Continue));
         // The active fix window means the verifier already ran and failed: the
         // notice must say so instead of implying verification was never run.
-        assert!(backing.last_history_message_contains("verification command ran and FAILED"));
+        assert!(backing.last_history_message_contains("verification command ran and failed"));
         assert!(
             !backing.last_history_message_contains(ANTI_BLIND_EDITING_DIRECTIVE),
             "generic never-ran directive must not be used while fix edits are granted"
         );
+    }
+
+    #[tokio::test]
+    async fn refusal_blocks_turn_with_reason_even_during_recovery() {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        let reason = "The model declined this request (category: cyber).".to_string();
+        let blocked_with_reason = {
+            let mut ctx = backing.turn_processing_context();
+            ctx.activate_recovery("loop detector");
+            assert!(ctx.consume_recovery_pass());
+
+            let mut repeated_tool_attempts = LoopTracker::new();
+            let mut turn_modified_files = BTreeSet::new();
+
+            let outcome = handle_turn_processing_result(HandleTurnProcessingResultParams {
+                ctx: &mut ctx,
+                processing_result: TurnProcessingResult::Refusal { reason: reason.clone() },
+                response_streamed: true,
+                step_count: 1,
+                repeated_tool_attempts: &mut repeated_tool_attempts,
+                turn_modified_files: &mut turn_modified_files,
+                max_tool_loops: 4,
+                tool_repeat_limit: 4,
+            })
+            .await
+            .expect("refusal should be handled");
+
+            matches!(
+                outcome,
+                TurnHandlerOutcome::Break(TurnLoopResult::Blocked { reason: Some(ref blocked) }) if *blocked == reason
+            )
+        };
+
+        assert!(blocked_with_reason);
+        assert!(backing.turn_refused(), "refusal must mark the turn for history rollback");
     }
 
     #[tokio::test]

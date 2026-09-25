@@ -495,7 +495,7 @@ impl FileOpsTool {
                                 builder = builder.field(
                                     "next_action",
                                     json!(
-                                        "Use the `next_read_args` field above to continue, or `exec_command.cmd` with `rg` and a specific pattern. Do NOT re-read the same offset; the per-turn spool chunk cap will block you."
+                                        "Use the `next_read_args` field above to continue, or `exec_command.cmd` with `rg` and a specific pattern. Re-reading the same offset returns nothing new and counts toward the per-turn spool chunk cap, which blocks further reads."
                                     ),
                                 );
                             }

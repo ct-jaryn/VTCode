@@ -103,37 +103,42 @@ fn budget_addendum(addendum: &str, remaining_budget_tokens: u64) -> String {
     format!("{truncated}{TRUNCATION_MARKER}")
 }
 
+/// Heading plus delegation guidance shared by the full and budgeted subagent
+/// sections, so the size estimate and both renderings stay in sync.
+const SUBAGENT_SECTION_HEADER: &str = "## Subagents\n\
+Delegated child agents available in this session. Treat the main thread as the controller: keep the next blocking \
+step local, and delegate only bounded independent work that is large enough to be worth a separate context, such as a \
+broad search or a self-contained change. Checking your own work is not independent work, so run that check yourself. \
+Read-only agents may be used proactively when their description matches; write-capable agents require explicit \
+delegation.\n\
+Users can explicitly target one with natural language or an `@agent-<name>` mention.\n\
+If the user explicitly selects a subagent for the task, delegate with `spawn_agent` to that subagent instead of \
+handling the task on the main thread. Join child results back into the parent flow before you depend on them.";
+
+fn subagent_entry(name: &str, description: &str, read_only: bool) -> String {
+    let suffix = if read_only {
+        " Read-only."
+    } else {
+        " Explicit delegation only."
+    };
+    format!("- {name}: {description}{suffix}")
+}
+
 fn estimate_subagent_section_chars(subagents: &[(String, String, bool)]) -> usize {
-    let header = "## Subagents\nDelegated child agents available in this session. Treat the main thread as the controller: keep the next blocking step local, and delegate only bounded independent work. Read-only agents may be used proactively when their description matches; write-capable agents require explicit delegation.\nUsers can explicitly target one with natural language or an `@agent-<name>` mention.\nIf the user explicitly selects a subagent for the task, delegate with `spawn_agent` to that subagent instead of handling the task on the main thread. Join child results back into the parent flow before you depend on them.\n";
     let entries: usize = subagents
         .iter()
-        .map(|(name, desc, read_only)| {
-            let suffix = if *read_only {
-                " Read-only."
-            } else {
-                " Explicit delegation only."
-            };
-            name.len() + desc.len() + suffix.len() + 3 // "- " + "\n"
-        })
+        .map(|(name, desc, read_only)| subagent_entry(name, desc, *read_only).len() + 1)
         .sum();
-    header.len() + entries
+    SUBAGENT_SECTION_HEADER.len() + 1 + entries
 }
 
 fn build_full_subagent_section(subagents: &[(String, String, bool)]) -> String {
-    let mut lines = Vec::with_capacity(4 + subagents.len());
-    lines.push("## Subagents".to_string());
-    lines.push("Delegated child agents available in this session. Treat the main thread as the controller: keep the next blocking step local, and delegate only bounded independent work. Read-only agents may be used proactively when their description matches; write-capable agents require explicit delegation.".to_string());
-    lines.push("Users can explicitly target one with natural language or an `@agent-<name>` mention.".to_string());
-    lines.push("If the user explicitly selects a subagent for the task, delegate with `spawn_agent` to that subagent instead of handling the task on the main thread. Join child results back into the parent flow before you depend on them.".to_string());
+    let mut section = SUBAGENT_SECTION_HEADER.to_string();
     for (name, description, read_only) in subagents {
-        let suffix = if *read_only {
-            " Read-only."
-        } else {
-            " Explicit delegation only."
-        };
-        lines.push(format!("- {name}: {description}{suffix}"));
+        section.push('\n');
+        section.push_str(&subagent_entry(name, description, *read_only));
     }
-    lines.join("\n")
+    section
 }
 
 fn build_summarized_subagent_section(subagents: &[(String, String, bool)]) -> String {
@@ -141,34 +146,25 @@ fn build_summarized_subagent_section(subagents: &[(String, String, bool)]) -> St
     let read_only = subagents.iter().filter(|(_, _, ro)| *ro).count();
     let writable = count - read_only;
     format!(
-        "## Subagents\n{count} subagents available ({} read-only, {} writable). Use `/agent` to inspect and `spawn_agent` to delegate.",
+        "## Subagents\n{count} subagents available ({} read-only, {} writable). Use `spawn_agent` to delegate bounded independent work; keep the next blocking step, and checks of your own work, on the main thread. The user can list them with `/agent`.",
         read_only, writable
     )
 }
 
 fn budget_subagent_section(subagents: &[(String, String, bool)], max_chars: usize) -> String {
-    let mut lines = Vec::with_capacity(4 + subagents.len());
-    lines.push("## Subagents".to_string());
-    lines.push("Delegated child agents available in this session. Treat the main thread as the controller: keep the next blocking step local, and delegate only bounded independent work. Read-only agents may be used proactively when their description matches; write-capable agents require explicit delegation.".to_string());
-    lines.push("Users can explicitly target one with natural language or an `@agent-<name>` mention.".to_string());
-    lines.push("If the user explicitly selects a subagent for the task, delegate with `spawn_agent` to that subagent instead of handling the task on the main thread. Join child results back into the parent flow before you depend on them.".to_string());
-    let mut remaining = max_chars.saturating_sub(lines.join("\n").len());
-    for (name, description, read_only) in subagents {
-        let suffix = if *read_only {
-            " Read-only."
-        } else {
-            " Explicit delegation only."
-        };
-        let entry = format!("- {name}: {description}{suffix}");
-        let entry_len = entry.len();
-        if entry_len > remaining {
-            lines.push(format!("- ... ({} more agents truncated)", subagents.len() - lines.len() + 4));
+    let mut section = SUBAGENT_SECTION_HEADER.to_string();
+    let mut remaining = max_chars.saturating_sub(section.len());
+    for (index, (name, description, read_only)) in subagents.iter().enumerate() {
+        let entry = subagent_entry(name, description, *read_only);
+        if entry.len() > remaining {
+            section.push_str(&format!("\n- ... ({} more agents truncated)", subagents.len() - index));
             break;
         }
-        lines.push(entry);
-        remaining = remaining.saturating_sub(entry_len + 1);
+        remaining = remaining.saturating_sub(entry.len() + 1);
+        section.push('\n');
+        section.push_str(&entry);
     }
-    lines.join("\n")
+    section
 }
 
 #[cfg(test)]

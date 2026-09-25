@@ -1,7 +1,8 @@
 use super::{
-    DEFAULT_AGENT_TOOL_IDS, active_subagent_entries, background_subprocess_summary, scaffold_agent_markdown,
-    subprocess_action_prompt, summarize_thread_event_preview, visible_subagent_entries,
+    DEFAULT_AGENT_TOOL_IDS, active_subagent_entries, background_completion_control, background_subprocess_summary,
+    scaffold_agent_markdown, subprocess_action_prompt, summarize_thread_event_preview, visible_subagent_entries,
 };
+use crate::agent::runloop::unified::turn::session::slash_commands::SlashCommandControl;
 use chrono::Utc;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -36,6 +37,30 @@ fn test_subagent_entry(id: &str, status: SubagentStatus) -> SubagentStatusEntry 
         error: None,
         transcript_path: Some(PathBuf::from("/tmp/transcript.md")),
         nickname: None,
+    }
+}
+
+fn test_background_entry() -> BackgroundSubprocessEntry {
+    BackgroundSubprocessEntry {
+        id: "background-rust-engineer".to_string(),
+        session_id: "session-123".to_string(),
+        exec_session_id: "exec-session-123".to_string(),
+        agent_name: "rust-engineer".to_string(),
+        display_label: "rust-engineer".to_string(),
+        description: "Review Rust changes".to_string(),
+        source: "project".to_string(),
+        color: None,
+        status: BackgroundSubprocessStatus::Starting,
+        desired_enabled: true,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        started_at: None,
+        ended_at: None,
+        pid: None,
+        summary: None,
+        error: None,
+        archive_path: None,
+        transcript_path: None,
     }
 }
 
@@ -132,29 +157,21 @@ fn summarize_thread_event_preview_uses_latest_live_updates() {
 
 #[test]
 fn background_subprocess_summary_reports_waiting_state_without_summary() {
-    let entry = BackgroundSubprocessEntry {
-        id: "background-rust-engineer".to_string(),
-        session_id: "session-123".to_string(),
-        exec_session_id: "exec-session-123".to_string(),
-        agent_name: "rust-engineer".to_string(),
-        display_label: "rust-engineer".to_string(),
-        description: "Review Rust changes".to_string(),
-        source: "project".to_string(),
-        color: None,
-        status: BackgroundSubprocessStatus::Starting,
-        desired_enabled: true,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        started_at: None,
-        ended_at: None,
-        pid: None,
-        summary: None,
-        error: None,
-        archive_path: None,
-        transcript_path: None,
-    };
+    let entry = test_background_entry();
 
     assert_eq!(background_subprocess_summary(&entry), "Starting; waiting for subprocess output.");
+}
+
+#[test]
+fn subprocess_stop_control_suppresses_only_its_matching_completion() {
+    let entry = test_background_entry();
+    let SlashCommandControl::BackgroundCompletionHandled { completion_identity } =
+        background_completion_control(&entry)
+    else {
+        panic!("subprocess stop should retain its completion identity");
+    };
+
+    assert_eq!(completion_identity, "background-rust-engineer:exec-session-123");
 }
 
 #[test]

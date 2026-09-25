@@ -184,12 +184,14 @@ pub(crate) fn hoist_tool_results_to_front(messages: &mut [AnthropicMessage]) {
 }
 
 /// Appends a synthetic user turn when the conversation ends on an assistant
-/// message and the target model/route does not support assistant-message
-/// prefill (Vertex AI rejects a trailing assistant message outright; direct
-/// Anthropic tolerates it as intentional prefill). Without this, an
-/// interrupted tool loop, mid-turn compaction, or a fork/resume snapshot
-/// that ends on an assistant boundary 400s on Vertex-backed routes. Mirrors
-/// XLI's trailing-assistant guard (S-014).
+/// message and the target model does not accept assistant-message prefill
+/// (see `capabilities::supports_assistant_prefill`): a trailing assistant turn
+/// returns 400 on Claude Opus/Sonnet 4.6+ and every 5.x model, and Vertex AI
+/// rejects it outright. Without this, an interrupted tool loop, mid-turn
+/// compaction, or a fork/resume snapshot that ends on an assistant boundary
+/// 400s. Models that accept prefill (older Claude models and non-Claude
+/// Anthropic-compatible backends) continue from the trailing turn as sent.
+/// Mirrors XLI's trailing-assistant guard (S-014).
 pub(crate) fn guard_trailing_assistant_message(messages: &mut Vec<AnthropicMessage>, supports_assistant_prefill: bool) {
     if supports_assistant_prefill {
         return;
@@ -340,11 +342,15 @@ mod tests {
     }
 
     #[test]
-    fn guard_appends_sentinel_when_prefill_unsupported_and_trailing_assistant() {
+    fn guard_appends_continue_sentinel_after_trailing_assistant() {
         let mut messages = vec![text_msg("user", "hi"), text_msg("assistant", "thinking...")];
         guard_trailing_assistant_message(&mut messages, false);
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2].role, "user");
+        match &messages[2].content[0] {
+            AnthropicContentBlock::Text { text, .. } => assert_eq!(text, "[Continue]"),
+            other => panic!("expected text sentinel, got {other:?}"),
+        }
     }
 
     #[test]
@@ -359,16 +365,28 @@ mod tests {
     }
 
     #[test]
-    fn guard_noop_when_prefill_supported() {
-        let mut messages = vec![text_msg("assistant", "prefill")];
-        guard_trailing_assistant_message(&mut messages, true);
-        assert_eq!(messages.len(), 1);
-    }
-
-    #[test]
     fn guard_noop_when_last_message_is_user() {
         let mut messages = vec![text_msg("assistant", "hi"), text_msg("user", "hello")];
         guard_trailing_assistant_message(&mut messages, false);
         assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn guard_noop_when_prefill_supported() {
+        let mut messages = vec![text_msg("user", "hi"), text_msg("assistant", "partial")];
+        guard_trailing_assistant_message(&mut messages, true);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, "assistant");
+
+        let mut pending_tool = vec![tool_use_msg("toolu_1")];
+        guard_trailing_assistant_message(&mut pending_tool, true);
+        assert_eq!(pending_tool.len(), 1);
+    }
+
+    #[test]
+    fn guard_noop_when_messages_are_empty() {
+        let mut messages = Vec::new();
+        guard_trailing_assistant_message(&mut messages, false);
+        assert!(messages.is_empty());
     }
 }

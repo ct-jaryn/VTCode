@@ -476,7 +476,7 @@ impl ModelsManager {
             Provider::ZAI => "glm-5.3".to_string(),
             Provider::Minimax => crate::config::constants::models::minimax::DEFAULT_MODEL.to_string(),
             Provider::Mistral => crate::config::constants::models::mistral::MISTRAL_LARGE_3.to_string(),
-            Provider::OpenRouter => "xiaomi/mimo-v2.5-pro".to_string(),
+            Provider::OpenRouter => "xiaomi/mimo-v2.6-pro".to_string(),
             Provider::Ollama => "gpt-oss:20b".to_string(),
             Provider::OllamaCloud => crate::config::constants::models::ollama::DEFAULT_CLOUD_MODEL.to_string(),
             Provider::LmStudio => crate::config::constants::models::lmstudio::DEFAULT_MODEL.to_string(),
@@ -629,7 +629,7 @@ impl ModelsManager {
     /// Build available models by merging remote and local presets
     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
         // Sort by priority
-        remote_models.sort_by(|a, b| a.priority.cmp(&b.priority));
+        remote_models.sort_by_key(|a| a.priority);
 
         // Convert remote models to presets
         let remote_presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();

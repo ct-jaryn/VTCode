@@ -27,6 +27,23 @@ Multiline methods (`Shift+Enter`, `Option+Enter`, `\`+`Enter`, `Ctrl+J`, paste) 
 
 Composer triggers (`#`, `/`, `!`, `@`, `@agent-<name>`, `Alt+P`) are tabulated in [Keyboard Shortcuts](./keyboard-shortcuts.md#quick-commands).
 
+## Reduced Motion
+
+Set `ui.reduce_motion_mode = true` to keep progress labels visible while
+stopping shimmer and spinner animation. You can also enable it for a run with
+`VTCODE_REDUCE_MOTION=1 vtcode` when `ui.reduce_motion_mode` is omitted from
+the configuration. If the variable is unset, VT Code uses the operating
+system's accessibility preference when supported: Windows and macOS system
+settings, plus best-effort GNOME, KDE Plasma, and XFCE settings on Linux. An
+explicit `true` or `false` setting takes precedence over both. Unknown or
+unavailable system settings default to `false`. Background-task and
+local-agent status labels remain visible as static text, and transcript
+file-operation markers remain static.
+
+To keep progress animation while reduced motion is enabled, set
+`ui.reduce_motion_keep_progress_animation = true`. Screen reader mode always
+keeps progress animation disabled.
+
 ## Fullscreen Rendering
 
 When VT Code is running in alternate-screen mode, the transcript and composer use a fixed fullscreen layout similar to terminal applications such as `vim` or `less`. The input stays pinned at the bottom, mouse handling is internal to VT Code, and the tool-output viewer/search happens inside the app instead of your terminal scrollback.
@@ -37,7 +54,7 @@ When VT Code is running in alternate-screen mode, the transcript and composer us
 | :-------------- | :------------------------------------------------------------ |
 | `PgUp` / `PgDn` | Scroll the live transcript by half a page.                    |
 | `Ctrl+Home`     | Jump to the oldest transcript content.                        |
-| `Ctrl+End`      | Jump to last change, pinned to the bottom with sticky highlight (pill + footer hint appear while scrolled up with ≥2 changes; click pill/footer or rebind `jump_to_last_change`). |
+| `Ctrl+End`      | Jump to the latest transcript content and resume auto-follow. |
 | Mouse wheel     | Scroll the live transcript when mouse capture is enabled.     |
 
 ### Diff Preview Navigation
@@ -172,7 +189,8 @@ VT Code supports an optional Vim-style prompt editor.
 When a task is already running, VT Code keeps the active turn alive and lets you queue or steer input:
 
 - `Enter` steers the active turn: the message is injected into the conversation right after the current tool-call batch, so the model sees it on its next request within the same turn. If the turn ends before another tool call runs, the steered message is delivered at the next turn boundary instead — nothing is lost. The transcript confirms delivery with a `Steered into active turn: …` status line.
-- `Ctrl+Enter` queues the current draft as a *batchable* message. Consecutive text-only Ctrl+Enter messages queued while a turn runs are joined into a single combined prompt for the next turn. Slash commands other than `/stop`, `/pause`, and `/resume` are queued non-batchable so their intent is preserved; `/stop`, `/pause`, and `/resume` take effect immediately instead of being queued.
+- `Ctrl+Enter` queues the current draft as a *batchable* message. Consecutive text-only Ctrl+Enter messages queued while a turn runs are joined into a single combined prompt for the next turn. Slash commands other than `/stop`, `/pause`, `/resume`, `/model`, and `/effort` are queued non-batchable so their intent is preserved; `/stop`, `/pause`, and `/resume` take effect immediately instead of being queued.
+- `/model` and `/effort` (including the `Ctrl+M` model picker and `Tab`/`Ctrl+Enter` drafts) are accepted while a turn is running. The selection is shown immediately as pending the next request, and it applies at the next model-request boundary: the in-flight request finishes with its original provider, model, and effort, and the following request uses the new settings (the same turn when it makes another request, otherwise the next turn). A failed selection leaves the effective settings unchanged and shows the error. For a model switch, the existing switch compaction runs against the active turn's history at that boundary. `/model` persistence and `/effort --persist` behavior are unchanged.
 - Queued inputs appear in an overlay above the composer in FIFO order (oldest on top, newest directly above the input), numbered `[i/n]` so dispatch order is explicit. `Shift+Left` (tmux) or `Alt+Up` pops the newest queued message back into the composer for editing. Up to five messages are shown, plus a `+N more queued (M total)` line when more are pending. Interrupts preserve queued inputs and report the preserved count instead of clearing the queue.
 - `/pause` pauses the active run at the next model/tool/approval boundary.
 - `/resume` resumes a paused run while it is active. When idle, `/resume` still opens archived sessions.
@@ -235,6 +253,15 @@ The Bash integration can run long commands asynchronously while you continue wor
 Background launches return a stable `session_id`, lifecycle state, PID when available, bounded initial output, and reusable wait arguments. A runtime retains at most three live background processes; it never evicts an older session to make room for a fourth. Use the existing `write_stdin`/`unified_exec` session actions to wait, poll, write, inspect, terminate, or close a session. Sessions live until they exit, are explicitly closed, or the VT Code runtime shuts down.
 
 While any background task (managed subagent, background subprocess, or retained exec session) is running, the input status line shows a shimmering `Running N background task(s)...` indicator, so live background work stays visible even with the Local Agents drawer closed. The indicator is informational only: background work never locks mode switches, blocks slash commands, or converts your submissions into queued/steered input.
+
+Managed background subprocesses and user-launched background exec sessions report
+`Stopped` or `Error` automatically after confirmed process exit. The Local Agents
+drawer and transcript update without requiring `/subprocesses refresh` or an
+explicit `write_stdin` poll. If the main loop is idle, VT Code delivers a bounded
+completion note and performs one follow-up reasoning turn; completions that
+arrive during an active turn wait for its next boundary, and queued or new user
+input takes precedence. Direct commands remain non-autonomous. Use the explicit
+`wait` action when a caller needs to observe a result synchronously.
 
 Common backgrounded commands include:
 

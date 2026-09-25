@@ -176,6 +176,8 @@ mod tests {
 
         assert!(prompt.contains("for `find`, use literal paths and quoted patterns only"));
         assert!(prompt.contains("prefer `rg --files`"));
-        assert!(prompt.contains("never use `$()`"));
+        assert!(prompt.contains(
+            "keep them free of `$()`, backticks, variable or brace expansion, and dynamically spliced options"
+        ));
     }
 }

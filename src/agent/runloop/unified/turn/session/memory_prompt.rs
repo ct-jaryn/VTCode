@@ -318,6 +318,9 @@ async fn handle_show_memory_intent(
 
     match control {
         SlashCommandControl::Continue => Ok(Some(InteractionOutcome::DirectToolHandled)),
+        SlashCommandControl::BackgroundCompletionHandled { completion_identity } => {
+            Ok(Some(InteractionOutcome::DirectBackgroundToolHandled { completion_identity }))
+        }
         SlashCommandControl::SubmitPrompt(prompt) => Ok(Some(InteractionOutcome::Continue {
             input: prompt,
             prompt_message_index: None,

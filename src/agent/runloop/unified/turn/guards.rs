@@ -309,15 +309,15 @@ fn normalize_turn_balancer_tool_name(name: &str) -> Cow<'_, str> {
 /// they must instruct the same `<proposed_plan>` contract. Without the format
 /// the model emits research prose that fails validation and the turn ends
 /// `Blocked` even though the evidence was present.
-const PLANNING_SYNTHESIS_FORMAT_HINT: &str = "Synthesize exactly one complete `<proposed_plan>` NOW from the evidence already gathered: include Summary, numbered steps as `Action -> files: [path] -> verify: [command]`, Validation, and Assumptions. Every implementation step must name a concrete file, symbol, or behavior target and a concrete `verify:` command or observable check. Valid examples: `verify: [cargo nextest run -p vtcode]`, `verify: [cargo check --locked]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, `verify: [grep -n 'symbol' src/file.rs]`, or `verify: [after launch confirm startup timing is reported]`. Invalid examples: `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`; vague prose and generic VCS-only checks fail validation. If a list has multiple comma-separated checks, every item must independently be concrete. Do not emit tool calls or tool-call markup.";
+const PLANNING_SYNTHESIS_FORMAT_HINT: &str = "Synthesize exactly one complete `<proposed_plan>` from the evidence already gathered: include Summary, numbered steps as `Action -> files: [path] -> verify: [command]`, Validation, and Assumptions. Every implementation step must name a concrete file, symbol, or behavior target and a concrete `verify:` command or observable check. Valid examples: `verify: [cargo nextest run -p vtcode]`, `verify: [cargo check --locked]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, `verify: [grep -n 'symbol' src/file.rs]`, or `verify: [git show --stat HEAD]` for a targeted review. Reuse visible evidence and keep output focused. Invalid examples: `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`; vague prose and generic VCS-only checks fail validation. If a list has multiple comma-separated checks, every item must independently be concrete. Do not emit tool calls or tool-call markup.";
 
 fn navigation_loop_guidance(planning_active: bool, repetition: usize) -> &'static str {
     if repetition >= 2 {
-        "CRITICAL: You have triggered the navigation-loop guard repeatedly. STOP all read/search operations immediately. DO NOT browse or explore further. Provide a direct synthesis with the next action or ask one blocking question, and nothing else."
+        "The navigation-loop guard has fired again this turn, so more read/search steps are unlikely to change the answer. Reply with only a direct synthesis and the next action, or one blocking question."
     } else if planning_active {
-        "WARNING: Too many read/search steps in Planning workflow without an actionable output. Stop browsing, summarize key findings, then update `task_tracker` with concrete steps (files + outcome + verification), or ask one blocking question."
+        "Planning has taken many read/search steps without an actionable output. Summarize key findings, then update `task_tracker` with concrete steps (files + outcome + verification), or ask one blocking question."
     } else {
-        "WARNING: Too many read/search steps without edits or execution. Summarize findings and propose the next concrete edit/action, or explain the blocker."
+        "Many read/search steps have run without edits or execution. Summarize findings and propose the next concrete edit/action, or explain the blocker."
     }
 }
 
@@ -386,7 +386,7 @@ pub(crate) async fn handle_turn_balancer(
     use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
         ANTI_BLIND_EDITING_DIRECTIVE, ANTI_BLIND_EDITING_WARNING, EXECUTION_TOTAL_LOW_SIGNAL_THRESHOLD,
         LISTING_LOOP_TRIP_COUNT, NAVIGATION_LOOP_THRESHOLD, PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD,
-        PLANNING_LISTING_LOOP_TRIP_COUNT, PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD, PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD,
+        PLANNING_LISTING_LOOP_TRIP_COUNT, PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD,
     };
 
     // NL2Repo-Bench checks run on every step (no backoff) since they
@@ -450,7 +450,7 @@ pub(crate) async fn handle_turn_balancer(
         && ctx.harness_state.model_visible_preview_budget_exhausted()
     {
         let recovery_reason = format!(
-            "Planning tool preview budget exhausted the model-visible allowance; further inspection returns metadata stubs without content. Tools are disabled on the next pass. Trust preserved outcome metadata (tool, spool_path, byte_count, completion_state), do NOT re-read or repeat exhausted calls. Verification, task_tracker, session polling, spool paging, and plan-draft re-reads stay open until the synthesis pass. {PLANNING_SYNTHESIS_FORMAT_HINT}"
+            "Planning tool preview budget exhausted the model-visible allowance; further inspection returns metadata stubs without content. Tools are disabled on the next pass. Trust preserved outcome metadata (tool, spool_path, byte_count, completion_state); re-reading or repeating exhausted calls only returns more stubs. Verification, task_tracker, session polling, spool paging, and plan-draft re-reads stay open until the synthesis pass. {PLANNING_SYNTHESIS_FORMAT_HINT}"
         );
         if ctx.activate_recovery(recovery_reason.clone()) {
             repeated_tool_attempts.planning_low_signal_synthesis_triggered = true;
@@ -458,35 +458,6 @@ pub(crate) async fn handle_turn_balancer(
                 .line(
                     MessageStyle::Info,
                     "[!] Planning recovery: tool preview budget exhausted; synthesizing plan from collected evidence.",
-                )
-                .unwrap_or(());
-            ctx.working_history.push(uni::Message::system(recovery_reason));
-        }
-        return apply_balancer_recovery(repeated_tool_attempts);
-    }
-
-    // A successful inspection can still be part of a loop: payload-based
-    // low-signal detection quite reasonably treats each non-empty file read as
-    // useful, while the model keeps narrowing into the same area. Planning
-    // gets one bounded convergence checkpoint when that pattern contains even
-    // one repeated request. Diverse research remains below this guard, and the
-    // ordinary navigation-loop guard still handles execution-mode turns.
-    if ctx.is_planning_active()
-        && !repeated_tool_attempts.planning_low_signal_synthesis_triggered
-        && repeated_tool_attempts.consecutive_navigations >= PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD
-        && repeated_tool_attempts.repeated_navigation_count() >= 1
-    {
-        let recovery_reason = format!(
-            "Planning research reached {} consecutive read/search steps with {} repeated navigation request(s). Tools are disabled on the next pass. {PLANNING_SYNTHESIS_FORMAT_HINT}",
-            repeated_tool_attempts.consecutive_navigations,
-            repeated_tool_attempts.repeated_navigation_count(),
-        );
-        if ctx.activate_recovery(recovery_reason.clone()) {
-            repeated_tool_attempts.planning_low_signal_synthesis_triggered = true;
-            ctx.renderer
-                .line(
-                    MessageStyle::Info,
-                    "[!] Planning recovery: repeated inspection reached the bounded synthesis checkpoint.",
                 )
                 .unwrap_or(());
             ctx.working_history.push(uni::Message::system(recovery_reason));
@@ -674,9 +645,9 @@ mod tests {
     use crate::agent::runloop::unified::tool_pipeline::{ToolExecutionStatus, ToolPipelineOutcome};
     use crate::agent::runloop::unified::turn::context::{TurnHandlerOutcome, TurnLoopResult};
     use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
-        BLIND_EDITING_THRESHOLD, EXECUTION_TOTAL_LOW_SIGNAL_THRESHOLD, LoopTracker, NAVIGATION_LOOP_THRESHOLD,
-        PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD, PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD,
-        PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD, update_repetition_tracker,
+        ANTI_BLIND_EDITING_DIRECTIVE, BLIND_EDITING_THRESHOLD, EXECUTION_TOTAL_LOW_SIGNAL_THRESHOLD, LoopTracker,
+        NAVIGATION_LOOP_THRESHOLD, PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD, PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD,
+        update_repetition_tracker,
     };
     use crate::agent::runloop::unified::turn::turn_processing::test_support::TestTurnProcessingBacking;
 
@@ -760,7 +731,9 @@ mod tests {
     #[test]
     fn navigation_loop_guidance_escalates_on_repetition() {
         let guidance = navigation_loop_guidance(false, 2);
-        assert!(guidance.contains("CRITICAL: You have triggered the navigation-loop guard repeatedly"));
+        assert!(guidance.contains("navigation-loop guard has fired again"));
+        assert!(guidance.contains("one blocking question"));
+        assert_ne!(guidance, navigation_loop_guidance(false, 1));
     }
 
     #[test]
@@ -817,7 +790,7 @@ mod tests {
         assert!(
             ctx.working_history
                 .iter()
-                .any(|message| { message.content.as_text().contains("run one verifier with `exec_command`") })
+                .any(|message| { message.content.as_text().contains(ANTI_BLIND_EDITING_DIRECTIVE) })
         );
     }
 
@@ -944,7 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn planning_repeated_successful_inspection_reaches_synthesis_checkpoint() {
+    async fn planning_one_repeated_successful_inspection_remains_productive() {
         let mut backing = TestTurnProcessingBacking::new(120).await;
         backing.activate_planning_for_test();
         let mut ctx = backing.turn_processing_context();
@@ -978,32 +951,20 @@ mod tests {
             update_repetition_tracker(&mut tracker, &success, tool_names::EXEC_COMMAND, &args);
         }
 
-        assert_eq!(tracker.consecutive_navigations, PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD);
+        assert_eq!(tracker.consecutive_navigations, calls.len());
         assert_eq!(tracker.repeated_navigation_count(), 1);
         assert_eq!(tracker.consecutive_low_signal_navigations, 0);
 
         let outcome = super::handle_turn_balancer(&mut ctx, 12, &mut tracker, 120, 3).await;
 
         assert!(matches!(outcome, TurnHandlerOutcome::Continue));
-        assert!(ctx.is_recovery_active());
-        assert_eq!(tracker.consecutive_navigations, 0);
-        assert!(tracker.planning_low_signal_synthesis_triggered);
-        assert!(
-            ctx.working_history
-                .iter()
-                .any(|message| { message.content.as_text().contains("repeated navigation request") })
-        );
-        assert!(
-            ctx.working_history.iter().any(|message| {
-                let text = message.content.as_text();
-                text.contains("<proposed_plan>") && text.contains("Action -> files")
-            }),
-            "repeated-navigation recovery must instruct plan-format synthesis"
-        );
+        assert!(!ctx.is_recovery_active());
+        assert_eq!(tracker.consecutive_navigations, calls.len());
+        assert!(!tracker.planning_low_signal_synthesis_triggered);
     }
 
     #[tokio::test]
-    async fn planning_diverse_inspection_stays_below_synthesis_checkpoint() {
+    async fn planning_diverse_inspection_remains_productive() {
         let mut backing = TestTurnProcessingBacking::new(120).await;
         backing.activate_planning_for_test();
         let mut ctx = backing.turn_processing_context();
@@ -1038,14 +999,44 @@ mod tests {
             );
         }
 
-        assert_eq!(tracker.consecutive_navigations, PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD);
+        assert_eq!(tracker.consecutive_navigations, commands.len());
         assert_eq!(tracker.repeated_navigation_count(), 0);
 
         let outcome = super::handle_turn_balancer(&mut ctx, 12, &mut tracker, 120, 3).await;
 
         assert!(matches!(outcome, TurnHandlerOutcome::Continue));
         assert!(!ctx.is_recovery_active());
-        assert_eq!(tracker.consecutive_navigations, PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD);
+        assert_eq!(tracker.consecutive_navigations, commands.len());
+    }
+
+    #[tokio::test]
+    async fn planning_genuine_repeated_navigation_still_recovers() {
+        let mut backing = TestTurnProcessingBacking::new(120).await;
+        backing.activate_planning_for_test();
+        let mut ctx = backing.turn_processing_context();
+        let mut tracker = LoopTracker::new();
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"stdout":"useful source"}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for index in 0..NAVIGATION_LOOP_THRESHOLD {
+            let command = format!("cat src/{}.rs", index % 4);
+            update_repetition_tracker(
+                &mut tracker,
+                &success,
+                tool_names::EXEC_COMMAND,
+                &json!({"cmd": command, "command": command, "action": "run"}),
+            );
+        }
+        assert!(tracker.repeated_navigation_count() >= 3);
+        assert_eq!(tracker.consecutive_low_signal_navigations, 0);
+
+        let outcome = super::handle_turn_balancer(&mut ctx, NAVIGATION_LOOP_THRESHOLD, &mut tracker, 120, 3).await;
+        assert!(matches!(outcome, TurnHandlerOutcome::Continue));
+        assert!(ctx.is_recovery_active());
+        assert_eq!(tracker.consecutive_navigations, 0);
     }
 
     #[tokio::test]

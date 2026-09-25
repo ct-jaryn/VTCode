@@ -273,30 +273,6 @@ impl Session {
                         return;
                     }
 
-                    if !self.has_active_overlay()
-                        && let Some(pill) = self.jump_pill_rect()
-                        && mouse_event.column >= pill.x
-                        && mouse_event.column < pill.x.saturating_add(pill.width)
-                        && mouse_event.row >= pill.y
-                        && mouse_event.row < pill.y.saturating_add(pill.height)
-                        && self.jump_to_last_change()
-                    {
-                        self.clear_mouse_selection();
-                        self.mouse_drag_target = MouseDragTarget::None;
-                        self.emit_inline_event(&InlineEvent::JumpToLastChange, events, callback);
-                        return;
-                    }
-
-                    if !self.has_active_overlay()
-                        && self.footer_jump_contains(mouse_event.column, mouse_event.row)
-                        && self.jump_to_last_change()
-                    {
-                        self.clear_mouse_selection();
-                        self.mouse_drag_target = MouseDragTarget::None;
-                        self.emit_inline_event(&InlineEvent::JumpToLastChange, events, callback);
-                        return;
-                    }
-
                     let is_double_click =
                         self.mouse_selection
                             .register_click(mouse_event.column, mouse_event.row, Instant::now());

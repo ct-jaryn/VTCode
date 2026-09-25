@@ -114,11 +114,7 @@ impl SkillMetrics {
 
     pub fn get_skill_avg_duration(&self, skill_name: &str) -> u64 {
         if let Some(stats) = self.skill_stats.get(skill_name) {
-            if stats.execution_count > 0 {
-                stats.total_duration_ms / stats.execution_count
-            } else {
-                0
-            }
+            stats.total_duration_ms.checked_div(stats.execution_count).unwrap_or(0)
         } else {
             0
         }

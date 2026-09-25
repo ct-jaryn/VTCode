@@ -603,9 +603,9 @@ fn standard_task_tracker_parameter_schema() -> Value {
 
 pub(crate) fn task_tracker_description_for_workflow(planning_active: bool) -> &'static str {
     if planning_active {
-        "Adaptive task tracking for planning. Persists hierarchical plan progress under .vtcode/plans/<plan>.tasks.md and mirrors updates to .vtcode/tasks/current_task.md. Actions: create, update, list, add. For action=update, planning item indices are positive 1-based flat or hierarchical index_path values; index: 0 is invalid. Use items for bulk updates."
+        "Adaptive task tracking for planning. Persists hierarchical plan progress under .vtcode/plans/<plan>.tasks.md and mirrors updates to .vtcode/tasks/current_task.md. Actions: create, update, list, add. Calling action=create again replaces the plan task list and its progress; use action=update or action=add to change it. For action=update, planning item indices are positive 1-based flat or hierarchical index_path values; index: 0 is invalid. Use items for bulk updates."
     } else {
-        "Track task progress through a single checklist API (action: create | update | list | add). Use with action=create at the start of a multi-step plan; action=update as work progresses; action=list to review current state. For action=update, item indices are 1-based; standard checklist-level completion alone may use index: 0 with status: completed. Planning workflow accepts only positive flat or hierarchical index paths. Use items for bulk updates. Do NOT call action=create twice — subsequent calls update the existing checklist. Tracker state mirrors between .vtcode/tasks/current_task.md and active plan sidecar files when available."
+        "Track task progress through a single checklist API (action: create | update | list | add). Use with action=create at the start of a multi-step plan; action=update as work progresses; action=list to review current state. For action=update, item indices are 1-based; standard checklist-level completion alone may use index: 0 with status: completed. Planning workflow accepts only positive flat or hierarchical index paths. Use items for bulk updates. Calling action=create again replaces the current checklist and its progress, unless the title and items match the active checklist, in which case the call is a no-op; use action=update or action=add to change an existing checklist. Tracker state mirrors between .vtcode/tasks/current_task.md and active plan sidecar files when available."
     }
 }
 
@@ -1489,6 +1489,54 @@ mod tests {
 
         assert_eq!(duplicate["status"], "unchanged");
         assert_eq!(duplicate["checklist"]["completed"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_with_new_structure_replaces_checklist() {
+        let temp = TempDir::new().unwrap();
+        let (_state, tool) = setup_tool(&temp);
+
+        tool.execute(json!({
+            "action": "create",
+            "title": "First",
+            "items": ["Fix A", "Fix B"]
+        }))
+        .await
+        .unwrap();
+
+        tool.execute(json!({
+            "action": "update",
+            "index": 1,
+            "status": "completed"
+        }))
+        .await
+        .unwrap();
+
+        let replaced = tool
+            .execute(json!({
+                "action": "create",
+                "title": "Second",
+                "items": ["Fix C"]
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(replaced["status"], "replaced");
+        assert_eq!(replaced["checklist"]["total"], 1);
+        assert_eq!(replaced["checklist"]["completed"], 0);
+    }
+
+    #[test]
+    fn task_tracker_descriptions_state_that_repeat_create_replaces() {
+        for planning_active in [false, true] {
+            let description = task_tracker_description_for_workflow(planning_active);
+            assert!(
+                description.contains("Calling action=create again replaces"),
+                "planning_active={planning_active}: {description}"
+            );
+            assert!(!description.contains("subsequent calls update"), "planning_active={planning_active}");
+        }
+        assert!(task_tracker_description_for_workflow(false).contains("no-op"));
     }
 
     #[tokio::test]

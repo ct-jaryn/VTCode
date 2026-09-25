@@ -11,11 +11,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::agent::runloop::unified::session_settings::SessionSettingsControl;
+use crate::agent::runloop::welcome::SessionBootstrap;
 use anyhow::Result;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::UnboundedReceiver;
 use vtcode_core::acp::ToolPermissionCache;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::core::agent::events::{tool_invocation_completed_event, tool_output_completed_event};
+use vtcode_core::core::agent::refusal;
 use vtcode_core::core::agent::runtime::RuntimeSteering;
 use vtcode_core::core::decision_tracker::DecisionTracker;
 use vtcode_core::core::trajectory::TrajectoryLogger;
@@ -24,6 +28,7 @@ use vtcode_core::hooks::LifecycleHookEngine;
 use vtcode_core::llm::provider as uni;
 use vtcode_core::tools::{ApprovalRecorder, ToolRegistry, ToolResultCache};
 use vtcode_core::utils::ansi::{AnsiRenderer, MessageStyle};
+use vtcode_ui::tui::app::InlineHeaderContext;
 use vtcode_ui::tui::app::{InlineHandle, InlineSession};
 
 use crate::agent::runloop::unified::inline_events::harness::{
@@ -47,6 +52,8 @@ mod notifications;
 mod post_tool_recovery;
 #[path = "turn_loop/recovery_compaction.rs"]
 mod recovery_compaction;
+#[path = "turn_loop/settings.rs"]
+mod settings;
 #[path = "turn_loop/usage_accounting.rs"]
 mod usage_accounting;
 
@@ -67,10 +74,12 @@ use post_tool_recovery::{
 #[cfg(test)]
 use recovery_compaction::current_turn_preserve_index;
 use recovery_compaction::{RecoveryCompactionRequest, compact_before_tool_enabled_retry};
+use settings::apply_pending_session_settings;
 use usage_accounting::{accumulate_turn_usage, estimate_session_costs, has_turn_usage, stop_reason_from_finish_reason};
 use vtcode_core::config::types::AgentConfig;
 use vtcode_core::core::agent::error_recovery::ErrorType;
 use vtcode_core::primary_agent::ActivePrimaryAgentState;
+use vtcode_core::tools::tool_intent::{GENERIC_VERIFIER_DESCRIPTION, VERIFIER_SHELL_FORM_NOTE};
 
 use crate::agent::runloop::mcp_events;
 use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
@@ -118,24 +127,25 @@ pub(crate) const ASSISTANT_TEXT_RESPONSE_CAP_REASON: &str =
     "Turn blocked after repeated assistant responses reached the safety cap; the latest response was preserved.";
 pub(crate) const PENDING_VERIFICATION_BLOCK_REASON: &str =
     "Turn blocked after repeated unverified assistant responses; verification is still pending.";
-const PENDING_VERIFICATION_FINAL_RESPONSE_PREFIX: &str = "The turn is blocked because verification is still pending \
-    after bounded autonomous recovery (harness auto-verification already tried). \
-    Inspection-only checks do not clear the verification gate; run your project's verifier standalone — e.g. \
-    `cargo check --locked`, `go test`, or `cargo nextest run` — or as a pure `&&` chain (no `|`, `;`, `||`; \
-    cap output with `max_output_tokens`) and let it exit 0, then type `continue` to resume with the gate preserved. \
-    A failed verifier grants ";
-const PENDING_VERIFICATION_FINAL_RESPONSE_SUFFIX: &str = " fix-up edits before re-verify is required.";
-
+/// Final response for a turn blocked on the verification gate. The block
+/// happens after bounded autonomous recovery whether or not a project verifier
+/// was detected, so it states only that recovery ran and names the verifier
+/// generically; the shell-form rule comes from [`VERIFIER_SHELL_FORM_NOTE`] so
+/// it cannot drift from the classifier.
 fn pending_verification_final_response() -> String {
     format!(
-        "{PENDING_VERIFICATION_FINAL_RESPONSE_PREFIX}{FAILED_VERIFICATION_FIX_ALLOWANCE}{PENDING_VERIFICATION_FINAL_RESPONSE_SUFFIX}"
+        "The turn is blocked because verification is still pending after bounded autonomous recovery. \
+         Inspection-only checks do not clear the verification gate. To clear it, run \
+         {GENERIC_VERIFIER_DESCRIPTION} with `exec_command`, standalone or as a pure `&&` chain of verifiers, \
+         and let it exit 0. {VERIFIER_SHELL_FORM_NOTE} Then type `continue` to resume with the gate preserved. \
+         A failed verifier grants {FAILED_VERIFICATION_FIX_ALLOWANCE} fix-up edits before the next verification."
     )
 }
 const CONTEXT_CAPACITY_FINAL_RESPONSE: &str = "The turn is blocked because context capacity or compaction failed. \
     The retained tool outputs and progress are preserved; resume the request or switch \
     models and try again.";
-const GENERIC_BLOCKED_FINAL_RESPONSE: &str = "The turn is blocked before success could be confirmed. \
-    The available history and outputs are retained; resume the request to continue.";
+const GENERIC_BLOCKED_FINAL_RESPONSE: &str =
+    "The turn stopped before the request was completed. Resume the request or give updated instructions to continue.";
 /// Maximum number of times the post-tool follow-up failure path may schedule
 /// a tool-free recovery pass within a single turn. This is a defense-in-depth
 /// backstop: the recovery pass itself is terminal (a text response ends the
@@ -224,7 +234,7 @@ pub(crate) const COMPLETED_TURN_FALLBACK_RESPONSE: &str = "The turn stopped befo
 /// `<proposed_plan>` contract in `break_planning_recovery_with_handoff`
 /// without duplicating its detail (that path knows the synthesis failed;
 /// this path only knows no final was produced).
-pub(crate) const PLANNING_COMPLETED_FALLBACK_RESPONSE: &str = "Planning remains active, but this turn ended without a final plan synthesis. The research gathered above is preserved; do NOT re-read files already read this turn. Type `keep planning` (or re-state the request) and emit one complete `<proposed_plan>` with `Action -> files: [path] -> verify: [command]` steps. Each `verify:` must be a concrete command or observable check; valid examples are `verify: [cargo nextest run -p vtcode]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, and `verify: [grep -n 'symbol' src/file.rs]`, while `verify: [run checks]` and `verify: [git diff --check]` are invalid. No changes were applied.";
+pub(crate) const PLANNING_COMPLETED_FALLBACK_RESPONSE: &str = "Planning remains active, but this turn ended without a final plan synthesis. The research gathered above is preserved, so the next turn can reuse it without re-reading files. Type `keep planning` (or re-state the request) to continue; the next turn should emit one complete `<proposed_plan>` with `Action -> files: [path] -> verify: [command]` steps. Each `verify:` must be a concrete command or observable check; valid examples are `verify: [cargo nextest run -p vtcode]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, and `verify: [grep -n 'symbol' src/file.rs]`, while `verify: [run checks]` and `verify: [git diff --check]` are invalid. No changes were applied.";
 const COMPLETED_TURN_FALLBACK_REASON: &str = "Turn ended with a recovery fallback; the requested work was not confirmed. The current plan and task state were retained.";
 /// Planning-specific variant of [`COMPLETED_TURN_FALLBACK_REASON`]. When a
 /// plan-mode turn ends via the generic fallback path, the generic reason hides
@@ -262,13 +272,13 @@ const RECOVERY_TOOL_CALL_RETRY_DIRECTIVE: &str = "Recovery: tools are disabled, 
 /// Without this, the model treats the tool-free recovery pass as another
 /// research step and emits `<invoke>`/`<tool_call>` markup instead of a plan
 /// (observed in checkpoints turn_648 and turn_650).
-pub(crate) const POST_TOOL_RECOVERY_REASON_PLAN_MODE: &str = "Planning research completed, but final plan synthesis needs recovery. Tools are disabled. Produce the `<proposed_plan>` NOW from the context and tool outputs already in this conversation: include Summary, numbered Implementation Steps (one line each: `Action -> files: [src/parser.rs] -> verify: [cargo check --locked]`), Test Cases and Validation, and Assumptions and Defaults. Every step must name a concrete file, symbol, or behavior target and one concrete `verify:` command or observable check. Valid examples: `verify: [cargo nextest run -p vtcode]`, `verify: [cargo check --locked]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, `verify: [grep -n 'symbol' src/file.rs]`, or `verify: [after launch confirm startup timing is reported]`. Invalid examples: `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`; vague prose and generic VCS-only checks are rejected. Each comma-separated verify item must independently be concrete. Prefer file:symbol references, and do NOT emit any tool calls or tool-call markup. Keep any text outside the block to one line or omit it; it is ignored.";
+pub(crate) const POST_TOOL_RECOVERY_REASON_PLAN_MODE: &str = "Planning research completed, but final plan synthesis needs recovery. Tools are disabled for this pass. Produce the `<proposed_plan>` from the context and tool outputs already in this conversation: include Summary, numbered Implementation Steps (one line each: `Action -> files: [src/parser.rs] -> verify: [cargo check --locked]`), Test Cases and Validation, and Assumptions and Defaults. Every step must name a concrete file, symbol, or behavior target and one concrete `verify:` command or observable check. Valid examples: `verify: [cargo nextest run -p vtcode]`, `verify: [cargo check --locked]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, `verify: [grep -n 'symbol' src/file.rs]`, or `verify: [after launch confirm startup timing is reported]`. Invalid examples: `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`; vague prose and generic VCS-only checks are rejected. Each comma-separated verify item must independently be concrete. Prefer file:symbol references. Tool calls and tool-call markup are discarded in this pass, so the response should contain none. Keep any text outside the block to one line or omit it; it is ignored.";
 /// Plan-mode variant of [`RECOVERY_TOOL_CALL_RETRY_DIRECTIVE`]. The generic
 /// directive only says \"respond with plain text\"; in plan mode the agent must
 /// instead finalize the `<proposed_plan>` from gathered research, otherwise it
 /// loops emitting `<invoke>` research calls during the tool-free recovery pass.
-pub(crate) const RECOVERY_TOOL_CALL_RETRY_DIRECTIVE_PLAN_MODE: &str = "Recovery: in plan mode, tools are disabled and you must finalize the plan. Emit the `<proposed_plan>` now from the research already gathered in this conversation — Summary, numbered steps on single lines (`Action -> files: [src/parser.rs] -> verify: [cargo check --locked]`), Validation, Assumptions — every step with a concrete file, symbol, or behavior target and one concrete `verify:` command or observable check. Valid examples are `verify: [cargo nextest run -p vtcode]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, and `verify: [grep -n 'symbol' src/file.rs]`; invalid examples are `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`. Each comma-separated verify item must independently be concrete. At most one intro line may appear outside the block; emit no tool calls and no `<tool_call>`/`<invoke>`/`<function=...>` markup.";
-const APPROVED_PLAN_STALE_PAUSE_RECOVERY_DIRECTIVE: &str = "Approved-plan execution recovery: the previous response incorrectly claimed that tools were disabled or implementation was paused. The planning approval is complete and the write-capable build agent is active. Continue with the next concrete implementation action now; use task_tracker and execute an edit or verification command. Do not respond with a pause/status message and do not ask for another confirmation.";
+pub(crate) const RECOVERY_TOOL_CALL_RETRY_DIRECTIVE_PLAN_MODE: &str = "Recovery: in plan mode, tools are disabled for this pass, so the next step is to finalize the plan. Emit the `<proposed_plan>` from the research already gathered in this conversation — Summary, numbered steps on single lines (`Action -> files: [src/parser.rs] -> verify: [cargo check --locked]`), Validation, Assumptions — every step with a concrete file, symbol, or behavior target and one concrete `verify:` command or observable check. Valid examples are `verify: [cargo nextest run -p vtcode]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, and `verify: [grep -n 'symbol' src/file.rs]`; invalid examples are `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`. Each comma-separated verify item must independently be concrete. At most one intro line may appear outside the block; tool calls and `<tool_call>`/`<invoke>`/`<function=...>` markup are discarded, so the response should contain none.";
+const APPROVED_PLAN_STALE_PAUSE_RECOVERY_DIRECTIVE: &str = "Approved-plan execution recovery: the previous response stated that tools were disabled or implementation was paused, but the planning approval is complete and the write-capable build agent is active. The next step is the next concrete implementation action: use task_tracker and run an edit or verification command. No further confirmation is needed, and a pause or status-only message does not advance the approved plan.";
 
 fn latest_final_assistant_response(history: &[uni::Message], turn_history_start_len: usize) -> Option<String> {
     history
@@ -338,6 +348,11 @@ fn publish_final_assistant_response(ctx: &mut TurnLoopContext<'_>, text: &str) -
 }
 
 pub(crate) fn format_blocked_turn_final_response(reason: &str) -> String {
+    if refusal::is_refusal_notice(reason) {
+        // The refusal notice is already a complete, user-facing explanation
+        // with its own next step; wrapping it would repeat that guidance.
+        return reason.trim().to_string();
+    }
     if reason.contains(PENDING_VERIFICATION_BLOCK_REASON) {
         pending_verification_final_response()
     } else if reason.contains(POST_TOOL_CONTEXT_COMPACTION_FAILED_REASON) {
@@ -347,17 +362,27 @@ pub(crate) fn format_blocked_turn_final_response(reason: &str) -> String {
         || reason.contains("Blocked tool-call limit")
     {
         format!(
-            "The turn is blocked because repeated tool calls were rejected: {reason}. The available history and outputs are retained. You can resume the request with specific guidance, or adjust permissions/tools to continue."
+            "The turn stopped because repeated tool calls were rejected: {}. Resume the request with specific guidance, or adjust permissions or tools to continue.",
+            reason_clause(reason)
         )
     } else if reason.contains("Repeated shell command") {
-        "The turn is blocked because repeated identical shell commands were detected. The available history and outputs are retained. Please provide alternative instructions or adjust the command.".to_string()
-    } else if !reason.trim().is_empty() && reason != "blocked" {
+        "The turn stopped because repeated identical shell commands were detected. Give alternative instructions or adjust the command to continue.".to_string()
+    } else if !reason.trim().is_empty() && reason.trim() != "blocked" {
         format!(
-            "The turn is blocked before success could be confirmed: {reason}. The available history and outputs are retained; resume the request or provide updated instructions to continue."
+            "The turn stopped: {}. Resume the request or give updated instructions to continue.",
+            reason_clause(reason)
         )
     } else {
         GENERIC_BLOCKED_FINAL_RESPONSE.to_string()
     }
+}
+
+/// Render a block reason as a clause that continues a sentence after a colon:
+/// trailing sentence punctuation is dropped (the caller supplies the period)
+/// and a leading capitalized plain word is lowercased. Acronyms and
+/// identifiers keep their case.
+fn reason_clause(reason: &str) -> String {
+    vtcode_commons::formatting::lowercase_leading_word(reason.trim().trim_end_matches(['.', '!', '?']).trim_end())
 }
 
 #[cfg(test)]
@@ -371,6 +396,9 @@ fn ensure_blocked_turn_response(
     turn_history_start_len: usize,
     reason: &str,
 ) -> Result<()> {
+    if ctx.harness_state.turn_refused() {
+        return publish_refusal_notice(ctx, reason);
+    }
     let existing_final = latest_final_assistant_response(working_history, turn_history_start_len);
     let generated_fallback = existing_final.is_none();
     let final_text = existing_final.unwrap_or_else(|| format_blocked_turn_final_response(reason));
@@ -390,6 +418,33 @@ fn ensure_blocked_turn_response(
         }
     } else {
         let _ = publish_final_assistant_response(ctx, &final_text)?;
+    }
+    Ok(())
+}
+
+/// Publish the refusal notice for a refused turn.
+///
+/// The notice is always shown, even when an earlier final answer exists in
+/// this turn: that answer predates the refused request and would misreport
+/// the outcome. The notice goes to the transcript and the harness event
+/// stream only. It is not appended to `working_history`, because the session
+/// loop rolls the refused turn out of model-visible history.
+fn publish_refusal_notice(ctx: &mut TurnLoopContext<'_>, reason: &str) -> Result<()> {
+    let notice = format_blocked_turn_final_response(reason);
+    ctx.harness_state.mark_final_response_fallback();
+    ctx.renderer.line(MessageStyle::Response, &notice)?;
+    ctx.harness_state.mark_final_response_rendered();
+    if ctx.harness_emitter.is_none() {
+        ctx.harness_state.mark_final_response_event_emitted();
+    } else if !ctx.harness_state.final_response_event_emitted()
+        && let Some(emitter) = ctx.harness_emitter
+    {
+        // When a stale final was already emitted, the canonical final item is
+        // taken; the `turn.blocked` event still carries the refusal reason.
+        match emitter.emit_assistant_message(&ctx.harness_state.turn_id.0, &notice) {
+            Ok(()) => ctx.harness_state.mark_final_response_event_emitted(),
+            Err(err) => tracing::warn!(error = %err, "refusal notice harness emission failed"),
+        }
     }
     Ok(())
 }
@@ -458,6 +513,25 @@ pub(crate) struct TurnLoopOutcome {
     /// Whether the turn's final response came from deterministic recovery
     /// fallback rather than a confirmed model synthesis.
     pub final_response_was_fallback: bool,
+    /// Whether the provider refused this turn's request. The session loop
+    /// rolls a refused turn out of model-visible history and skips every
+    /// auto-continue and recovery path for it.
+    pub refused: bool,
+}
+
+pub(crate) fn effective_vt_cfg<'a>(
+    fallback: Option<&'a VTCodeConfig>,
+    live: &'a Option<&mut Option<VTCodeConfig>>,
+) -> Option<&'a VTCodeConfig> {
+    live.as_ref().and_then(|cfg| cfg.as_ref()).or(fallback)
+}
+
+pub(crate) struct ActiveSettingsContext<'a> {
+    pub receiver: &'a mut UnboundedReceiver<SessionSettingsControl>,
+    pub header_context: &'a mut InlineHeaderContext,
+    pub session_bootstrap: &'a SessionBootstrap,
+    pub thread_id: &'a str,
+    pub thread_handle: &'a vtcode_core::core::threads::ThreadRuntimeHandle,
 }
 
 pub(crate) struct TurnLoopContext<'a> {
@@ -494,6 +568,8 @@ pub(crate) struct TurnLoopContext<'a> {
     pub harness_emitter: Option<&'a HarnessEventEmitter>,
     pub config: &'a mut AgentConfig,
     pub vt_cfg: Option<&'a VTCodeConfig>,
+    pub live_vt_cfg: Option<&'a mut Option<VTCodeConfig>>,
+    pub settings: Option<ActiveSettingsContext<'a>>,
     pub turn_metadata_cache: &'a mut Option<Option<serde_json::Value>>,
     pub provider_client: &'a mut Box<dyn uni::LLMProvider>,
     pub traj: &'a TrajectoryLogger,
@@ -584,6 +660,8 @@ impl<'a> TurnLoopContext<'a> {
             harness_emitter,
             config,
             vt_cfg,
+            live_vt_cfg: None,
+            settings: None,
             turn_metadata_cache,
             provider_client,
             traj,
@@ -597,7 +675,7 @@ impl<'a> TurnLoopContext<'a> {
     pub(crate) fn as_run_loop_context(&mut self) -> RunLoopContext<'_> {
         let auto_permission = Some(crate::agent::runloop::unified::run_loop_context::AutoPermissionRuntimeContext {
             config: self.config,
-            vt_cfg: self.vt_cfg,
+            vt_cfg: effective_vt_cfg(self.vt_cfg, &self.live_vt_cfg),
             provider_client: self.provider_client.as_mut(),
             working_history: &[],
         });
@@ -624,12 +702,12 @@ impl<'a> TurnLoopContext<'a> {
             self.skip_confirmations,
             self.full_auto,
         );
-        ctx.active_agent_permissions = self
-            .vt_cfg
+        ctx.active_agent_permissions = effective_vt_cfg(self.vt_cfg, &self.live_vt_cfg)
             .and_then(|cfg| cfg.runtime_agent_permissions.as_ref())
             .or(Some(&self.active_primary_agent.active().permissions));
         ctx.agent_name = Some(self.active_primary_agent.active().identity.name.clone());
-        ctx.default_primary_agent = self.vt_cfg.map(|cfg| cfg.default_primary_agent.clone());
+        ctx.default_primary_agent =
+            effective_vt_cfg(self.vt_cfg, &self.live_vt_cfg).map(|cfg| cfg.default_primary_agent.clone());
         // The primary agent loop is always for the primary agent, not a subagent
         ctx.is_subagent = false;
         ctx
@@ -658,7 +736,7 @@ impl<'a> TurnLoopContext<'a> {
         let llm = crate::agent::runloop::unified::turn::context::LLMContext {
             provider_client: self.provider_client,
             config: self.config,
-            vt_cfg: self.vt_cfg,
+            vt_cfg: effective_vt_cfg(self.vt_cfg, &self.live_vt_cfg),
             context_manager: self.context_manager,
             active_primary_agent: self.active_primary_agent,
             decision_ledger: self.decision_ledger,
@@ -704,7 +782,7 @@ impl<'a> TurnLoopContext<'a> {
     }
 }
 
-pub(crate) const POST_TOOL_RESUME_DIRECTIVE: &str = "Previous turn already completed tool execution. Reuse the latest tool outputs in history instead of rerunning the same exploration. If those tool outputs include `critical_note`, `hint`, `next_action`, `fallback_tool`, `fallback_tool_args`, or `rerun_hint`, follow that guidance first. Do NOT re-read files that were already read in the previous turn — their content is in the conversation history above. Synthesize a plan or answer from what is already gathered.";
+pub(crate) const POST_TOOL_RESUME_DIRECTIVE: &str = "Previous turn already completed tool execution. Reuse the latest tool outputs in history instead of rerunning the same exploration. If those tool outputs include `critical_note`, `hint`, `next_action`, `fallback_tool`, `fallback_tool_args`, or `rerun_hint`, follow that guidance first. Files read in the previous turn are already in the conversation history above, so re-reading them adds no information. Synthesize a plan or answer from what is already gathered.";
 pub(crate) const POST_TOOL_TOOL_ENABLED_RETRY_DIRECTIVE: &str = "The previous model follow-up failed after tool execution. The older context will be compacted before this retry. Reuse the completed tool outputs above, do not repeat read-only exploration, and continue the user's request with any required write or verification tools. Only finish after the requested work is confirmed; do not claim success from an unverified plan.";
 
 // For `TurnLoopContext`, we will reuse the generic `handle_pipeline_output` via an adapter below.
@@ -744,7 +822,11 @@ pub(crate) async fn run_turn_loop(
     }
 
     // Optimization: Extract all frequently accessed config values once
-    let mut turn_config = extract_turn_config(ctx.vt_cfg, ctx.is_planning_active(), ctx.renderer.supports_inline_ui());
+    let mut turn_config = extract_turn_config(
+        effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+        ctx.is_planning_active(),
+        ctx.renderer.supports_inline_ui(),
+    );
     if ctx.is_planning_active() {
         ctx.plan_session.start_turn();
     }
@@ -799,6 +881,18 @@ pub(crate) async fn run_turn_loop(
         if handle_steering_messages(&mut ctx, working_history, &mut result).await? {
             break;
         }
+        if apply_pending_session_settings(&mut ctx, working_history).await? {
+            // A model or effort switch changes provider capabilities, context
+            // budget, and prompt shaping for the request about to be built.
+            // Re-derive the cached turn config so the next request uses the
+            // effective settings; the in-flight request already finished with
+            // its original settings.
+            turn_config = extract_turn_config(
+                effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                ctx.is_planning_active(),
+                ctx.renderer.supports_inline_ui(),
+            );
+        }
 
         // A permanent interview denial can happen after this turn's initial
         // config snapshot (for example when the model's plan response
@@ -823,7 +917,11 @@ pub(crate) async fn run_turn_loop(
         if !planning_limits_applied && ctx.is_planning_active() {
             planning_limits_applied = true;
             ctx.plan_session.start_turn();
-            turn_config = extract_turn_config(ctx.vt_cfg, true, ctx.renderer.supports_inline_ui());
+            turn_config = extract_turn_config(
+                effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                true,
+                ctx.renderer.supports_inline_ui(),
+            );
             if ctx.plan_session.is_interview_denied() {
                 turn_config.request_user_input_enabled = false;
             }
@@ -846,12 +944,12 @@ pub(crate) async fn run_turn_loop(
                 session: ctx.session,
                 ctrl_c_state: ctx.ctrl_c_state,
                 ctrl_c_notify: ctx.ctrl_c_notify,
-                vt_cfg: ctx.vt_cfg,
+                vt_cfg: effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                 skip_confirmations: ctx.skip_confirmations,
                 full_auto: ctx.full_auto,
                 context_usage_percent: ctx.context_manager.context_usage_percent(
                     vtcode_core::compaction::effective_context_budget(
-                        ctx.vt_cfg,
+                        effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                         ctx.provider_client.as_ref(),
                         &resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active()),
                     ),
@@ -884,7 +982,8 @@ pub(crate) async fn run_turn_loop(
         // A configured monetary budget is an enforcement contract. Validate
         // pricing before any compaction path because native compaction can
         // itself dispatch a provider request.
-        if let Some(max_budget_usd) = ctx.vt_cfg.and_then(|cfg| cfg.agent.harness.max_budget_usd)
+        if let Some(max_budget_usd) =
+            effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg).and_then(|cfg| cfg.agent.harness.max_budget_usd)
             && let Err(error) = vtcode_core::llm::usage_cost::require_budget_pricing(
                 ctx.provider_client.name(),
                 &active_model,
@@ -918,7 +1017,7 @@ pub(crate) async fn run_turn_loop(
                     &harness_snapshot.session_id,
                     &ctx.harness_state.run_id.0,
                     &ctx.config.workspace,
-                    ctx.vt_cfg,
+                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                     ctx.lifecycle_hooks,
                     ctx.harness_emitter,
                 ),
@@ -972,7 +1071,7 @@ pub(crate) async fn run_turn_loop(
             tracing::info!(
                 model = %active_model,
                 context_budget = vtcode_core::compaction::effective_context_budget(
-                    ctx.vt_cfg, ctx.provider_client.as_ref(), &active_model,
+                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg), ctx.provider_client.as_ref(), &active_model,
                 ),
                 prompt_tokens = ctx.context_manager.current_token_usage(),
                 "Resolved per-turn context budget denominator"
@@ -982,10 +1081,11 @@ pub(crate) async fn run_turn_loop(
             // when disabled, or when suppressed; starting a spinner
             // unconditionally would flicker every turn.
             let auto_start = Instant::now();
-            let auto_compaction_allowed = ctx.vt_cfg.is_some_and(|cfg| cfg.agent.harness.auto_compaction_enabled)
+            let auto_compaction_allowed = effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg)
+                .is_some_and(|cfg| cfg.agent.harness.auto_compaction_enabled)
                 && ctx.session_stats.auto_compact_suppressed == vtcode_core::compaction::SUPPRESS_NONE;
             let auto_threshold = crate::agent::runloop::unified::turn::compaction::effective_compaction_threshold(
-                ctx.vt_cfg,
+                effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                 ctx.provider_client.as_ref(),
                 &active_model,
             );
@@ -1005,7 +1105,7 @@ pub(crate) async fn run_turn_loop(
                     &harness_snapshot.session_id,
                     &ctx.harness_state.run_id.0,
                     &ctx.config.workspace,
-                    ctx.vt_cfg,
+                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                     ctx.lifecycle_hooks,
                     ctx.harness_emitter,
                 ),
@@ -1882,6 +1982,7 @@ pub(crate) async fn run_turn_loop(
         pending_plan_execution_target,
         plan_approved_execution_pending,
         final_response_was_fallback,
+        refused: ctx.harness_state.turn_refused(),
     })
 }
 
@@ -2028,7 +2129,7 @@ async fn finalize_turn(
         }
     }
     emit_turn_outcome_notification(
-        ctx.vt_cfg,
+        effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
         working_history,
         ctx.config.workspace.as_path(),
         ctx.harness_state,

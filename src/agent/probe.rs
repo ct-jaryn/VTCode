@@ -1,18 +1,18 @@
 //! Terminal palette probe coordination.
 //!
 //! The OSC color probe ([`probe_and_cache_terminal_palette_harmony`]) does
-//! blocking I/O on `/dev/tty` with up to a 200 ms timeout.  Starting it
+//! blocking I/O on `/dev/tty` with up to a 50 ms timeout.  Starting it
 //! synchronously in `run_single_agent_loop` delays the first TUI render by
 //! that full duration.
 //!
 //! Instead, [`start_terminal_palette_probe`] spawns the probe on a blocking
 //! thread early during bootstrap so it overlaps with startup-context
 //! resolution (config loading, auth probing, theme determination).  The
-//! agent loop then calls [`await_terminal_palette_probe`] just before
-//! crossterm sets up the terminal — by which point the probe has typically
-//! already completed.  This avoids a termios race (the probe's
-//! `RawModeGuard` restore must not undo crossterm's raw mode) while
-//! removing the probe from the user-visible critical path.
+//! Session UI never awaits this probe before first paint. It calls
+//! `note_crossterm_raw_mode()` before spawning the TUI so a late probe
+//! `RawModeGuard` restore cannot undo crossterm raw mode, then
+//! [`await_terminal_palette_probe`] after spawn drains TTY replies and
+//! settles theme before the first model turn.
 //!
 //! # Correctness guarantees
 //!
@@ -25,6 +25,8 @@
 //! - **Fallback**: if the probe was never started (an unanticipated code
 //!   path that still reaches the agent loop), [`await_terminal_palette_probe`]
 //!   runs it synchronously, preserving the original behavior.
+//! - **Timeout**: the OSC probe itself uses a 50 ms read timeout so a silent
+//!   terminal cannot stall background drain for long.
 //!
 //! [`probe_and_cache_terminal_palette_harmony`]:
 //!     vtcode_core::utils::terminal_color_probe::probe_and_cache_terminal_palette_harmony

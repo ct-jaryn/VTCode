@@ -1,7 +1,269 @@
 # Changelog
 
 All notable changes to vtcode will be documented in this file.
+## 0.169.2 - 2026-09-24
+## 0.169.3 - 2026-09-25
+
+### Highlights
+#### Bug Fixes
+
+- Add blank line between agent message and tool block (0bf474a6) 
+- Render full command in transcript headers without truncation (821a9c35) 
+- Cap live preview at 10 rows to match session body budget (bc1465e0) 
+- Stop double-charging spooled previews and raise turn budgets (fee1c55f) 
+- Execution-mode plan repair with allocation and path-scoped read cap (18e516a6) 
+- Prefer bundled system skill for command skills (0fdd25b7) 
+#### Documentation
+
+- Fix broken loop-engineering link and split dense Use table row (7b3195df) 
+- Update TODO - drop completed TUI item, add plan-mode rejection entry (b63d585e) 
+- Document auth, schema, analyze, check, and man subcommands (39390a61) 
+- Finalize instant-tui-startup regression report (00da2b35) 
+- Record reviewed range for instant-tui-startup (5a7a1fca) 
+- Move Quick start before Why/Architecture and trim docs intro (3cddde52) 
+- Finalize static-first-paint report (56a72870) 
+- Finalize registry-light-critical report (6f9f8259) 
+- Record registry-light-critical commit range (f12c4de0) 
+- Record registry-light-critical reviewed range (b406ab90) 
+### Other Changes
+#### Other
+
+- Fix(instant-tui-startup-regression) keep maintenance and palette probe off first paint (f4863b9d) 
+- Feat(static-first-paint) paint typeable shell before session critical init (696442c9) 
+- Update TODO (656da492) 
+- Feat(registry-light-critical) complete tool registry after first paint (302d97f7) 
+#### Performance
+
+- Keep maintenance and palette probe off the first-paint path (8575924f) 
+- Paint typeable shell before session critical init (fd52538c) 
+- Registry-light critical path after first paint (0913c42b) 
+- Registry-light critical path after first paint (a9eb9792) 
+#### Refactors
+
+- Concise user-facing diagnostics, keep forensics file-only (cf4211c0) 
+#### Tests
+
+- Harden Ran command full-display regressions with exact screenshot bytes (caff413b) 
+
+### Highlights
+#### Bug Fixes
+
+- Track shell-created files and register redo (ce40c6f0) (@S2thend)
+- Bound tiny preview bypass with 4 KiB per-turn reserve (6e5d0ae8) 
+- Retire recovery records and harden rewind/redo (d802990d) 
+- Avoid preview gate tripping blocked-call fuse (92a9e71b) 
+- Keep reduced motion docs and probes in sync (c9d579e9) 
+- Restore input after exec session completion (76e05d5a) 
+- Drop assistant prefill that 400s on Claude 4.6+ and 5.x (6b465709) 
+- Resolve manual thinking budgets to adaptive on adaptive-only models (f21af2ce) 
+- Sanitize thinking and temperature per fallback model (7c4af43f) 
+- Default max_tokens to 64k for Claude 5.x profiles (fd895e27) 
+- Downgrade forced tool_choice on models that reject it (cf463e33) 
+- Declare web_fetch format parameter in schema (5c08c8f2) 
+- Name memory command field correctly in description (b0a3cfda) 
+- Document agent parameters and accept items[].type (63e50c7f) 
+- Keep full sentences in progressive tool descriptions (c9b09027) 
+- Replace verify-every-edit cadence with outcome rule (6e5ba141) 
+- State the verifier gate plainly in edit nudge (12832cc1) 
+- Make structured reasoning tags opt-in for all modes (bc0260a9) 
+- State read-budget mechanism instead of shouting (828a7343) 
+- Reword navigation loop guard at normal volume (618d9fca) 
+- Reword loop detector messages at normal volume (4acc0caf) 
+- Reword tool error retry guidance at normal volume (2d950753) 
+- Report all findings with confidence instead of self-filtering (375c1c2a) 
+- Align auto-permission prompt with JSON parser (840e5293) 
+- Replace personal memory example with placeholders (1488c8a2) 
+- Give summarizer a task identity and dedupe summary (414c1779) 
+- Tighten built-in subagent prompt wording (5b4d5b0c) 
+- Keep verification outcome rule in minimal profile (d4462f92) 
+- Persist few-shot context once instead of per request (aaaaaac2) 
+- Append IDE context snapshots instead of rewriting message 0 (7d5e6c78) 
+- Keep sent collapsed-output notices in history (5cd6b205) 
+- Emit each system message in one place only (66a2ddd5) 
+- Skip user-message hoist on preserved-thinking profiles (939de2f7) 
+- Replay assistant content blocks in original order (6e82a62d) 
+- State verification-gate and model-switch resume text factually (a7cca023) 
+- Calm loop, read, spool, and preview guard messages (5a3408f1) 
+- Rewrite verifier, background, roster, and child reminder prompts (4919f21c) 
+- Calm planning recovery, continuation, and handoff directives (d27955de) 
+- State tool error and hint consequences instead of shouting (b0ab17d3) 
+- Apply per-model effort default unless effort is explicit (3c04ccf6) 
+- Drop refused-model blocks at a mid-output fallback boundary (1083da20) 
+- Send the fallback-credit beta with list-form fallbacks (a541d80c) 
+- Skip the refusal retry when the refusal carries a prefill claim (5c62fe9b) 
+- Send a thinking-rewritten refusal retry without the credit token (9405cdbe) 
+- Gate and validate request-level fallbacks like config fallbacks (b8e3cc4c) 
+- Drop requested updates display on models that reject it (a2a55c1a) 
+- Keep trailing assistant turns for backends that accept prefill (b45f13ae) 
+- Fail closed on unclear or negated verifier decisions (8c8c6e49) 
+- Anchor verifier issue extraction to ISSUE: lines (518d2a50) 
+- Let the final response contract yield to agent-defined formats (40180f21) 
+- Keep MCP descriptions fenced in Progressive and Full modes (437f665c) 
+- Derive subagent reasoning enum from vtcode-commons (bf831486) 
+- State that an exhausted read-only budget blocks every tool (f9468aba) 
+- Classify loop blocks by the exact generated message shape (7a7b26d4) 
+- Report completion only after a check you ran (99ca6247) 
+- Give spool paging and preview exhaustion one home (e7fcc3cb) 
+- State what additional_permissions paths can reach (74d17ea3) 
+- Stop advertising task_tracker index 0 while planning (ff73de86) 
+- One accurate start_planning line in one home (d7db4aaa) 
+- Keep one home for when to delegate to subagents (788d5a55) 
+- Point Specialized at the repo's own architecture docs (8dfdfa35) 
+- Calmer wording for static find commands in planning (7f12ac77) 
+- Point edit-miss recovery at exec_command instead of read_file (b16283fe) 
+- Keep universal rules in one home and test it across sections (cfdc54b5) 
+- Roll back refused turns from model-visible history (8b39dc83) 
+- Keep [provider.anthropic] settings when rebuilding the provider client (3178b63f) 
+- Classify elided truncation verifiers as the command that ran (d63ada47) 
+- Name the public exec_command tool in background-demo (943b2dca) 
+- Name the generic verifier when no project command is detected (1e0125e0) 
+- State harness recovery directives as consequences and next steps (ccbb45a6) 
+- Align verifier pipe guidance with the gate and refresh doc references (4bd2826a) 
+- End refused turns without a resumable stall (5ed08ba0) 
+- Ignore the previous turn's final text after a refusal rollback (5df1d8af) 
+- Derive structured-output error model list from capabilities (4028ccd3) 
+#### Documentation
+
+- Prefer gh CLI over webfetch for GitHub refs (57c7b6cd) 
+- Add repo-only DeepWiki-first openai/codex reference workflow (99b57b48) 
+- Require Apache-2.0 attribution for every openai/codex reference (7f28a88c) 
+- Group contributors grid and regenerate via script (22682611) 
+- Add Windows install note, security reporting, FAQ/compatibility, and releases links (71cb63e9) 
+- Tighten overview flow and reorder webmcp section (e390f22e) 
+- Remove npm installer from docs, updater, and distribution scripts (8b7cf117) 
+- Describe web_fetch preview and spool result accurately (8904cde1) 
+- State that task_tracker create replaces the checklist (b6b99627) 
+- Lead apply_patch description with the patch format (42a9f5d5) 
+- Describe start_planning behavior without steering (c45a839d) 
+- Document search_tools behavior and parameters (a02009a4) 
+- Add when-not-to-use guidance to exec_command (44f93b4c) 
+- Reword skill tool descriptions calmly (caff1bd4) 
+- Disambiguate overlapping tools and drop timeout alias (a87ceb1d) 
+- Add prompt style note and refresh prompt references (bcad024b) 
+- Match xhigh and task_budget model lists to the capability profiles (c6c5479e) 
+- Note Anthropic effort, fallbacks and refusal behavior changes (2e14e4c5) 
+- Record Claude 5.x request invariants and persisted context boundaries (928a709e) 
+- Update Anthropic runtime matrix for Claude 5.x (46f4b632) 
+#### Features
+
+- Add native file and conversation rewind with redo (e441fe08) (@S2thend)
+- Honor system reduced motion preference (690e2353) 
+- Apply /model and /effort mid-session without restart (40e2b0eb) 
+- Condense exec-session rows and bound session bodies (cac29a33) 
+- Surface streamed refusal stop_details (0b7a7e20) 
+- Add thinking display updates mode for Opus 5.5 (348a1b9b) 
+- Rewrite runtime guidance and base contract as provider-agnostic prose (0f0ea172) 
+- Opt into server-side refusal fallbacks by default (a5c97f1b) 
+- Stop runner on provider refusal with a Refused outcome (2a90ae6b) 
+### Other Changes
+#### Other
+
+- Add small/large workspace file search benchmarks (a1f7e78f) 
+- Update TODO (6bf07ac4) 
+- Update TODO (9f479aa1) 
+- Update TODO (32eb7dd5) 
+- Update TODO (5e30ac5f) 
+- Update TODO (1426b80a) 
+- Use a char array pattern to split Claude model ids (acfce94d) 
+- Rustfmt the collaboration re-export list (734f5365) 
+- Drop needless struct update in long-context hoist test (0d7627f9) 
+- Update TODO (f98c8b4f) 
+#### Refactors
+
+- Remove manual chain-of-thought answer scaffold (9ece62ed) 
+- Remove dead LLM safety screen (0180a78f) 
+- Dedupe and shorten continuation nudges (9bca78c6) 
+- Share evaluator prompt and drop strategy coaching (e3fffde7) 
+- Prose pass on compiled tool guidance (628e74b2) 
+- Share one Claude 5 family list across capability checks (a3582db1) 
+- Share one leading-word lowercasing helper (ab085cd4) 
+#### Tests
+
+- Initialize preferences in config tests (9e39b093) (@ct-jaryn)
+- Update Merge Gateway preset count (ddb3e81c) (@ct-jaryn)
+- Clarify reduce motion docs and add coverage for static status (6b081c23) 
+- Require constraint cues instead of shouting in contract test (692ef4c3) 
+- Assert verifier gate wording directly (325c1c35) 
+- Match rewritten handoff and denied-interview directives (3154016f) 
+## Unreleased
+
+### Features
+
+- Add filesnap-backed prompt checkpoints for combined file and conversation rewind, with `/redo` and `/rewind-recover`. Track known file edits and literal Unix shell output redirects before mutation, and retain legacy snapshot compatibility.
+
+### Behavior Changes
+
+- Anthropic: an unset `provider.anthropic.effort` now means the model's own default effort (`medium` on Claude Opus 5.5, `high` on the other Claude 5 models). It previously defaulted to `xhigh`; set `effort = "xhigh"` to keep the old behavior. An explicit `agent.reasoning_effort` or `/effort` still takes precedence.
+- Anthropic: `provider.anthropic.fallbacks` now defaults to `"default"`, so requests to the first-party Claude API for models that support server-side refusal fallbacks (Claude Opus 5, Opus 5.5, Fable 5, and Fable 5.1) send `fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta header. Other models and endpoints (Bedrock, Vertex, Foundry, Anthropic-compatible providers) send nothing. Set `fallbacks = "off"` to opt out.
+- A provider refusal (`stop_reason: "refusal"`) now ends the turn as blocked: partial output is not committed as an answer, tool calls in the refused response are not executed, and empty-response recovery does not resend the prompt.
+
 ## v0.73.2 - 2026-01-29
+## 0.169.1 - 2026-09-23
+
+### Highlights
+#### Bug Fixes
+
+- Strip clear_at for non-turn-scoped providers (a54e8cd2) 
+- Bound plan-mode previews and complete review-only plans without file changes (84c45c8b) 
+#### Documentation
+
+- Clarify quick start and navigation (456bc44a) 
+#### Features
+
+- Cap execution-mode preview budget at 6k tokens (bf4fbd29) 
+- Allow read-only git commands as plan verify evidence (8c0192c8) 
+### Other Changes
+## 0.169.0 - 2026-09-23
+
+### Highlights
+#### Features
+
+- Add gpt-6-sol and gpt-6-luna to openai, merge-gateway, openrouter (51725911) 
+### Other Changes
+#### Other
+
+- Update README (edc13cf3) 
+## 0.168.0 - 2026-09-23
+
+### Highlights
+### Other Changes
+## 0.167.0 - 2026-09-23
+
+### Highlights
+#### Bug Fixes
+
+- Drain terminal palette probe before dispatch early-exit (9d234b60) 
+- Harden recovery handoffs and completion lifecycles (694541d5) 
+#### Features
+
+- Show release notes immediately after install (6be474b0) 
+- Add Claude Opus 5.5 across model registries (aa1d8a8c) 
+### Other Changes
+#### Other
+
+- Update provider guides (f4f91f9a) 
+## 0.166.0 - 2026-09-22
+
+### Highlights
+#### Bug Fixes
+
+- Avoid truncating swarm range samples (1e0ba7a3) (@ct-jaryn)
+- Honor default_provider/default_model from global config.toml (7af7d919) 
+- Redirect apply_patch shell collisions to the apply_patch tool (98792a32) 
+#### Documentation
+
+- Explain CLI failure fixture setup (d5225c1b) (@ct-jaryn)
+- Explain deterministic swarm range tests (f40b0b1c) (@ct-jaryn)
+- Update README with OAuth login, init command, and refreshed guide links (68c9ba40) 
+### Other Changes
+#### Other
+
+- Add GLM-5.3-FlashX model from Zai (d12a130d) 
+- Add XiaoMi Mimo's Mimo-v2.5 Pro, Mimo-v2.6 Flash and Mimo-v2.6 Ultraspeed (11f4b57d) 
+- Remove Jump to last change navigation (2c8c7ff0) 
+#### Tests
+
+- Pin failure harness provider and model (cb477d13) (@ct-jaryn)
 ## 0.165.0 - 2026-09-21
 
 ### Highlights

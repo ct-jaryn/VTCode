@@ -149,6 +149,10 @@ impl ToolBudgetWarning {
     }
 }
 
+/// Shared tail of the tool-call and wall-clock budget exhaustion directives.
+const BUDGET_EXHAUSTED_SYNTHESIS_NOTE: &str = "Tools are disabled for the rest of this turn, so further tool calls are \
+skipped. Synthesize your final answer now from the tool outputs already gathered in this conversation.";
+
 impl ToolBudgetExhaustion {
     pub(crate) fn policy_violation_message(self) -> String {
         format!("Policy violation: exceeded max tool calls per turn ({})", self.max)
@@ -167,7 +171,7 @@ impl ToolBudgetExhaustion {
     pub(crate) fn synthesis_directive_message(self) -> String {
         debug_assert!(self.max > 0, "disabled tool-call caps must not emit exhaustion");
         format!(
-            "Tool-call budget exhausted for this turn ({}/{}). Tools are disabled for the rest of this turn. Do NOT emit more tool calls. Synthesize your final answer now from the tool outputs already gathered in this conversation.",
+            "Tool-call budget exhausted for this turn ({}/{}). {BUDGET_EXHAUSTED_SYNTHESIS_NOTE}",
             self.used, self.max
         )
     }
@@ -254,7 +258,7 @@ impl ToolWallClockExhaustion {
     /// the in-turn synthesis nudge that the raw per-call policy errors lack.
     pub(crate) fn synthesis_directive_message(self) -> String {
         format!(
-            "Tool wall-clock budget exhausted for this turn ({}s). Tools are disabled for the rest of this turn. Do NOT emit more tool calls. Synthesize your final answer now from the tool outputs already gathered in this conversation.",
+            "Tool wall-clock budget exhausted for this turn ({}s). {BUDGET_EXHAUSTED_SYNTHESIS_NOTE}",
             self.max_secs
         )
     }
@@ -509,6 +513,7 @@ pub(crate) struct HarnessTurnState {
     raw_spooled_bytes: u64,
     model_visible_output_bytes: u64,
     model_visible_tool_preview_bytes: usize,
+    model_visible_tiny_tool_preview_bytes: usize,
     model_visible_tool_metadata_bytes: usize,
     model_visible_tool_preview_budget_exhausted: bool,
     suppressed_tool_previews: u32,
@@ -524,6 +529,10 @@ pub(crate) struct HarnessTurnState {
     recovery_activations: u32,
     pub blocked_tool_calls: usize,
     pub consecutive_blocked_tool_calls: usize,
+    /// Parallel preview-gate rejections are one failed decision, not separate
+    /// permission denials. Allow one response to choose spool paging or finish.
+    preview_gate_rejected_this_batch: bool,
+    consecutive_preview_gate_batches: u8,
     /// Counts consecutive malformed/schema-invalid tool calls independently
     /// from policy denials. A valid admitted call resets this streak.
     pub consecutive_preflight_failures: usize,
@@ -550,6 +559,10 @@ pub(crate) struct HarnessTurnState {
     /// Whether the final response was produced by deterministic recovery
     /// fallback rather than by a successful model synthesis.
     final_response_was_fallback: bool,
+    /// Whether the provider refused this turn (`FinishReason::Refusal`). A
+    /// refused turn is rolled back out of model-visible history and never
+    /// auto-continued, so the flag travels to the session loop.
+    turn_refused: bool,
     pub consecutive_spool_chunk_reads: usize,
     pub consecutive_same_shell_command_runs: usize,
     pub last_shell_command_signature: Option<String>,
@@ -699,6 +712,7 @@ impl HarnessTurnState {
             raw_spooled_bytes: 0,
             model_visible_output_bytes: 0,
             model_visible_tool_preview_bytes: 0,
+            model_visible_tiny_tool_preview_bytes: 0,
             model_visible_tool_metadata_bytes: 0,
             model_visible_tool_preview_budget_exhausted: false,
             suppressed_tool_previews: 0,
@@ -707,6 +721,8 @@ impl HarnessTurnState {
             recovery_activations: 0,
             blocked_tool_calls: 0,
             consecutive_blocked_tool_calls: 0,
+            preview_gate_rejected_this_batch: false,
+            consecutive_preview_gate_batches: 0,
             consecutive_preflight_failures: 0,
             consecutive_assistant_text_responses: 0,
             out_of_band_tool_progress: false,
@@ -714,6 +730,7 @@ impl HarnessTurnState {
             final_response_event_emitted: false,
             streamed_response_event_emitted: false,
             final_response_was_fallback: false,
+            turn_refused: false,
             consecutive_spool_chunk_reads: 0,
             consecutive_same_shell_command_runs: 0,
             last_shell_command_signature: None,
@@ -878,7 +895,7 @@ impl HarnessTurnState {
     }
 
     /// Test-only execution-budget shorthand so exec-mode tests avoid
-    /// repeating the `32 KiB` denominator on every call.
+    /// repeating the `64 KiB` denominator on every call.
     #[cfg(test)]
     pub(crate) fn bound_model_visible_tool_preview(&mut self, tool_name: Option<&str>, content: String) -> String {
         self.bound_model_visible_tool_preview_with_budget(
@@ -898,7 +915,7 @@ impl HarnessTurnState {
     /// recursively growing prompt.
     ///
     /// Callers pass the effective turn budget (`turn_preview_budget_bytes`)
-    /// so planning (`96 KiB`) and execution (`32 KiB`) share one accounting
+    /// so planning (`96 KiB`) and execution (`64 KiB`) share one accounting
     /// path instead of duplicated ledgers.
     #[cfg(test)]
     pub(crate) fn bound_model_visible_tool_preview_with_budget(
@@ -948,14 +965,20 @@ impl HarnessTurnState {
         }
 
         // Verifier bypass: payloads at or under `TINY_PREVIEW_BYPASS_BYTES`
-        // stay visible even after exhaustion. Session-vtcode-20260913T074747Z
-        // exhausted 32 KiB on a 24 KiB README read then blinded 25 later
-        // verifier outputs (5-byte `grep -c`, short `BROKEN:` lists),
-        // forcing repeated identical shell runs. Use the full content length
-        // here so metadata-heavy payloads (e.g. large `diagnosis` blocks)
-        // still exhaust the budget instead of bypassing on a small `output`.
+        // use a separate finite per-turn reserve instead of the regular
+        // preview budget. This keeps short checks available after that budget
+        // is exhausted. Charge full serialized content so metadata overhead
+        // cannot bypass either bound.
         if content.len() <= vtcode_config::constants::output_limits::TINY_PREVIEW_BYPASS_BYTES {
-            return content;
+            let tiny_budget = vtcode_config::constants::output_limits::TURN_TINY_PREVIEW_BUDGET_BYTES;
+            let remaining = tiny_budget.saturating_sub(self.model_visible_tiny_tool_preview_bytes);
+            if content.len() <= remaining {
+                self.model_visible_tiny_tool_preview_bytes =
+                    self.model_visible_tiny_tool_preview_bytes.saturating_add(content.len());
+                return content;
+            }
+            self.model_visible_tiny_tool_preview_bytes = tiny_budget;
+            return self.suppress_model_visible_tool_preview(tool_call_id, tool_name, content);
         }
 
         let budget = budget_bytes.max(1);
@@ -969,6 +992,15 @@ impl HarnessTurnState {
         }
 
         self.model_visible_tool_preview_bytes = budget;
+        self.suppress_model_visible_tool_preview(tool_call_id, tool_name, content)
+    }
+
+    fn suppress_model_visible_tool_preview(
+        &mut self,
+        tool_call_id: Option<&str>,
+        tool_name: Option<&str>,
+        content: String,
+    ) -> String {
         self.model_visible_tool_preview_budget_exhausted = true;
         self.record_suppressed_tool_preview(tool_call_id);
         let metadata_remaining =
@@ -1199,6 +1231,25 @@ impl HarnessTurnState {
 
     pub(crate) fn reset_blocked_tool_call_streak(&mut self) {
         self.consecutive_blocked_tool_calls = 0;
+    }
+
+    pub(crate) fn record_preview_gate_rejection(&mut self) {
+        self.preview_gate_rejected_this_batch = true;
+    }
+
+    /// Returns true after two blind-inspection batches without an admitted
+    /// tool between them. A batch of parallel calls counts only once.
+    pub(crate) fn finish_preview_gate_batch(&mut self) -> bool {
+        if !std::mem::take(&mut self.preview_gate_rejected_this_batch) {
+            return false;
+        }
+        self.consecutive_preview_gate_batches = self.consecutive_preview_gate_batches.saturating_add(1);
+        self.consecutive_preview_gate_batches >= 2
+    }
+
+    pub(crate) fn reset_preview_gate_batches(&mut self) {
+        self.preview_gate_rejected_this_batch = false;
+        self.consecutive_preview_gate_batches = 0;
     }
 
     pub(crate) fn record_preflight_failure(&mut self) -> usize {
@@ -1476,6 +1527,14 @@ impl HarnessTurnState {
 
     pub(crate) fn final_response_was_fallback(&self) -> bool {
         self.final_response_was_fallback
+    }
+
+    pub(crate) fn mark_turn_refused(&mut self) {
+        self.turn_refused = true;
+    }
+
+    pub(crate) fn turn_refused(&self) -> bool {
+        self.turn_refused
     }
 
     pub(crate) fn is_approved_plan_execution(&self) -> bool {
@@ -2118,7 +2177,10 @@ mod tests {
         ToolBudgetExhaustion, ToolBudgetExhaustionNotice, ToolBudgetWarning, ToolWallClockExhaustion,
         ToolWallClockExhaustionNotice, TurnExecutionPhase, TurnId, TurnPhase, TurnRunId, full_auto_loop_grants_enabled,
     };
-    use vtcode_config::constants::output_limits::{TURN_PREVIEW_BUDGET_BYTES, TURN_PREVIEW_BUDGET_BYTES_PLANNING};
+    use vtcode_config::constants::output_limits::{
+        TINY_PREVIEW_BYPASS_BYTES, TURN_PREVIEW_BUDGET_BYTES, TURN_PREVIEW_BUDGET_BYTES_PLANNING,
+        TURN_TINY_PREVIEW_BUDGET_BYTES,
+    };
     use vtcode_core::config::loader::VTCodeConfig;
 
     #[test]
@@ -2226,6 +2288,42 @@ mod tests {
             "aggregate metadata bytes grew unboundedly: {aggregate_metadata_bytes}"
         );
         assert_eq!(state.model_visible_tool_metadata_bytes, MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn tiny_verifier_previews_use_a_bounded_reserve_after_regular_budget_exhaustion() {
+        let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
+        let primary =
+            state.bound_model_visible_tool_preview(Some("read_file"), "a".repeat(TURN_PREVIEW_BUDGET_BYTES + 1));
+        assert!(primary.contains("preview_budget_exhausted"));
+
+        let output = "3";
+        let tiny = serde_json::json!({"success": true, "exit_code": 0, "output": output}).to_string();
+        assert!(tiny.len() <= TINY_PREVIEW_BYPASS_BYTES);
+        let admitted_count = TURN_TINY_PREVIEW_BUDGET_BYTES / tiny.len();
+        assert!(admitted_count > 0);
+        for index in 0..admitted_count {
+            let visible = state.bound_model_visible_tool_preview_for_call_with_budget(
+                &format!("call-verifier-{index}"),
+                Some("exec_command"),
+                tiny.clone(),
+                TURN_PREVIEW_BUDGET_BYTES,
+            );
+            assert_eq!(visible, tiny);
+        }
+
+        let suppressed = state.bound_model_visible_tool_preview_for_call_with_budget(
+            "call-verifier-overflow",
+            Some("exec_command"),
+            tiny,
+            TURN_PREVIEW_BUDGET_BYTES,
+        );
+        assert!(suppressed.contains("preview_budget_exhausted"));
+        assert!(!suppressed.contains("\"output\":\"3\""));
+        assert!(suppressed.contains("\"success\":true"));
+        assert!(suppressed.contains("\"exit_code\":0"));
+        assert_eq!(state.model_visible_tiny_tool_preview_bytes, TURN_TINY_PREVIEW_BUDGET_BYTES);
+        assert_eq!(state.suppressed_tool_previews, 2);
     }
 
     #[test]
@@ -2529,7 +2627,7 @@ mod tests {
     fn tool_budget_exhaustion_synthesis_directive_matches_contract() {
         assert_eq!(
             ToolBudgetExhaustion { used: 4, max: 4, remaining: 0 }.synthesis_directive_message(),
-            "Tool-call budget exhausted for this turn (4/4). Tools are disabled for the rest of this turn. Do NOT emit more tool calls. Synthesize your final answer now from the tool outputs already gathered in this conversation."
+            "Tool-call budget exhausted for this turn (4/4). Tools are disabled for the rest of this turn, so further tool calls are skipped. Synthesize your final answer now from the tool outputs already gathered in this conversation."
         );
     }
 
@@ -2652,7 +2750,7 @@ mod tests {
         assert_eq!(exhaustion.skipped_call_message(), "Tool wall-clock budget exhausted for this turn; call skipped.");
         assert_eq!(
             exhaustion.synthesis_directive_message(),
-            "Tool wall-clock budget exhausted for this turn (600s). Tools are disabled for the rest of this turn. Do NOT emit more tool calls. Synthesize your final answer now from the tool outputs already gathered in this conversation."
+            "Tool wall-clock budget exhausted for this turn (600s). Tools are disabled for the rest of this turn, so further tool calls are skipped. Synthesize your final answer now from the tool outputs already gathered in this conversation."
         );
     }
 

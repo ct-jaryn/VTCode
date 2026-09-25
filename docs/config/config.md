@@ -1160,7 +1160,7 @@ enabled = true
 enabled = true
 ```
 
-- `inject_into_prompt` injects a compact `Active Editor Context` block into request-time model input, outside the static system prompt.
+- `inject_into_prompt` injects a compact `Active Editor Context` block into model input, outside the static system prompt. The block is attached to a user turn (just before the user message) only when the snapshot differs from the one last sent, so earlier requests are never rewritten; changes made while the agent is mid-turn apply from the next user turn.
 - `show_in_tui` mirrors the same active editor summary in the inline header.
 - `include_selection_text` only sends text when there is an explicit selection.
 - `provider_mode` can force one family: `auto`, `vscode_compatible`, `zed`, or `generic`.

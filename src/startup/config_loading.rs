@@ -7,6 +7,7 @@ use vtcode_core::utils::validation::validate_path_exists;
 
 use super::first_run::maybe_run_first_run_setup;
 use super::validation::{parse_cli_config_entries, resolve_config_path, resolve_workspace_path};
+use vtcode_core::config::loader::ConfigManager;
 
 pub(super) struct LoadedStartupConfig {
     pub(super) workspace: PathBuf,
@@ -107,6 +108,7 @@ pub(super) async fn load_startup_config(args: &Cli) -> Result<LoadedStartupConfi
     // single owned clone for this startup.
     let primary_agent_explicitly_configured = manager.has_explicit_top_level_key("default_primary_agent");
     let mut config = manager.config().clone();
+    apply_aux_dotconfig_provider_defaults(&mut config, &manager).await;
 
     let (full_auto_requested, automation_prompt) = match args.full_auto.clone() {
         Some(value) if value.trim().is_empty() => (true, None),
@@ -128,6 +130,93 @@ pub(super) async fn load_startup_config(args: &Cli) -> Result<LoadedStartupConfi
         automation_prompt,
         primary_agent_explicitly_configured,
     })
+}
+
+/// Honor the auxiliary global `config.toml` (`[preferences] default_provider` /
+/// `default_model`, including legacy bare top-level keys) when the canonical
+/// `vtcode.toml` layers do not explicitly configure `agent.provider` /
+/// `agent.default_model`.
+///
+/// `vtcode review` / `exec` (and every other command) resolve the runtime
+/// provider from `VTCodeConfig.agent.provider`. Users editing the global
+/// `config.toml` expect those preferences to apply; previously they were
+/// silently ignored and the runtime kept the compiled-in openrouter default,
+/// failing with an openrouter auth error even after configuring e.g. ollama.
+async fn apply_aux_dotconfig_provider_defaults(config: &mut VTCodeConfig, manager: &ConfigManager) {
+    let provider_explicit = explicit_agent_key(manager, "provider");
+    let model_explicit = explicit_agent_key(manager, "default_model");
+    if provider_explicit && model_explicit {
+        return;
+    }
+
+    let dot = match vtcode_core::utils::dot_config::load_user_config().await {
+        Ok(dot) => dot,
+        Err(_) => return,
+    };
+
+    apply_dot_preferences(config, &dot.preferences, provider_explicit, model_explicit);
+}
+
+pub(super) fn apply_dot_preferences(
+    config: &mut VTCodeConfig,
+    preferences: &vtcode_core::utils::dot_config::UserPreferences,
+    provider_explicit: bool,
+    model_explicit: bool,
+) {
+    let compiled_default_provider = vtcode_core::config::constants::defaults::DEFAULT_PROVIDER;
+    let compiled_default_model = vtcode_core::config::constants::defaults::DEFAULT_MODEL;
+
+    // Resolve the provider first so a provider switch can drive the model
+    // fallback below.
+    let mut provider_changed = false;
+    if !provider_explicit {
+        let preferred = preferences.default_provider.trim();
+        // A pristine auxiliary file carries the compiled-in default
+        // (`openrouter`), which is a no-op. Only an explicit, non-default
+        // auxiliary provider overrides the canonical default.
+        if !preferred.is_empty()
+            && !preferred.eq_ignore_ascii_case(compiled_default_provider)
+            && !preferred.eq_ignore_ascii_case(&config.agent.provider)
+        {
+            config.agent.provider = preferred.to_owned();
+            provider_changed = true;
+            // The placeholder default (`OPENROUTER_API_KEY`) resolves per-provider
+            // via `resolve_api_key_env`; reset it so diagnostics and downstream
+            // resolution use the new provider's default env key.
+            let current_env = config.agent.api_key_env.trim().to_owned();
+            if current_env.is_empty()
+                || current_env.eq_ignore_ascii_case(vtcode_core::config::constants::defaults::DEFAULT_API_KEY_ENV)
+            {
+                config.agent.api_key_env = vtcode_core::config::api_keys::api_key_env_var(&config.agent.provider);
+            }
+        }
+    }
+
+    if model_explicit {
+        return;
+    }
+
+    let preferred_model = preferences.default_model.trim().to_owned();
+    let dot_model_customized = !preferred_model.is_empty() && preferred_model != compiled_default_model;
+    if dot_model_customized && preferred_model != config.agent.default_model {
+        config.agent.default_model = preferred_model;
+    } else if provider_changed && config.agent.default_model == compiled_default_model {
+        // Provider switched via the auxiliary file but the auxiliary model was
+        // left at the compiled-in default: adopt the new provider's default
+        // model instead of keeping the old provider's default (which would
+        // fail model validation, e.g. an openrouter route with ollama).
+        if let Some(provider_default) =
+            vtcode_core::config::constants::model_helpers::default_for(&config.agent.provider)
+            && provider_default != config.agent.default_model
+        {
+            config.agent.default_model = provider_default.to_owned();
+        }
+    }
+}
+
+fn explicit_agent_key(manager: &ConfigManager, key: &str) -> bool {
+    let effective = manager.effective_config();
+    effective.get("agent").and_then(|agent| agent.get(key)).is_some()
 }
 
 #[cfg(test)]
@@ -221,5 +310,44 @@ enable_tracing = true
             vtcode_commons::canonicalize(&config_path).ok(),
             "startup must capture the resolved env path as the session override"
         );
+    }
+
+    #[test]
+    fn aux_dotconfig_ollama_provider_applies_when_canonical_is_default() {
+        let mut config = VTCodeConfig::default();
+        assert_eq!(config.agent.provider, "openrouter");
+        let preferences = vtcode_core::utils::dot_config::UserPreferences {
+            default_provider: "ollama".to_string(),
+            ..Default::default()
+        };
+        // Auxiliary model left at the compiled-in default: the ollama default
+        // model must be adopted instead of keeping the openrouter route.
+        apply_dot_preferences(&mut config, &preferences, false, false);
+        assert_eq!(config.agent.provider, "ollama");
+        assert_eq!(config.agent.default_model, vtcode_core::config::constants::models::ollama::DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn aux_dotconfig_does_not_clobber_explicit_canonical_provider() {
+        let mut config = VTCodeConfig::default();
+        config.agent.provider = "openai".to_string();
+        let preferences = vtcode_core::utils::dot_config::UserPreferences {
+            default_provider: "ollama".to_string(),
+            ..Default::default()
+        };
+        apply_dot_preferences(&mut config, &preferences, true, false);
+        assert_eq!(config.agent.provider, "openai");
+    }
+
+    #[test]
+    fn aux_dotconfig_custom_model_applies_when_canonical_model_is_default() {
+        let mut config = VTCodeConfig::default();
+        let preferences = vtcode_core::utils::dot_config::UserPreferences {
+            default_provider: "openrouter".to_string(),
+            default_model: "custom-route/model".to_string(),
+            ..Default::default()
+        };
+        apply_dot_preferences(&mut config, &preferences, true, false);
+        assert_eq!(config.agent.default_model, "custom-route/model");
     }
 }

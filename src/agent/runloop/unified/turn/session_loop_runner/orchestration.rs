@@ -36,10 +36,11 @@ use super::metrics::{
 };
 use super::plan_seed::load_active_plan_seed;
 use super::support::{
-    ExecutionSummaryStatus, append_transient_turn_notes, approved_plan_execution_summary,
-    build_unrelated_dirty_worktree_note, checkpoint_session_archive_start, force_reload_workspace_config_for_execution,
-    format_workspace_relative_paths, latest_assistant_result_text, prepare_resume_bootstrap_without_archive,
-    prompt_startup_planning_workflow, remove_transient_system_notes, take_pending_resumed_user_prompt,
+    ExecutionSummaryStatus, RefusedTurnRollback, append_transient_turn_notes, approved_plan_execution_summary,
+    build_unrelated_dirty_worktree_note, build_withdrawn_turn_changes_note, checkpoint_session_archive_start,
+    force_reload_workspace_config_for_execution, format_workspace_relative_paths, latest_assistant_result_text,
+    prepare_resume_bootstrap_without_archive, prompt_startup_planning_workflow, remove_transient_system_notes,
+    take_pending_resumed_user_prompt,
 };
 use crate::agent::runloop::ResumeSession;
 use crate::agent::runloop::git::{compute_session_code_change_delta, normalize_workspace_path};
@@ -57,6 +58,7 @@ use crate::agent::runloop::unified::session_setup::{
 };
 use crate::agent::runloop::unified::state::SessionStats;
 use crate::agent::runloop::unified::status_line::InputStatusState;
+use crate::agent::runloop::unified::turn::background_completion::PendingBackgroundCompletions;
 use crate::agent::runloop::unified::turn::context::TurnLoopResult as RunLoopTurnLoopResult;
 use crate::agent::runloop::unified::turn::finalization::finalize_session;
 use crate::agent::runloop::unified::turn::primary_agent_runtime::{
@@ -69,6 +71,8 @@ use crate::agent::runloop::unified::turn::turn_loop_helpers::{
 };
 use crate::agent::runloop::unified::workspace_links::LinkedDirectory;
 use crate::updater::{InlineUpdateOutcome, display_update_notice, run_inline_update_prompt};
+
+const BACKGROUND_COMPLETION_CONTINUATION_PROMPT: &str = "Review the authoritative background subprocess completion notice and continue the user's request. Do not poll or wait for those completed tasks.";
 
 fn persist_primary_agent(
     session_archive: &mut Option<session_archive::SessionArchive>,
@@ -257,6 +261,28 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         }
         let session_setup_phase = vtcode_commons::startup_trace::phase_started();
         let session_primary_agent_override = next_session_primary_agent.take();
+        // Static-first paint: typeable shell before ToolRegistry/discovery.
+        let steering_sender_for_shell = if steering_receiver.is_none() {
+            let (sender, receiver) = mpsc::unbounded_channel();
+            *steering_receiver = Some(receiver);
+            Some(sender)
+        } else {
+            None
+        };
+        let (settings_sender, shell_settings_receiver) = mpsc::unbounded_channel();
+        let shell = crate::agent::runloop::unified::session_setup::initialize_session_shell(
+            &config,
+            vt_cfg.as_ref(),
+            crate::agent::runloop::unified::session_setup::SessionUiLaunchOptions {
+                session_archive: None,
+                full_auto,
+                skip_confirmations,
+                steering_sender: steering_sender_for_shell,
+                settings_sender: settings_sender.clone(),
+            },
+        )
+        .await?;
+        let mut settings_receiver = shell_settings_receiver;
         let session_critical_phase = vtcode_commons::startup_trace::phase_started();
         let mut session_state = initialize_session_critical(
             &config,
@@ -296,13 +322,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             }};
         }
 
-        let steering_sender = if steering_receiver.is_none() {
-            let (sender, receiver) = mpsc::unbounded_channel();
-            *steering_receiver = Some(receiver);
-            Some(sender)
-        } else {
-            None
-        };
         let session_ui_phase = vtcode_commons::startup_trace::phase_started();
         let ui_setup = initialize_session_ui(
             &config,
@@ -311,16 +330,46 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             &mut session_state,
             session_trigger,
             resume_ref,
+            shell,
             crate::agent::runloop::unified::session_setup::SessionUiLaunchOptions {
                 session_archive,
                 full_auto,
                 skip_confirmations,
-                steering_sender,
+                steering_sender: None,
+                settings_sender: settings_sender.clone(),
             },
         )
         .await;
         let mut ui_setup = harness_try!(ui_setup);
         vtcode_commons::startup_trace::record_phase("session_setup_ui", session_ui_phase);
+
+        // Registry-light critical path: ToolRegistry + discovery run after the
+        // typeable shell / ready wiring so first paint never waits on them.
+        harness_try!(
+            crate::agent::runloop::unified::session_setup::complete_session_registry(
+                &mut session_state,
+                &config,
+                vt_cfg.as_ref(),
+                full_auto,
+                primary_agent_explicitly_configured,
+                resume_ref,
+                thread_handle.thread_id().as_str(),
+                session_primary_agent_override.as_deref(),
+            )
+            .await
+        );
+
+        // Retention walks the session store and may rmtree dozens of dirs.
+        // Scheduled only after first paint is available so a large archive
+        // cannot delay the first frame; still best-effort background.
+        {
+            let workspace = config.workspace.clone();
+            let vt_cfg = vt_cfg.clone();
+            let turn_run_id = turn_run_id.clone();
+            tokio::spawn(async move {
+                super::harness::run_harness_retention(&workspace, vt_cfg.as_ref(), &turn_run_id).await;
+            });
+        }
 
         // Deferred hydration runs after the TUI first frame is available.
         // The interaction loop must not dispatch a model turn until this
@@ -389,6 +438,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         let _background_subprocess_task_guard = ui_setup.background_subprocess_task_guard;
         let _startup_update_task_guard = ui_setup.startup_update_task_guard;
         let _editor_open_coordinator_task_guard = ui_setup.editor_open_coordinator_task_guard;
+        let _settings_task_guard = ui_setup.settings_task_guard;
         let editor_open_sender = ui_setup.editor_open_sender;
         let editor_open_dispatcher = ui_setup.editor_open_dispatcher;
         let startup_update_cached_notice = ui_setup.startup_update_cached_notice;
@@ -396,7 +446,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         let SessionState {
             session_bootstrap,
             mut provider_client,
-            mut tool_registry,
+            tool_registry: tool_registry_opt,
             tools,
             tool_catalog,
             conversation_history,
@@ -408,6 +458,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             mut active_primary_agent,
             ..
         } = session_state;
+        // `complete_session_registry` already ran after first paint; the
+        // interaction loop requires the concrete registry.
+        let mut tool_registry = tool_registry_opt.expect("tool registry completed before interaction");
         // `initialize_session_ui` may move the archive through setup. Persist
         // again after extracting the live state so every subsequent switch is
         // anchored to the same archive metadata instance.
@@ -488,10 +541,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     crate::agent::runloop::unified::planning_workflow::persisted_plan_is_ready(&plan_state).await;
                 if !plan_ready {
                     let follow_up = tracker_continue::plan_mode_continue_follow_up();
-                    let directive = "Resume continuation: planning remains active via recoverable blocked handoff. \
-                         Continue read-only research/synthesis toward one compact `<proposed_plan>` now; \
-                         do not ask the user to resume and do not implement."
-                        .to_string();
+                    let directive = tracker_continue::plan_mode_resume_directive();
                     {
                         let messages = std::sync::Arc::make_mut(&mut runtime.state.messages);
                         messages.push(vtcode_core::llm::provider::Message::system(directive));
@@ -520,10 +570,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 // Resume with open TODO/tracker steps: auto-queue one continuation
                 // turn instead of waiting for the user to type continue.
                 let follow_up = tracker_continue::tracker_continue_follow_up(&incomplete);
-                let directive = format!(
-                    "Resume continuation: task_tracker still has incomplete steps: {}. \
-                     Execute the next concrete tracker step now; do not ask the user to resume.",
-                    incomplete.join(", ")
+                let directive = tracker_continue::tracker_continue_directive(
+                    tracker_continue::TRACKER_RESUME_DIRECTIVE_LABEL,
+                    &incomplete,
                 );
                 {
                     let messages = std::sync::Arc::make_mut(&mut runtime.state.messages);
@@ -627,6 +676,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         let mut prefer_latest_queued_input_once = false;
         let mut queued_inputs: VecDeque<crate::agent::runloop::unified::inline_events::QueuedInput> =
             VecDeque::with_capacity(8);
+        let mut background_completion_receiver = tool_registry
+            .subagent_controller()
+            .map(|controller| controller.subscribe_parent_background_completions());
+        let exec_session_manager = tool_registry.exec_session_manager();
+        let mut exec_completion_receiver = Some(exec_session_manager.subscribe_completion());
+        let exec_completion_notify = Some(exec_session_manager.completion_notify());
+        let mut pending_background_completions = PendingBackgroundCompletions::default();
         let (webmcp_prompt_sender, webmcp_prompt_receiver) = crate::agent::runloop::unified::webmcp::prompt_channel();
         let mut webmcp_prompt_receiver = Some(webmcp_prompt_receiver);
         let mut webmcp_bridge = None;
@@ -786,6 +842,16 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     controller.set_parent_messages(&runtime.state.messages).await;
                 }
 
+                if pending_background_completions.should_schedule_continuation(
+                    !queued_inputs.is_empty() || !session.events.is_empty(),
+                    runtime.has_pending_follow_up_inputs(),
+                ) {
+                    match runtime.try_queue_follow_up_input(BACKGROUND_COMPLETION_CONTINUATION_PROMPT.to_string()) {
+                        Ok(()) => pending_background_completions.mark_continuation_queued(),
+                        Err(error) => tracing::warn!(%error, "Unable to queue background completion continuation"),
+                    }
+                }
+
                 let interaction_outcome = if pending_approved_plan_execution_input {
                     // An approved-plan handoff is an internal state transition,
                     // not ordinary user steering. Consume it directly so a
@@ -804,6 +870,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     InteractionOutcome::Continue { input, prompt_message_index: None, turn_id }
                 } else {
                     let mut interaction_turn_metadata_cache = None;
+                    let background_completion_notify = tool_registry
+                        .subagent_controller()
+                        .map(|controller| controller.background_completion_notify());
                     let (session_state, runtime_steering) = runtime.split_mut();
                     let mut interaction_ctx =
                         crate::agent::runloop::unified::turn::session::interaction_loop::InteractionLoopContext {
@@ -865,6 +934,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             startup_update_notice_rx: &mut startup_update_notice_rx,
                             editor_open_sender: &editor_open_sender,
                             editor_open_dispatcher: editor_open_dispatcher.clone(),
+                            background_completion_notify,
+                            exec_completion_notify: exec_completion_notify.clone(),
+                            background_completion_receiver: &mut background_completion_receiver,
+                            exec_completion_receiver: &mut exec_completion_receiver,
+                            pending_background_completions: &mut pending_background_completions,
                         };
 
                     let mut interaction_state =
@@ -910,10 +984,10 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         session_end_reason = SessionEndReason::Completed;
                         break;
                     }
-                    InteractionOutcome::DirectToolHandled => {
-                        // Explicit `run ...` / `!cmd` interactions are direct command mode:
-                        // render the tool output and wait for the next user input instead of
-                        // fabricating an autonomous follow-up turn.
+                    InteractionOutcome::BackgroundCompletionReady => continue,
+                    InteractionOutcome::DirectToolHandled => continue,
+                    InteractionOutcome::DirectBackgroundToolHandled { completion_identity } => {
+                        pending_background_completions.suppress_autonomous_continuation(completion_identity);
                         continue;
                     }
                     InteractionOutcome::Continue { input, prompt_message_index, turn_id: next_turn_id } => {
@@ -1199,6 +1273,62 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 }
                 let (session_state, runtime_steering) = runtime.split_mut();
                 let working_history = std::sync::Arc::make_mut(&mut session_state.messages);
+                let refused_turn_rollback = RefusedTurnRollback::capture(
+                    working_history,
+                    completed_turn_prompt_message_index,
+                    &next_turn_input,
+                );
+                let _prompt_checkpoint_lease = if let Some(manager) = checkpoint_manager.as_ref() {
+                    let prefix = completed_turn_prompt_message_index
+                        .unwrap_or(working_history.len())
+                        .min(working_history.len());
+                    let conversation: Vec<_> = working_history[..prefix].iter().map(SessionMessage::from).collect();
+                    let session_id = tool_registry.harness_context_snapshot().session_id;
+                    let lease = match manager
+                        .begin_prompt(next_checkpoint_turn, &session_id, &next_turn_input, &conversation)
+                        .await
+                    {
+                        Ok(lease) => lease,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "Checkpoint unavailable; prompt retained in input");
+                            let _ = renderer.line(
+                                MessageStyle::Error,
+                                &format!("Prompt not sent; checkpoint unavailable: {err:#}"),
+                            );
+                            // The prompt message was already appended to history by the
+                            // interaction loop (or the approved-plan handoff). Remove it
+                            // so a retry does not duplicate, and restore the text.
+                            if let Some(index) = completed_turn_prompt_message_index {
+                                if index < working_history.len() {
+                                    working_history.truncate(index);
+                                }
+                                handle.set_input(next_turn_input.clone());
+                                handle.force_redraw();
+                            } else if working_history.last().is_some_and(|message| {
+                                message.role == MessageRole::User
+                                    && message.content.as_text().trim() == next_turn_input.trim()
+                            }) {
+                                working_history.pop();
+                                handle.set_input(next_turn_input.clone());
+                                handle.force_redraw();
+                            }
+                            continue;
+                        }
+                    };
+                    if let Some(emitter) = harness_emitter.as_ref() {
+                        let _ = emitter.emit(harness_event(
+                            vtcode_core::exec::events::HarnessEventKind::SnapshotCreated,
+                            Some(format!("Before prompt {next_checkpoint_turn} snapshot saved")),
+                            None,
+                            None,
+                            None,
+                        ));
+                    }
+                    next_checkpoint_turn = next_checkpoint_turn.saturating_add(1);
+                    Some(lease)
+                } else {
+                    None
+                };
                 // Pre-fetch the unrelated dirty worktree note off the async
                 // executor. `build_unrelated_dirty_worktree_note` spawns
                 // blocking `git` subprocesses — see the `# Blocking` docs in
@@ -1226,6 +1356,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     config.workspace.as_path(),
                     &tool_registry,
                     unrelated_dirty_note,
+                    pending_background_completions.take_transient_note(),
                 )
                 .await;
                 let turn_started_at = Instant::now();
@@ -1258,7 +1389,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         harness_config.max_tool_retries,
                     );
                     harness_state.set_approved_plan_execution(executing_approved_plan);
-                    let turn_loop_ctx = crate::agent::runloop::unified::turn::TurnLoopContext::new(
+                    let mut turn_loop_ctx = crate::agent::runloop::unified::turn::TurnLoopContext::new(
                         &mut renderer,
                         &handle,
                         &mut session,
@@ -1291,7 +1422,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         &mut harness_state,
                         harness_emitter.as_ref(),
                         &mut config,
-                        vt_cfg.as_ref(),
+                        None,
                         &mut turn_metadata_cache,
                         &mut provider_client,
                         &traj,
@@ -1300,6 +1431,16 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         full_auto,
                         runtime_steering,
                     );
+                    turn_loop_ctx.live_vt_cfg = Some(&mut vt_cfg);
+                    let thread_id_owned = thread_handle.thread_id().to_string();
+                    turn_loop_ctx.settings =
+                        Some(crate::agent::runloop::unified::turn::turn_loop::ActiveSettingsContext {
+                            receiver: &mut settings_receiver,
+                            header_context: &mut header_context,
+                            session_bootstrap: &session_bootstrap,
+                            thread_id: thread_id_owned.as_str(),
+                            thread_handle: &thread_handle,
+                        });
 
                     let primary_agent_snapshot = active_primary_agent.active().clone();
                     let result =
@@ -1354,6 +1495,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             pending_plan_execution_target: None,
                             plan_approved_execution_pending: false,
                             final_response_was_fallback: false,
+                            refused: false,
                         }
                     }
                 };
@@ -1365,10 +1507,30 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     handle.set_placeholder(default_placeholder.clone());
                     handle.set_activity_state(ActivityState::Idle);
                 }
-                remove_transient_system_notes(working_history, &transient_system_notes);
+                // A refused request must not stay in model-visible history:
+                // the next request would replay it and be refused again. Roll
+                // back before any post-turn history edits, checkpointing, or
+                // persistence; the refusal notice already reached the
+                // transcript and the harness event stream.
+                let turn_refused = outcome.refused;
+                let refused_turn_rolled_back = turn_refused && refused_turn_rollback.apply(working_history);
+                if refused_turn_rolled_back {
+                    // The rollback removed the turn's tool calls, not their
+                    // effects on disk; name the files it changed so the next
+                    // turn does not reason from stale contents.
+                    if let Some(note) =
+                        build_withdrawn_turn_changes_note(config.workspace.as_path(), &outcome.turn_modified_files)
+                    {
+                        working_history.push(vtcode_core::llm::provider::Message::system(note));
+                    }
+                } else {
+                    remove_transient_system_notes(working_history, &transient_system_notes);
+                }
 
                 // Cross-turn loop detection: fingerprint this turn's actions and
-                // inject a warning if a loop or stuck pattern is detected.
+                // inject a warning if a loop or stuck pattern is detected. The
+                // warning describes activity from a rolled-back refused turn,
+                // which the model no longer sees, so it is not injected then.
                 if let Some(cross_turn_warning) = cross_turn_tracker.seal_turn_with_progress(
                     &cross_turn_read_sigs,
                     &cross_turn_written,
@@ -1376,7 +1538,8 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     cross_turn_failed_shell_key.as_deref(),
                     cross_turn_out_of_band_progress,
                     planning_active,
-                ) {
+                ) && !refused_turn_rolled_back
+                {
                     tracing::warn!(warning = %cross_turn_warning, "Cross-turn loop detector triggered");
                     working_history.push(vtcode_core::llm::provider::Message::system(cross_turn_warning));
                 }
@@ -1418,7 +1581,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         handle: &handle,
                         ctrl_c_state: &ctrl_c_state,
                         default_placeholder: &default_placeholder,
-                        checkpoint_manager: checkpoint_manager.as_ref(),
+                        checkpoint_manager: None,
                         next_checkpoint_turn: &mut next_checkpoint_turn,
                         session_end_reason: &mut session_end_reason,
                         turn_elapsed,
@@ -1721,7 +1884,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         session_stats.reset_verification_auto_recovery_turns();
                     }
                     let max_turns = tracker_continue::tracker_cross_turn_turns(vt_cfg.as_ref());
-                    let final_text = latest_assistant_result_text(&runtime.state.messages);
+                    // A rolled-back refused turn left no final text; the latest
+                    // assistant message belongs to an earlier turn.
+                    let final_text = if refused_turn_rolled_back {
+                        None
+                    } else {
+                        latest_assistant_result_text(&runtime.state.messages)
+                    };
                     let final_text_is_safety_handoff =
                         vtcode_core::core::agent::completion::tracker_final_text_is_safety_handoff(
                             final_text.as_deref().unwrap_or(""),
@@ -1774,12 +1943,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     );
                     if should_queue_plan {
                         let follow_up = tracker_continue::plan_mode_continue_follow_up();
-                        let directive = format!(
-                            "{} planning remains active and no validated plan is ready for approval. \
-                             Continue read-only research/synthesis toward one compact `<proposed_plan>` now; \
-                             do not ask the user to resume and do not implement.",
-                            tracker_continue::PLAN_MODE_AUTO_CONTINUE_MARKER
-                        );
+                        let directive = tracker_continue::plan_mode_auto_continue_directive();
                         let budget_remaining = session_stats.plan_continuation_turns() < max_turns;
                         let queued = budget_remaining
                             && match runtime.try_queue_follow_up_input(follow_up) {
@@ -1830,11 +1994,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     } else if should_queue {
                         let incomplete = incomplete.unwrap_or_default();
                         let follow_up = tracker_continue::tracker_continue_follow_up(&incomplete);
-                        let directive = format!(
-                            "Tracker auto-continue: incomplete steps remain: {}. \
-                             Execute the next concrete step now; do not ask the user to resume \
-                             and do not end with a status-only recap while work remains.",
-                            incomplete.join(", ")
+                        let directive = tracker_continue::tracker_continue_directive(
+                            tracker_continue::TRACKER_AUTO_CONTINUE_DIRECTIVE_LABEL,
+                            &incomplete,
                         );
                         let budget_remaining = session_stats.tracker_continuation_turns() < max_turns;
                         let queued = budget_remaining
@@ -1907,7 +2069,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         session_stats.reset_plan_continuation_budget();
                     }
                 }
-                if let RunLoopTurnLoopResult::Blocked { reason } = &outcome_result {
+                // A refusal is terminal for its request, not a stall to resume:
+                // no blocked handoff, no stall reason for `continue` to replay.
+                if let RunLoopTurnLoopResult::Blocked { reason } = &outcome_result
+                    && !turn_refused
+                {
                     use crate::agent::runloop::unified::turn::tool_outcomes::helpers as verification_gate;
 
                     let base = reason.as_deref().unwrap_or("Turn blocked due to repeated failing behavior.");
@@ -1948,12 +2114,8 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             attempt,
                             max,
                         );
-                        let verifier_command = default_verifier.as_deref().unwrap_or("cargo check --locked");
-                        let follow_up = format!(
-                            "Continue autonomously from the last stalled turn. Verification is still pending: run `{verifier_command}` \
-                            with exec_command standalone or as a pure `&&` chain (no pipes, no `;`/`||`; cap output with \
-                            `max_output_tokens`), let it exit 0, then resume the request. Do not reply with text instead of verifying."
-                        );
+                        let follow_up =
+                            super::blocked_handoff::verification_auto_recovery_follow_up(default_verifier.as_deref());
                         // Queue first: on a full queue the turn must fall
                         // through to the manual blocked handoff without leaving
                         // an orphan recovery directive in history.
@@ -1963,8 +2125,10 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     .push(vtcode_core::llm::provider::Message::system(directive));
                                 let _ = renderer.line(
                                     MessageStyle::Info,
-                                    &format!(
-                                        "[i] Verification gate auto-recovery turn {attempt}/{max}: retrying `{verifier_command}` without manual `continue`."
+                                    &super::blocked_handoff::verification_auto_recovery_status_line(
+                                        default_verifier.as_deref(),
+                                        attempt,
+                                        max,
                                     ),
                                 );
                                 session_stats.mark_turn_stalled(
@@ -1998,30 +2162,15 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             vt_cfg.as_ref(),
                             config.workspace.as_path(),
                         );
-                        let command = verifier.as_deref().unwrap_or("cargo check --locked");
                         let attempt = session_stats.verification_auto_recovery_turns();
                         let max = verification_gate::verification_cross_turn_turns(vt_cfg.as_ref());
-                        // `max == 0` disables cross-turn recovery via config: report
-                        // it as disabled rather than the confusing `0/0 turns`.
-                        let recovery_note = if max == 0 {
-                            format!(
-                                "with cross-turn auto-recovery disabled (harness auto-verification already tried `{command}`)"
-                            )
-                        } else {
-                            format!(
-                                "after {attempt}/{max} auto-recovery turns (harness auto-verification already tried `{command}`)"
-                            )
-                        };
-                        match (escalated, session_stats.last_verification_failure()) {
-                            (true, Some(failure)) => format!(
-                                "{base} The harness auto-verification `{}` failed {} time(s) consecutively, so autonomous recovery stopped. Last output tail:\n{}\nFix the reported failure, then run `{}` standalone (no pipes; use `max_output_tokens` for output) and let it exit 0 before typing `continue` to resume with the gate preserved.",
-                                failure.command, failure.consecutive_failures, failure.excerpt_tail, failure.command,
-                            ),
-                            _ => format!(
-                                "{base} Autonomous verification recovery was exhausted {recovery_note}. \
-                                Run `{command}` standalone (no pipes; use `max_output_tokens` for output) and let it exit 0, then type `continue` to resume with the gate preserved."
-                            ),
-                        }
+                        super::blocked_handoff::verification_exhausted_handoff_reason(
+                            base,
+                            verifier.as_deref(),
+                            attempt,
+                            max,
+                            session_stats.last_verification_failure().filter(|_| escalated),
+                        )
                     } else {
                         base.to_string()
                     };
@@ -2047,6 +2196,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             &config.workspace,
                             &harness_snapshot.session_id,
                             &summary,
+                            checkpoint_outcome.blocked_handoff_resume(),
                             tool_registry.is_planning_active(),
                         );
                     }
@@ -2079,6 +2229,15 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     RunLoopTurnLoopResult::Aborted => {
                         session_stats
                             .mark_turn_stalled(true, Some("Turn aborted due to an execution error.".to_string()));
+                    }
+                    RunLoopTurnLoopResult::Blocked { .. } if turn_refused => {
+                        handle.set_placeholder(Some(
+                            "Request declined · Rephrase it, or use /model to switch models...".to_string(),
+                        ));
+                        // Blocked status makes the next input restore the
+                        // default placeholder.
+                        input_status_state.is_blocked = true;
+                        session_stats.mark_turn_stalled(false, None);
                     }
                     RunLoopTurnLoopResult::Blocked { reason } => {
                         // Plan-mode QoL: a blocked placeholder that still says

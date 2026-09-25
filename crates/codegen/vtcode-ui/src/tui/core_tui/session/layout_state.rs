@@ -6,7 +6,6 @@ use ratatui::layout::Rect;
 pub(super) struct SessionAreas {
     transcript: Option<Rect>,
     input: Option<Rect>,
-    input_status: Option<Rect>,
     bottom_panel: Option<Rect>,
     modal_list: Option<Rect>,
     modal_text: Vec<Rect>,
@@ -27,14 +26,6 @@ impl SessionAreas {
 
     pub(super) fn set_input(&mut self, area: Option<Rect>) {
         self.input = area;
-    }
-
-    pub(super) fn input_status(&self) -> Option<Rect> {
-        self.input_status
-    }
-
-    pub(super) fn set_input_status(&mut self, area: Option<Rect>) {
-        self.input_status = area;
     }
 
     pub(super) fn bottom_panel(&self) -> Option<Rect> {

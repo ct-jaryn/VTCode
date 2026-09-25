@@ -19,6 +19,10 @@ pub(crate) enum TurnProcessingResult {
     },
     /// Turn resulted in no actionable output
     Empty,
+    /// The provider stopped the turn with a refusal (`FinishReason::Refusal`).
+    /// Retrying the same prompt reproduces the refusal, so the turn ends with
+    /// `reason` as the user-facing explanation instead of entering recovery.
+    Refusal { reason: String },
 }
 
 pub(crate) enum TurnHandlerOutcome {

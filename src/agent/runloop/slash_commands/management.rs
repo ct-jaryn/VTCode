@@ -37,13 +37,8 @@ pub(super) fn handle_mcp_command(args: &str, renderer: &mut AnsiRenderer) -> Res
                     "show" | "list" | "status" => {
                         Ok(SlashCommandOutcome::ManageMcp { action: McpCommandAction::ShowConfig })
                     }
-                    other if other.starts_with("--") => {
-                        if other == "--edit" {
-                            Ok(SlashCommandOutcome::ManageMcp { action: McpCommandAction::EditConfig })
-                        } else {
-                            render_mcp_usage(renderer)?;
-                            Ok(SlashCommandOutcome::Handled)
-                        }
+                    other if other.starts_with("--") && other == "--edit" => {
+                        Ok(SlashCommandOutcome::ManageMcp { action: McpCommandAction::EditConfig })
                     }
                     _ => {
                         render_mcp_usage(renderer)?;

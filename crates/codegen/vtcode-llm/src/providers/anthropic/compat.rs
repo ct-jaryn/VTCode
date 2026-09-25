@@ -254,6 +254,38 @@ mod tests {
         let error = serde_json::to_value(tool).expect_err("reserved extension keys must be rejected");
         assert!(error.to_string().contains("collides with a reserved wire field"));
     }
+
+    #[test]
+    fn updates_display_is_only_forwarded_to_models_that_accept_it() {
+        use crate::providers::anthropic::request_builder::{RequestBuilderContext, convert_to_anthropic_format};
+        use vtcode_config::core::{AnthropicConfig, AnthropicPromptCacheSettings};
+
+        let payload_thinking = |model: &str| {
+            let request: AnthropicMessagesRequest = serde_json::from_value(json!({
+                "model": model,
+                "max_tokens": 1024,
+                "messages": [{ "role": "user", "content": "hello" }],
+                "thinking": { "type": "adaptive", "display": "updates" },
+            }))
+            .expect("compat request");
+            let llm_request = convert_anthropic_to_llm_request(request);
+            let anthropic_config = AnthropicConfig::default();
+            let prompt_cache_settings = AnthropicPromptCacheSettings::default();
+            let ctx = RequestBuilderContext {
+                prompt_cache_enabled: false,
+                prompt_cache_settings: &prompt_cache_settings,
+                anthropic_config: &anthropic_config,
+                model,
+                server_side_fallbacks_available: false,
+            };
+            convert_to_anthropic_format(&llm_request, &ctx).expect("payload conversion")["thinking"].clone()
+        };
+
+        assert_eq!(payload_thinking("claude-opus-5-5"), json!({ "type": "adaptive", "display": "updates" }));
+        for model in ["claude-opus-4-8", "claude-sonnet-5", "claude-opus-5"] {
+            assert_eq!(payload_thinking(model), json!({ "type": "adaptive" }), "{model}");
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -512,9 +544,6 @@ pub(crate) fn convert_anthropic_to_llm_request(request: AnthropicMessagesRequest
         thinking_budget: None,
         betas: request.betas,
         context_management: request.context_management,
-        prefill: None,
-        character_reinforcement: false,
-        character_name: None,
         coding_agent_settings: None,
         metadata: None,
         previous_response_id: None,
@@ -817,6 +846,7 @@ fn compatibility_thinking_display(thinking: Option<&ThinkingConfig>) -> Anthropi
     match display {
         Some(ThinkingDisplay::Summarized) => AnthropicThinkingDisplayOverride::Summarized,
         Some(ThinkingDisplay::Omitted) => AnthropicThinkingDisplayOverride::Omitted,
+        Some(ThinkingDisplay::Updates) => AnthropicThinkingDisplayOverride::Updates,
         Some(ThinkingDisplay::Unknown) | None => AnthropicThinkingDisplayOverride::Inherit,
     }
 }

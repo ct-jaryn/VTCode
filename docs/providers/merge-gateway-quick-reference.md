@@ -21,6 +21,7 @@ Curated routes:
 ```text
 openai/gpt-5.5
 anthropic/claude-opus-5
+anthropic/claude-opus-5-5
 anthropic/claude-sonnet-5
 google/gemini-3.6-flash
 google/gemini-3.7-flash
@@ -33,9 +34,13 @@ moonshot/kimi-k3
 thinkingmachines/inkling
 meta/muse-spark-1.1
 zai/glm-5.3-flash
+zai/glm-5.3-flashx
 openai/gpt-5.6-luna
 openai/gpt-5.6-sol
 openai/gpt-5.6-terra
+openai/gpt-6-astra
+openai/gpt-6-sol
+openai/gpt-6-luna
 ```
 
 ## Minimal setup

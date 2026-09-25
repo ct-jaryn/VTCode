@@ -18,6 +18,7 @@ use vtcode_core::llm::provider as uni;
 use vtcode_core::scheduler::{DurableTaskStore, SchedulerDaemon};
 use vtcode_core::tools::continuation::{PtyContinuationArgs, ReadChunkContinuationArgs};
 use vtcode_core::tools::terminal_app::{EditorLaunchConfig, TerminalAppLauncher};
+use vtcode_core::tools::tool_intent::{VERIFIER_SHELL_FORM_NOTE, verifier_reference};
 use vtcode_core::ui::theme;
 use vtcode_core::ui::{inline_theme_from_core_styles, to_tui_appearance};
 use vtcode_core::utils::ansi::MessageStyle;
@@ -332,17 +333,17 @@ pub(super) fn stalled_follow_up_recovery_prompt(stall_reason: &str, has_fallback
 /// still pending. Unlike the generic stalled-follow-up directive (which pushes
 /// toward a conclusion), this keeps the original task alive: verify the
 /// pending edits with the detected project command first, then resume.
-/// `default_verifier` should come from `default_verifier_for_workspace`;
-/// `None` falls back to the generic Rust gate example rather than naming a
-/// command that may not exist.
+/// `default_verifier` should come from `resolve_harness_verifier_command`;
+/// `None` names the generic build/test/lint description rather than a
+/// command that may not exist in this workspace.
 pub(super) fn stalled_verification_resume_directive(default_verifier: Option<&str>) -> String {
-    let command = default_verifier.unwrap_or("cargo check --locked");
+    let verifier = verifier_reference(default_verifier);
     format!(
-        "Previous turn stalled with edits still awaiting verification: run `{command}` with exec_command \
-        standalone or as a pure `&&` chain (no pipes, no `;`/`||`; cap output with `max_output_tokens`) \
-        and let it exit 0 first, then resume the original request from where it stalled. Do not conclude, \
-        summarize, or claim completion until the verification gate clears; a failed verifier grants bounded \
-        fix-up edits before re-verify is required."
+        "Previous turn stalled with edits still awaiting verification. Run {verifier} with `exec_command`, \
+        standalone or as a pure `&&` chain of verifiers, and once it exits 0 resume the original request from where \
+        it stalled. {VERIFIER_SHELL_FORM_NOTE} The turn cannot complete while the gate is pending, so a completion \
+        claim before a verifier passes ends the turn blocked; a failed verifier grants a bounded number of fix-up \
+        edits before the next verification."
     )
 }
 
@@ -1175,6 +1176,7 @@ mod tests {
     use tempfile::TempDir;
     use vtcode_config::core::permissions::{AgentPermissionsConfig, PermissionDefault};
     use vtcode_config::{SubagentSource, SubagentSpec};
+    use vtcode_core::tools::tool_intent::GENERIC_VERIFIER_DESCRIPTION;
 
     #[test]
     fn next_primary_agent_name_starts_with_first_sorted_agent() {
@@ -1515,20 +1517,21 @@ mod tests {
     }
 
     #[test]
-    fn stalled_verification_resume_directive_names_verifier_and_forbids_concluding() {
+    fn stalled_verification_resume_directive_names_verifier_and_keeps_completion_gated() {
         let directive = stalled_verification_resume_directive(Some("go test ./..."));
 
-        assert!(directive.contains("go test ./..."));
+        assert!(directive.contains("Run `go test ./...` with `exec_command`"));
         assert!(directive.contains("resume the original request"));
-        assert!(directive.contains("Do not conclude"));
-        assert!(directive.contains("max_output_tokens"));
+        assert!(directive.contains("The turn cannot complete while the gate is pending"));
+        assert!(directive.contains(VERIFIER_SHELL_FORM_NOTE));
     }
 
     #[test]
-    fn stalled_verification_resume_directive_falls_back_without_project_marker() {
+    fn stalled_verification_resume_directive_names_generic_verifier_without_project_marker() {
         let directive = stalled_verification_resume_directive(None);
 
-        assert!(directive.contains("cargo check --locked"));
+        assert!(directive.contains(&format!("Run {GENERIC_VERIFIER_DESCRIPTION} with `exec_command`")));
+        assert!(!directive.contains("Run `cargo check --locked`"), "no single command is presumed: {directive}");
         assert!(directive.contains("resume the original request"));
     }
 

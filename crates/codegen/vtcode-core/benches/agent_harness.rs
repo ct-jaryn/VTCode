@@ -264,30 +264,42 @@ fn tool_definition_sorting_benchmark(c: &mut Criterion) {
     });
 }
 
-fn file_search_benchmarks(c: &mut Criterion) {
-    let workspace = tempfile::tempdir().expect("benchmark workspace");
-    for module in 0..64 {
-        for file in 0..64 {
-            let path = workspace.path().join(format!("src/module_{module:02}/widget_{file:02}.rs"));
+fn populate_search_workspace(root: &std::path::Path, modules: usize, files_per_module: usize) {
+    for module in 0..modules {
+        for file in 0..files_per_module {
+            let path = root.join(format!("src/module_{module:02}/widget_{file:02}.rs"));
             std::fs::create_dir_all(path.parent().expect("benchmark parent")).expect("benchmark directory");
             std::fs::write(path, "fn widget() {}\n").expect("benchmark source");
         }
     }
+}
+
+fn file_search_benchmarks(c: &mut Criterion) {
+    let small_workspace = tempfile::tempdir().expect("benchmark workspace");
+    populate_search_workspace(small_workspace.path(), 8, 8);
+    let large_workspace = tempfile::tempdir().expect("benchmark workspace");
+    populate_search_workspace(large_workspace.path(), 64, 64);
 
     let runtime = Runtime::new().expect("criterion tokio runtime");
+    let _benchmark = c.bench_function("agent_harness_file_search_uncached_small", |b| {
+        b.iter(|| {
+            let result = run(indexed_search_config(small_workspace.path())).expect("uncached file search");
+            black_box((result.matches.len(), result.total_match_count))
+        })
+    });
     let _benchmark = c.bench_function("agent_harness_file_search_uncached", |b| {
         b.iter(|| {
-            let result = run(indexed_search_config(workspace.path())).expect("uncached file search");
+            let result = run(indexed_search_config(large_workspace.path())).expect("uncached file search");
             black_box((result.matches.len(), result.total_match_count))
         })
     });
 
-    let _benchmark = c.bench_function("agent_harness_file_index_build", |b| {
+    let _benchmark = c.bench_function("agent_harness_file_index_build_small", |b| {
         b.iter_batched(
-            || FileIndexCache::new(workspace.path().to_path_buf(), Vec::new(), false, 4),
+            || FileIndexCache::new(small_workspace.path().to_path_buf(), Vec::new(), false, 4),
             |cache| {
                 let result = runtime
-                    .block_on(run_with_index(indexed_search_config(workspace.path()), &cache))
+                    .block_on(run_with_index(indexed_search_config(small_workspace.path()), &cache))
                     .expect("file index build");
                 black_box((result.matches.len(), result.total_match_count))
             },
@@ -295,15 +307,42 @@ fn file_search_benchmarks(c: &mut Criterion) {
         )
     });
 
-    let cache = FileIndexCache::new(workspace.path().to_path_buf(), Vec::new(), false, 4);
+    let _benchmark = c.bench_function("agent_harness_file_index_build", |b| {
+        b.iter_batched(
+            || FileIndexCache::new(large_workspace.path().to_path_buf(), Vec::new(), false, 4),
+            |cache| {
+                let result = runtime
+                    .block_on(run_with_index(indexed_search_config(large_workspace.path()), &cache))
+                    .expect("file index build");
+                black_box((result.matches.len(), result.total_match_count))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    let large_cache = FileIndexCache::new(large_workspace.path().to_path_buf(), Vec::new(), false, 4);
     let _warmup_results = runtime
-        .block_on(run_with_index(indexed_search_config(workspace.path()), &cache))
+        .block_on(run_with_index(indexed_search_config(large_workspace.path()), &large_cache))
         .expect("warm indexed search");
+
+    let small_cache = FileIndexCache::new(small_workspace.path().to_path_buf(), Vec::new(), false, 4);
+    let _small_warmup = runtime
+        .block_on(run_with_index(indexed_search_config(small_workspace.path()), &small_cache))
+        .expect("warm indexed search");
+
+    let _benchmark = c.bench_function("indexed_file_search_scoring_cache_hit_small", |b| {
+        b.iter(|| {
+            let result = runtime
+                .block_on(run_with_index(indexed_search_config(small_workspace.path()), &small_cache))
+                .expect("indexed search");
+            black_box(result.matches.len())
+        })
+    });
 
     let _benchmark = c.bench_function("indexed_file_search_scoring_cache_hit", |b| {
         b.iter(|| {
             let result = runtime
-                .block_on(run_with_index(indexed_search_config(workspace.path()), &cache))
+                .block_on(run_with_index(indexed_search_config(large_workspace.path()), &large_cache))
                 .expect("indexed search");
             black_box(result.matches.len())
         })

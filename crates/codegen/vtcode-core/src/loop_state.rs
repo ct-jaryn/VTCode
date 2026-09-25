@@ -167,7 +167,7 @@ pub fn list_loop_states(workspace_root: &Path) -> Result<Vec<LoopRunState>> {
             }
         }
     }
-    states.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    states.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     Ok(states)
 }
 

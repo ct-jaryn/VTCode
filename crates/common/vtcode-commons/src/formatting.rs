@@ -319,6 +319,35 @@ pub fn is_markdown_fence_delimiter(line: &str) -> bool {
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
+/// Lowercase a leading capitalized plain word so `text` reads as a clause
+/// continuing a sentence (for example after a colon). Acronyms and
+/// identifiers (a second uppercase letter, a digit, or punctuation after the
+/// first letter) and the pronoun "I" keep their case.
+///
+/// ```
+/// # use vtcode_commons::formatting::lowercase_leading_word;
+/// assert_eq!(lowercase_leading_word("Tool calls were rejected"), "tool calls were rejected");
+/// assert_eq!(lowercase_leading_word("MCP server failed"), "MCP server failed");
+/// assert_eq!(lowercase_leading_word("I cannot help"), "I cannot help");
+/// assert_eq!(lowercase_leading_word("A"), "a");
+/// ```
+pub fn lowercase_leading_word(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let second = chars.clone().next();
+    let plain_word =
+        first.is_uppercase() && first != 'I' && second.is_none_or(|c| c.is_lowercase() || c.is_whitespace());
+    if plain_word {
+        let mut lowered: String = first.to_lowercase().collect();
+        lowered.push_str(chars.as_str());
+        lowered
+    } else {
+        text.to_string()
+    }
+}
+
 /// Collapse consecutive whitespace into single spaces, trimming leading/trailing.
 ///
 /// ```

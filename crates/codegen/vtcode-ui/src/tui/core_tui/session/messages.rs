@@ -173,7 +173,6 @@ impl Session {
                 if self.lines[idx].kind == InlineMessageKind::Policy && self.lines[idx].segments.is_empty() {
                     let notify = idx;
                     self.lines.remove(idx);
-                    self.shift_tracked_changes_after_removal(idx);
                     self.mark_line_dirty(notify);
                 }
             }
@@ -214,7 +213,6 @@ impl Session {
 
         self.lines.drain(..remove_count);
         self.evicted_message_count += remove_count;
-        self.shift_tracked_changes_after_eviction(remove_count);
 
         self.invalidate_transcript_cache();
         self.invalidate_scroll_metrics();
@@ -331,7 +329,6 @@ impl Session {
         self.collapsed_pastes.retain(|paste| paste.line_index < first_removed);
         let first_dirty = self.lines.len().saturating_sub(remove_count);
         self.lines.truncate(self.lines.len().saturating_sub(remove_count));
-        self.prune_tracked_changes_to_len();
         let mut link_ranges = link_ranges.unwrap_or_default().into_iter();
         for segments in lines {
             let revision = self.next_revision();
@@ -610,7 +607,6 @@ impl Session {
                 .is_some_and(|l| l.kind == InlineMessageKind::Policy && l.segments.is_empty())
         {
             self.lines.remove(prev_idx);
-            self.shift_tracked_changes_after_removal(prev_idx);
             self.mark_transcript_line_dirty(prev_idx);
             self.thinking_runs.end_run();
             self.invalidate_scroll_metrics();

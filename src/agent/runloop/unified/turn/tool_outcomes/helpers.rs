@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use vtcode_core::core::agent::refusal;
 use vtcode_core::llm::provider as uni;
 use vtcode_core::tools::names::canonical_tool_name;
 use vtcode_core::tools::tool_intent::{
-    ShellActivity, classify_shell_activity, shell_command_is_admitted_verification_attempt,
+    ShellActivity, classify_shell_activity, shell_args_as_executed, shell_command_is_admitted_verification_attempt,
 };
 
 use crate::agent::runloop::unified::tool_pipeline::{ToolExecutionStatus, ToolPipelineOutcome};
@@ -16,7 +17,10 @@ use crate::agent::runloop::unified::turn::tool_outcomes::{is_grep_style_no_match
 /// warning fires. NL2Repo-Bench recommends verifying after every few edits.
 pub(crate) const BLIND_EDITING_THRESHOLD: usize = 6;
 pub(crate) const ANTI_BLIND_EDITING_WARNING: &str = "[!] Anti-Blind-Editing: run a verifier (build/test/lint — e.g. `cargo check`, `go test`, or `pytest`) and let it exit 0 before further edits.";
-pub(crate) const ANTI_BLIND_EDITING_DIRECTIVE: &str = "CRITICAL: Multiple edits were made without verification. Stop editing and run one verifier with `exec_command` — your project's build/test/lint tool, e.g. `cargo check`, `go test`, `npm test`, or `pytest` — standalone or as a pure `&&` chain (no `|`, `;`, or `||`; cap output with `max_output_tokens`), and let it exit 0 before another mutation. Piped checks do not clear the gate.";
+/// Ends with the text of [`VERIFIER_SHELL_FORM_NOTE`] so the shell forms it
+/// describes match what the execution kernel elides; a test keeps the two in
+/// lockstep because `concat!` cannot splice a cross-crate const.
+pub(crate) const ANTI_BLIND_EDITING_DIRECTIVE: &str = "Several edits have landed without a build/test/lint run since the last check, so further code mutations are blocked until a verifier exits 0 (docs-only edits stay allowed). Run your project's build/test/lint tool with `exec_command` (e.g. `cargo check`, `go test`, `npm test`, or `pytest`), standalone or as a pure `&&` chain. Cap output with `max_output_tokens`. A verifier piped only into `head` or `tail` runs without the truncator and counts as standalone; filtering pipes (`| grep`), `;`, and `||` make the exit status another command's, so they do not clear the gate.";
 /// Fix-up window granted after a failed verification attempt. A failed
 /// `cargo check` / `cargo nextest run` must not deadlock the turn: the agent
 /// needs a bounded number of edits to address the reported failure before
@@ -30,7 +34,7 @@ pub(crate) const VERIFICATION_RESULT_LOST_WARNING: &str =
     "[!] Verification result lost: the exec session ended before the verifier's output was captured.";
 /// Model-facing directive paired with [`VERIFICATION_RESULT_LOST_WARNING`]:
 /// a standalone verifier re-run is the only way to clear the pending gate.
-pub(crate) const VERIFICATION_RESULT_LOST_DIRECTIVE: &str = "Verification result lost: the exec session ended before the verifier's output was captured. Re-run the verification command standalone (no pipes/truncation) to confirm or reject the recent edits.";
+pub(crate) const VERIFICATION_RESULT_LOST_DIRECTIVE: &str = "Verification result lost: the exec session ended before the verifier's output was captured. Re-run the verification command standalone or as a pure `&&` chain to confirm or reject the recent edits.";
 /// Warning rendered while the failed-verifier fix-up window is active. Distinct
 /// from [`ANTI_BLIND_EDITING_WARNING`] so the pending-verification block notice
 /// does not imply verification was never run when the verifier already failed.
@@ -40,19 +44,19 @@ pub(crate) const FAILED_VERIFICATION_FIX_WARNING: &str =
 /// the verifier ran and reported failure, so text responses must repair the
 /// reported failure and re-run a standalone verifier instead of claiming
 /// completion.
-pub(crate) const FAILED_VERIFICATION_FIX_DIRECTIVE: &str = "The last verification command ran and FAILED. A bounded fix window is active: apply fixes for the reported failure, then re-run the standalone verification command (no pipes/truncation). Verification success is still required before the work can be accepted.";
-/// Warning rendered when a piped verifier (e.g. `cargo check 2>&1 | tail -5`)
-/// succeeded while the gate is pending: the pipeline's exit status belongs to
-/// the tail command, so the verifier's success cannot clear the gate.
-/// NOTE: pure `head`/`tail` truncator shapes no longer reach this notice —
-/// the exec layer elides them into standalone verifiers with truthful exit
-/// codes. Only non-rewritable pipelines (filtering tails, `;` joins) land
-/// here.
-pub(crate) const PIPED_VERIFICATION_WARNING: &str = "[!] Piped verifier did not clear the verification gate: the pipeline exit status is the truncator's, not the verifier's.";
+pub(crate) const FAILED_VERIFICATION_FIX_DIRECTIVE: &str = "The last verification command ran and failed. A bounded fix window is active: apply fixes for the reported failure, then re-run the verification command standalone or as a pure `&&` chain. The work is accepted once a verifier exits 0.";
+/// Warning rendered when a verifier behind a filtering pipe or a `;`/`||`
+/// join (e.g. `cargo check 2>&1 | grep error`) succeeded while the gate is
+/// pending: the exit status belongs to another command, so the verifier's
+/// success cannot clear the gate. Pure `head`/`tail` truncator shapes never
+/// land here: the execution kernel runs them as standalone verifiers, and the
+/// tracker classifies the command as executed
+/// ([`vtcode_core::tools::tool_intent::shell_args_as_executed`]).
+pub(crate) const PIPED_VERIFICATION_WARNING: &str = "[!] Piped verifier did not clear the verification gate: the exit status belongs to another command, not the verifier.";
 /// Model-facing directive paired with [`PIPED_VERIFICATION_WARNING`]: without
 /// this feedback a piped success reads as "verified" to the model and the
 /// pending gate deadlocks the turn on unverified text responses.
-pub(crate) const PIPED_VERIFICATION_DIRECTIVE: &str = "The verification command ran inside a pipeline, so its exit status is the pipeline tail's (e.g. `tail`/`head`), not the verifier's, and it did not clear the verification gate. Re-run the verifier standalone or as a pure `&&` chain of verifiers without `|`, `;`, or `||` (pass `max_output_tokens` instead of piping) to clear verification.";
+pub(crate) const PIPED_VERIFICATION_DIRECTIVE: &str = "The verification command ran behind a filtering pipe or a `;`/`||` join, so its exit status belongs to another command (e.g. `grep`) and it did not clear the verification gate. Re-run the verifier standalone or as a pure `&&` chain of verifiers; a pipe only into `head` or `tail` also counts as standalone. Cap output with `max_output_tokens` instead of filtering it.";
 /// Bounded in-turn autonomous recovery attempts when the model emits text
 /// instead of a verifier while the gate is pending.
 ///
@@ -270,10 +274,29 @@ pub(crate) async fn tracker_completed_count(tool_registry: &vtcode_core::tools::
 pub(crate) fn tracker_continue_follow_up(incomplete: &[String]) -> String {
     let joined = incomplete.join(", ");
     format!(
-        "Continue working autonomously. The task tracker still has incomplete steps: {joined}. \
-         Execute the next concrete tracker step now using tools; do not ask the user to resume, \
-         do not end with a status-only recap, and update task_tracker as steps complete. \
-         Stop only for a genuine user decision, permission/policy block, or when the tracker is complete."
+        "The task tracker still has incomplete steps: {joined}. This follow-up is the harness resuming \
+         the work, so no user reply is needed. The next step is to continue with the next incomplete step \
+         using tools and update task_tracker as steps complete. A status-only recap does not advance the \
+         tracker. The turn can end when the tracker is complete, or when a user decision or a \
+         permission/policy block stops progress."
+    )
+}
+
+/// Label of the system directive paired with a session-resume tracker continuation.
+pub(crate) const TRACKER_RESUME_DIRECTIVE_LABEL: &str = "Resume continuation";
+/// Label of the system directive paired with an in-session tracker auto-continue.
+pub(crate) const TRACKER_AUTO_CONTINUE_DIRECTIVE_LABEL: &str = "Tracker auto-continue";
+
+/// System directive paired with a queued tracker continuation. Both the
+/// session-resume and in-session paths share this wording so the stated
+/// consequence (the harness resumed; a recap does not advance the tracker)
+/// cannot drift between them.
+pub(crate) fn tracker_continue_directive(label: &str, incomplete: &[String]) -> String {
+    format!(
+        "{label}: task_tracker still has incomplete steps: {}. The harness queued this continuation, so no \
+         user reply is needed. The next step is the next concrete tracker step; a status-only recap does not \
+         advance the tracker while work remains.",
+        incomplete.join(", ")
     )
 }
 
@@ -284,6 +307,12 @@ pub(crate) fn tracker_continue_follow_up(incomplete: &[String]) -> String {
 /// recovery), not paraphrases. Unknown / missing reasons are not auto-queued
 /// when the turn did not complete.
 pub(crate) fn tracker_auto_continue_is_recoverable_block(reason: Option<&str>) -> bool {
+    // A provider refusal is terminal for the refused request: resending it is
+    // refused again. Checked before the substring classifiers because the
+    // notice may quote provider or response text containing any token.
+    if reason.is_some_and(refusal::is_refusal_notice) {
+        return false;
+    }
     let Some(reason) = reason.map(str::to_ascii_lowercase) else {
         // Only used when the outer gate already marked the turn Completed.
         // Blocked { reason: None } must not auto-queue.
@@ -411,7 +440,8 @@ pub(crate) const MAX_PLAN_EMPTY_FALLBACK_AUTO_CONTINUE: u8 = 2;
 /// the gate stays pure (no cross-module constant import) and robust to
 /// surrounding file-list appends.
 pub(crate) fn is_plan_empty_fallback_text(text: &str) -> bool {
-    text.contains("without a final plan synthesis") && text.contains("do NOT re-read files already read this turn")
+    text.contains("without a final plan synthesis")
+        && text.contains("the next turn can reuse it without re-reading files")
 }
 
 pub(crate) fn should_queue_plan_mode_auto_continue(
@@ -445,6 +475,10 @@ pub(crate) fn should_queue_plan_mode_auto_continue(
 /// that path and forced a user `continue` nudge. Interview/approval/permission
 /// handoffs stay denied after the allow-list misses.
 pub(crate) fn plan_mode_recoverable_block(reason: &str) -> bool {
+    // Refusals never auto-continue; see `tracker_auto_continue_is_recoverable_block`.
+    if refusal::is_refusal_notice(reason) {
+        return false;
+    }
     let lower = reason.to_ascii_lowercase();
     // True handoffs deny even when recovery/budget tokens are also present
     // (compound reasons must not auto-queue past a permission/interview wait).
@@ -523,12 +557,38 @@ pub(crate) fn plan_progress_line(
 /// must share one literal instead of drifting.
 pub(crate) const PLAN_MODE_AUTO_CONTINUE_MARKER: &str = "Plan-mode auto-continue:";
 
+/// Shared tail of every plan-mode continuation message. States the
+/// consequence (planning stays read-only, the harness resumed the turn, code
+/// changes wait for approval) and the next step. It deliberately contains the
+/// stay phrase `continue planning` and no implementation cue, so even without
+/// the [`PLAN_MODE_AUTO_CONTINUE_MARKER`] guard it could never read as an
+/// exit-and-implement intent.
+const PLAN_MODE_CONTINUE_DIRECTIVE_TAIL: &str = "Planning stays active and read-only, so the next step is to continue \
+planning: read-only research and synthesis toward one compact `<proposed_plan>`. The harness queued this \
+continuation, so no user reply is needed, and code changes wait for plan approval.";
+
 /// Follow-up prompt for plan-mode auto-continue turns.
 pub(crate) fn plan_mode_continue_follow_up() -> String {
     format!(
-        "{PLAN_MODE_AUTO_CONTINUE_MARKER} planning is still active and no validated persisted plan is ready for approval. \
-Continue read-only research/synthesis toward one compact `<proposed_plan>` now. \
-Do not ask the user to resume, do not implement, and do not auto-exit planning."
+        "{PLAN_MODE_AUTO_CONTINUE_MARKER} no validated persisted plan is ready for approval yet. \
+{PLAN_MODE_CONTINUE_DIRECTIVE_TAIL}"
+    )
+}
+
+/// System directive paired with an in-session plan-mode auto-continue.
+pub(crate) fn plan_mode_auto_continue_directive() -> String {
+    format!(
+        "{PLAN_MODE_AUTO_CONTINUE_MARKER} planning remains active and no validated plan is ready for approval. \
+{PLAN_MODE_CONTINUE_DIRECTIVE_TAIL}"
+    )
+}
+
+/// System directive paired with a plan-mode continuation queued on session
+/// resume after a recoverable blocked handoff.
+pub(crate) fn plan_mode_resume_directive() -> String {
+    format!(
+        "Resume continuation: planning remains active after a recoverable blocked handoff. \
+{PLAN_MODE_CONTINUE_DIRECTIVE_TAIL}"
     )
 }
 
@@ -562,7 +622,21 @@ mod tracker_continue_tests {
             tracker_continue_follow_up(&["#2 change (pending)".to_string(), "#3 verify (blocked)".to_string()]);
         assert!(prompt.contains("#2 change (pending)"));
         assert!(prompt.contains("#3 verify (blocked)"));
-        assert!(prompt.contains("do not ask the user to resume"));
+        assert!(prompt.contains("no user reply is needed"));
+        assert!(prompt.contains("A status-only recap does not advance the tracker"));
+    }
+
+    #[test]
+    fn tracker_continue_directive_is_shared_calm_prose() {
+        let incomplete = ["#2 change (pending)".to_string(), "#3 verify (pending)".to_string()];
+        for label in [TRACKER_RESUME_DIRECTIVE_LABEL, TRACKER_AUTO_CONTINUE_DIRECTIVE_LABEL] {
+            let directive = tracker_continue_directive(label, &incomplete);
+            assert!(directive.starts_with(&format!("{label}: task_tracker still has incomplete steps:")));
+            assert!(directive.contains("#2 change (pending), #3 verify (pending)"));
+            assert!(directive.contains("no user reply is needed"));
+            assert!(directive.contains("status-only recap does not advance the tracker"));
+            assert!(!directive.contains("do not"), "directive states consequences, not prohibitions: {directive}");
+        }
     }
 
     #[test]
@@ -647,8 +721,12 @@ mod tracker_continue_tests {
 
     #[test]
     fn detects_plan_empty_fallback_text() {
-        let empty = "Planning remains active, but this turn ended without a final plan synthesis. The research gathered above is preserved; do NOT re-read files already read this turn. Type `keep planning`.";
+        let empty = "Planning remains active, but this turn ended without a final plan synthesis. The research gathered above is preserved, so the next turn can reuse it without re-reading files. Type `keep planning`.";
         assert!(is_plan_empty_fallback_text(empty));
+        // The gate must recognize the production fallback text, not only the fixture.
+        assert!(is_plan_empty_fallback_text(
+            crate::agent::runloop::unified::turn::turn_loop::PLANNING_COMPLETED_FALLBACK_RESPONSE
+        ));
         assert!(!is_plan_empty_fallback_text("Planning turn ended via recovery fallback without confirming plan."));
         assert!(!is_plan_empty_fallback_text(""));
     }
@@ -692,11 +770,47 @@ mod tracker_continue_tests {
     }
 
     #[test]
-    fn plan_mode_continue_follow_up_forbids_resume_and_implement() {
-        let prompt = plan_mode_continue_follow_up();
-        assert!(prompt.contains("Do not ask the user to resume"));
-        assert!(prompt.contains("do not implement"));
-        assert!(prompt.contains("<proposed_plan>"));
+    fn plan_mode_continue_messages_keep_planning_read_only_without_a_user_nudge() {
+        for prompt in [
+            plan_mode_continue_follow_up(),
+            plan_mode_auto_continue_directive(),
+            plan_mode_resume_directive(),
+        ] {
+            assert!(prompt.contains("no user reply is needed"), "{prompt}");
+            assert!(prompt.contains("read-only"), "{prompt}");
+            assert!(prompt.contains("code changes wait for plan approval"), "{prompt}");
+            assert!(prompt.contains("<proposed_plan>"), "{prompt}");
+            let normalized = vtcode_core::planning::normalize_plan_intent(&prompt);
+            assert!(vtcode_core::planning::matches_stay_intent(&normalized), "{prompt}");
+            assert!(!vtcode_core::planning::contains_implementation_cue(&normalized), "{prompt}");
+        }
+        assert!(plan_mode_continue_follow_up().starts_with(PLAN_MODE_AUTO_CONTINUE_MARKER));
+        assert!(plan_mode_auto_continue_directive().starts_with(PLAN_MODE_AUTO_CONTINUE_MARKER));
+    }
+
+    #[test]
+    fn refusal_notices_never_auto_continue() {
+        // A refusal explanation may quote text that matches recoverable
+        // tokens ("recovery fallback", "tool budget"); the refusal still wins.
+        let reason = format!(
+            "{}: the request looked like a recovery fallback for a tool budget bypass. \
+             The request was not retried; rephrase it or switch models.",
+            refusal::REFUSAL_NOTICE_PREFIX
+        );
+        assert!(!tracker_auto_continue_is_recoverable_block(Some(&reason)));
+        assert!(!plan_mode_recoverable_block(&reason));
+        assert!(!should_queue_tracker_auto_continue(
+            true,
+            false,
+            false,
+            Some(&reason),
+            false,
+            Some(&["step".to_string()]),
+            3,
+            false,
+            false,
+        ));
+        assert!(!should_queue_plan_mode_auto_continue(true, true, false, false, Some(&reason), false, 3, 0));
     }
 
     #[test]
@@ -1188,7 +1302,7 @@ pub(crate) const NAVIGATION_LOOP_THRESHOLD: usize = 15;
 pub(crate) const LISTING_LOOP_TRIP_COUNT: usize = 3;
 
 /// Planning listing tripwire: planning owns dedicated convergence guards (6
-/// consecutive / 10 total low-signal, 12-step nav synthesis), so three
+/// consecutive / 10 total low-signal), so three
 /// successful listings are legitimate exploration there rather than churn.
 pub(crate) const PLANNING_LISTING_LOOP_TRIP_COUNT: usize = 5;
 
@@ -1197,12 +1311,6 @@ pub(crate) const PLANNING_LISTING_LOOP_TRIP_COUNT: usize = 5;
 /// tool-free synthesis pass while the evidence is still useful.
 pub(crate) const PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD: u8 = 6;
 pub(crate) const PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD: u8 = 10;
-/// Consecutive planning inspections are allowed to be productive, but a
-/// repeated request after this bounded research window means the model should
-/// synthesize before it narrows the search indefinitely. This catches
-/// successful reads that are not low-signal by payload shape.
-pub(crate) const PLANNING_NAVIGATION_SYNTHESIS_THRESHOLD: usize = 12;
-
 /// Execution-mode total low-signal guard. Planning converges via its adaptive
 /// thresholds (6 consecutive / 10 total); execution mode previously converged
 /// only through per-family repeats, the 15-step navigation loop, or the final
@@ -1394,8 +1502,7 @@ impl LoopTracker {
     }
 
     /// Number of redundant navigations (total - unique) in the current window.
-    /// The generic navigation-loop guard requires at least 3; planning's
-    /// bounded convergence checkpoint also uses a single repeated request.
+    /// The navigation-loop guard requires at least 3 redundant requests.
     pub(crate) fn repeated_navigation_count(&self) -> usize {
         self.consecutive_navigations.saturating_sub(self.nav_signatures.len())
     }
@@ -2271,8 +2378,9 @@ fn is_execution_tool(name: &str) -> bool {
 /// checkpoint is pending.
 /// A failed verifier grants a bounded fix-up window ([`FAILED_VERIFICATION_FIX_ALLOWANCE`])
 /// so a broken build can be repaired, and piped verifier attempts
-/// (e.g. `cargo check 2>&1 | head`) are admitted to run even though only a
-/// standalone success clears the gate.
+/// (e.g. `cargo check 2>&1 | grep error`) are admitted to run even though
+/// they cannot clear the gate. A verifier piped only into `head`/`tail` runs
+/// as a standalone verifier (see [`shell_args_as_executed`]).
 pub(crate) fn mutation_blocked_until_verification(
     loop_tracker: &LoopTracker,
     name: &str,
@@ -2284,17 +2392,17 @@ pub(crate) fn mutation_blocked_until_verification(
 
     let canonical_name = canonical_tool_name(name);
     if is_execution_tool(canonical_name) {
-        // Truncation-only verifier attempts (`cargo check 2>&1 | head`) must
-        // run so the model can see the failure; they never clear the gate
-        // (see update_repetition_tracker). The admission predicate requires
-        // every shell segment to be verification-or-readonly, so a smuggled
-        // mutation such as `cargo check && rm -rf target` stays blocked.
-        if shell_command_is_admitted_verification_attempt(args)
-            && matches!(classify_shell_activity(canonical_name, args), ShellActivity::Mutation)
-        {
-            return false;
-        }
-        if !matches!(classify_shell_activity(canonical_name, args), ShellActivity::Mutation) {
+        // Classify the command the kernel will run: a verifier piped only
+        // into `head`/`tail` executes standalone and is a verification.
+        let executed = shell_args_as_executed(canonical_name, args);
+        let activity = classify_shell_activity(canonical_name, &executed);
+        // Other piped verifier attempts (`cargo check 2>&1 | grep error`)
+        // still run so the model can see the failure; they never clear the
+        // gate (see update_repetition_tracker). The admission predicate
+        // requires every shell segment to be verification-or-readonly, so a
+        // smuggled mutation such as `cargo check && rm -rf target` stays
+        // blocked.
+        if !matches!(activity, ShellActivity::Mutation) || shell_command_is_admitted_verification_attempt(&executed) {
             return false;
         }
         // Fix-up window: allow bounded repair edits after a failed verifier.
@@ -2327,8 +2435,8 @@ pub(crate) fn mutation_blocked_until_verification(
 /// [`VERIFICATION_RESULT_LOST_DIRECTIVE`] for the handlers to surface.
 ///
 /// A `true` return finally covers a *piped* verifier success while the gate
-/// is pending (`cargo check 2>&1 | tail -5`): the pipeline exit status
-/// cannot clear the gate, so the tracker queues
+/// is pending (`cargo check 2>&1 | grep error`): the exit status belongs to
+/// another command and cannot clear the gate, so the tracker queues
 /// [`PIPED_VERIFICATION_DIRECTIVE`] instead of leaving the model to believe
 /// the check verified the edits.
 pub(crate) fn update_repetition_tracker(
@@ -2404,7 +2512,11 @@ pub(crate) fn update_repetition_tracker(
     // step (cargo check, cargo test, etc.) should RESET the mutation counter,
     // not increment it.
     if is_execution_tool(canonical_name) {
-        match classify_shell_activity(canonical_name, args) {
+        // Classify the command the kernel ran, not the typed text: a verifier
+        // piped only into `head`/`tail` executes standalone, so its truthful
+        // exit status is the verifier's and it counts as verification.
+        let executed = shell_args_as_executed(canonical_name, args);
+        match classify_shell_activity(canonical_name, &executed) {
             ShellActivity::Inspection => {
                 loop_tracker.consecutive_navigations = loop_tracker.consecutive_navigations.saturating_add(1);
                 loop_tracker.nav_signatures.insert(navigation_signature_key);
@@ -2443,15 +2555,16 @@ pub(crate) fn update_repetition_tracker(
                 loop_tracker.reset_navigation_window(low_signal_family.is_none());
             }
             ShellActivity::Mutation => {
-                // Truncation-only verifier attempts (e.g. `cargo check 2>&1 | head`)
-                // are admitted to run but never clear the gate: the pipeline
-                // exit status is the truncator's, not the verifier's. Don't
-                // count them as blind edits; a failed piped attempt still
+                // Piped verifier attempts that the kernel cannot elide (e.g.
+                // `cargo check 2>&1 | grep error`, or a `;` join) are admitted
+                // to run but never clear the gate: the exit status belongs to
+                // another command, not the verifier. Don't count them as
+                // blind edits; a failed piped attempt still
                 // opens the fix window so the agent can repair and re-run a
                 // standalone verifier. Chained mutations smuggled behind a
                 // verifier prefix are rejected by the admission predicate and
                 // take the blind-edit path below.
-                if shell_command_is_admitted_verification_attempt(args) {
+                if shell_command_is_admitted_verification_attempt(&executed) {
                     let ran_and_failed =
                         matches!(&outcome.status, ToolExecutionStatus::Success { command_success: false, .. });
                     if ran_and_failed {
@@ -2459,12 +2572,12 @@ pub(crate) fn update_repetition_tracker(
                         loop_tracker.reset_navigation_window(low_signal_family.is_none());
                         return true;
                     }
-                    // A piped verifier's exit status belongs to the pipeline
-                    // tail, so a success cannot clear the gate. While the
+                    // A piped verifier's exit status belongs to another
+                    // command, so a success cannot clear the gate. While the
                     // gate is pending that silence reads as "verified" to
                     // the model (checkpoint session-vtcode-20260912T083718Z:
-                    // `cargo check 2>&1 | tail -5` exited 0 and the turn
-                    // still deadlocked). Queue the one-shot piped-verifier
+                    // a piped verifier exited 0 and the turn still
+                    // deadlocked). Queue the one-shot piped-verifier
                     // directive so the handlers surface it after the tool
                     // response lands.
                     if loop_tracker.verification_is_pending()
@@ -2904,12 +3017,12 @@ mod tests {
     fn piped_verifier_is_admitted_but_does_not_clear_gate() {
         let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
         tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
-        // Piped verifiers must run (not block) so the model sees output, but
-        // the pipeline status is the truncator's — only standalone success clears.
+        // Filtering-piped verifiers must run (not block) so the model sees
+        // output, but the exit status is the filter's — they never clear.
         assert!(!mutation_blocked_until_verification(
             &tracker,
             tools::EXEC_COMMAND,
-            &json!({"cmd": "cargo check --locked 2>&1 | head -c 4000"})
+            &json!({"cmd": "cargo check --locked 2>&1 | grep error"})
         ));
         let piped_success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
             output: serde_json::json!({"exit_code": 0}),
@@ -2921,10 +3034,48 @@ mod tests {
             &mut tracker,
             &piped_success,
             tools::EXEC_COMMAND,
-            &json!({"cmd": "cargo check --locked 2>&1 | head -c 4000"}),
+            &json!({"cmd": "cargo check --locked 2>&1 | grep error"}),
         );
         assert!(tracker.verification_is_pending());
         assert_eq!(tracker.consecutive_mutations, BLIND_EDITING_THRESHOLD);
+    }
+
+    #[test]
+    fn truncation_only_piped_verifier_success_clears_gate() {
+        // The kernel elides a pure `| head`/`| tail` tail and runs the
+        // standalone verifier, so its exit 0 is the verifier's own. The
+        // tracker must agree even when handed the typed (raw) arguments,
+        // e.g. after a PreToolUse hook rewrite.
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: serde_json::json!({"exit_code": 0}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for command in [
+            "cargo check --locked 2>&1 | tail -5",
+            "cargo check --locked 2>&1 | head -c 4000",
+        ] {
+            let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+            tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
+            assert!(
+                !mutation_blocked_until_verification(&tracker, tools::EXEC_COMMAND, &json!({"cmd": command})),
+                "{command}"
+            );
+            assert!(
+                !update_repetition_tracker(&mut tracker, &success, tools::EXEC_COMMAND, &json!({"cmd": command})),
+                "{command}"
+            );
+            assert!(!tracker.verification_is_pending(), "elided verifier success must clear: {command}");
+            assert_eq!(tracker.consecutive_mutations, 0, "{command}");
+            assert!(!tracker.take_piped_verification_notice(), "no piped notice for {command}");
+        }
+    }
+
+    #[test]
+    fn anti_blind_editing_directive_states_the_shared_shell_form_note() {
+        assert!(ANTI_BLIND_EDITING_DIRECTIVE.ends_with(vtcode_core::tools::tool_intent::VERIFIER_SHELL_FORM_NOTE));
+        assert!(!PIPED_VERIFICATION_DIRECTIVE.contains("`tail`/`head`"));
     }
 
     #[test]
@@ -2983,7 +3134,7 @@ mod tests {
         for command in [
             "cargo check --locked; cargo nextest run --locked -p vtcode-ui",
             "cargo check --locked || cargo nextest run --locked -p vtcode-ui",
-            "cargo check --locked | head -40",
+            "cargo check --locked | grep -v warning",
         ] {
             let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
             tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
@@ -3143,7 +3294,7 @@ mod tests {
             &mut tracker,
             &piped_success,
             tools::EXEC_COMMAND,
-            &json!({"cmd": "cargo check --locked -p vtcode 2>&1 | tail -5"}),
+            &json!({"cmd": "cargo check --locked -p vtcode 2>&1 | grep -E 'error|warning'"}),
         ));
         assert!(tracker.verification_is_pending(), "piped success must not clear the gate");
         assert!(tracker.take_piped_verification_notice(), "piped success must queue the notice");
@@ -3180,7 +3331,7 @@ mod tests {
             &mut tracker,
             &piped_success,
             tools::EXEC_COMMAND,
-            &json!({"cmd": "cargo check --locked 2>&1 | tail -5"}),
+            &json!({"cmd": "cargo check --locked 2>&1 | grep error"}),
         ));
         assert!(!tracker.take_piped_verification_notice());
     }

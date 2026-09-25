@@ -18,6 +18,7 @@ pub const MINIMAX_M3: &str = "MiniMax-M3";
 // --- Anthropic-compatible models (Messages API) ---
 pub const CLAUDE_SONNET_5: &str = "claude-sonnet-5";
 pub const CLAUDE_OPUS_5: &str = "claude-opus-5";
+pub const CLAUDE_OPUS_5_5: &str = "claude-opus-5-5";
 
 pub const DEFAULT_MODEL: &str = GPT_5_6;
 
@@ -30,12 +31,19 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     MINIMAX_M3,
     CLAUDE_SONNET_5,
     CLAUDE_OPUS_5,
+    CLAUDE_OPUS_5_5,
     CLAUDE_OPUS_5,
     CLAUDE_SONNET_5,
 ];
 
 /// Models that use the Anthropic Messages API instead of OpenAI Chat Completions.
-const ANTHROPIC_FORMAT_MODELS: &[&str] = &[CLAUDE_SONNET_5, CLAUDE_OPUS_5, CLAUDE_OPUS_5, CLAUDE_SONNET_5];
+const ANTHROPIC_FORMAT_MODELS: &[&str] = &[
+    CLAUDE_SONNET_5,
+    CLAUDE_OPUS_5,
+    CLAUDE_OPUS_5_5,
+    CLAUDE_OPUS_5,
+    CLAUDE_SONNET_5,
+];
 
 /// Models that emit reasoning traces / accept `reasoning_effort`.
 pub const REASONING_MODELS: &[&str] = &[];

@@ -34,7 +34,7 @@
 //! ## Quickstart
 //!
 //! ```bash
-//! # Install the CLI (cargo, npm, or Homebrew are also supported)
+//! # Install the CLI (cargo or Homebrew are also supported)
 //! cargo install vtcode
 //!
 //! # Export the API key for your provider
@@ -84,7 +84,6 @@
 //! VT Code is distributed via multiple ecosystems:
 //!
 //! - **crates.io**: `cargo install vtcode`
-//! - **npm**: `npm install -g vtcode`
 //! - **Homebrew**: `brew install vtcode`
 //! - **GitHub Releases**: pre-built binaries for macOS, Linux, and Windows
 //!

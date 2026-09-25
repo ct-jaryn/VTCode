@@ -38,8 +38,6 @@ impl FromStr for ModelId {
                 m if m == models::opencode_go::GLM_5_3 => Ok(ModelId::OpenCodeGoGlm53),
                 m if m == models::opencode_go::GPT_5_6_LUNA => Ok(ModelId::OpenCodeGoGpt56Luna),
                 m if m == models::opencode_go::KIMI_K3 => Ok(ModelId::OpenCodeGoKimiK3),
-                m if m == models::opencode_go::MIMO_V2_5 => Ok(ModelId::OpenCodeGoMimoV25),
-                m if m == models::opencode_go::MIMO_V2_5_PRO => Ok(ModelId::OpenCodeGoMimoV25Pro),
                 m if m == models::opencode_go::MINIMAX_M3 => Ok(ModelId::OpenCodeGoMinimaxM3),
                 _ => Err(ModelParseError::InvalidModel(trimmed.to_string())),
             };

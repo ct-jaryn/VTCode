@@ -13,10 +13,12 @@ use crate::providers::shared;
 
 use async_stream::try_stream;
 use futures::StreamExt;
+use hashbrown::HashSet;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-use super::response_parser::{parse_finish_reason, parse_usage};
+use super::block_order::StreamBlockOrder;
+use super::response_parser::{parse_finish_reason, parse_usage, stop_details_reasoning_detail};
 
 enum ReasoningBlockState {
     Thinking {
@@ -34,6 +36,30 @@ enum ReasoningBlockState {
     },
 }
 
+impl ReasoningBlockState {
+    fn is_thinking(&self) -> bool {
+        matches!(self, Self::Thinking { .. } | Self::Redacted { .. })
+    }
+}
+
+/// A finished `reasoning_details` entry and the content block it came from.
+struct FinalizedDetail {
+    index: usize,
+    /// Thinking or redacted thinking, which a later mid-output fallback discards.
+    thinking: bool,
+    detail: String,
+}
+
+impl FinalizedDetail {
+    fn from_block(index: usize, block: ReasoningBlockState) -> Self {
+        Self {
+            index,
+            thinking: block.is_thinking(),
+            detail: serialize_reasoning_block_detail(block),
+        }
+    }
+}
+
 pub fn create_stream(
     response: reqwest::Response,
     model: String,
@@ -47,8 +73,12 @@ pub fn create_stream(
         let mut decoder = shared::Utf8StreamDecoder::new();
         let mut aggregator = shared::StreamAggregator::new(model);
         let mut reasoning_blocks = BTreeMap::new();
-        let mut finalized_reasoning_details = Vec::new();
-        let mut advisor_blocks: Vec<Value> = Vec::new();
+        let mut finalized_reasoning_details: Vec<FinalizedDetail> = Vec::new();
+        // Advisor blocks keyed by content-block index, so a mid-output
+        // fallback can drop an unpaired `server_tool_use` before its boundary.
+        let mut advisor_blocks: Vec<(usize, Value)> = Vec::new();
+        let mut stop_details_detail: Option<String> = None;
+        let mut block_order = StreamBlockOrder::default();
 
         while let Some(chunk_result) = body_stream.next().await {
             let chunk = chunk_result.map_err(|err| {
@@ -74,6 +104,7 @@ pub fn create_stream(
                         }
                     })?;
 
+                    block_order.observe(&event);
                     match event {
                         AnthropicStreamEvent::MessageStart { message } => {
                             let usage_value = serde_json::to_value(&message.usage).unwrap_or_else(|_| Value::Object(Map::new()));
@@ -137,29 +168,76 @@ pub fn create_stream(
                             aggregator.tool_builders[index].apply_delta(&Value::Object(delta));
                         }
                         AnthropicStreamEvent::ContentBlockStart {
+                            index,
                             content_block:
                                 AnthropicContentBlock::ServerToolUse { id, name, input },
-                            ..
                         } => {
                             if name == "advisor" {
-                                advisor_blocks.push(serde_json::json!({
+                                advisor_blocks.push((index, serde_json::json!({
                                     "type": "server_tool_use",
                                     "id": id,
                                     "name": name,
                                     "input": input,
-                                }));
+                                })));
                             }
                         }
                         AnthropicStreamEvent::ContentBlockStart {
+                            index,
                             content_block:
                                 AnthropicContentBlock::AdvisorToolResult { tool_use_id, content },
-                            ..
                         } => {
-                            advisor_blocks.push(serde_json::json!({
+                            advisor_blocks.push((index, serde_json::json!({
                                 "type": "advisor_tool_result",
                                 "tool_use_id": tool_use_id,
                                 "content": content,
-                            }));
+                            })));
+                        }
+                        AnthropicStreamEvent::ContentBlockStart {
+                            index,
+                            content_block: AnthropicContentBlock::Fallback { from, to },
+                        } => {
+                            // A mid-output fallback: the stream keeps the
+                            // refused model's partial, but its thinking, tool
+                            // use, and unpaired server-tool blocks before this
+                            // boundary must not be echoed back or run. Text,
+                            // compaction, and paired server-tool blocks stay.
+                            // Reasoning already streamed for display is kept.
+                            reasoning_blocks.retain(|block_index, block: &mut ReasoningBlockState| {
+                                *block_index >= index || !block.is_thinking()
+                            });
+                            finalized_reasoning_details.retain(|detail| detail.index >= index || !detail.thinking);
+                            for builder in aggregator.tool_builders.iter_mut().take(index) {
+                                *builder = shared::ToolCallBuilder::default();
+                            }
+                            let paired_tool_use_ids: HashSet<String> = advisor_blocks
+                                .iter()
+                                .filter_map(|(_, block)| block.get("tool_use_id").and_then(Value::as_str))
+                                .map(str::to_owned)
+                                .collect();
+                            let mut unpaired_advisor_indices = Vec::new();
+                            advisor_blocks.retain(|(block_index, block)| {
+                                let unpaired = *block_index < index
+                                    && block.get("type").and_then(Value::as_str) == Some("server_tool_use")
+                                    && !block
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|id| paired_tool_use_ids.contains(id));
+                                if unpaired {
+                                    unpaired_advisor_indices.push(*block_index);
+                                }
+                                !unpaired
+                            });
+                            block_order.discard_declined_partial(index, &unpaired_advisor_indices);
+                            finalized_reasoning_details.push(FinalizedDetail {
+                                index,
+                                thinking: false,
+                                detail: serde_json::json!({
+                                    "type": "fallback",
+                                    "from": from,
+                                    "to": to,
+                                })
+                                .to_string(),
+                            });
                         }
                         AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
                             match delta {
@@ -253,7 +331,7 @@ pub fn create_stream(
                         }
                         AnthropicStreamEvent::ContentBlockStop { index } => {
                             if let Some(reasoning_block) = reasoning_blocks.remove(&index) {
-                                finalized_reasoning_details.push(serialize_reasoning_block_detail(reasoning_block));
+                                finalized_reasoning_details.push(FinalizedDetail::from_block(index, reasoning_block));
                             }
                         }
                         AnthropicStreamEvent::MessageDelta { delta, usage } => {
@@ -288,6 +366,9 @@ pub fn create_stream(
                             if let Some(reason) = delta.stop_reason {
                                 aggregator.set_finish_reason(parse_finish_reason(&reason));
                             }
+                            if let Some(detail) = delta.stop_details.as_ref().and_then(stop_details_reasoning_detail) {
+                                stop_details_detail = Some(detail);
+                            }
                         }
                         AnthropicStreamEvent::Error { error } => {
                             Err(LLMError::Provider {
@@ -308,9 +389,15 @@ pub fn create_stream(
             }
         }
 
-        for (_, reasoning_block) in reasoning_blocks {
-            finalized_reasoning_details.push(serialize_reasoning_block_detail(reasoning_block));
+        for (index, reasoning_block) in reasoning_blocks {
+            finalized_reasoning_details.push(FinalizedDetail::from_block(index, reasoning_block));
         }
+
+        // Same order as the non-streaming parser: reasoning blocks, then
+        // stop_details, then advisor blocks.
+        let mut finalized_reasoning_details: Vec<String> =
+            finalized_reasoning_details.into_iter().map(|detail| detail.detail).collect();
+        finalized_reasoning_details.extend(stop_details_detail);
 
         let mut response = aggregator.finalize();
         if !finalized_reasoning_details.is_empty() {
@@ -319,11 +406,14 @@ pub fn create_stream(
         if !advisor_blocks.is_empty() {
             let detail = serde_json::json!({
                 "type": "advisor",
-                "blocks": advisor_blocks,
+                "blocks": advisor_blocks.into_iter().map(|(_, block)| block).collect::<Vec<_>>(),
             });
             let mut details = response.reasoning_details.unwrap_or_default();
             details.push(detail.to_string());
             response.reasoning_details = Some(details);
+        }
+        if let Some(detail) = block_order.into_detail() {
+            response.reasoning_details.get_or_insert_with(Vec::new).push(detail);
         }
         response.request_id = request_id.clone();
         response.organization_id = organization_id.clone();

@@ -137,7 +137,10 @@ async fn process_output(
 }
 
 impl PtyStreamRuntime {
-    const MAX_LIVE_STREAM_LINES: usize = 12;
+    /// Live rows kept visible while a command streams. Capped at 10 so live
+    /// previews stay within the same display budget as the 10-row
+    /// exec-session completed bodies; the full capture stays in `Ctrl+T`.
+    const MAX_LIVE_STREAM_LINES: usize = 10;
 
     pub(crate) fn start(
         handle: InlineHandle,

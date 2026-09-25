@@ -22,6 +22,11 @@ Runs a shell command through the active shell profile. Permission-related
 fields express stable request intent; the execution gateway resolves runtime
 enforcement without changing the model-visible schema.
 
+File edits belong in `apply_patch` rather than shell redirection or in-place
+editors such as `sed -i`. Expanded `sandbox_permissions` modes trigger an
+approval check before the command runs; `require_escalated` and
+`bypass_sandbox` also need a non-empty `justification`.
+
 Required:
 
 - `cmd`: command text.
@@ -113,10 +118,14 @@ Example:
 
 ### `search_tools`
 
-Searches the deferred local catalog by name and description. `query` is
-required; `limit` is optional (1–25), and `detail_level` accepts `name`,
-`name_description`, or `full`. Ranked matches are expanded deterministically
-for the next request segment.
+Searches the session tool catalog by name and description, so the model can
+find tools whose definitions are deferred (for example `code_search`,
+`web_fetch`, `web_search`, `cron`, and MCP server tools). `query` is required;
+`limit` is optional (1–25, default 5), and `detail_level` accepts `name`,
+`name_description` (default), or `full`. Deferred matches are listed in
+`expanded_for_next_segment` and become callable on the next request segment.
+The `mcp` tool's `action=search_tools` is narrower: it searches only tools
+exposed by configured MCP servers.
 
 ```json
 {"query":"GitHub pull request review","limit":5,"detail_level":"name_description"}

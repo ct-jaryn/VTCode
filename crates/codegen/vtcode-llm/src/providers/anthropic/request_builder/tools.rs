@@ -1,7 +1,7 @@
 use crate::provider::{LLMError, LLMRequest, ToolDefinition};
 use crate::providers::anthropic_types::{
     AnthropicCodeExecutionTool, AnthropicFunctionTool, AnthropicMemoryTool, AnthropicTool, AnthropicToolSearchTool,
-    AnthropicWebSearchTool, CacheControl, ThinkingConfig,
+    AnthropicWebSearchTool, CacheControl,
 };
 use serde_json::{Map, Value, json};
 
@@ -171,12 +171,13 @@ fn anthropic_web_search_options(tool: &ToolDefinition) -> Result<Map<String, Val
     }
 }
 
-pub(crate) fn build_tool_choice(request: &LLMRequest, thinking_val: &Option<ThinkingConfig>) -> Option<Value> {
+/// Builds the wire `tool_choice`. When `forced_tool_choice_allowed` is false
+/// (thinking is on, or a target model rejects forced tool use), `any`/`tool`
+/// is downgraded to `auto` so the request is not rejected with a 400.
+pub(crate) fn build_tool_choice(request: &LLMRequest, forced_tool_choice_allowed: bool) -> Option<Value> {
     let mut final_tool_choice = request.tool_choice.as_ref().map(|tc| tc.to_provider_format("anthropic"));
 
-    if thinking_val.is_some()
-        && let Some(ref choice) = final_tool_choice
-    {
+    if !forced_tool_choice_allowed && let Some(ref choice) = final_tool_choice {
         let choice_type = choice.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if choice_type != "auto" && choice_type != "none" && !choice_type.is_empty() {
             final_tool_choice = Some(json!({"type": "auto"}));
@@ -660,7 +661,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_tool_choice(&request, &None),
+            build_tool_choice(&request, true),
             Some(json!({
                 "type": "auto",
                 "disable_parallel_tool_use": true

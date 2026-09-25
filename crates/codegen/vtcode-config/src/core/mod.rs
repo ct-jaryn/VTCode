@@ -42,10 +42,11 @@ pub use prompt_cache::{
     session_affinity_key_enabled, session_affinity_provider,
 };
 pub use provider::{
-    AnthropicConfig, OpenAIConfig, OpenAIHostedShellConfig, OpenAIHostedShellDomainSecret,
-    OpenAIHostedShellEnvironment, OpenAIHostedShellNetworkPolicy, OpenAIHostedShellNetworkPolicyType,
-    OpenAIHostedSkill, OpenAIHostedSkillVersion, OpenAIManualCompactionConfig, OpenAIServiceTier,
-    OpenAIToolSearchConfig, ThinkingDisplayMode, ToolSearchAlgorithm, ToolSearchConfig,
+    AnthropicConfig, AnthropicFallbackMode, AnthropicFallbackTarget, AnthropicFallbacks, OpenAIConfig,
+    OpenAIHostedShellConfig, OpenAIHostedShellDomainSecret, OpenAIHostedShellEnvironment,
+    OpenAIHostedShellNetworkPolicy, OpenAIHostedShellNetworkPolicyType, OpenAIHostedSkill, OpenAIHostedSkillVersion,
+    OpenAIManualCompactionConfig, OpenAIServiceTier, OpenAIToolSearchConfig, ThinkingDisplayMode, ToolSearchAlgorithm,
+    ToolSearchConfig,
 };
 pub use provider_override::ProviderOverrideConfig;
 pub use sandbox::{

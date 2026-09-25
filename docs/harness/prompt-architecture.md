@@ -56,9 +56,50 @@ immutable `system_prompt` in this order:
 9. **GitHub Copilot Client Tools** — only for the Copilot provider.
 10. **Active Primary Agent Runtime State** — model, reasoning effort,
     instructions, and `### Memory Appendix` if the agent has memory.
-11. **[Few-Shot Examples]** — appended after the immutable prompt as a
-    synthetic system context message when relevant and budget allows (see
-    below).
+11. **[Few-Shot Examples]** — never part of the system prompt. When
+    relevant and budget allows, the block is persisted in history once per
+    user turn, directly after the user message (see below).
+
+## Prompt style
+
+The compiled base prompt (`prompts/system.rs`, `prompts/runtime_guidance.rs`,
+`prompts/guidelines.rs`) is written to work unchanged on every provider,
+including small local models.
+
+- **Plain prose with reasons.** State each rule as a full sentence and give
+  the reason when it is not obvious ("confirm destructive actions ... since
+  lost work may be unrecoverable"). Do not use capitalized emphasis such as
+  MUST, NEVER, or CRITICAL; the runtime-guidance test rejects it.
+- **One home per rule.** Universal rules (scope, grounding, verification
+  honesty, delegation, safety, tool-failure recovery, waiting on
+  `next_wait_args` instead of polling, `spool_path` paging and
+  `preview_budget_exhausted` handling, progress updates) live only in
+  `RUNTIME_GUIDANCE_SECTION`, which every profile includes and which is
+  re-added when a workspace `system.md` replaces the base. State the
+  harness carries across compaction lives in `SHARED_CONTRACT_LINES`.
+  Extended style for the Default, Lightweight, and Specialized profiles
+  lives in `DEFAULT_SPECIFIC_LINES`. Operating deltas describe only mode
+  mechanics (core tools, Planning workflow, tracker). Per-tool mechanics,
+  including the single `start_planning` line, live in the `## Active Tools`
+  section from `prompts/guidelines.rs`, and `[Harness Limits]` states limit
+  values, their exemptions, and how to work within each limit; neither
+  restates a universal rule.
+  `static_prompts::tests::shared_contract_lines_and_runtime_bullets_appear_exactly_once_per_profile`
+  asserts that every `SHARED_CONTRACT_LINES` entry, every profile-specific
+  contract line, and every Runtime Guidance bullet appears exactly once in
+  each profile, and
+  `guidelines::tests::universal_rules_have_one_home_across_composed_prompt_sections`
+  composes each profile with the Default, Minimal, and Planning tool
+  guidance plus Harness Limits and asserts each universal rule appears
+  exactly once.
+- **Provider-agnostic.** No model or provider names, no references to
+  provider-specific features such as thinking blocks or context-clearing
+  parameters, and no formatting that depends on one vendor's renderer.
+- **Budgets with justification.** Each profile and section has a token or
+  character bound in its tests. When a bound is raised, the constant or
+  assertion carries a one-line comment saying why and what it measured.
+  Current base sizes (cl100k estimate): Minimal about 525, Lightweight about
+  730, Default about 860, Specialized about 875, Runtime Guidance about 440.
 
 ## Few-shot management (Section 18.3.3)
 
@@ -103,8 +144,21 @@ For each turn, the harness:
 5. Walks in order, appending until the running total exceeds
    [`DEFAULT_FEW_SHOT_BUDGET_TOKENS`] (default 800 tokens, ~10% of an 8K
    context window).
-6. Renders the chosen examples as a `[Few-Shot Examples]` block appended
-   to the system prompt before the tool catalog.
+6. Renders the chosen examples as a `[Few-Shot Examples]` block and, at
+   the first request of the turn only, persists it in canonical history
+   directly after the user message
+   (`llm_request/request_context.rs`). Every later request of the turn, and
+   every later turn, replays it unchanged at that position, so requests stay
+   append-only for prompt caching and for models that bind replayed thinking
+   to the exact prior prefix (Claude Opus 5.5, Claude Fable 5.1).
+7. Shapes the persisted block per route: routes with turn-scoped system
+   messages send it as `role: "system"` with
+   `clear_at: "next_user_message"`, so it stops applying once the next user
+   turn arrives; other routes receive it as a user-role context message,
+   because their adapters fold mid-history system messages into the
+   top-level system prompt and would rewrite the cached system prefix
+   whenever the selection changes. Earlier turns' blocks stay in history
+   (bounded by the per-turn budget) until compaction removes them.
 
 The selection is keyword-based and runs in-process without an embedding
 provider. Embedding-based selection is the documented next step (see
@@ -140,16 +194,18 @@ include:
 
 - A **verb cue** — `Use `, `Create `, `List `, `Fetch `, etc. — so the
   model recognizes the action the tool performs.
-- An **anti-pattern cue** OR a **constraint cue** — e.g. `Do NOT ...`,
-  `Avoid ...`, `sparely`, or `max ...`, `rate-limit`, `session`,
-  `Prompt`, `timeout`, `inherits` — so the model knows the limits and
-  side effects.
+- A **constraint cue** — e.g. `max ...`, `rate-limit`, `session`,
+  `timeout`, `requires approval`, `inherits` — so the model knows the
+  limits and side effects. Prohibition phrasing such as `Do NOT ...` or
+  `Avoid ...` does not satisfy the rule; models that follow tool
+  descriptions literally over-apply it, so state the concrete limit instead.
 
-Tools exempted from the anti-pattern/constraint requirement are
-single-action or read-only helpers (`cron` action=`list`/`delete`,
-`mcp` action=`list_servers`, etc.) where the model can safely call them without
-explicit guard-rails. See the test for the full allowlist and cue
-vocabularies.
+Descriptions must be 40-1500 characters. Tools exempted from the constraint
+requirement are single-action or read-only helpers (`request_user_input`,
+`search_tools`, `code_search`, etc.) where the model can safely call them
+without explicit guard-rails. The allowlist holds registration names only;
+aliases such as `cron_list` are never checked. See the test for the full
+allowlist and cue vocabulary.
 
 Run `cargo test -p vtcode-core tools::registry::builtins::tests::tool_descriptions_satisfy_documented_contract`
 to validate any description change before merging.

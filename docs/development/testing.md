@@ -184,13 +184,21 @@ cargo nextest run -E 'binary(/integration/)' -- --nocapture
 ### Benchmarks
 
 ```bash
-# Run all benchmarks
+# Run all benchmarks (sequentially; never in parallel)
 cargo bench
 
 # Run specific Criterion benches used in this workspace
+cargo bench --bench allocator_throughput
 cargo bench -p vtcode-core --bench tool_pipeline
 cargo bench -p vtcode-core --bench agent_harness
+cargo bench -p vtcode-ui --bench markdown_render
+cargo bench -p vtcode-ui --bench transcript
 ```
+
+See `docs/development/performance.md` Benchmark discipline for the
+baseline, independence, and no-gaming guardrails. The standalone
+`startup` bench needs a release binary; see the Testing Guide startup
+section.
 
 ### Fuzz Testing (cargo-fuzz)
 
@@ -294,7 +302,12 @@ cargo nextest run -E 'binary(/open_responses_compliance/)'
 
 ### Benchmarks
 
-Located in `benches/` directory:
+Located in `benches/` directories (`benches/`,
+`crates/codegen/vtcode-core/benches/`,
+`crates/codegen/vtcode-ui/benches/`). Follow the Benchmark discipline
+in `docs/development/performance.md` (sequential runs, `black_box`
+outputs, `iter_batched` independence except explicit `cache_hit`
+benches, no edits to timed bench code to hit a goal).
 
 ```rust
 use criterion::{black_box, criterion_group, criterion_main, Criterion};

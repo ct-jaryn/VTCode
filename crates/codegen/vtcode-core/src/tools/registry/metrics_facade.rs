@@ -18,12 +18,14 @@ impl ToolRegistry {
         self.pty_poll_counter.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Reset the aggregate provider-visible preview ledger at a turn boundary.
+    /// Reset the regular and small-preview ledgers at a turn boundary.
     ///
     /// Call once per turn from each runloop so the planning-aware budget in
-    /// `turn_preview_budget_bytes` applies per turn rather than per session.
+    /// `turn_preview_budget_bytes` and the small verifier reserve apply per
+    /// turn rather than per session.
     pub fn begin_turn_preview_window(&self) {
         self.turn_preview_bytes.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.turn_tiny_preview_bytes.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Charge `bytes` against the per-turn preview budget, returning the
@@ -31,5 +33,11 @@ impl ToolRegistry {
     /// truncate or strip payload bodies once the budget is exhausted.
     pub(super) fn charge_turn_preview_bytes(&self, bytes: usize) -> usize {
         self.turn_preview_bytes.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Charge `bytes` to the separate per-turn allowance for small previews.
+    pub(super) fn charge_turn_tiny_preview_bytes(&self, bytes: usize) -> usize {
+        self.turn_tiny_preview_bytes
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed)
     }
 }

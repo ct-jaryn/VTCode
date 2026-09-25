@@ -92,3 +92,55 @@ fn assign_origins(
         }
     }
 }
+
+/// Promote legacy top-level `default_provider` / `default_model` keys into the
+/// canonical `[agent]` table within a single layer value.
+///
+/// Older global files (and hand-edited configs) use bare
+/// `default_provider = "ollama"` / `default_model = "..."` at the document
+/// root. `VTCodeConfig` only deserializes `agent.provider` /
+/// `agent.default_model`, so without this promotion those keys are silently
+/// dropped and the runtime falls back to the compiled-in default (openrouter).
+/// The promotion is per-layer so normal layer precedence still applies: an
+/// explicit `[agent] provider` in the same file wins over its own top-level
+/// alias, and higher-precedence layers win over lower ones.
+pub(crate) fn normalize_legacy_top_level_provider_aliases(value: &mut toml::Value) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+
+    let legacy_provider = table
+        .get("default_provider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let legacy_model = table
+        .get("default_model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+
+    if legacy_provider.is_none() && legacy_model.is_none() {
+        return;
+    }
+
+    let agent_entry = table
+        .entry("agent".to_string())
+        .or_insert(toml::Value::Table(toml::Table::new()));
+    let Some(agent_table) = agent_entry.as_table_mut() else {
+        return;
+    };
+
+    if let Some(provider) = legacy_provider
+        && !agent_table.contains_key("provider")
+    {
+        agent_table.insert("provider".to_string(), toml::Value::String(provider));
+    }
+    if let Some(model) = legacy_model
+        && !agent_table.contains_key("default_model")
+    {
+        agent_table.insert("default_model".to_string(), toml::Value::String(model));
+    }
+}

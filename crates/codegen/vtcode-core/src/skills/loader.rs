@@ -1,6 +1,7 @@
 use crate::skills::cli_bridge::{CliToolBridge, CliToolConfig, discover_cli_tools};
 use crate::skills::command_skills::{
-    BuiltInCommandSkill, built_in_command_skill, merge_built_in_command_skill_contexts,
+    BuiltInCommandSkill, CommandSkillBackend, built_in_command_skill, find_command_skill_by_skill_name,
+    merge_built_in_command_skill_contexts,
 };
 use crate::skills::container_validation::{
     ContainerSkillsValidator, ContainerValidationReport, ContainerValidationResult,
@@ -859,19 +860,19 @@ impl EnhancedSkillLoader {
         self.ensure_system_skills_installed();
         let result = self.discovery.discover_all(&self.workspace_root).await?;
 
-        // Try traditional skills first
-        for skill_ctx in &result.skills {
-            if skill_ctx.manifest().name == name {
-                let path = skill_ctx.path();
-                let (manifest, instructions) = crate::skills::manifest::parse_skill_file(path)?;
-                let skill = Skill::with_scope(
-                    manifest,
-                    path.clone(),
-                    infer_scope_from_skill_path(path, &self.workspace_root),
-                    instructions,
-                )?;
-                return Ok(EnhancedSkill::Traditional(Box::new(skill)));
-            }
+        // Try traditional skills first. Command skills (`cmd-*` with a bundled
+        // `.system` contract) prefer the System copy so a stale workspace
+        // shadow cannot break `/review` free-form + fix-mode behavior.
+        if let Some(skill_ctx) = select_traditional_skill_ctx(&result.skills, name, &self.workspace_root) {
+            let path = skill_ctx.path();
+            let (manifest, instructions) = crate::skills::manifest::parse_skill_file(path)?;
+            let skill = Skill::with_scope(
+                manifest,
+                path.clone(),
+                infer_scope_from_skill_path(path, &self.workspace_root),
+                instructions,
+            )?;
+            return Ok(EnhancedSkill::Traditional(Box::new(skill)));
         }
 
         // Try CLI tools
@@ -969,6 +970,57 @@ fn has_agents_skills_ancestor(path: &Path) -> bool {
         }
     }
     false
+}
+
+fn is_bundled_command_skill(name: &str) -> bool {
+    find_command_skill_by_skill_name(name)
+        .is_some_and(|spec| matches!(spec.backend, CommandSkillBackend::TraditionalSkill { .. }))
+}
+
+fn is_system_skill_path(path: &Path) -> bool {
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        let is_skills = component.as_os_str() == "skills";
+        let next_is_system = components.peek().is_some_and(|next| next.as_os_str() == ".system");
+        if is_skills && next_is_system {
+            return true;
+        }
+    }
+    false
+}
+
+fn select_traditional_skill_ctx<'a>(
+    skills: &'a [SkillContext],
+    name: &str,
+    workspace_root: &Path,
+) -> Option<&'a SkillContext> {
+    let mut first_match: Option<&'a SkillContext> = None;
+    let mut system_match: Option<&'a SkillContext> = None;
+    for skill_ctx in skills {
+        if skill_ctx.manifest().name != name {
+            continue;
+        }
+        if first_match.is_none() {
+            first_match = Some(skill_ctx);
+        }
+        // Shape-based system detection covers custom `CODEX_HOME` values where
+        // `infer_scope_from_skill_path` falls back to `User`. Exclude `Repo`
+        // scope so a workspace-nested `skills/.system` path cannot spoof it.
+        let scope = infer_scope_from_skill_path(skill_ctx.path(), workspace_root);
+        if system_match.is_none()
+            && (scope == SkillScope::System || (scope != SkillScope::Repo && is_system_skill_path(skill_ctx.path())))
+        {
+            system_match = Some(skill_ctx);
+        }
+        if first_match.is_some() && system_match.is_some() {
+            break;
+        }
+    }
+    if is_bundled_command_skill(name) {
+        system_match.or(first_match)
+    } else {
+        first_match
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1378,6 +1430,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn bundled_command_skill_prefers_system_over_workspace_shadow() {
+        use crate::skills::types::SkillContext;
+        let workspace = TempDir::new().expect("workspace");
+        let codex_home = TempDir::new().expect("codex home");
+        install_system_skills(codex_home.path()).expect("install bundled system skills");
+        let system_dir = system_cache_root_dir(codex_home.path()).join("cmd-review");
+        let workspace_dir = workspace.path().join(".agents/skills/cmd-review");
+        // Simulate discovery order: workspace first, system last.
+        let system_ctx = SkillContext::MetadataOnly(
+            crate::skills::manifest::parse_skill_file(&system_dir).expect("parse system").0,
+            system_dir.clone(),
+        );
+        let workspace_ctx = SkillContext::MetadataOnly(manifest("cmd-review", "stale workspace shadow"), workspace_dir);
+        let skills = vec![workspace_ctx, system_ctx];
+        let selected = select_traditional_skill_ctx(&skills, "cmd-review", workspace.path()).expect("select skill");
+        assert_eq!(selected.path(), &system_dir);
+        assert!(
+            selected.manifest().description.contains("[instructions |"),
+            "bundled cmd-review must support free-form instructions, got: {}",
+            selected.manifest().description
+        );
+    }
+
+    #[test]
+    fn non_command_skill_keeps_workspace_first_match() {
+        use crate::skills::types::SkillContext;
+        let workspace = TempDir::new().expect("workspace");
+        let workspace_dir = workspace.path().join(".agents/skills/my-skill");
+        let other_dir = workspace.path().join("other/my-skill");
+        let skills = vec![
+            SkillContext::MetadataOnly(manifest("my-skill", "workspace"), workspace_dir),
+            SkillContext::MetadataOnly(manifest("my-skill", "other"), other_dir),
+        ];
+        let selected = select_traditional_skill_ctx(&skills, "my-skill", workspace.path()).expect("select skill");
+        assert_eq!(selected.manifest().description, "workspace");
+    }
+
+    #[test]
+    fn workspace_nested_system_shape_does_not_spoof_command_skill() {
+        use crate::skills::types::SkillContext;
+        let workspace = TempDir::new().expect("workspace");
+        let codex_home = TempDir::new().expect("codex home");
+        install_system_skills(codex_home.path()).expect("install bundled system skills");
+        let system_dir = system_cache_root_dir(codex_home.path()).join("cmd-review");
+        let spoof_dir = workspace.path().join(".agents/skills/skills/.system/cmd-review");
+        let system_ctx = SkillContext::MetadataOnly(
+            crate::skills::manifest::parse_skill_file(&system_dir).expect("parse system").0,
+            system_dir.clone(),
+        );
+        let spoof_ctx = SkillContext::MetadataOnly(manifest("cmd-review", "workspace spoof"), spoof_dir);
+        let skills = vec![spoof_ctx, system_ctx];
+        let selected = select_traditional_skill_ctx(&skills, "cmd-review", workspace.path()).expect("select skill");
+        assert_eq!(selected.path(), &system_dir);
     }
 
     fn write_skill(dir: &Path, name: &str, description: &str) {

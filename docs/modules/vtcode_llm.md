@@ -39,7 +39,7 @@ Provides a unified interface for multiple LLM providers with streaming, tool cal
 | HuggingFace | `providers/huggingface.rs` | Router-based models |
 | Mistral | `providers/mistral.rs` | Mistral models |
 | Qwen | `providers/qwen.rs` | Qwen models |
-| MiMo | `providers/mimo.rs` | MiMo V2.5, V2.5 Pro |
+| MiMo | `providers/mimo.rs` | MiMo V2.6 Pro, V2.6 Flash, V2.6 Pro UltraSpeed |
 
 ## Architecture Notes
 

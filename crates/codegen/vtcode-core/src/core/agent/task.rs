@@ -61,6 +61,12 @@ pub enum TaskOutcome {
         reason: String,
         tool_name: String,
     },
+    /// The provider declined the request (`FinishReason::Refusal`). Terminal
+    /// for the prompt: resending it is refused again. `reason` is the
+    /// user-facing notice from [`crate::core::agent::refusal::refusal_reason`].
+    Refused {
+        reason: String,
+    },
     Failed {
         reason: String,
         /// What was accomplished before the failure occurred.
@@ -110,6 +116,7 @@ impl TaskOutcome {
             Self::Escalated { reason, tool_name } => {
                 format!("Task escalated: {tool_name} — {reason}")
             }
+            Self::Refused { reason } => reason.clone(),
             Self::Failed { reason, accomplished, recovery_suggestion, .. } => {
                 let mut parts = vec![format!("Task failed: {reason}")];
                 if !accomplished.is_empty() {
@@ -135,6 +142,7 @@ impl TaskOutcome {
             Self::Cancelled => "cancelled",
             Self::HandedOff { .. } => "handed_off",
             Self::Escalated { .. } => "escalated",
+            Self::Refused { .. } => "refused",
             Self::Failed { .. } => "failed",
             Self::Unknown => "unknown",
         }
@@ -150,6 +158,7 @@ impl TaskOutcome {
             | Self::LoopDetected
             | Self::HandedOff { .. }
             | Self::Escalated { .. }
+            | Self::Refused { .. }
             | Self::Failed { .. }
             | Self::Unknown => ThreadCompletionSubtype::ErrorDuringExecution,
         }
@@ -187,6 +196,10 @@ impl TaskOutcome {
 
     pub fn escalated(reason: String, tool_name: String) -> Self {
         Self::Escalated { reason, tool_name }
+    }
+
+    pub fn refused(reason: String) -> Self {
+        Self::Refused { reason }
     }
 
     pub fn handed_off(target: String) -> Self {
@@ -229,6 +242,25 @@ mod tests {
             (TaskOutcome::failed("boom".to_string(), vec![], None, None)).thread_completion_subtype(),
             ThreadCompletionSubtype::ErrorDuringExecution
         );
+        assert_eq!(
+            TaskOutcome::refused("declined".to_string()).thread_completion_subtype(),
+            ThreadCompletionSubtype::ErrorDuringExecution
+        );
+    }
+
+    #[test]
+    fn refused_outcome_is_a_distinct_failure_that_carries_the_reason() {
+        let outcome = TaskOutcome::refused("The model declined this request.".to_string());
+
+        assert!(!outcome.is_success());
+        assert!(!outcome.is_hard_block());
+        assert_eq!(outcome.code(), "refused");
+        assert_eq!(outcome.description(), "The model declined this request.");
+
+        let json = serde_json::to_value(&outcome).expect("serialize refused outcome");
+        assert_eq!(json, serde_json::json!({"refused": {"reason": "The model declined this request."}}));
+        let round_trip: TaskOutcome = serde_json::from_value(json).expect("deserialize refused outcome");
+        assert_eq!(round_trip, outcome);
     }
 }
 

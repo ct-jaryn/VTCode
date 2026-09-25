@@ -124,19 +124,11 @@ impl ExecutionMetrics {
     }
 
     pub fn avg_duration_ms(&self) -> u64 {
-        if self.total_executions > 0 {
-            self.total_duration_ms / self.total_executions
-        } else {
-            0
-        }
+        self.total_duration_ms.checked_div(self.total_executions).unwrap_or(0)
     }
 
     pub fn avg_memory_mb(&self) -> u64 {
-        if self.total_executions > 0 {
-            self.memory_total_mb / self.total_executions
-        } else {
-            0
-        }
+        self.memory_total_mb.checked_div(self.total_executions).unwrap_or(0)
     }
 
     pub fn success_rate(&self) -> f64 {

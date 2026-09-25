@@ -82,7 +82,7 @@ pub(crate) struct ToolFailureDiagnosis {
 }
 
 impl ToolFailureDiagnosis {
-    fn new(observed: impl AsRef<str>, likely_cause: impl AsRef<str>, next_action: impl AsRef<str>) -> Self {
+    pub(crate) fn new(observed: impl AsRef<str>, likely_cause: impl AsRef<str>, next_action: impl AsRef<str>) -> Self {
         Self {
             observed: evidence::bounded_field(observed.as_ref()),
             likely_cause: evidence::bounded_field(likely_cause.as_ref()),
@@ -410,6 +410,19 @@ mod tests {
 
         assert!(!diagnosis.likely_cause.contains("no matching results"));
         assert!(diagnosis.likely_cause.contains("non-zero exit status"));
+    }
+
+    #[test]
+    fn apply_patch_shell_collision_points_to_tool_instead_of_path() {
+        let output = json!({
+            "command": "apply_patch",
+            "output": "zsh:1: command not found: apply_patch",
+            "exit_code": 127
+        });
+        let diagnosis = deterministic_output_diagnosis(tool_names::EXEC_COMMAND, &json!({}), &output);
+
+        assert!(diagnosis.likely_cause.contains("not a shell binary"));
+        assert!(diagnosis.next_action.contains("Call the `apply_patch` tool"));
     }
 
     #[test]

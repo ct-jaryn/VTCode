@@ -132,21 +132,20 @@ pub(crate) fn build_mid_turn_resume_message(
     let mut message = format!(
         "{MODEL_SWITCH_RESUME_PREFIX} {prev_provider}/{prev_model} -> {new_provider}/{new_model}. \
         {continuity} \
-        Continue seamlessly from where the previous model left off. \
-        Reuse tool outputs already in history instead of re-reading files. \
-        Do not claim success from an unverified plan."
+        The task and tool outputs in history still apply: continue from where the previous model left off \
+        and reuse those outputs instead of re-reading files."
     );
     if let Some(reason) = stall_reason.map(str::trim).filter(|reason| !reason.is_empty()) {
         let sanitized = sanitize_resume_fragment(reason, 220);
         if !sanitized.is_empty() {
-            message.push_str(&format!(" Previous turn stalled: {sanitized}. Recover autonomously."));
+            message.push_str(&format!(" Previous turn stalled: {sanitized}."));
         }
     }
     let (verification_pending, fix_remaining) = verification_snapshot;
     if verification_pending {
         message.push_str(&format!(
-            " Verification gate pending: run a verification command to exit 0 before claiming completion; \
-            {fix_remaining} fix-up edits allowed."
+            " Verification gate pending: edits since the last passing verifier are unverified, and a verifier must exit 0 \
+            before the task can complete; {fix_remaining} fix-up edits allowed."
         ));
     }
     let touched: Vec<String> = touched_files
@@ -158,7 +157,6 @@ pub(crate) fn build_mid_turn_resume_message(
     if !touched.is_empty() {
         message.push_str(&format!(" Recent files: {}.", touched.join(", ")));
     }
-    message.push_str(" Provider prompt cache was invalidated; this request re-pays full input cost.");
     message
 }
 
@@ -614,7 +612,7 @@ mod tests {
         assert_eq!(last.role, vtcode_core::llm::provider::MessageRole::System);
         let text = last.content.as_text().to_string();
         assert!(text.contains("Model switched mid-turn: openai/gpt-x -> anthropic/claude-x"));
-        assert!(text.contains("Continue seamlessly"));
+        assert!(text.contains("continue from where the previous model left off"));
         assert!(text.contains("auto-compacted"));
     }
 
@@ -744,7 +742,7 @@ mod tests {
         assert!(compacted_note.contains("auto-compacted"));
         assert!(!preserved_note.contains("auto-compacted"));
         assert!(preserved_note.contains("left intact"));
-        assert!(preserved_note.contains("Continue seamlessly"));
+        assert!(preserved_note.contains("continue from where the previous model left off"));
     }
 
     #[test]

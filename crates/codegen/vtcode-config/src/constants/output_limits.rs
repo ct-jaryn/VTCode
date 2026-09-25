@@ -21,15 +21,18 @@ pub const DEFAULT_MESSAGE_LIMIT: usize = 4_000;
 /// Maximum message count limit.
 pub const MAX_MESSAGE_LIMIT: usize = 20_000;
 
-/// Aggregate provider-visible tool preview budget across one turn (32 KiB
-/// execution, 96 KiB planning).
+/// Regular aggregate provider-visible tool preview budget across one turn
+/// (64 KiB execution, 96 KiB planning).
 ///
-/// Once a turn's tool previews exhaust this budget, later tool responses keep
-/// bounded outcome/control metadata while payload bodies are truncated or
-/// omitted. Planning gets the larger budget because read-only research needs
-/// roughly a dozen spooled previews before synthesis; execution keeps the
-/// tighter bound so recovery converges promptly.
-pub const TURN_PREVIEW_BUDGET_BYTES: usize = 32 * 1024;
+/// Once a turn's regular tool previews exhaust this budget, later responses
+/// keep bounded outcome/control metadata while payload bodies are truncated
+/// or omitted. Verifier-sized responses can still use the separate, finite
+/// `TURN_TINY_PREVIEW_BUDGET_BYTES` reserve. Planning gets the larger regular
+/// budget because read-only research needs roughly a dozen spooled previews
+/// before synthesis; execution keeps a slightly tighter bound so recovery
+/// still converges promptly, while allowing a normal ~10-15 tool-call turn
+/// (2-5 KiB per preview) to complete without blinding the model.
+pub const TURN_PREVIEW_BUDGET_BYTES: usize = 64 * 1024;
 /// Plan-mode per-turn preview budget (96 KiB ≈ a dozen spooled previews).
 pub const TURN_PREVIEW_BUDGET_BYTES_PLANNING: usize = 96 * 1024;
 
@@ -43,18 +46,23 @@ pub const fn turn_preview_budget_bytes(planning_active: bool) -> usize {
     }
 }
 
-/// Verifier-sized payloads bypass the per-turn preview budget (1 KiB).
+/// Maximum payload-body size admitted to the small verifier-preview reserve.
 ///
 /// Session `session-vtcode-20260913T074747Z_225432-45397` exhausted its 32 KiB
-/// budget on a 24 KiB README read, then stripped 25/45 later outputs — even
+/// budget (now 64 KiB) on a 24 KiB README read, then stripped 25/45 later outputs — even
 /// 5-byte `grep -c` / link-check verifiers — blinding the model into repeated
 /// identical shell runs. Small outcome payloads (exit codes, counts, short
-/// `BROKEN:` lists) are the evidence verifiers need; hiding them forces the
-/// retry spiral the budget is meant to prevent. Both preview layers
-/// (`ToolRegistry::enforce_turn_preview_budget` and
-/// `HarnessTurnState::bound_model_visible_tool_preview_with_budget`) must use
-/// this shared threshold so Layer1/Layer2 accounting stays in sync.
+/// `BROKEN:` lists) are the evidence verifiers need. Keep them available after
+/// the regular budget is spent, while charging them to a separate per-turn
+/// reserve so repeated calls remain bounded. Both preview layers must use this
+/// threshold and reserve.
 pub const TINY_PREVIEW_BYPASS_BYTES: usize = 1024;
+
+/// Aggregate allowance for verifier-sized payloads per turn (8 KiB).
+///
+/// This reserve is independent of the regular execution/planning preview
+/// budget and is reset at the same turn boundary.
+pub const TURN_TINY_PREVIEW_BUDGET_BYTES: usize = 8 * 1024;
 
 /// Truncation marker appended when content is cut off.
 const TRUNCATION_MARKER: &str = "\n[... content truncated due to size limit ...]";
@@ -127,8 +135,7 @@ mod tests {
 
     #[test]
     fn turn_preview_budget_splits_by_workflow_mode() {
-        assert_eq!(turn_preview_budget_bytes(false), 32 * 1024);
+        assert_eq!(turn_preview_budget_bytes(false), 64 * 1024);
         assert_eq!(turn_preview_budget_bytes(true), 96 * 1024);
-        assert_eq!(TURN_PREVIEW_BUDGET_BYTES_PLANNING, 3 * TURN_PREVIEW_BUDGET_BYTES);
     }
 }

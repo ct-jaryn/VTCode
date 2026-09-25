@@ -20,7 +20,7 @@ pub(super) fn strip_assistant_text(processing_result: TurnProcessingResult) -> T
             reasoning_details,
         },
         TurnProcessingResult::TextResponse { .. } => TurnProcessingResult::Empty,
-        TurnProcessingResult::Empty => processing_result,
+        TurnProcessingResult::Empty | TurnProcessingResult::Refusal { .. } => processing_result,
     }
 }
 
@@ -59,7 +59,7 @@ pub(super) fn maybe_append_planning_workflow_reminder(processing_result: TurnPro
                 proposed_plan,
             }
         }
-        TurnProcessingResult::Empty => processing_result,
+        TurnProcessingResult::Empty | TurnProcessingResult::Refusal { .. } => processing_result,
     }
 }
 
@@ -69,6 +69,11 @@ pub(super) fn inject_planning_workflow_interview(
     conversation_len: usize,
 ) -> TurnProcessingResult {
     use vtcode_core::config::constants::tools;
+
+    // A refused turn ends the loop; never replace it with an interview call.
+    if matches!(processing_result, TurnProcessingResult::Refusal { .. }) {
+        return processing_result;
+    }
 
     let args = json!({ "questions": [ build_fallback_question() ] });
     let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
@@ -107,6 +112,7 @@ pub(super) fn inject_planning_workflow_interview(
             reasoning,
             reasoning_details,
         },
+        TurnProcessingResult::Refusal { .. } => processing_result,
         TurnProcessingResult::Empty => TurnProcessingResult::ToolCalls {
             tool_calls: prepare_tool_calls(vec![call]),
             assistant_text: String::new(),

@@ -194,7 +194,7 @@ async fn build_system_prompt_with_empty_base_prompt_fails() {
 }
 
 #[tokio::test]
-async fn request_editor_context_message_includes_active_editor_context_block() {
+async fn request_editor_context_block_includes_active_editor_context_block() {
     let workspace = assert_fs::TempDir::new().expect("workspace");
     let mut manager = ContextManager::new("System prompt".to_string(), (), Arc::new(RwLock::new(HashMap::new())), None);
     manager.set_workspace_root(workspace.path());
@@ -237,19 +237,18 @@ async fn request_editor_context_message_includes_active_editor_context_block() {
         .await
         .expect("system prompt");
 
-    let message = manager.request_editor_context_message().expect("editor context message");
+    let block = manager.request_editor_context_block().expect("editor context block");
 
     assert!(!prompt.contains("## Active Editor Context"));
-    assert_eq!(message.role, uni::MessageRole::User);
-    assert!(message.content.as_text().contains("## Active Editor Context"));
-    assert!(message.content.as_text().contains("- Active file: src/main.rs"));
-    assert!(message.content.as_text().contains("- Selection: 48:1-52:8"));
-    assert!(message.content.as_text().contains("- Open files:"));
-    assert!(message.content.as_text().contains("  - src/lib.rs"));
+    assert!(block.starts_with("## Active Editor Context"));
+    assert!(block.contains("- Active file: src/main.rs"));
+    assert!(block.contains("- Selection: 48:1-52:8"));
+    assert!(block.contains("- Open files:"));
+    assert!(block.contains("  - src/lib.rs"));
 }
 
 #[tokio::test]
-async fn request_editor_context_message_skips_disallowed_provider_family() {
+async fn request_editor_context_block_skips_disallowed_provider_family() {
     let workspace = assert_fs::TempDir::new().expect("workspace");
     let mut manager = ContextManager::new("System prompt".to_string(), (), Arc::new(RwLock::new(HashMap::new())), None);
     manager.set_workspace_root(workspace.path());
@@ -282,11 +281,11 @@ async fn request_editor_context_message_skips_disallowed_provider_family() {
         .expect("system prompt");
 
     assert!(!prompt.contains("## Active Editor Context"));
-    assert!(manager.request_editor_context_message().is_none());
+    assert!(manager.request_editor_context_block().is_none());
 }
 
 #[tokio::test]
-async fn request_editor_context_message_respects_session_local_ide_toggle() {
+async fn request_editor_context_block_respects_session_local_ide_toggle() {
     let workspace = assert_fs::TempDir::new().expect("workspace");
     let mut manager = ContextManager::new("System prompt".to_string(), (), Arc::new(RwLock::new(HashMap::new())), None);
     manager.set_workspace_root(workspace.path());
@@ -313,9 +312,9 @@ async fn request_editor_context_message_respects_session_local_ide_toggle() {
         })
         .await
         .expect("enabled prompt");
-    let enabled_message = manager.request_editor_context_message().expect("enabled editor context");
+    let enabled_block = manager.request_editor_context_block().expect("enabled editor context");
     assert!(!enabled_prompt.contains("## Active Editor Context"));
-    assert!(enabled_message.content.as_text().contains("## Active Editor Context"));
+    assert!(enabled_block.contains("## Active Editor Context"));
 
     assert!(!manager.toggle_session_ide_context());
     let disabled_prompt = manager
@@ -327,7 +326,7 @@ async fn request_editor_context_message_respects_session_local_ide_toggle() {
         .await
         .expect("disabled prompt");
     assert!(!disabled_prompt.contains("## Active Editor Context"));
-    assert!(manager.request_editor_context_message().is_none());
+    assert!(manager.request_editor_context_block().is_none());
 
     assert!(manager.toggle_session_ide_context());
     let reenabled_prompt = manager
@@ -338,9 +337,9 @@ async fn request_editor_context_message_respects_session_local_ide_toggle() {
         })
         .await
         .expect("reenabled prompt");
-    let reenabled_message = manager.request_editor_context_message().expect("reenabled editor context");
+    let reenabled_block = manager.request_editor_context_block().expect("reenabled editor context");
     assert!(!reenabled_prompt.contains("## Active Editor Context"));
-    assert!(reenabled_message.content.as_text().contains("## Active Editor Context"));
+    assert!(reenabled_block.contains("## Active Editor Context"));
 }
 
 #[test]

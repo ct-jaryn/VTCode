@@ -1,4 +1,5 @@
 use anyhow::Result;
+use vtcode_core::core::agent::refusal;
 use vtcode_core::llm::providers::split_reasoning_from_text;
 use vtcode_core::utils::ansi::AnsiRenderer;
 use vtcode_core::utils::ansi::MessageStyle;
@@ -27,6 +28,13 @@ pub(crate) fn process_llm_response(
     use crate::agent::runloop::unified::turn::provider_noise::strip_provider_noise;
     use vtcode_core::config::constants::tools;
     use vtcode_core::llm::provider as uni;
+
+    // A refusal is terminal for this prompt: empty-response recovery would
+    // resend it and be refused again, and any partial output was cut off by
+    // the provider, so it must not be committed as an answer or executed.
+    if refusal::is_refusal(response) {
+        return Ok(TurnProcessingResult::Refusal { reason: refusal::refusal_reason(response) });
+    }
 
     let reasoning = split_reasoning_from_text(response.reasoning.as_deref().unwrap_or("")).0;
     let reasoning_text = reasoning
@@ -725,6 +733,76 @@ mod tests {
         }
     }
 
+    fn refusal_response(content: Option<&str>, reasoning_details: Option<Vec<String>>) -> LLMResponse {
+        LLMResponse {
+            content: content.map(str::to_string),
+            finish_reason: FinishReason::Refusal,
+            reasoning_details,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn process_llm_response_ends_refused_turn_with_category_and_explanation() {
+        let detail = serde_json::json!({
+            "type": "stop_details",
+            "category": "cyber",
+            "explanation": "Request resembles malware development",
+        })
+        .to_string();
+        // Partial output cut off by the refusal must not become the answer.
+        let response = refusal_response(Some("Sure, here is"), Some(vec![detail]));
+
+        let mut renderer = AnsiRenderer::stdout();
+        let result = process_llm_response(&response, &mut renderer, 0, false, true, true, true, None, None)
+            .expect("processing should succeed");
+
+        let TurnProcessingResult::Refusal { reason } = result else {
+            panic!("refusal should end the turn");
+        };
+        assert_eq!(
+            reason,
+            "The model declined this request (category: cyber): request resembles malware development. \
+             The request was not retried; rephrase it or switch models."
+        );
+        assert!(!reason.contains("Sure, here is"), "{reason}");
+        assert!(!reason.contains("fallback"), "no fallback ran, so none is claimed: {reason}");
+    }
+
+    #[test]
+    fn process_llm_response_uses_refusal_content_when_stop_details_are_absent() {
+        let response = refusal_response(Some("  I can't help with that.  "), None);
+
+        let mut renderer = AnsiRenderer::stdout();
+        let result = process_llm_response(&response, &mut renderer, 0, false, true, true, true, None, None)
+            .expect("processing should succeed");
+
+        let TurnProcessingResult::Refusal { reason } = result else {
+            panic!("refusal should end the turn");
+        };
+        assert_eq!(
+            reason,
+            "The model declined this request: I can't help with that. \
+             The request was not retried; rephrase it or switch models."
+        );
+    }
+
+    #[test]
+    fn process_llm_response_reports_refusal_without_stop_details() {
+        let response = refusal_response(None, None);
+
+        let mut renderer = AnsiRenderer::stdout();
+        let result = process_llm_response(&response, &mut renderer, 0, false, true, true, true, None, None)
+            .expect("processing should succeed");
+
+        let TurnProcessingResult::Refusal { reason } = result else {
+            panic!("refusal should not fall through to empty-response recovery");
+        };
+        assert!(reason.starts_with("The model declined this request."), "{reason}");
+        assert!(!reason.contains("category"), "{reason}");
+        assert!(!reason.contains("fallback"), "{reason}");
+    }
+
     #[tokio::test]
     async fn process_llm_response_rejects_textual_exec_command_without_command() {
         let temp = tempfile::tempdir().expect("temp workspace");
@@ -857,7 +935,9 @@ mod tests {
             TurnProcessingResult::TextResponse { text, .. } => {
                 panic!("spaced DSML leaked as text: {text}");
             }
-            TurnProcessingResult::Empty => panic!("spaced DSML should produce a tool call"),
+            TurnProcessingResult::Empty | TurnProcessingResult::Refusal { .. } => {
+                panic!("spaced DSML should produce a tool call")
+            }
         }
     }
 
@@ -1041,7 +1121,9 @@ mod tests {
                 assert!(proposed_plan.is_some());
             }
             TurnProcessingResult::ToolCalls { .. } => panic!("attached calls must not bypass plan approval"),
-            TurnProcessingResult::Empty => panic!("complete plan should remain actionable"),
+            TurnProcessingResult::Empty | TurnProcessingResult::Refusal { .. } => {
+                panic!("complete plan should remain actionable")
+            }
         }
     }
 

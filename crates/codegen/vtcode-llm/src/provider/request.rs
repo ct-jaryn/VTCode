@@ -6,7 +6,10 @@ use vtcode_config::types::{ReasoningEffortLevel, VerbosityLevel};
 use super::{Message, ToolDefinition};
 
 /// Fallback model configuration for Anthropic server-side fallback.
-/// Used with the `server-side-fallback-2026-07-01` beta header.
+/// The explicit-list form of `fallbacks`, sent with the
+/// `server-side-fallback-2026-06-01` beta header (the `"default"` keyword form
+/// uses `server-side-fallback-2026-07-01`; pairing a header with the other form
+/// is rejected).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FallbackModel {
     /// The model identifier to fall back to (e.g., "claude-opus-5")
@@ -59,6 +62,7 @@ pub enum AnthropicThinkingDisplayOverride {
     Inherit,
     Summarized,
     Omitted,
+    Updates,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -154,16 +158,6 @@ pub struct LLMRequest {
     /// Optional provider-specific context management configuration (Anthropic compaction/editing).
     pub context_management: Option<Value>,
 
-    /// Optional prefill text for the assistant response (Anthropic prefilling)
-    /// Incompatible with extended thinking
-    pub prefill: Option<String>,
-
-    /// Whether to enable character reinforcement (system prompt/prefill tagging)
-    pub character_reinforcement: bool,
-
-    /// Optional character name for reinforcement
-    pub character_name: Option<String>,
-
     /// Optional coding agent specific settings
     pub coding_agent_settings: Option<Box<CodingAgentSettings>>,
 
@@ -194,14 +188,19 @@ pub struct LLMRequest {
     /// Optional request-scoped prompt cache profile for provider-specific TTL overrides.
     pub prompt_cache_profile: Option<PromptCacheProfile>,
 
-    /// Optional fallback models for Anthropic server-side fallback (Claude Fable 5).
-    /// Requires the `server-side-fallback-2026-07-01` beta header.
+    /// Optional explicit fallback models for Anthropic server-side fallback.
+    /// Overrides `provider.anthropic.fallbacks`; sent with the
+    /// `server-side-fallback-2026-06-01` beta header. Subject to the same
+    /// gates as the config list (first-party endpoint, a model that supports
+    /// server-side fallbacks, no credit-token retry) and the same entry
+    /// validation; an empty list sends nothing.
     pub fallbacks: Option<Vec<FallbackModel>>,
 
     /// Optional opaque credit token from a refused request's `stop_details.fallback_credit_token`.
     /// Echoed on the retry to avoid paying the prompt-cache cost twice.
-    /// Requires the `fallback-credit-2026-06-01` beta header on both the refused request and
-    /// the retry.
+    /// Sent with the `fallback-credit-2026-07-01` beta header. The refused request must have
+    /// carried that header or `server-side-fallback-2026-07-01`, which grants the same
+    /// `stop_details` fields.
     pub fallback_credit_token: Option<String>,
 
     /// Optional Anthropic-specific request overrides used when request semantics must
@@ -271,24 +270,10 @@ pub struct ResponsesCompactionOptions {
 /// Settings to refine model behavior for coding agent tasks
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CodingAgentSettings {
-    /// Encourage the model to use XML tags for structured responses
-    pub(crate) force_xml_tags: bool,
-    /// Automatically prefill with `<thought>` to encourage reasoning
-    pub(crate) prefill_thought: bool,
-    /// Explicitly allow the model to say "I don't know" or "I am unsure"
-    pub(crate) allow_uncertainty: bool,
-    /// Enforce strict grounding to provided documents
-    pub(crate) strict_grounding: bool,
-    /// Optimize for long context by hoisting large messages and grounding in quotes
+    /// Optimize for long context by hoisting the largest user message.
+    /// Hoisting reorders earlier turns, so the Anthropic builder skips it on
+    /// preserved-thinking models (Claude Opus 5.5, Claude Fable 5.1).
     pub(crate) long_context_optimization: bool,
-    /// Wrap multiple file contexts in structured XML tags
-    pub(crate) use_xml_document_format: bool,
-    /// Inject instructions to find quotes before carrying out the task
-    pub(crate) force_quote_grounding: bool,
-    /// Optional specialized role for Claude (e.g., "Senior Software Architect")
-    pub(crate) role_specialization: Option<String>,
-    /// Enforce the use of `<thinking>` and `<answer>` tags for manual chain-of-thought
-    pub(crate) enforce_structured_thought: bool,
 }
 
 /// Tool choice configuration that works across different providers

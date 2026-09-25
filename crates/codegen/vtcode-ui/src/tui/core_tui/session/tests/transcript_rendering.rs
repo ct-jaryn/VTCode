@@ -443,7 +443,8 @@ fn cached_reflow_refreshes_tool_and_pty_block_boundaries() {
         .iter()
         .position(|line| line.contains("Ran cargo check"))
         .expect("tool header");
-    assert_eq!(tool, agent + 1, "agent prose glues to its tool block: {rendered:?}");
+    assert_eq!(tool, agent + 2, "agent-to-tool boundary needs exactly one blank row: {rendered:?}");
+    assert!(rendered[agent + 1].trim().is_empty(), "tool gap must be blank: {rendered:?}");
 
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.push_line(InlineMessageKind::User, vec![make_segment("Run the check.")]);
@@ -543,6 +544,27 @@ fn agent_trailing_blank_lines_do_not_stack_with_turn_gap() {
         .expect("user divider");
     let gap = &texts[answer + 1..divider];
     assert_eq!(gap.len(), 1, "content trailing blanks must not stack with the turn gap, got {texts:?}");
+    assert!(gap[0].trim().is_empty(), "gap row should be blank, got {texts:?}");
+}
+
+#[test]
+fn agent_trailing_blanks_do_not_stack_with_tool_gap() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.push_line(InlineMessageKind::Agent, vec![make_segment("lead-in prose\n\n")]);
+    session.push_line(InlineMessageKind::Tool, vec![make_segment("• Ran cargo check")]);
+
+    let rendered = session.reflow_transcript_lines(80);
+    let texts: Vec<String> = rendered.iter().map(line_text).collect();
+    let prose = texts
+        .iter()
+        .position(|text| text.contains("lead-in prose"))
+        .expect("agent prose");
+    let tool = texts
+        .iter()
+        .position(|text| text.contains("Ran cargo check"))
+        .expect("tool header");
+    let gap = &texts[prose + 1..tool];
+    assert_eq!(gap.len(), 1, "content trailing blanks must not stack with the tool gap, got {texts:?}");
     assert!(gap[0].trim().is_empty(), "gap row should be blank, got {texts:?}");
 }
 
@@ -1472,12 +1494,11 @@ fn tool_summary_details_are_tightly_grouped() {
     assert!(texts[6].trim().is_empty()); // bottom
 }
 
-/// Agent pre-announcement → tool block glues directly with no blank line:
-/// prose reads as the caption of its work log. Neither side owns a gap here
-/// (`Agent` emits no trailing gap before tool blocks and `Tool`/`Info` add
-/// no top gap after an `Agent`).
+/// Agent pre-announcement → tool block keeps exactly one blank line so the
+/// message stays visually distinct from its work log (single ownership: the
+/// agent suppresses its trailing gap and the tool block owns the top gap).
 #[test]
-fn agent_to_tool_has_no_gap() {
+fn agent_to_tool_has_single_blank() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.push_line(
         InlineMessageKind::Agent,
@@ -1495,9 +1516,10 @@ fn agent_to_tool_has_no_gap() {
     // Find the Agent line and the following Ran line.
     let agent_idx = texts.iter().position(|t| t.contains("Got the doc")).expect("agent line");
     let ran_idx = texts.iter().position(|t| t.contains("Ran 2 commands")).expect("ran line");
-    // No blank line between them: prose glues to its work log.
-    assert_eq!(ran_idx, agent_idx + 1, "expected adjacent rows, got texts: {texts:?}");
-    // Also verify the pure policy: Agent -> Tool should not add extra top gap.
+    // One blank line between them so prose stays distinct from its work log.
+    assert_eq!(ran_idx, agent_idx + 2, "expected one blank row, got texts: {texts:?}");
+    assert!(texts[agent_idx + 1].trim().is_empty(), "gap row should be blank, got texts: {texts:?}");
+    // Also verify the pure policy: Agent -> Tool adds the tool top gap.
     use crate::tui::core_tui::session::message::MessageLine;
     use crate::tui::core_tui::session::reflow::should_add_tool_block_top_spacing_for_kinds;
     use crate::tui::core_tui::types::InlineMessageKind as Kind;
@@ -1513,7 +1535,7 @@ fn agent_to_tool_has_no_gap() {
         link_ranges: vec![],
         revision: 0,
     };
-    assert!(!should_add_tool_block_top_spacing_for_kinds(&agent_line, &tool_line));
+    assert!(should_add_tool_block_top_spacing_for_kinds(&agent_line, &tool_line));
 }
 
 // ---------------------------------------------------------------------------
@@ -1580,7 +1602,7 @@ fn info_summary_followed_by_agent_has_section_divider() {
 }
 
 #[test]
-fn agent_glues_to_tool_and_pty_blocks() {
+fn agent_separates_from_tool_and_pty_blocks() {
     for kind in [InlineMessageKind::Tool, InlineMessageKind::Pty] {
         let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
         session.push_line(InlineMessageKind::Agent, vec![make_segment("lead-in prose")]);
@@ -1602,12 +1624,13 @@ fn agent_glues_to_tool_and_pty_blocks() {
             .position(|text| text.contains("lead-in prose"))
             .expect("agent prose");
         let block = texts.iter().position(|text| text.contains("Ran")).expect("tool header");
-        assert_eq!(block, prose + 1, "prose must glue to {kind:?} block, got {texts:?}");
+        assert_eq!(block, prose + 2, "prose must keep one blank row before {kind:?} block, got {texts:?}");
+        assert!(texts[prose + 1].trim().is_empty(), "gap row should be blank, got {texts:?}");
     }
 }
 
 #[test]
-fn agent_prose_glues_to_work_log_with_rule_section_break() {
+fn agent_prose_separates_from_work_log_with_rule_section_break() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.push_line(InlineMessageKind::Agent, vec![make_segment("Links all resolve.")]);
     session.push_line(InlineMessageKind::Info, vec![make_segment("• Ran 5 commands")]);
@@ -1623,7 +1646,8 @@ fn agent_prose_glues_to_work_log_with_rule_section_break() {
         .iter()
         .position(|text| text.contains("Ran 5 commands"))
         .expect("work-log hint");
-    assert_eq!(hint, prose + 1, "prose must glue to its work log, got {texts:?}");
+    assert_eq!(hint, prose + 2, "prose must keep one blank row before its work log, got {texts:?}");
+    assert!(texts[prose + 1].trim().is_empty(), "gap row should be blank, got {texts:?}");
     let dividers = divider_positions(&texts);
     assert_eq!(dividers.len(), 1, "one rule separates the sections, got {texts:?}");
     let follow = texts
@@ -1804,4 +1828,84 @@ fn agent_prose_links_stay_aligned_when_rows_justify() {
         }
     }
     assert_eq!(found, 1, "expected the inline path to stay linked");
+}
+
+#[test]
+fn tool_command_header_wraps_in_full_without_truncation() {
+    // Screenshot 2026-09-24 16:37: a piped `• Ran grep ... | grep -v ...`
+    // header must wrap across lines with every segment intact and no `…`.
+    // Wrapping may only insert whitespace (hanging indent); comparing with
+    // whitespace stripped proves no characters are lost or truncated.
+    // Fixture uses the exact screenshot bytes: `||` inside the quoted pattern
+    // and the backslash-escaped `\.backup` must both survive wrapping.
+    let command = "grep -rn \"@vinhnx/vtcode|npm install -g||npx @vinhnx\" docs | grep -v node_modules | grep -v package-lock | grep -v \"\\.backup\"";
+    let expected_flat: String = format!("• Ran {command}").chars().filter(|c| !c.is_whitespace()).collect();
+    for width in [80u16, 50, 40] {
+        let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+        session.push_line(InlineMessageKind::Tool, vec![make_segment(&format!("• Ran {command}"))]);
+        let rows = session.reflow_transcript_lines(width);
+        let joined: String = rows
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(!joined.contains('…'), "width {width}: header must not truncate, got: {joined:?}");
+        let flat: String = joined.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(flat, expected_flat, "width {width}: wrapped header lost content, got: {joined:?}");
+        // Proper line wrapping shape: the header must actually wrap at narrow
+        // widths, the first content row keeps the bullet+verb, continuations
+        // hang under it (gutter + hanging indent, never a mid-token restart),
+        // and no row overflows the viewport. Spacing blanks are skipped.
+        let content_rows: Vec<String> = rows
+            .iter()
+            .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+            .filter(|text: &String| !text.trim().is_empty())
+            .collect();
+        assert!(content_rows.len() > 1, "width {width}: long header must wrap, got: {joined:?}");
+        assert!(
+            content_rows[0].starts_with("• Ran "),
+            "width {width}: first row keeps bullet+verb, got: {:?}",
+            content_rows[0]
+        );
+        for text in content_rows.iter().skip(1) {
+            assert!(text.starts_with("  "), "width {width}: continuation hangs under the header, got: {text:?}");
+            assert!(text.chars().count() <= usize::from(width), "width {width}: row overflows viewport, got: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn pty_command_header_wraps_in_full_without_truncation() {
+    // Same screenshot command through the live PTY path: `• Ran` plus its
+    // `  │ ` continuations must keep every pipe segment with no `…`. Exact
+    // screenshot bytes (`||`, `\.backup`); the `│` stream glyphs are content
+    // and must survive reflow rather than being stripped or truncated.
+    let header = "• Ran grep -rn \"@vinhnx/vtcode|npm install -g||npx @vinhnx\" docs |";
+    let continuation = "  │ grep -v node_modules | grep -v package-lock | grep -v \"\\.backup\"";
+    let expected_flat: String = format!("{header}{continuation}")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for width in [80u16, 50, 40] {
+        let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+        push_pty_line(&mut session, header);
+        push_pty_line(&mut session, continuation);
+        let first = session.reflow_pty_lines(0, width);
+        let second = session.reflow_pty_lines(1, width);
+        let joined: String = first
+            .iter()
+            .chain(second.iter())
+            .flat_map(|line| line.line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(!joined.contains('…'), "width {width}: PTY header must not truncate, got: {joined:?}");
+        let flat: String = joined.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(flat, expected_flat, "width {width}: PTY header lost content, got: {joined:?}");
+        // Stream `│` glyphs survive reflow and no row overflows the viewport.
+        assert!(joined.contains('│'), "width {width}: continuation glyph lost, got: {joined:?}");
+        for line in first.iter().chain(second.iter()) {
+            let text: String = line.line.spans.iter().map(|span| span.content.as_ref()).collect();
+            assert!(text.chars().count() <= usize::from(width), "width {width}: row overflows viewport, got: {text:?}");
+        }
+    }
 }

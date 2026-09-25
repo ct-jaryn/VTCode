@@ -425,10 +425,8 @@ impl SkillValidator {
                                 warnings.push("Skill name is empty");
                             }
                         }
-                        "description" => {
-                            if manifest.description.is_empty() {
-                                warnings.push("Skill description is empty");
-                            }
+                        "description" if manifest.description.is_empty() => {
+                            warnings.push("Skill description is empty");
                         }
                         _ => {}
                     }

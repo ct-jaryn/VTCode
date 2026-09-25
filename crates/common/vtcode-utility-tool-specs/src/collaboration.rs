@@ -2,6 +2,9 @@
 
 use serde_json::{Value, json};
 
+/// Model-visible description of the `agent` tool.
+pub const AGENT_DESCRIPTION: &str = "Spawn and steer delegated child agents. Use action=spawn to delegate a scoped task, action=spawn_subprocess for a managed background subagent, action=send_input to continue a child, action=resume to reopen a completed child, action=wait for results, or action=close to cancel a child. spawn_subprocess runs a subagent defined with background: true in a separate VT Code process; shell commands, including long-running ones such as dev servers, go through exec_command, with background=true to keep them running.";
+
 #[must_use]
 pub fn agent_parameters() -> Value {
     json!({
@@ -11,18 +14,18 @@ pub fn agent_parameters() -> Value {
             "action": {
                 "type": "string",
                 "enum": ["spawn", "spawn_subprocess", "send_input", "resume", "wait", "close"],
-                "description": "spawn: delegate a scoped task to a child agent (requires message). spawn_subprocess: launch a managed background subprocess for long-running daemons (requires message). send_input: send follow-up input to a running child (requires id + message or items). resume: reopen a completed or closed child from saved context (requires id). wait: block the current foreground turn until one or more children reach a terminal state, including managed background subprocess ids (requires ids). close: cancel and free a child's tool budget (requires id)."
+                "description": "spawn: delegate a scoped task to a child agent (requires message). spawn_subprocess: run a subagent defined with background: true as a managed background VT Code process (requires message). send_input: send follow-up input to a running child (requires id + message or items). resume: reopen a completed or closed child from saved context (requires id). wait: block the current foreground turn until one or more children reach a terminal state, including managed background subprocess ids (requires ids). close: cancel and free a child's tool budget (requires id)."
             },
-            "agent_type": {"type": "string", "description": "spawn or spawn_subprocess: subagent type or name to run."},
+            "agent_type": {"type": "string", "description": agent_type_description("spawn or spawn_subprocess: ", " spawn_subprocess requires an agent defined with background: true.")},
             "message": {"type": "string", "description": "spawn or spawn_subprocess: task prompt. send_input: follow-up prompt for the child."},
             "items": {
                 "type": "array",
-                "description": "Structured context items for the child.",
+                "description": ITEMS_DESCRIPTION,
                 "items": collaboration_input_item_schema()
             },
             "fork_context": {"type": "boolean", "description": "spawn: seed the child with the current thread history.", "default": false},
             "model": {"type": "string", "description": "spawn or spawn_subprocess: model override. Omit to use parent model."},
-            "reasoning_effort": {"type": "string", "description": "spawn or spawn_subprocess: reasoning effort override."},
+            "reasoning_effort": reasoning_effort_schema("spawn or spawn_subprocess: "),
             "background": {"type": "boolean", "description": "spawn: run the child agent in background and return immediately.", "default": false},
             "max_turns": {"type": "integer", "description": "spawn or spawn_subprocess: optional turn limit for the child."},
             "id": {"type": "string", "description": "send_input, resume, or close: child agent id."},
@@ -45,11 +48,11 @@ pub fn spawn_agent_parameters() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "agent_type": {"type": "string", "description": "Subagent type or name to run."},
+            "agent_type": {"type": "string", "description": agent_type_description("", "")},
             "message": {"type": "string", "description": "Task prompt for the child agent."},
             "items": {
                 "type": "array",
-                "description": "Structured context items for the child agent.",
+                "description": ITEMS_DESCRIPTION,
                 "items": collaboration_input_item_schema()
             },
             "fork_context": {"type": "boolean", "description": "Seed the child with the current thread history.", "default": false},
@@ -57,7 +60,7 @@ pub fn spawn_agent_parameters() -> Value {
                 "type": "string",
                 "description": "Model override. Omit to use parent model."
             },
-            "reasoning_effort": {"type": "string", "description": "Reasoning effort override."},
+            "reasoning_effort": reasoning_effort_schema(""),
             "background": {
                 "type": "boolean",
                 "description": "Run agent in background. Returns immediately.",
@@ -76,18 +79,18 @@ pub fn spawn_background_subprocess_parameters() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "agent_type": {"type": "string", "description": "Background-enabled subagent type or name to run."},
+            "agent_type": {"type": "string", "description": agent_type_description("", " Requires an agent defined with background: true.")},
             "message": {"type": "string", "description": "Task prompt for the background subprocess."},
             "items": {
                 "type": "array",
-                "description": "Structured context items for the background subprocess.",
+                "description": ITEMS_DESCRIPTION,
                 "items": collaboration_input_item_schema()
             },
             "model": {
                 "type": "string",
                 "description": "Model override. Omit to use parent model."
             },
-            "reasoning_effort": {"type": "string", "description": "Reasoning effort override."},
+            "reasoning_effort": reasoning_effort_schema(""),
             "max_turns": {
                 "type": "integer",
                 "description": "Optional turn limit for the launched background subprocess task before it reports readiness. Values below 4 are promoted to 4 for background launches."
@@ -106,7 +109,7 @@ pub fn send_input_parameters() -> Value {
             "message": {"type": "string", "description": "Follow-up prompt for the child."},
             "items": {
                 "type": "array",
-                "description": "Structured follow-up items.",
+                "description": ITEMS_DESCRIPTION,
                 "items": collaboration_input_item_schema()
             },
             "interrupt": {"type": "boolean", "description": "When true, abort current child work and restart with this input. When false (default), queue the input; if the child is already running, it starts the child's next turn after the current turn completes.", "default": false}
@@ -229,15 +232,41 @@ pub fn request_user_input_parameters() -> Value {
     })
 }
 
+/// Reasoning effort values accepted for a child agent override: every value
+/// `ReasoningEffortLevel::parse` accepts, including `none` (the child sends no
+/// reasoning configuration), taken from the single list in `vtcode-commons`.
+pub const SUBAGENT_REASONING_EFFORT_VALUES: &[&str] = vtcode_commons::reasoning::constants::PARSEABLE_LEVELS;
+
+const ITEMS_DESCRIPTION: &str = "Structured context items for the child. Each item carries one content field. Items are used only when message is empty; each item contributes its first non-empty field in the order text, path, name, image_url.";
+
+fn agent_type_description(prefix: &str, suffix: &str) -> String {
+    format!(
+        "{prefix}Subagent name listed in the Subagents section of the system prompt (built-ins: default, explorer, worker; custom agents come from .vtcode/agents, .claude/agents, or .codex/agents in the workspace or home directory). Defaults to the agent the user explicitly mentioned, otherwise default.{suffix}"
+    )
+}
+
+fn reasoning_effort_schema(prefix: &str) -> Value {
+    json!({
+        "type": "string",
+        "enum": SUBAGENT_REASONING_EFFORT_VALUES,
+        "description": format!(
+            "{prefix}reasoning effort override for the child. When omitted, the child uses its agent definition's reasoning effort, or the parent's when the definition sets none."
+        )
+    })
+}
+
 fn collaboration_input_item_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "type": {"type": "string"},
-            "text": {"type": "string"},
-            "path": {"type": "string"},
-            "name": {"type": "string"},
-            "image_url": {"type": "string"}
+            "type": {
+                "type": "string",
+                "description": "Optional label naming the content field this item carries."
+            },
+            "text": {"type": "string", "description": "Inline text passed to the child as-is."},
+            "path": {"type": "string", "description": "Workspace file path the child should read; rendered as \"Reference: <path>\"."},
+            "name": {"type": "string", "description": "Name of a referenced symbol, agent, or resource, passed as-is."},
+            "image_url": {"type": "string", "description": "Image URL; rendered as \"Image: <url>\"."}
         },
         "additionalProperties": false
     })
@@ -256,6 +285,36 @@ mod tests {
         assert_eq!(spawn_items, send_items);
         assert_eq!(spawn_items["additionalProperties"], json!(false));
         assert_eq!(spawn_items["properties"]["image_url"]["type"], json!("string"));
+        // The label is informational; the child reads only the content fields.
+        assert!(spawn_items["properties"]["type"].get("enum").is_none());
+        for field in ["type", "text", "path", "name", "image_url"] {
+            let description = spawn_items["properties"][field]["description"].as_str().unwrap_or_default();
+            assert!(!description.is_empty(), "item field {field} needs a description");
+        }
+    }
+
+    #[test]
+    fn collaboration_schemas_document_agent_type_sources_and_reasoning_enum() {
+        let schemas = [
+            agent_parameters(),
+            spawn_agent_parameters(),
+            spawn_background_subprocess_parameters(),
+        ];
+        for schema in &schemas {
+            let agent_type = schema["properties"]["agent_type"]["description"].as_str().unwrap_or_default();
+            assert!(agent_type.contains("Subagents section of the system prompt"));
+            assert!(agent_type.contains("built-ins: default, explorer, worker"));
+            assert!(agent_type.contains(".vtcode/agents"));
+            assert!(agent_type.contains("Defaults to the agent the user explicitly mentioned"));
+
+            let reasoning = &schema["properties"]["reasoning_effort"];
+            assert_eq!(reasoning["enum"], json!(SUBAGENT_REASONING_EFFORT_VALUES));
+            assert!(reasoning["description"].as_str().unwrap_or_default().contains("When omitted"));
+        }
+        assert_eq!(
+            agent_parameters()["properties"]["items"]["description"],
+            send_input_parameters()["properties"]["items"]["description"]
+        );
     }
     #[test]
     fn collaboration_schemas_expose_updated_agent_description_text() {

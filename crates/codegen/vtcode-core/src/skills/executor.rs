@@ -869,7 +869,7 @@ impl LLMProvider for RepeatToolThenFinalizeProvider {
                     .last()
                     .map(|message| message.content.as_text().to_string())
                     .unwrap_or_default();
-                assert!(prompt.contains("HARD STOP"));
+                assert!(prompt.contains(crate::core::loop_detector::HARD_STOP_PREFIX));
                 assert!(prompt.contains(SKILL_TOOL_FREE_SYNTHESIS_PROMPT));
 
                 Ok(LLMResponse {

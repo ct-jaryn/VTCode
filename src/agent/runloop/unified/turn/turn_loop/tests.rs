@@ -634,10 +634,16 @@ fn blocked_turn_final_response_explains_pending_verification() {
 
     assert!(response.contains("Inspection-only checks do not clear the verification gate"));
     assert!(response.contains("cargo check --locked"));
-    assert!(response.contains("cargo nextest run"));
+    assert!(response.contains(vtcode_core::tools::tool_intent::GENERIC_VERIFIER_DESCRIPTION));
+    assert!(response.contains(vtcode_core::tools::tool_intent::VERIFIER_SHELL_FORM_NOTE));
     assert!(response.contains("autonomous recovery"));
     assert!(response.contains("max_output_tokens"));
     assert!(response.contains("continue"));
+    // The block fires whether or not a project verifier was detected, so the
+    // notice must not claim the harness already ran one, and must not restate
+    // a stricter pipe rule than the classifier applies.
+    assert!(!response.contains("already tried"), "{response}");
+    assert!(!response.contains("no `|`"), "{response}");
 }
 
 #[test]
@@ -674,22 +680,76 @@ fn blocked_turn_final_response_has_generic_fallback() {
 #[test]
 fn blocked_turn_final_response_formats_tool_call_limit() {
     let response = blocked_turn_final_response("Blocked tool-call limit reached after 4 calls");
-    assert!(response.contains("repeated tool calls were rejected"));
-    assert!(response.contains("Blocked tool-call limit reached after 4 calls"));
-    assert!(response.contains("retained"));
+    assert_eq!(
+        response,
+        "The turn stopped because repeated tool calls were rejected: blocked tool-call limit reached after 4 calls. \
+         Resume the request with specific guidance, or adjust permissions or tools to continue."
+    );
 }
 
 #[test]
 fn blocked_turn_final_response_formats_repeated_shell() {
     let response = blocked_turn_final_response("Repeated shell command detected");
     assert!(response.contains("repeated identical shell commands were detected"));
-    assert!(response.contains("retained"));
+    assert!(!response.contains("retained"));
 }
 
 #[test]
 fn blocked_turn_final_response_formats_specific_reason() {
     let response = blocked_turn_final_response("specific error happened");
-    assert!(response.contains("The turn is blocked before success could be confirmed: specific error happened"));
+    assert_eq!(
+        response,
+        "The turn stopped: specific error happened. Resume the request or give updated instructions to continue."
+    );
+}
+
+#[test]
+fn blocked_turn_final_response_reads_cleanly_for_sentence_reasons() {
+    // Reasons are full sentences; the notice must not produce "..", keep a
+    // capital after the colon, or claim anything about retained history.
+    for reason in [
+        super::ASSISTANT_TEXT_RESPONSE_CAP_REASON,
+        "Provider stream ended unexpectedly.",
+        "Blocked tool-call limit reached.",
+    ] {
+        let response = blocked_turn_final_response(reason);
+        assert!(!response.contains(".."), "double period in: {response}");
+        assert!(!response.contains(": T") && !response.contains(": P") && !response.contains(": B"), "{response}");
+        assert!(!response.contains("before success could be confirmed"), "{response}");
+        assert!(!response.contains("retained"), "{response}");
+    }
+    assert!(!GENERIC_BLOCKED_FINAL_RESPONSE.contains("retained"));
+    assert!(!GENERIC_BLOCKED_FINAL_RESPONSE.contains("before success could be confirmed"));
+}
+
+#[test]
+fn blocked_turn_final_response_keeps_acronym_case_after_colon() {
+    let response = blocked_turn_final_response("API quota exhausted");
+    assert!(response.starts_with("The turn stopped: API quota exhausted."), "{response}");
+}
+
+#[test]
+fn blocked_turn_final_response_returns_refusal_notice_verbatim() {
+    let reason = vtcode_core::core::agent::refusal::refusal_reason(&uni::LLMResponse {
+        finish_reason: uni::FinishReason::Refusal,
+        reasoning_details: Some(vec![
+            serde_json::json!({
+                "type": "stop_details",
+                "category": "cyber",
+                "explanation": "This looks like malware development."
+            })
+            .to_string(),
+        ]),
+        ..uni::LLMResponse::default()
+    });
+
+    let response = blocked_turn_final_response(&reason);
+
+    assert_eq!(
+        response,
+        "The model declined this request (category: cyber): this looks like malware development. \
+         The request was not retried; rephrase it or switch models."
+    );
 }
 
 #[tokio::test]
@@ -1114,11 +1174,13 @@ async fn resumed_turn_cannot_complete_while_verification_is_pending() {
     assert!(outcome.final_response_was_fallback);
     assert!(history.iter().any(|message| {
         message.role == uni::MessageRole::System
-            && message.content.as_text().contains("run one verifier with `exec_command`")
+            && message
+                .content
+                .as_text()
+                .contains(crate::agent::runloop::unified::turn::tool_outcomes::helpers::ANTI_BLIND_EDITING_DIRECTIVE)
     }));
     assert!(history.iter().any(|message| {
-        message.role == uni::MessageRole::System
-            && message.content.as_text().contains("AUTONOMOUS VERIFICATION RECOVERY")
+        message.role == uni::MessageRole::System && message.content.as_text().contains("Verification recovery (")
     }));
     assert!(
         !history
@@ -1196,8 +1258,7 @@ async fn harness_auto_verification_completes_text_only_turn_without_manual_conti
     assert!(!outcome.final_response_was_fallback);
     assert!(
         !history.iter().any(|message| {
-            message.role == uni::MessageRole::System
-                && message.content.as_text().contains("AUTONOMOUS VERIFICATION RECOVERY")
+            message.role == uni::MessageRole::System && message.content.as_text().contains("Verification recovery (")
         }),
         "fast path must skip directive rounds entirely"
     );
@@ -2296,6 +2357,52 @@ async fn context_capacity_blocked_recovery_publishes_one_actionable_handoff() {
         message.role == uni::MessageRole::System && message.content.as_text().contains(POST_TOOL_RESUME_DIRECTIVE)
     }));
     assert_blocked_response_surfaces(&mut backing, &history, &harness_path, CONTEXT_CAPACITY_RESPONSE_MARKER);
+}
+
+#[tokio::test]
+async fn refused_turn_renders_refusal_notice_over_stale_final_answer() {
+    let stale_final = "Here is the answer to the earlier part of this turn.";
+    let notice = "The model declined this request (category: cyber). \
+                  The request was not retried; rephrase it or switch models.";
+    let mut backing = TestTurnProcessingBacking::new(4).await;
+    let harness_path = backing.enable_harness_emitter();
+
+    let mut history = vec![
+        uni::Message::user("refused request".to_string()),
+        uni::Message::assistant(stale_final.to_string()).with_phase(Some(uni::AssistantPhase::FinalAnswer)),
+    ];
+    let history_before = history.clone();
+    let blocked = TurnLoopResult::Blocked { reason: Some(notice.to_string()) };
+    {
+        let mut context = backing.turn_loop_context();
+        context.harness_state.mark_turn_refused();
+        // The stale final was already shown; the refusal must still render.
+        context.harness_state.mark_final_response_rendered();
+        ensure_blocked_turn_response(&mut context, &mut history, 0, notice).expect("refusal notice");
+        finalize_turn(&mut context, &history, &blocked, &HarnessUsage::default()).await;
+    }
+
+    assert_eq!(history, history_before, "the refusal notice must not enter model-visible history");
+    let rendered = backing.rendered_inline_output();
+    assert_eq!(rendered.matches("The model declined this request").count(), 1, "{rendered}");
+
+    let harness = fs::read_to_string(harness_path).expect("read harness events");
+    let agent_messages = harness
+        .lines()
+        .filter_map(|line| {
+            let event = serde_json::from_str::<VersionedThreadEvent>(line)
+                .expect("versioned harness event")
+                .into_event();
+            let ThreadEvent::ItemCompleted(item) = event else {
+                return None;
+            };
+            let ThreadItemDetails::AgentMessage(message) = item.item.details else {
+                return None;
+            };
+            Some(message.text)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(agent_messages, vec![notice.to_string()]);
 }
 
 #[tokio::test]

@@ -130,7 +130,7 @@ async fn build_local_agent_entries(
         ));
     }
 
-    entries.sort_by(|left, right| right.0.cmp(&left.0));
+    entries.sort_by_key(|left| std::cmp::Reverse(left.0));
     entries.into_iter().map(|(_, entry)| entry).collect()
 }
 
@@ -147,7 +147,7 @@ pub(super) fn visible_delegated_local_agents(entries: Vec<SubagentStatusEntry>) 
         .into_iter()
         .filter(|entry| !matches!(entry.status, SubagentStatus::Completed | SubagentStatus::Closed))
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    entries.sort_by_key(|left| std::cmp::Reverse(left.updated_at));
     entries
 }
 
@@ -161,7 +161,7 @@ pub(super) fn visible_background_local_agents(
                 || (entry.desired_enabled && matches!(entry.status, BackgroundSubprocessStatus::Error))
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    entries.sort_by_key(|left| std::cmp::Reverse(left.updated_at));
     entries
 }
 

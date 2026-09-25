@@ -329,10 +329,7 @@ pub fn command_words_after_environment_prefix(words: &[String]) -> &[String] {
     loop {
         if words.get(start).is_some_and(|word| word == "env") {
             start += 1;
-            loop {
-                let Some(word) = words.get(start) else {
-                    break;
-                };
+            while let Some(word) = words.get(start) {
                 if word == "--" {
                     start += 1;
                     break;

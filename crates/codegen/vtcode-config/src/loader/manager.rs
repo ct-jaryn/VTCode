@@ -567,8 +567,9 @@ impl ConfigManager {
     fn load_toml_from_file(path: &Path) -> Result<toml::Value> {
         let content =
             fs::read_to_string(path).with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        let value: toml::Value =
+        let mut value: toml::Value =
             toml::from_str(&content).with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+        crate::loader::merge::normalize_legacy_top_level_provider_aliases(&mut value);
         Ok(value)
     }
 
@@ -602,7 +603,10 @@ impl ConfigManager {
         let resolved_source = source.with_file(resolved_file);
 
         match toml::from_str::<toml::Value>(&content) {
-            Ok(toml) => Some(ConfigLayerEntry::new(resolved_source, toml)),
+            Ok(mut toml) => {
+                crate::loader::merge::normalize_legacy_top_level_provider_aliases(&mut toml);
+                Some(ConfigLayerEntry::new(resolved_source, toml))
+            }
             Err(err) => {
                 let error =
                     anyhow::Error::from(err).context(format!("Failed to parse config file: {}", file.display()));

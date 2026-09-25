@@ -260,17 +260,21 @@ fn normalised_code_search_path(effective_args: &Value) -> Option<String> {
 /// `<proposed_plan>` from evidence already gathered instead of starting more
 /// research, otherwise the tool-free recovery synthesis emits prose and the
 /// turn blocks with no approval-ready draft.
+/// Planning-mode next step for family-cap rejections: once the same read
+/// family repeats, more reads add no evidence.
+const PLANNING_READ_CAP_NEXT_STEP: &str = "Synthesize the `<proposed_plan>` from the output already gathered; \
+re-reading files already read this turn adds no new evidence.";
+
 #[cold]
 fn build_repeated_file_read_family_error_content_for_mode(target: &str, planning_active: bool) -> String {
-    let guidance = if planning_active {
-        format!(
-            "Repeated exploration of the same file or path ('{target}') exceeded the per-turn cap. Synthesize the `<proposed_plan>` now from the output already gathered; do NOT re-read files already read this turn."
-        )
+    let next_step = if planning_active {
+        PLANNING_READ_CAP_NEXT_STEP
     } else {
-        format!(
-            "Repeated exploration of the same file or path ('{target}') exceeded the per-turn cap. Reuse the output already gathered or try a different approach."
-        )
+        "Reuse the output already gathered or try a different approach."
     };
+    let guidance = format!(
+        "Repeated exploration of the same file or path ('{target}') exceeded the per-turn cap, so further reads of it are blocked this turn. {next_step}"
+    );
     super::super::super::execution_result::build_error_content(guidance, None, None, "repeated_read_family").to_string()
 }
 
@@ -319,7 +323,7 @@ fn build_preview_exhaustion_error_content(planning_active: bool) -> String {
     let guidance = if planning_active {
         "Tool preview budget is exhausted this turn; further inspection returns hidden stubs. \
          Synthesize the `<proposed_plan>` now from the evidence already gathered. \
-         Verification, task_tracker, session polling, spool paging in small ranges using a spool_path already in this conversation, and plan-draft re-reads stay open; do not repeat exhausted inspections."
+         Verification, task_tracker, session polling, spool paging in small ranges using a spool_path already in this conversation, and plan-draft re-reads stay open; exhausted inspections are blocked."
     } else {
         "Tool preview budget is exhausted this turn; further inspection returns hidden stubs. \
          Work from the evidence already visible: summarize status, edit, verify, or report. \
@@ -388,7 +392,7 @@ pub(crate) fn enforce_preview_exhaustion_inspection_gate(
     .to_string();
     let error_content = build_preview_exhaustion_error_content(planning_active);
     push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
-    Some(ValidationResult::Blocked)
+    Some(ValidationResult::PreviewExhausted)
 }
 
 /// Build the error content for a read-after-write guard trip.
@@ -535,19 +539,16 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
     if let Some(path) = repeated_read_path(canonical_tool_name, effective_args) {
         let path_count = ctx.harness_state.record_file_read_path_call(path.clone());
         if path_count > path_cap {
-            let block_reason = if planning_active {
-                format!(
-                    "Repeated reads of '{path}' hit the per-file-path cap ({path_cap}). \
-                     Synthesize the `<proposed_plan>` now from the output already gathered; do NOT re-read files already read this turn."
-                )
-            } else {
-                format!(
-                    "Repeated reads of '{path}' hit the per-file-path cap ({path_cap}). \
-                     Read the file in full once and reuse the output."
-                )
-            };
-            let error_content = build_repeated_file_read_family_error_content_for_mode(&path, planning_active);
-            ctx.activate_recovery(block_reason.clone());
+            let block_reason = format!(
+                "Repeated reads of '{path}' hit the per-file-path cap ({path_cap}), so further reads of this path are blocked for the rest of this turn. Reads of other paths, edits, and other useful actions remain available; continue from the evidence already gathered."
+            );
+            let error_content = super::super::super::execution_result::build_error_content(
+                block_reason.clone(),
+                None,
+                None,
+                "repeated_read_path",
+            )
+            .to_string();
             push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
             return Some(ValidationResult::Blocked);
         }

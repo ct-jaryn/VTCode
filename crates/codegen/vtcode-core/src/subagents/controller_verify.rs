@@ -80,11 +80,17 @@ impl SubagentController {
             .join("\n");
 
         let prompt = format!(
-            "Verify the following proposed change.\n\n\
+            "Review a proposed change before it is merged. You did not write it, so judge it only \
+             from the files as they are now.\n\n\
              ## Diff Description\n{diff_description}\n\n\
              ## Affected Files\n{files_list}\n\n\
-             Read each affected file and check for correctness, safety, and convention adherence.\n\
-             Respond with your verification result in the format specified in your instructions."
+             Read each affected file and check that the change does what the description says, \
+             handles errors, and follows the surrounding code's conventions. Ignore problems that \
+             predate the change.\n\n\
+             Your reply is parsed by the harness: put each problem on its own line as \
+             `- ISSUE: <path>:<line> <description>`, and end with exactly one line, \
+             `Decision: APPROVED` or `Decision: REJECTED`. Any ISSUE line blocks the merge, so list \
+             only problems that must be fixed."
         );
 
         let request = SpawnAgentRequest {
@@ -105,27 +111,12 @@ impl SubagentController {
             Some(entry) if entry.status == SubagentStatus::Completed => {
                 let summary = entry.summary.unwrap_or_default();
                 let issues = extract_issues_from_summary(&summary);
-                let lower = summary.to_lowercase();
-
-                // Positive approval: verifier must explicitly state approval.
-                // Ambiguous or unclear results default to rejected (fail-closed).
-                let explicitly_approved = lower.contains("approved")
-                    || lower.contains("safe to merge")
-                    || lower.contains("no issues found")
-                    || lower.contains("looks correct")
-                    || lower.contains("verification passed");
-                let explicitly_rejected = lower.contains("reject")
-                    || lower.contains("denied")
-                    || lower.contains("unsafe")
-                    || lower.contains("blocked")
-                    || lower.contains("dangerous")
-                    || lower.contains("malicious")
-                    || lower.contains("vulnerability");
-
-                let approved = if explicitly_rejected {
-                    false
-                } else {
-                    explicitly_approved && issues.is_empty()
+                // An explicit decision line wins (a non-clean value fails
+                // closed); keyword heuristics cover verifiers that do not follow
+                // the requested format. Any ISSUE line blocks approval.
+                let approved = match parse_verifier_decision(&summary) {
+                    Some(decision) => decision && issues.is_empty(),
+                    None => heuristic_verifier_approval(&summary, &issues),
                 };
 
                 Ok(VerificationResult { approved, issues, reasoning: summary })

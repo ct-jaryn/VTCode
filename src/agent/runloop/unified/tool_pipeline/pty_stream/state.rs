@@ -13,9 +13,7 @@ use vtcode_ui::tui::app::InlineLinkRange;
 use vtcode_ui::tui::app::InlineSegment;
 
 use super::segments::{PtyLineStyles, line_to_segments};
-use crate::agent::runloop::unified::tool_summary_helpers::{
-    COMPACT_PREVIEW_LEN, preview_command, relativize_command_paths,
-};
+use crate::agent::runloop::unified::tool_summary_helpers::{preview_full_command, relativize_command_paths};
 
 const LIVE_PREVIEW_HEAD_LINES: usize = 3;
 const MAX_BUFFERED_TAIL_LINES: usize = 64;
@@ -322,11 +320,12 @@ fn format_command_header_lines(command: &str, workspace_root: Option<&Path>) -> 
 
     // Fold prefix-only `python3 -c "` / unclosed-quote scripts into readable
     // content first (same pipeline as `• Ran` summaries) so live PTY headers
-    // do not echo a dangling prefix. Budget matches the compact preview so
-    // ordinary long commands still wrap across `│` lines instead of
-    // collapsing to a head-truncated `…` row.
+    // do not echo a dangling prefix. The transcript must show the command in
+    // full: unlike compact previews, live headers never head-truncate with
+    // `…` — TUI reflow owns viewport-aware wrapping, so every pipe segment
+    // (e.g. screenshot 2026-09-24 `| grep -v ".backup"`) survives.
     let relative = relativize_command_paths(command, workspace_root);
-    let preview = preview_command(&relative, COMPACT_PREVIEW_LEN);
+    let preview = preview_full_command(&relative);
     let wrapped = wrap_text_words(&preview, FIRST_LINE_WIDTH, CONTINUATION_WIDTH);
     if wrapped.is_empty() {
         return vec!["• Ran command".to_string()];

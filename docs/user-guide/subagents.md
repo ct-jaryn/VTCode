@@ -565,6 +565,20 @@ VT Code can also run a background subagent as a managed child `vtcode` subproces
 
 Background subprocess state is persisted under `.vtcode/state/background_subagents.json`. On restart, VT Code only respawns enabled background agents when both `subagents.background.enabled = true` and `subagents.background.auto_restore = true`.
 
+Terminal completion is event-driven: after a managed record reaches `Stopped` or
+`Error`, or a user-launched background exec session is confirmed exited, the
+parent session receives the terminal status and exit code plus available task
+references. VT Code makes a bounded final-output drain before notification and
+immediately synchronizes the retained preview and terminal status into Local
+Agents. The drawer does not require `/subprocesses refresh` or a manual
+`write_stdin` poll to learn the state. A user-requested stop is reported as
+`Stopped` even when process termination uses a non-zero signal exit; unexpected
+non-zero exits remain `Error`. If the parent interaction loop is
+idle, it adds one bounded completion note and queues one follow-up reasoning
+turn. Active model/tool work and queued user input always win; a completion is
+deferred to the next boundary, and a direct user command does not create an
+unrelated automatic turn.
+
 Add background runtime controls under `[subagents.background]`:
 
 ```toml
@@ -610,7 +624,7 @@ For a minimal demo pair, see [background-subagent-demo.md](../examples/backgroun
 
 Delegated child threads keep their own history. VT Code can continue them with follow-up input instead of starting from scratch. The runtime exposes `send_input`, `resume_agent`, `wait_agent`, and `close_agent` to the model for this purpose.
 
-`wait_agent` blocks the current turn until a child finishes or the timeout expires. It accepts delegated child thread ids and managed background subprocess ids (`background-<name>`): launch long-lived helpers with `spawn_background_subprocess`, then await their `Stopped`/`Error` completion with `wait_agent` when the main orchestrator needs their result. `Ctrl+B`, `/subprocesses`, the sidebar, and `Alt+S` remain the human inspection and termination surface.
+`wait_agent` blocks the current turn until a child finishes or the timeout expires. It accepts delegated child thread ids and managed background subprocess ids (`background-<name>`): launch long-lived helpers with `spawn_background_subprocess`, then await their `Stopped`/`Error` completion with `wait_agent` when the main orchestrator needs a synchronous result. Waiting is optional for learning that a managed subprocess finished: the parent also receives the persisted terminal completion event. `Ctrl+B`, `/subprocesses`, the sidebar, and `Alt+S` remain the human inspection and termination surface.
 
 ## Choose Between Main Thread And Subagents
 

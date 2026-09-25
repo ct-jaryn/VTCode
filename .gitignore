@@ -870,3 +870,7 @@ plans/
 
 .codegraph
 .superpowers
+
+# Native checkpoint source module (not generated snapshot data).
+!crates/codegen/vtcode-core/src/core/agent/snapshots/
+!crates/codegen/vtcode-core/src/core/agent/snapshots/native.rs

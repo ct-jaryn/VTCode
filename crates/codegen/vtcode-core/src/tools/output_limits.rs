@@ -11,28 +11,66 @@ pub(crate) const OUTPUT_PREVIEW_CHARS_PER_TOKEN: usize = 4;
 /// Default per-result preview budget for plan-mode inspections that omit an
 /// explicit `max_output_tokens` (`2_000` tokens ≈ 8 KiB). Planning research
 /// fans out across many reads, so the smaller default keeps a dozen previews
-/// inside the `96 KiB` plan turn budget. Explicit caller values and
+/// inside the `96 KiB` plan turn budget. Explicit large values on
+/// non-verification calls are clamped to [`PLAN_MODE_MAX_OUTPUT_TOKENS`];
 /// verification commands are never clamped.
 pub(crate) const PLAN_MODE_DEFAULT_MAX_OUTPUT_TOKENS: usize = 2_000;
+
+/// Maximum per-result preview budget for plan-mode non-verification calls
+/// (`4_000` tokens ≈ 16 KiB). Session `session-vtcode-20260923T065602Z`
+/// requested `12_000-30_000` tokens per inspection, exhausting the `96 KiB`
+/// turn budget after two previews and forcing stubbed retries. Clamping keeps
+/// at least six previews visible before exhaustion while spool paging (with
+/// preview credit) stays available for full content.
+pub(crate) const PLAN_MODE_MAX_OUTPUT_TOKENS: usize = 4_000;
+
+/// Maximum per-result preview budget for execution-mode non-verification
+/// calls (`6_000` tokens ≈ 24 KiB). Session `session-vtcode-20260923T064245Z`
+/// ran `5_000-7_000`-token inspections plus unbounded (`10_000`-token
+/// default) calls against the `64 KiB` execution turn budget, exhausting it
+/// after two or three previews. The `6_000`-token bound keeps one default
+/// inspection inside the turn budget with room for tracker echoes and several
+/// small calls; verification commands are exempt so build/test output
+/// stays authoritative, and spool paging (with preview credit) stays
+/// available for full content.
+pub(crate) const EXEC_MODE_MAX_OUTPUT_TOKENS: usize = 6_000;
 
 /// Validates and returns the requested model-visible result preview budget.
 ///
 /// A missing value resolves to the stable default. Values must be JSON integers
 /// so callers cannot silently coerce floats or strings into a larger context
 /// allocation than the model requested.
+///
+/// This is validation only (bounds-check); per-mode preview policy lives in
+/// [`resolve_max_output_tokens`].
 pub(crate) fn max_output_tokens(args: &Value) -> Result<usize> {
-    resolve_max_output_tokens(args, false, false)
+    max_output_tokens_uncapped(args)
 }
 
-/// Planning-aware variant of [`max_output_tokens`].
+/// Mode-aware variant of [`max_output_tokens`].
 ///
-/// An explicitly provided integer keeps existing validation exactly;
-/// verification commands keep the full default so build/test output stays
-/// authoritative. Only an omitted value on a non-verification call while
-/// planning is active resolves to [`PLAN_MODE_DEFAULT_MAX_OUTPUT_TOKENS`].
+/// An omitted value on a non-verification call resolves to the mode default
+/// ([`PLAN_MODE_DEFAULT_MAX_OUTPUT_TOKENS`] in planning,
+/// [`EXEC_MODE_MAX_OUTPUT_TOKENS`] in execution). An explicit value on a
+/// non-verification call is clamped to the mode max
+/// ([`PLAN_MODE_MAX_OUTPUT_TOKENS`] in planning,
+/// [`EXEC_MODE_MAX_OUTPUT_TOKENS`] in execution) so one large inspection
+/// cannot exhaust the turn preview budget; verification commands keep the
+/// full default so build/test output stays authoritative.
 pub(crate) fn resolve_max_output_tokens(args: &Value, planning_active: bool, is_verification: bool) -> Result<usize> {
-    if args.get(MAX_OUTPUT_TOKENS_FIELD).is_none() && planning_active && !is_verification {
-        return Ok(PLAN_MODE_DEFAULT_MAX_OUTPUT_TOKENS);
+    if planning_active && !is_verification {
+        if args.get(MAX_OUTPUT_TOKENS_FIELD).is_none() {
+            return Ok(PLAN_MODE_DEFAULT_MAX_OUTPUT_TOKENS);
+        }
+        let tokens = max_output_tokens_uncapped(args)?;
+        return Ok(tokens.min(PLAN_MODE_MAX_OUTPUT_TOKENS));
+    }
+    if !is_verification {
+        if args.get(MAX_OUTPUT_TOKENS_FIELD).is_none() {
+            return Ok(EXEC_MODE_MAX_OUTPUT_TOKENS);
+        }
+        let tokens = max_output_tokens_uncapped(args)?;
+        return Ok(tokens.min(EXEC_MODE_MAX_OUTPUT_TOKENS));
     }
     max_output_tokens_uncapped(args)
 }
@@ -101,16 +139,39 @@ mod tests {
             resolve_max_output_tokens(&json!({}), true, false).unwrap()
                 < resolve_max_output_tokens(&json!({}), false, false).unwrap()
         );
-        // Explicit caller values are never clamped, even in planning.
+        // Explicit large values in planning are clamped to the plan max so a
+        // single inspection cannot exhaust the turn preview budget.
         assert_eq!(
             resolve_max_output_tokens(&json!({"max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS}), true, false).unwrap(),
-            DEFAULT_MAX_OUTPUT_TOKENS
+            PLAN_MODE_MAX_OUTPUT_TOKENS
         );
+        assert_eq!(
+            resolve_max_output_tokens(&json!({"max_output_tokens": 30_000}), true, false).unwrap(),
+            PLAN_MODE_MAX_OUTPUT_TOKENS
+        );
+        // Small explicit values below the max are preserved.
         assert_eq!(resolve_max_output_tokens(&json!({"max_output_tokens": 1}), true, false).unwrap(), 1);
+        assert_eq!(
+            resolve_max_output_tokens(&json!({"max_output_tokens": PLAN_MODE_MAX_OUTPUT_TOKENS}), true, false).unwrap(),
+            PLAN_MODE_MAX_OUTPUT_TOKENS
+        );
         // Verification commands keep the full default in planning.
         assert_eq!(resolve_max_output_tokens(&json!({}), true, true).unwrap(), DEFAULT_MAX_OUTPUT_TOKENS);
-        // Execution mode is untouched.
-        assert_eq!(resolve_max_output_tokens(&json!({}), false, false).unwrap(), DEFAULT_MAX_OUTPUT_TOKENS);
+        // Execution non-verification omits to the execution bound and clamps
+        // explicit large values to it; small explicit values are preserved.
+        assert_eq!(resolve_max_output_tokens(&json!({}), false, false).unwrap(), EXEC_MODE_MAX_OUTPUT_TOKENS);
+        assert_eq!(
+            resolve_max_output_tokens(&json!({"max_output_tokens": 7_000}), false, false).unwrap(),
+            EXEC_MODE_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(
+            resolve_max_output_tokens(&json!({"max_output_tokens": 30_000}), false, false).unwrap(),
+            EXEC_MODE_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(resolve_max_output_tokens(&json!({"max_output_tokens": 250}), false, false).unwrap(), 250);
+        // Execution verification keeps the full default, omitted or explicit.
+        assert_eq!(resolve_max_output_tokens(&json!({}), false, true).unwrap(), DEFAULT_MAX_OUTPUT_TOKENS);
+        assert_eq!(resolve_max_output_tokens(&json!({"max_output_tokens": 30_000}), false, true).unwrap(), 30_000);
         // Invalid values still error in every mode.
         assert!(resolve_max_output_tokens(&json!({"max_output_tokens": 0}), true, false).is_err());
         assert!(resolve_max_output_tokens(&json!({"max_output_tokens": "100"}), true, false).is_err());

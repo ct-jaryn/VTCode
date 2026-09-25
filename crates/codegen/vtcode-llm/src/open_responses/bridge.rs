@@ -554,16 +554,14 @@ impl ResponseBuilder {
                     });
                 }
             }
-            OutputItem::FunctionCallOutput(fco) => {
-                if !fco.output.is_empty() {
-                    emitter.emit(ResponseStreamEvent::OutputTextDone {
-                        response_id: self.response.id.clone(),
-                        item_id: item.id.clone(),
-                        output_index,
-                        content_index: 0,
-                        text: fco.output.clone(),
-                    });
-                }
+            OutputItem::FunctionCallOutput(fco) if !fco.output.is_empty() => {
+                emitter.emit(ResponseStreamEvent::OutputTextDone {
+                    response_id: self.response.id.clone(),
+                    item_id: item.id.clone(),
+                    output_index,
+                    content_index: 0,
+                    text: fco.output.clone(),
+                });
             }
             _ => {}
         }

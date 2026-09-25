@@ -299,7 +299,7 @@ async fn remember_planner_uses_immediately_preceding_assistant_reply_for_deictic
           "facts": [
             {
               "topic": "preferences",
-              "fact": "My name is Vinh Nguyen; my alias is vinhnx.",
+              "fact": "My name is Sam Rivera; my alias is srivera.",
               "source": "assistant_reply"
             }
           ],
@@ -313,7 +313,7 @@ async fn remember_planner_uses_immediately_preceding_assistant_reply_for_deictic
         model: "stub-model".to_string(),
         temperature: 0.0,
     };
-    let prior_assistant_reply = "Your name is Vinh Nguyen and you go by vinhnx.";
+    let prior_assistant_reply = "Your name is Sam Rivera and you go by srivera.";
     let plan = plan_memory_operation_with_provider(
         &provider,
         &route,
@@ -330,13 +330,18 @@ async fn remember_planner_uses_immediately_preceding_assistant_reply_for_deictic
     assert_eq!(plan.kind, MemoryOpKind::Remember);
     assert_eq!(plan.facts.len(), 1);
     assert_eq!(plan.facts[0].topic, MemoryPlannedTopic::Preferences);
-    assert_eq!(plan.facts[0].fact, "My name is Vinh Nguyen; my alias is vinhnx.");
+    assert_eq!(plan.facts[0].fact, "My name is Sam Rivera; my alias is srivera.");
 
     let request = provider.last_request();
     let prompt = request.messages[0].content.as_text();
     assert!(prompt.contains("Immediately preceding assistant reply"));
     assert!(prompt.contains(prior_assistant_reply));
     assert!(prompt.contains("approved by the current user"));
+    // Examples are neutral templates: an identity fact with placeholders and a
+    // separate non-identity preference, never a real person's name.
+    assert!(prompt.contains("My name is <name>; my alias is <alias>."));
+    assert!(prompt.contains("I prefer pnpm over npm for JavaScript projects."));
+    assert!(!prompt.contains("vinhnx"));
 
     std::fs::write(workspace.path().join(".git"), "gitdir: /tmp/git").expect("git marker");
     let vt_cfg = enabled_vt_memory_config_for(workspace.path());
@@ -351,7 +356,7 @@ async fn remember_planner_uses_immediately_preceding_assistant_reply_for_deictic
         .expect("read persisted candidates")
         .expect("enabled");
     assert!(candidates.iter().any(|candidate| {
-        candidate.fact == "My name is Vinh Nguyen; my alias is vinhnx." && candidate.source == "assistant_reply"
+        candidate.fact == "My name is Sam Rivera; my alias is srivera." && candidate.source == "assistant_reply"
     }));
 }
 

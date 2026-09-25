@@ -14,7 +14,7 @@ pub const TWO_PASS_DEFAULT_SPLIT_FRACTION: f64 = 0.95;
 /// over the full pass1 response.
 const TWO_PASS_MIN_SUMMARY_BLOCK_CHARS: usize = 1000;
 
-/// Cap on NOTE₁ text embedded in pass2 (carrier + special turn).
+/// Cap on NOTE₁ text embedded in pass2 (once, in the carrier turn).
 const TWO_PASS_MAX_NOTE1_CHARS: usize = 12_000;
 
 /// Result of splitting a conversation for two-pass compaction.
@@ -220,9 +220,9 @@ fn format_two_pass_note1_carrier(note1: &str) -> String {
     )
 }
 
-fn format_two_pass_special_pass2_user(note1: &str, compaction_prompt: &str) -> String {
-    let note1 = note1.trim();
-    let summary_block = format!("<summary_content>\n{note1}\n</summary_content>");
+/// Final pass2 instruction. NOTE₁ is already in the carrier turn at the start
+/// of the pass2 history, so this refers to it instead of repeating it.
+fn format_two_pass_special_pass2_user(compaction_prompt: &str) -> String {
     let uq = if compaction_prompt.trim().is_empty() {
         "Please summarize the conversation so far."
     } else {
@@ -230,20 +230,17 @@ fn format_two_pass_special_pass2_user(note1: &str, compaction_prompt: &str) -> S
     };
     format!(
         "This is a special compaction case (two-pass / hierarchical summarization).\n\
-         You are writing the *final* compaction note that a successor assistant will \
-         rely on as their only memory of the conversation.\n\n\
-         Critical requirements:\n\
-         - Incorporate the **entire** prior summary below into your final note — do not \
-         omit sections, defer to \"see prior compaction\", or drop early history because \
-         newer turns are in context.\n\
-         - Merge that prior summary with the more recent conversation turns above into \
-         one coherent, faithful, self-contained summary (same structure/sections you \
-         normally use for compaction).\n\
+         You are writing the final compaction note that a successor assistant will \
+         rely on as its only memory of the conversation; it will not see the prior summary.\n\n\
+         - Incorporate the whole prior summary (the <summary_content> block at the start \
+         of this conversation) into the final note. Do not omit its sections, defer to \
+         \"see prior compaction\", or drop early history because newer turns are in context.\n\
+         - Merge it with the more recent conversation turns above into one coherent, \
+         faithful, self-contained summary (the same structure/sections you normally use \
+         for compaction).\n\
          - Preserve concrete values, file paths, errors/blockers, operational how-tos, \
-         key findings, and pending tasks from *both* the prior summary and the recent \
+         key findings, and pending tasks from both the prior summary and the recent \
          turns when they still matter.\n\n\
-         Prior summary to incorporate in full (duplicate of the summary_content above):\n\n\
-         {summary_block}\n\n\
          Compaction instruction:\n\
          {uq}"
     )
@@ -286,7 +283,9 @@ pub fn build_two_pass_pass2_history(
     if history.is_empty() {
         history.push(Message {
             role: crate::llm::provider::MessageRole::System,
-            content: crate::llm::provider::MessageContent::Text("You are a helpful assistant.".to_string()),
+            content: crate::llm::provider::MessageContent::Text(
+                "You are condensing a coding-agent session so work can continue without the full history.".to_string(),
+            ),
             reasoning: None,
             reasoning_details: None,
             tool_calls: None,
@@ -313,10 +312,7 @@ pub fn build_two_pass_pass2_history(
     history.extend(tail.iter().cloned());
     history.push(Message {
         role: crate::llm::provider::MessageRole::User,
-        content: crate::llm::provider::MessageContent::Text(format_two_pass_special_pass2_user(
-            note1,
-            compaction_prompt,
-        )),
+        content: crate::llm::provider::MessageContent::Text(format_two_pass_special_pass2_user(compaction_prompt)),
         reasoning: None,
         reasoning_details: None,
         tool_calls: None,
@@ -575,5 +571,44 @@ mod tests {
             .collect();
         assert!(texts.iter().any(|t| t.contains("<summary_content>")));
         assert!(texts.last().is_some_and(|t| t.contains("special compaction case")));
+        // NOTE₁ is embedded once (carrier turn); the final turn refers back to it.
+        let note1_copies: usize = texts.iter().map(|t| t.matches(note1.as_str()).count()).sum();
+        assert_eq!(note1_copies, 1);
+        assert!(texts.last().is_some_and(|t| !t.contains(note1.as_str())));
+    }
+
+    #[test]
+    fn pass2_fallback_system_prompt_states_compaction_role() {
+        let conv = vec![
+            Message {
+                role: MessageRole::User,
+                content: crate::llm::provider::MessageContent::Text("early".to_string()),
+                reasoning: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                phase: None,
+                origin_tool: None,
+                metadata: None,
+                clear_at: None,
+            },
+            Message {
+                role: MessageRole::User,
+                content: crate::llm::provider::MessageContent::Text("late".to_string()),
+                reasoning: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                phase: None,
+                origin_tool: None,
+                metadata: None,
+                clear_at: None,
+            },
+        ];
+        let split = split_conversation_for_two_pass(&conv, 0.5);
+        let pass2 = build_two_pass_pass2_history(split.prefix, split.tail, "note", "summarize");
+        let system = pass2.first().expect("system message");
+        assert_eq!(system.role, MessageRole::System);
+        assert!(system.content.as_text().contains("condensing a coding-agent session"));
     }
 }

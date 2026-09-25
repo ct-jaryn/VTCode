@@ -2,7 +2,7 @@
 name = "vtcode-utility-tool-specs"
 version.workspace = true
 edition = "2024"
-rust-version = "1.93.0"
+rust-version = "1.98.1"
 authors = ["Vinh Nguyen <vinhnguyen2308@gmail.com>"]
 description = "Passive JSON schemas for VT Code utility, file, scheduling, and collaboration tool surfaces"
 license.workspace = true
@@ -22,6 +22,7 @@ mcp = ["dep:rmcp"]
 rmcp = { version = "3.4.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+vtcode-commons = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

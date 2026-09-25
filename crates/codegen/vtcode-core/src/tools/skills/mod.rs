@@ -493,7 +493,7 @@ impl Tool for LoadSkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load detailed instructions for a specific traditional skill and activate its associated tool into your environment. This operation requires approval because skill content may be executable or native-backed. Use list_skills first to see what is available. Do NOT call load_skill for skills already listed as active — they are already loaded. Returns the skill instructions and activation status."
+        "Load detailed instructions for a specific traditional skill and activate its associated tool into your environment. This operation requires approval because skill content may be executable or native-backed. Use list_skills first to see what is available. Skills that list_skills reports as active are already loaded, so load_skill is only needed for inactive ones; calling it for an active skill returns the cached instructions without reloading. Returns the skill instructions and activation status."
     }
 
     fn parameter_schema(&self) -> Option<Value> {
@@ -744,7 +744,7 @@ impl Tool for LoadSkillResourceTool {
     }
 
     fn description(&self) -> &str {
-        "Read a resource file (script, template, or doc) from a loaded skill's directory. Use after loading a skill via load_skill. Provide skill_name and resource_path relative to the skill root. Do NOT use this to load skill instructions — use load_skill for that. Returns the raw file content."
+        "Read a resource file (script, template, or doc) from an active skill's directory. The skill must already be loaded via load_skill, which is also the tool that returns skill instructions. Provide skill_name and resource_path relative to the skill root. Returns the raw file content."
     }
 
     fn parameter_schema(&self) -> Option<Value> {
@@ -836,6 +836,30 @@ mod tests {
 
         assert_eq!(tool.default_permission(), ToolPolicy::Prompt);
         assert!(tool.is_mutating());
+    }
+
+    #[tokio::test]
+    async fn skill_tool_descriptions_state_routing_without_prohibitions() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let active_skills = Arc::new(RwLock::new(HashMap::new()));
+        let registry = Arc::new(ToolRegistry::new(temp_dir.path().to_path_buf()).await);
+        let runtime = SkillToolSessionRuntime::new(
+            registry,
+            None,
+            ToolDocumentationMode::Full,
+            ToolModelCapabilities::default(),
+            None,
+        );
+        let load_tool = LoadSkillTool::new(temp_dir.path().to_path_buf(), Arc::clone(&active_skills), runtime);
+        let resource_tool = LoadSkillResourceTool::new(active_skills);
+
+        let load = load_tool.description();
+        assert!(load.contains("returns the cached instructions without reloading"));
+        let resource = resource_tool.description();
+        assert!(resource.contains("The skill must already be loaded via load_skill"));
+        for description in [load, resource] {
+            assert!(!description.contains("Do NOT"), "{description}");
+        }
     }
 
     fn write_skill_fixture(workspace: &Path, name: &str) {

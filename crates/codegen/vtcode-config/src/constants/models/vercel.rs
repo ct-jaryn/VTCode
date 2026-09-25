@@ -5,6 +5,7 @@
 
 pub const ANTHROPIC_CLAUDE_SONNET_5: &str = "anthropic/claude-sonnet-5";
 pub const ANTHROPIC_CLAUDE_OPUS_5: &str = "anthropic/claude-opus-5";
+pub const ANTHROPIC_CLAUDE_OPUS_5_5: &str = "anthropic/claude-opus-5-5";
 pub const ANTHROPIC_CLAUDE_HAIKU_4_5: &str = "anthropic/claude-haiku-4.5";
 pub const OPENAI_GPT_5_6_SOL: &str = "openai/gpt-5.6-sol";
 pub const OPENAI_GPT_6_ASTRA: &str = "openai/gpt-6-astra";
@@ -24,6 +25,7 @@ pub const DEFAULT_MODEL: &str = ANTHROPIC_CLAUDE_SONNET_5;
 pub const SUPPORTED_MODELS: &[&str] = &[
     ANTHROPIC_CLAUDE_SONNET_5,
     ANTHROPIC_CLAUDE_OPUS_5,
+    ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_HAIKU_4_5,
     OPENAI_GPT_5_6_SOL,
     OPENAI_GPT_6_ASTRA,

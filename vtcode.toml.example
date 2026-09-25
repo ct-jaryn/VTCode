@@ -62,6 +62,12 @@ use_memories = true
 atif_enabled = true
 bottleneck_tracing = false
 
+[ui]
+# When omitted, reduced motion uses VTCODE_REDUCE_MOTION first, then a supported
+# OS accessibility preference (Windows, macOS, GNOME/KDE/XFCE on Linux).
+# Explicit true or false always wins.
+# reduce_motion_mode = true
+
 [ui.terminal_title]
 items = ["project", "spinner", "app-name", "git-branch"]
 

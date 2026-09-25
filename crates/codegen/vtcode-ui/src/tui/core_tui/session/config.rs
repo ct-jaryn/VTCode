@@ -102,11 +102,12 @@ pub struct AppearanceConfig {
     #[serde(default)]
     pub screen_reader_mode: bool,
 
-    /// Reduce motion mode (disables shimmer/flashing animations)
+    /// Reduce motion mode (keeps progress labels visible without animated effects)
     #[serde(default)]
     pub reduce_motion_mode: bool,
 
-    /// Keep progress animation while reduce motion mode is enabled
+    /// Keep progress animation while reduce motion mode is enabled.
+    /// Screen reader mode still disables progress animation.
     #[serde(default)]
     pub reduce_motion_keep_progress_animation: bool,
 
@@ -200,10 +201,7 @@ impl AppearanceConfig {
         self.thinking_display == ThinkingBlockState::Collapsed
     }
 
-    pub(crate) fn motion_reduced(&self) -> bool {
-        self.screen_reader_mode || self.reduce_motion_mode
-    }
-
+    /// Whether progress effects animate; screen reader mode always suppresses them.
     pub(crate) fn should_animate_progress_status(&self) -> bool {
         !self.screen_reader_mode && (!self.reduce_motion_mode || self.reduce_motion_keep_progress_animation)
     }

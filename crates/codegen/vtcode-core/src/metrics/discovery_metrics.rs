@@ -75,11 +75,7 @@ impl DiscoveryMetrics {
     }
 
     pub fn avg_response_time_ms(&self) -> u64 {
-        if self.successful_queries > 0 {
-            self.total_time_ms / self.successful_queries
-        } else {
-            0
-        }
+        self.total_time_ms.checked_div(self.successful_queries).unwrap_or(0)
     }
 
     pub fn hit_rate(&self) -> f64 {

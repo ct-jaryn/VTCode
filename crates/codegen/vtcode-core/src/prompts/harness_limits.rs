@@ -45,7 +45,7 @@ pub fn upsert_harness_limits_section(
          - max_tool_retries: {max_tool_retries}\n\
          - max_readonly_tool_calls: {MAX_TOTAL_READONLY_CALLS} (global budget across all read-only tools; produce output before exhausting)\n\
          - max_same_file_path_reads: {MAX_SAME_FILE_PATH_READS} (per file path per turn; read a file once in full rather than paginating)\n\
-         - exec wait/inspect are exempt from max_tool_calls_per_turn: prefer blocking waits (write_stdin action:\"wait\" / next_wait_args) over short polls, and inspect spool_path/session output instead of re-running commands\n\
+         - exec wait/inspect are exempt from max_tool_calls_per_turn\n\
          - long commands: set yield_time_ms above 10000 on the initial run for a single-call long run (no outer timeout), or omit it and steer with next_wait_args; both stay budget-exempt"
     );
 

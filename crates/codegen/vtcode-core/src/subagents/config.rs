@@ -16,6 +16,7 @@ use crate::config::VTCodeConfig;
 use crate::config::constants::tools;
 use crate::config::models::ModelId;
 use crate::config::types::{ReasoningEffortLevel, SystemPromptMode, ToolDocumentationMode};
+use crate::core::loop_detector::{SUBAGENT_MAX_TOTAL_READONLY_CALLS, SUBAGENT_NAVIGATION_HARD_STOP_STREAK};
 use crate::core::threads::build_thread_archive_metadata;
 use crate::llm::provider::ToolDefinition;
 use crate::tools::mcp::MCP_QUALIFIED_TOOL_PREFIX;
@@ -456,26 +457,35 @@ const FINAL_RESPONSE_CONTRACT: &str = "Return your final response using this exa
 - [Check performed or still needed]\n\n\
 ## Open Questions\n\
 - [Any unresolved question]\n\n\
-Use `- None` for empty sections. Keep it concise and grounded in the work you actually performed.";
+Use `- None` for empty sections. Keep it concise and grounded in the work you actually performed. \
+If your agent instructions or the task define their own response format, follow that format instead.";
 
-const READ_ONLY_TOOL_REMINDER: &str = "Tool reminder: stay inside the exposed read-only tool set for this child. \
-Use advanced `code_search` for a focused literal query with bounded filters. Use `list_skills` and \
-`load_skill_resource` for already-loaded repository skills when needed. If these tools are insufficient, report the \
-blocker instead of retrying denied calls.";
+const READ_ONLY_TOOL_REMINDER: &str = "Tool reminder: this child has a read-only tool set, and calls outside it are \
+denied. Use advanced `code_search` for a focused literal query with bounded filters, and `list_skills` / \
+`load_skill_resource` for repository skills that are already loaded. If these tools cannot answer the task, report what \
+is missing in your final response.";
 
-const READ_ONLY_PLANNING_WORKFLOW_REMINDER: &str = "This delegated agent already runs with a read-only tool surface. \
-Do not try to enter or exit planning workflow, do not call hidden mutating tools, and do not retry the same denied tool \
-call; adjust strategy or report the blocker instead.";
+const READ_ONLY_PLANNING_WORKFLOW_REMINDER: &str = "Planning workflow tools and mutating tools are not exposed to this \
+child, and a denied call returns the same denial on retry. When a call is denied, change approach or report the \
+blocker.";
 
 const WRITE_TOOL_REMINDER: &str = "Tool reminder: use `exec_command` with targeted commands for workspace discovery \
 and file reading. Use advanced `code_search` for definitions, syntactic usages, text, or matching paths. When `exec_command` returns a live session, \
 continue or poll it with `write_stdin`. Use `exec_command` with `git diff --name-only` or `git diff --stat` when reviewing \
 current changes.";
 
-const WRITE_SYNTHESIS_REMINDER: &str = "CRITICAL: After reading files to gather context, you MUST synthesize \
-your findings and begin implementation. Do not continue reading additional files. The harness enforces a hard \
-read-only budget -- exceeding it terminates your session with no output. \
-If you catch yourself reading the same file with different offsets, STOP immediately and write what you have.";
+/// Writable children run with the loop detector in subagent mode; its hard
+/// stops end the run before the child writes its final response, so state the
+/// real limits instead of a bare "stop reading" order.
+fn write_synthesis_reminder() -> String {
+    format!(
+        "Exploration budget: this run ends when it reaches {SUBAGENT_MAX_TOTAL_READONLY_CALLS} read-only calls in total, \
+{SUBAGENT_NAVIGATION_HARD_STOP_STREAK} consecutive reads/searches without an edit or a non-read command, or repeated \
+reads of the same file with little argument variation. A run stopped this way ends before you write the final \
+response, so start implementing once you have enough context; if you are re-reading one file at different \
+offsets, write up what you have instead."
+    )
+}
 
 pub fn compose_subagent_instructions(spec: &SubagentSpec, memory_appendix: Option<String>) -> String {
     compose_subagent_runtime_instructions(&ResolvedAgentRuntimeView::from_spec(spec), memory_appendix)
@@ -496,7 +506,7 @@ fn compose_subagent_runtime_instructions(
         sections.push(READ_ONLY_PLANNING_WORKFLOW_REMINDER.to_string());
     } else {
         sections.push(WRITE_TOOL_REMINDER.to_string());
-        sections.push(WRITE_SYNTHESIS_REMINDER.to_string());
+        sections.push(write_synthesis_reminder());
     }
 
     if !runtime.skills.is_empty() {

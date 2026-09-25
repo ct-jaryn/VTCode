@@ -239,6 +239,8 @@ impl ToolRegistry {
             .timeout_policy()
             .ceiling_for(ToolTimeoutCategory::LongRunningCommand)
             .unwrap_or(Duration::from_secs(3_600));
+        // `timeout_seconds` is a legacy spelling kept for older transcripts and
+        // callers; the model-visible schema only advertises `wait_timeout_seconds`.
         let requested_seconds = payload
             .get("wait_timeout_seconds")
             .or_else(|| payload.get("timeout_seconds"))

@@ -9,7 +9,7 @@ use crate::agent::runloop::unified::turn::primary_agent_runtime::{
     builtin_primary_agent_specs, load_primary_agent_specs, resolve_approved_plan_execution_agent,
 };
 
-pub(super) const PLAN_APPROVED_EXECUTION_DIRECTIVE: &str = "Execution handoff is active. Any earlier message saying tools are disabled or implementation is paused belongs to the completed planning/recovery turn and is stale. Tools are enabled now. Do not report that work is paused, ask to wait, or request another confirmation. Start implementation immediately: execute the approved plan step by step beginning with the first pending step. Before the first implementation action, use task_tracker with action=list and mark the first pending task in_progress; update each task as work and verification complete. Use cargo nextest run --locked for Rust verification; never emit a raw <tool_call> block as text. Finish with a concise execution summary covering the outcome, changed files, verification performed, and remaining blockers.";
+pub(super) const PLAN_APPROVED_EXECUTION_DIRECTIVE: &str = "Execution handoff is active. Any earlier message saying tools are disabled or implementation is paused belongs to the completed planning/recovery turn and no longer applies: tools are enabled and the plan is already approved, so no further confirmation is needed. Execute the approved plan step by step, beginning with the first pending step. Before the first implementation action, use task_tracker with action=list and mark the first pending task in_progress; update each task as its work and verification complete. If the approved steps are read-only review or inspection with no file mutations expected, summarize from the evidence already gathered rather than re-running large inspections, and mark the tracker complete. Verify with the plan's `verify:` commands. Tool calls go through the tool-call channel; a raw <tool_call> block written as text is not executed. Finish with a concise execution summary covering the outcome, changed files, verification performed, and remaining blockers.";
 pub(super) const PLAN_APPROVED_FRESH_CONTEXT_HEADER: &str = "This is a fresh execution context. The persisted approved plan below is the source of user intent. Treat it as authoritative and implement it now.";
 pub(super) const PLAN_APPROVED_EXECUTION_INPUT: &str = "Implement the approved plan now.";
 
@@ -133,6 +133,17 @@ mod tests {
 
         assert_eq!(prompt, PLAN_APPROVED_EXECUTION_DIRECTIVE);
         assert!(!prompt.contains("Approved plan context:"));
+    }
+
+    #[test]
+    fn execution_directive_avoids_redundant_inspection_for_review_plans() {
+        let prior_evidence = "Review outcome: background completion emits one terminal event; no file edits expected.";
+        let prompt = build_approved_plan_execution_prompt(PlanExecutionContext::Current, Some(prior_evidence));
+        assert!(prompt.contains("read-only review or inspection"));
+        assert!(prompt.contains("rather than re-running large inspections"));
+        assert!(prompt.contains("summarize from the evidence already gathered"));
+        assert!(prompt.contains("mark the tracker complete"));
+        assert!(prompt.contains(prior_evidence));
     }
 
     #[test]

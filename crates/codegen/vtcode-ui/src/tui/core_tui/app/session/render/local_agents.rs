@@ -314,7 +314,7 @@ fn local_agents_divider_style(session: &Session, selected_index: Option<usize>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, format_local_agent_preview, local_agent_status_line};
+    use super::{Session, format_local_agent_preview, local_agent_status_line, local_agent_title_line};
     use crate::tui::core_tui::types::{InlineTheme, LocalAgentEntry, LocalAgentKind};
     use std::time::Duration;
 
@@ -350,5 +350,23 @@ mod tests {
         let lines = format_local_agent_preview(&session, &sample_entry("completed"));
 
         assert_eq!(lines[1].spans.len(), 1);
+    }
+
+    #[test]
+    fn reduce_motion_keeps_loading_agent_status_static_and_visible() {
+        let mut session = Session::new(InlineTheme::default(), None, 14);
+        session.core.appearance.reduce_motion_mode = true;
+        let mut entry = sample_entry("running");
+        entry.summary = Some("Reviewing the workspace".to_string());
+
+        let title = local_agent_title_line(&session, &entry);
+        let title_text = title.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+        let summary = local_agent_status_line(&session, "Reviewing the workspace", true);
+        let static_summary = local_agent_status_line(&session, "Reviewing the workspace", false);
+
+        assert!(title_text.ends_with("running"), "loading status should remain visible: {title_text}");
+        assert_eq!(title.spans.len(), 5, "loading status should use one static label span");
+        assert_eq!(summary.spans, static_summary.spans);
+        assert_eq!(summary.spans[0].content.as_ref(), "Reviewing the workspace");
     }
 }

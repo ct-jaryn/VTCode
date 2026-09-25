@@ -48,6 +48,12 @@ pub(super) async fn apply_background_subprocess_action(
     Ok(entry)
 }
 
+pub(super) fn background_completion_control(entry: &BackgroundSubprocessEntry) -> SlashCommandControl {
+    SlashCommandControl::BackgroundCompletionHandled {
+        completion_identity: format!("{}:{}", entry.id, entry.exec_session_id),
+    }
+}
+
 pub(super) async fn show_threads_modal(mut ctx: SlashCommandContext<'_>) -> Result<SlashCommandControl> {
     let Some(controller) = ctx.tool_registry.subagent_controller() else {
         return render_missing_subagent_controller(&mut ctx);
@@ -459,6 +465,7 @@ pub(super) async fn show_background_subprocess_inspector(
                     refresh_local_agents(ctx.handle, Some(&controller), ctx.tool_registry.exec_session_manager())
                         .await?;
                     render_subprocess_status(ctx, &updated)?;
+                    return Ok(background_completion_control(&updated));
                 }
                 return Ok(SlashCommandControl::Continue);
             }
@@ -468,6 +475,7 @@ pub(super) async fn show_background_subprocess_inspector(
                     refresh_local_agents(ctx.handle, Some(&controller), ctx.tool_registry.exec_session_manager())
                         .await?;
                     render_subprocess_status(ctx, &updated)?;
+                    return Ok(background_completion_control(&updated));
                 }
                 return Ok(SlashCommandControl::Continue);
             }
@@ -491,6 +499,7 @@ pub(super) async fn show_background_subprocess_inspector(
                     refresh_local_agents(ctx.handle, Some(&controller), ctx.tool_registry.exec_session_manager())
                         .await?;
                     render_subprocess_status(ctx, &updated)?;
+                    return Ok(background_completion_control(&updated));
                 }
                 if selection_config_action(action.selection.as_ref(), SUBPROCESS_CANCEL_PREFIX).is_some()
                     && confirm_subprocess_action(ctx, current_entry.display_label.as_str(), true).await?
@@ -499,6 +508,7 @@ pub(super) async fn show_background_subprocess_inspector(
                     refresh_local_agents(ctx.handle, Some(&controller), ctx.tool_registry.exec_session_manager())
                         .await?;
                     render_subprocess_status(ctx, &updated)?;
+                    return Ok(background_completion_control(&updated));
                 }
                 return Ok(SlashCommandControl::Continue);
             }

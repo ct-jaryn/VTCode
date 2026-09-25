@@ -18,9 +18,9 @@ mod responses_api;
 mod tool_kind;
 
 pub use collaboration::{
-    agent_parameters, close_agent_parameters, request_user_input_description, request_user_input_parameters,
-    resume_agent_parameters, send_input_parameters, spawn_agent_parameters, spawn_background_subprocess_parameters,
-    wait_agent_parameters,
+    AGENT_DESCRIPTION, SUBAGENT_REASONING_EFFORT_VALUES, agent_parameters, close_agent_parameters,
+    request_user_input_description, request_user_input_parameters, resume_agent_parameters, send_input_parameters,
+    spawn_agent_parameters, spawn_background_subprocess_parameters, wait_agent_parameters,
 };
 pub use json_schema::{AdditionalProperties, JsonSchema, parse_tool_input_schema};
 #[cfg(feature = "mcp")]
@@ -37,8 +37,14 @@ pub const SEMANTIC_ANCHOR_GUIDANCE: &str =
 /// rejects. This mirrors the `input` description so both alias fields carry
 /// identical, complete format guidance (see checkpoint turn_615 for the
 /// failure this prevents).
-pub const APPLY_PATCH_ALIAS_DESCRIPTION: &str = "Patch in VT Code format (*** Begin Patch, *** Update File: path, @@ hunk, -/+ lines, *** End Patch). Same envelope as 'input'; do NOT use unified diff (--- /+++ format). Every patch path must be workspace-relative; never use absolute paths, `..`, or traversal-like forms.";
-pub const DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION: &str = "Patch in VT Code format: *** Begin Patch, *** Update File: path, @@ hunk, -/+ lines, *** End Patch. Every patch path must be workspace-relative; never use absolute paths, `..`, or traversal-like forms.";
+pub const APPLY_PATCH_ALIAS_DESCRIPTION: &str = "Patch in VT Code format (*** Begin Patch, *** Update File: path, @@ hunk, -/+ lines, *** End Patch). Same envelope as 'input'; standard unified diffs (--- /+++ format) are rejected. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected.";
+pub const DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION: &str = "Patch in VT Code format: *** Begin Patch, *** Update File: path, @@ hunk, -/+ lines, *** End Patch. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected.";
+/// Model-visible description of the `apply_patch` tool. It leads with the
+/// accepted envelope so the model writes the right format on the first try,
+/// and states the unified-diff rejection and path rules as plain facts
+/// instead of shouted warnings. Registration sites append
+/// [`SEMANTIC_ANCHOR_GUIDANCE`] via [`with_semantic_anchor_guidance`].
+pub const APPLY_PATCH_TOOL_DESCRIPTION: &str = "Apply a patch in VT Code format (*** Begin Patch / *** Update File: path / @@ hunks with -/+ lines / *** End Patch); standard unified diffs (---/+++ format) are rejected. *** Add File: path, *** Delete File: path, and *** Move to: path (after *** Update File) are also supported. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected. Changes are applied after permission checks.";
 
 /// Default model-visible preview budget for function-tool results.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
@@ -142,6 +148,9 @@ pub fn cron_parameters() -> Value {
     })
 }
 
+/// Model-visible description of the `mcp` tool.
+pub const MCP_DESCRIPTION: &str = "Discover and manage Model Context Protocol capabilities. Use action=search_tools to find tools, action=get_tool_details to fetch one schema, action=list_servers to inspect configured servers, or action=connect and action=disconnect to manage a named server. action=search_tools searches only tools exposed by configured MCP servers; the separate search_tools tool searches the whole session catalog, including deferred built-in tools. Do not disconnect a server while one of its tool calls is active.";
+
 #[must_use]
 pub fn mcp_parameters() -> Value {
     json!({
@@ -201,6 +210,9 @@ pub fn cron_delete_parameters() -> Value {
     })
 }
 
+/// Model-visible description of the `exec_command` tool.
+pub const EXEC_COMMAND_DESCRIPTION: &str = "Run a shell command through the active sandbox policy and permission checks. Put normal shell tools such as ls, rg, find, cat, sed, awk, build tools, and test tools in cmd. Returns output, exit status, and a reusable session id when the command is still running. For file edits, use apply_patch instead of shell redirection or in-place editors such as `sed -i`. Expanded sandbox_permissions modes trigger an approval check before the command runs; `require_escalated` and `bypass_sandbox` also need a non-empty justification.";
+
 #[must_use]
 pub fn exec_command_parameters() -> Value {
     json!({
@@ -245,7 +257,6 @@ pub fn write_stdin_parameters() -> Value {
             "chars": {"type": "string", "description": "Bytes to write to stdin. Pass an empty string to poll without sending input."},
             "yield_time_ms": {"type": "integer", "description": "Wait before returning fresh session output (ms).", "default": 1000},
             "wait_timeout_seconds": {"type": "integer", "minimum": 1, "description": "Explicit wait deadline in seconds. A deadline returns an in-progress session that can be waited on again."},
-            "timeout_seconds": {"type": "integer", "minimum": 1, "description": "Alias for wait_timeout_seconds."},
             "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 10000, "description": "Output token cap for the continuation response. Large or truncated output can return a spool_path; the response reports whether an active session has finished writing it."}
         },
         "anyOf": [
@@ -255,6 +266,9 @@ pub fn write_stdin_parameters() -> Value {
         "additionalProperties": false
     })
 }
+
+/// Model-visible description of the `search_tools` tool.
+pub const SEARCH_TOOLS_DESCRIPTION: &str = "Search the session tool catalog by capability and return ranked matches. Use it to find tools whose definitions are deferred and not yet sent to you, such as code_search, web_fetch, web_search, cron, and MCP server tools. Deferred matches are listed in `expanded_for_next_segment` and become callable on the next request. It is not needed for tools already defined in the current request; call those directly.";
 
 #[must_use]
 pub fn search_tools_parameters() -> Value {
@@ -271,12 +285,14 @@ pub fn search_tools_parameters() -> Value {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 25,
-                "default": 5
+                "default": 5,
+                "description": "Maximum number of ranked matches to return (default: 5, max: 25)."
             },
             "detail_level": {
                 "type": "string",
                 "enum": ["name", "name_description", "full"],
-                "default": "name_description"
+                "default": "name_description",
+                "description": "Fields returned per match (default: name_description). name returns the tool name and score; name_description adds the description; full also adds the parameter schema."
             }
         },
         "additionalProperties": false
@@ -387,6 +403,46 @@ mod tests {
     }
 
     #[test]
+    fn search_tools_schema_documents_limit_and_detail_level_defaults() {
+        let schema = search_tools_parameters();
+        let limit = &schema["properties"]["limit"];
+        assert_eq!(limit["default"], json!(5));
+        assert_eq!(limit["maximum"], json!(25));
+        let limit_description = limit["description"].as_str().expect("limit description");
+        assert!(limit_description.contains("default: 5"));
+        assert!(limit_description.contains("max: 25"));
+
+        let detail_level = &schema["properties"]["detail_level"];
+        assert_eq!(detail_level["default"], json!("name_description"));
+        let detail_description = detail_level["description"].as_str().expect("detail_level description");
+        for level in ["name", "name_description", "full"] {
+            assert!(detail_description.contains(level), "{level}");
+        }
+
+        assert!(SEARCH_TOOLS_DESCRIPTION.contains("deferred"));
+        assert!(SEARCH_TOOLS_DESCRIPTION.contains("next request"));
+        assert!(SEARCH_TOOLS_DESCRIPTION.contains("MCP"));
+        assert!(SEARCH_TOOLS_DESCRIPTION.contains("not needed"));
+    }
+
+    #[test]
+    fn apply_patch_tool_description_leads_with_format_and_stays_calm() {
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.starts_with("Apply a patch in VT Code format (*** Begin Patch"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("unified diffs"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("workspace-relative"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("permission checks"));
+        for description in [
+            APPLY_PATCH_TOOL_DESCRIPTION,
+            APPLY_PATCH_ALIAS_DESCRIPTION,
+            DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION,
+        ] {
+            assert!(!description.contains("IMPORTANT"), "{description}");
+            assert!(!description.contains("NOT"), "{description}");
+            assert!(!description.contains("never"), "{description}");
+        }
+    }
+
+    #[test]
     fn common_output_limit_parameter_preserves_strict_schema() {
         let schema = with_max_output_tokens_parameter(json!({
             "type": "object",
@@ -487,6 +543,10 @@ mod tests {
         assert_eq!(stdin_params["properties"]["chars"]["type"], "string");
         assert_eq!(stdin_params["properties"]["action"]["enum"], json!(["write", "poll", "wait"]));
         assert!(stdin_params["properties"]["wait_timeout_seconds"].is_object());
+        assert!(
+            stdin_params["properties"].get("timeout_seconds").is_none(),
+            "write_stdin schema advertises only wait_timeout_seconds"
+        );
         assert_eq!(stdin_params["anyOf"][1]["required"], json!(["action"]));
         assert_eq!(stdin_params["anyOf"][1]["properties"]["action"]["const"], "wait");
         assert!(
@@ -508,6 +568,44 @@ mod tests {
                 .contains("spool_path")
         );
         assert_eq!(stdin_params["additionalProperties"], false);
+    }
+
+    #[test]
+    fn mcp_description_distinguishes_server_search_from_catalog_search() {
+        assert!(MCP_DESCRIPTION.starts_with("Discover and manage Model Context Protocol capabilities."));
+        assert!(MCP_DESCRIPTION.contains("action=search_tools searches only tools exposed by configured MCP servers"));
+        assert!(MCP_DESCRIPTION.contains("the separate search_tools tool searches the whole session catalog"));
+    }
+
+    #[test]
+    fn agent_description_routes_shell_processes_to_exec_command() {
+        assert!(AGENT_DESCRIPTION.starts_with("Spawn and steer delegated child agents."));
+        assert!(AGENT_DESCRIPTION.contains("spawn_subprocess runs a subagent defined with background: true"));
+        assert!(AGENT_DESCRIPTION.contains("go through exec_command, with background=true"));
+        let action = agent_parameters()["properties"]["action"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!action.contains("daemons"), "{action}");
+    }
+
+    #[test]
+    fn exec_command_description_states_edit_routing_and_escalation_rules() {
+        assert!(EXEC_COMMAND_DESCRIPTION.starts_with("Run a shell command through the active sandbox policy"));
+        assert!(EXEC_COMMAND_DESCRIPTION.contains("For file edits, use apply_patch"));
+        assert!(EXEC_COMMAND_DESCRIPTION.contains("approval check"));
+        assert!(EXEC_COMMAND_DESCRIPTION.contains("non-empty justification"));
+        for mode in ["require_escalated", "bypass_sandbox"] {
+            assert!(EXEC_COMMAND_DESCRIPTION.contains(mode), "{mode}");
+            assert!(
+                exec_command_parameters()["properties"]["sandbox_permissions"]["enum"]
+                    .as_array()
+                    .expect("sandbox_permissions enum")
+                    .iter()
+                    .any(|value| value == mode),
+                "{mode} must stay a real sandbox_permissions value"
+            );
+        }
     }
 
     #[test]

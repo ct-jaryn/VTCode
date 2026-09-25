@@ -6,6 +6,8 @@ use super::super::*;
 use super::helpers::*;
 use crate::tui::core_tui::app::types::InlineEvent as AppInlineEvent;
 use crate::tui::core_tui::types::{ContentPart, SubmittedInput};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 #[test]
 fn shift_enter_inserts_newline() {
@@ -561,6 +563,36 @@ fn busy_enter_steers_active_run() {
 
     let event = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(event, Some(InlineEvent::Steer(value)) if value == "keep searching in docs/"));
+}
+
+#[test]
+fn retained_foreground_session_does_not_steer_idle_composer() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.active_pty_sessions = Some(Arc::new(AtomicUsize::new(1)));
+    session.set_input("start a new turn".to_string());
+
+    let event = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(event, Some(InlineEvent::Submit(value)) if value == "start a new turn"));
+
+    set_busy_status(&mut session);
+    session.set_input("steer active turn".to_string());
+    let event = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(event, Some(InlineEvent::Steer(value)) if value == "steer active turn"));
+}
+
+#[test]
+fn app_retained_foreground_session_does_not_steer_idle_composer() {
+    let mut session = AppSession::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.core.active_pty_sessions = Some(Arc::new(AtomicUsize::new(1)));
+    session.core.set_input("start a new turn".to_string());
+
+    let event = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(event, Some(AppInlineEvent::Submit(value)) if value.text == "start a new turn"));
+
+    set_app_session_busy_status(&mut session);
+    session.core.set_input("steer active turn".to_string());
+    let event = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(event, Some(AppInlineEvent::Steer(value)) if value.text == "steer active turn"));
 }
 
 #[test]

@@ -148,6 +148,45 @@ mod tests {
     }
 
     #[test]
+    fn shared_contract_lines_and_runtime_bullets_appear_exactly_once_per_profile() {
+        let runtime_bullets = RUNTIME_GUIDANCE_SECTION
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect::<Vec<_>>();
+        assert!(runtime_bullets.len() >= 10, "runtime guidance bullets were not found");
+        let profiles = [
+            (SystemPromptMode::Default, DEFAULT_SPECIFIC_LINES),
+            (SystemPromptMode::Minimal, MINIMAL_SPECIFIC_LINES),
+            (SystemPromptMode::Lightweight, DEFAULT_SPECIFIC_LINES),
+            (SystemPromptMode::Specialized, DEFAULT_SPECIFIC_LINES),
+        ];
+
+        for (mode, specific_lines) in profiles {
+            let prompt = static_profile_prompt(mode);
+            for line in SHARED_CONTRACT_LINES.iter().chain(specific_lines) {
+                let bullet = format!("- {line}\n");
+                assert_eq!(
+                    prompt.matches(line).count(),
+                    1,
+                    "{mode:?} should state contract line {line:?} exactly once"
+                );
+                assert_eq!(
+                    prompt.matches(&bullet).count(),
+                    1,
+                    "{mode:?} should render {line:?} as one contract bullet"
+                );
+            }
+            for bullet in &runtime_bullets {
+                assert_eq!(
+                    prompt.matches(bullet).count(),
+                    1,
+                    "{mode:?} should state runtime guidance bullet {bullet:?} exactly once"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn static_prompts_do_not_embed_maintainer_files() {
         let prompts = [
             default_system_prompt(),

@@ -268,11 +268,7 @@ impl CodeExecutor {
         let ipc_task: JoinHandle<Result<()>> = tokio::spawn(async move {
             let ipc_start = Instant::now();
 
-            loop {
-                let Some(remaining_timeout) = execution_timeout.checked_sub(ipc_start.elapsed()) else {
-                    break;
-                };
-
+            while let Some(remaining_timeout) = execution_timeout.checked_sub(ipc_start.elapsed()) {
                 let Some(mut request) = ipc_handler.wait_for_request(remaining_timeout).await? else {
                     break;
                 };

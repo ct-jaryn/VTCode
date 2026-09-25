@@ -25,6 +25,38 @@ pub struct PersistedPlanDraft {
     pub validation: PlanValidationReport,
 }
 
+/// Allocate the workspace-local plan file when none exists.
+///
+/// Shared by `persist_plan_draft` (active-planning synthesis without a prior
+/// `start_planning` call) and the execution-mode approval path, which must
+/// persist a valid first draft without activating the planning workflow.
+/// Sets the file pointer and baseline and ensures the parent directory.
+/// Returns the existing path when one is already set.
+pub async fn allocate_plan_file_if_missing(state: &PlanningWorkflowState) -> Result<PathBuf> {
+    if let Some(existing) = state.get_plan_file().await {
+        return Ok(existing);
+    }
+    // The dedicated plan agent can enter planning without invoking the
+    // `start_planning` tool first. Plan synthesis must still have a
+    // durable artifact before approval, so lazily allocate the same
+    // workspace-local plan location used by `start_planning`.
+    let plan_file = state
+        .plans_dir()
+        .join(format!("{}.md", vtcode_commons::slug::create_timestamped()));
+    if let Some(parent) = plan_file.parent() {
+        ensure_dir_exists(parent)
+            .await
+            .with_context(|| format!("Failed to create plans directory: {}", parent.display()))?;
+    }
+    state.set_plan_file(Some(plan_file.clone())).await;
+    state.set_plan_baseline(Some(SystemTime::now())).await;
+    tracing::info!(
+        plan_file = %plan_file.display(),
+        "Initialized missing plan file during plan synthesis"
+    );
+    Ok(plan_file)
+}
+
 async fn persist_global_tracker_if_missing(workspace_root: &Path, tracker_markdown: &str) -> Result<bool> {
     if workspace_root.as_os_str().is_empty() {
         return Ok(false);
@@ -87,27 +119,7 @@ pub async fn persist_plan_draft(state: &PlanningWorkflowState, plan_markdown: &s
 
     let plan_file = match state.get_plan_file().await {
         Some(path) => path,
-        None if state.is_active() => {
-            // The dedicated plan agent can enter planning without invoking the
-            // `start_planning` tool first. Plan synthesis must still have a
-            // durable artifact before approval, so lazily allocate the same
-            // workspace-local plan location used by `start_planning`.
-            let plan_file = state
-                .plans_dir()
-                .join(format!("{}.md", vtcode_commons::slug::create_timestamped()));
-            if let Some(parent) = plan_file.parent() {
-                ensure_dir_exists(parent)
-                    .await
-                    .with_context(|| format!("Failed to create plans directory: {}", parent.display()))?;
-            }
-            state.set_plan_file(Some(plan_file.clone())).await;
-            state.set_plan_baseline(Some(SystemTime::now())).await;
-            tracing::info!(
-                plan_file = %plan_file.display(),
-                "Initialized missing plan file during active plan synthesis"
-            );
-            plan_file
-        }
+        None if state.is_active() => allocate_plan_file_if_missing(state).await?,
         None => bail!("No active plan file. Call start_planning first."),
     };
     let existing_plan = read_optional_file(&plan_file, "plan file").await?;

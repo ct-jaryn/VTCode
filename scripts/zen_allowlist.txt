@@ -106,7 +106,7 @@ vtcode-core/src/components.rs:465 | key iterated from map.keys()
 vtcode-core/src/core/agent/session/mod.rs:439 | delta >= 0 checked above
 vtcode-core/src/core/agent/session/mod.rs:561 | serde_json::to_string on Value; infallible
 vtcode-core/src/core/loop_detector/normalization.rs:79 | tokens.len() >= 2 checked above
-vtcode-core/src/exec/code_executor.rs:309 | builtin_names implies a builtin executor
+vtcode-core/src/exec/code_executor.rs:305 | builtin_names implies a builtin executor
 vtcode-core/src/pods/manager.rs:446 | pod manager home directory; default impl
 vtcode-core/src/tools/registry/distributed.rs:47 | OnceCell initialized after first set() call
 vtcode-core/src/tools/search_runtime.rs:86 | cache capacity is a non-zero constant

@@ -164,9 +164,11 @@ are designed to keep the first-request overhead low and per-turn growth bounded.
 - Put universal user-facing behavior in the compiled runtime-guidance section; keep authored instruction files for project-specific maps and maintainer workflows. Authored files are context, not a security boundary.
 - Prefer delegating large searches to subagents with a narrow, explicit tool set
   rather than fanning out broad orchestration.
-- When adding a tool, keep its description between 40 and 1200 characters and include
-  a verb cue and any side-effect/constraint cue so the model selects it accurately
-  without padding the prompt.
+- When adding a tool, keep its description between 40 and 1500 characters and include
+  a verb cue and, for side-effect tools, a concrete constraint cue (`max `, `session`,
+  `timeout`, `requires approval`, ...) so the model selects it accurately without
+  padding the prompt. Prohibition phrasing such as `Do NOT` does not satisfy the
+  description contract test.
 - Pin the cache breakpoint: keep the system prefix stable across turns. Dynamic
   per-turn content (timestamps, volatile workspace state) belongs in trailing
   sections, not the cached prefix.

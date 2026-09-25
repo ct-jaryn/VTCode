@@ -62,10 +62,14 @@ fn user_examples_dir(home: &Path) -> PathBuf {
     home.join(PROMPTS_PARENT).join(EXAMPLES_DIR)
 }
 
-/// Default token budget for the `[Few-Shot Examples]` block of the system
-/// prompt. ~10% of an 8K context window, leaving the remainder for the
-/// base prompt, tools, history, and the model's response.
+/// Default token budget for the `[Few-Shot Examples]` block. ~10% of an 8K
+/// context window, leaving the remainder for the base prompt, tools,
+/// history, and the model's response.
 pub const DEFAULT_FEW_SHOT_BUDGET_TOKENS: usize = 800;
+
+/// First line of every rendered few-shot block. The runloop persists the
+/// block in history once per user turn and recognizes it by this header.
+pub const FEW_SHOT_SECTION_HEADER: &str = "[Few-Shot Examples]";
 
 /// A single few-shot example loaded from disk.
 ///
@@ -234,10 +238,8 @@ pub fn render_few_shot_section(examples: &[&FewShotExample]) -> String {
     }
 
     let mut out = String::new();
-    out.push_str(
-        "[Few-Shot Examples]\n\
-         The following examples illustrate expected behavior for similar tasks.\n\n",
-    );
+    out.push_str(FEW_SHOT_SECTION_HEADER);
+    out.push_str("\nThe following examples illustrate expected behavior for similar tasks.\n\n");
     for example in examples {
         let _ = std::fmt::Write::write_fmt(&mut out, format_args!("### {}\n", example.id));
         if !example.summary.is_empty() {
@@ -559,7 +561,8 @@ mod tests {
             FewShotStore::from_examples(vec![example("demo", &["hi", "demo"], "user said hi\nassistant said hello")]);
         let chosen = store.select("hi there", 1000);
         let rendered = render_few_shot_section(&chosen);
-        assert!(rendered.contains("[Few-Shot Examples]"));
+        assert!(rendered.starts_with(FEW_SHOT_SECTION_HEADER));
+        assert!(rendered.contains("[Few-Shot Examples]\nThe following examples illustrate"));
         assert!(rendered.contains("### demo"));
         assert!(rendered.contains("user said hi"));
     }

@@ -14,9 +14,6 @@ cargo install vtcode
 
 # Option B: With Homebrew (macOS)
 brew install vtcode
-
-# Option C: With NPM
-npm install -g vtcode-ai
 ```
 
 Verify installation:

@@ -157,27 +157,6 @@ pub(crate) fn dispatch_rebindable_action(session: &mut Session, action: Action) 
             session.mark_dirty();
             Some(InlineEvent::ScrollPageDown)
         }
-        Action::JumpToLastChange => {
-            if session.jump_to_last_change() {
-                session.mark_dirty();
-                Some(InlineEvent::JumpToLastChange)
-            } else if session.user_scrolled {
-                // No tracked change (fresh/cleared transcript) but the view is
-                // scrolled up: preserve legacy Ctrl+End bottom behavior.
-                session.scroll_to_bottom();
-                session.mark_dirty();
-                Some(InlineEvent::JumpToLastChange)
-            } else if session.input_enabled {
-                // Preserve legacy Ctrl+End cursor behavior when there is no
-                // jump target: move to buffer end instead of swallowing the key.
-                session.clear_inline_prompt_suggestion();
-                session.move_to_end();
-                session.mark_dirty();
-                None
-            } else {
-                None
-            }
-        }
         Action::EditQueue => {
             if !session.queued_inputs.is_empty() {
                 if let Some(latest) = session.pop_latest_queued_input() {
@@ -399,11 +378,9 @@ pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<Inline
                         return None;
                     }
                 }
-                KeyCode::Down => {
-                    if session.move_cursor_down_for_history() {
-                        session.mark_dirty();
-                        return None;
-                    }
+                KeyCode::Down if session.move_cursor_down_for_history() => {
+                    session.mark_dirty();
+                    return None;
                 }
                 _ => {}
             }

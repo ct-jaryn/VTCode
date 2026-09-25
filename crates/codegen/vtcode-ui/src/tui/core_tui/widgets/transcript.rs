@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
@@ -120,7 +120,6 @@ impl<'a> Widget for TranscriptWidget<'a> {
                 .decorate_borrowed_cached_transcript_links(cached_lines.as_slice(), scroll_area)
         };
         apply_active_file_operation_spinner(self.session, &mut visible_lines);
-        apply_jump_to_last_change_highlight(self.session, &mut visible_lines, visible_start, content_width);
 
         // Only clear if content actually changed, not on viewport-only scroll
         // This is a significant optimization: avoids expensive Clear operation on most scrolls
@@ -137,79 +136,7 @@ impl<'a> Widget for TranscriptWidget<'a> {
             .wrap(Wrap { trim: false });
         paragraph.render(scroll_area, buf);
         apply_full_width_line_backgrounds(buf, scroll_area, &visible_lines, default_bg);
-        apply_jump_highlight_cell_reverse(buf, scroll_area, &visible_lines, self.session);
-        render_jump_to_last_change_pill(self.session, scroll_area, buf);
     }
-}
-
-/// Sticky highlight for the jump target: REVERSED + BOLD on overlapped rows.
-///
-/// Applied to `Line`/`Span` styles pre-render so `Paragraph` carries it, and
-/// mirrored at the cell level post-render (see
-/// `apply_jump_highlight_cell_reverse`) because `Paragraph` only paints cells
-/// covered by text, leaving padding cells without the inversion.
-fn apply_jump_to_last_change_highlight(
-    session: &mut Session,
-    visible_lines: &mut [Line<'static>],
-    visible_start: usize,
-    content_width: u16,
-) {
-    let Some(target_idx) = session.jump_highlight_line_idx else {
-        return;
-    };
-    let Some((start_row, end_row)) = session.transcript_message_row_range(content_width, target_idx) else {
-        return;
-    };
-    let highlight = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
-    for (offset, line) in visible_lines.iter_mut().enumerate() {
-        let row = visible_start.saturating_add(offset);
-        if row < start_row || row >= end_row {
-            continue;
-        }
-        line.style = line.style.patch(highlight);
-        for span in &mut line.spans {
-            span.style = span.style.patch(highlight);
-        }
-    }
-}
-
-/// Mirror the jump highlight onto cell backgrounds so empty padding cells on
-/// highlighted rows also invert. Runs after `Paragraph::render`.
-fn apply_jump_highlight_cell_reverse(buf: &mut Buffer, area: Rect, visible_lines: &[Line<'_>], session: &Session) {
-    if session.jump_highlight_line_idx.is_none() {
-        return;
-    }
-    let max_rows = usize::from(area.height).min(visible_lines.len());
-    // Only rows whose Line style carries REVERSED from the pre-render pass
-    // are inverted here; this avoids needing another mutable cache lookup.
-    for (offset, line) in visible_lines.iter().take(max_rows).enumerate() {
-        if !line.style.add_modifier.contains(Modifier::REVERSED) {
-            continue;
-        }
-        let y = area.y + offset as u16;
-        for x in area.left()..area.right() {
-            let cell = &mut buf[(x, y)];
-            cell.set_style(cell.style().add_modifier(Modifier::REVERSED | Modifier::BOLD));
-        }
-    }
-}
-
-/// Floating `Jump to last change` pill, bottom-right of the transcript.
-///
-/// Visible only while scrolled up with at least two tracked changes. Geometry
-/// comes from `Session::jump_pill_rect` so render and hit-testing cannot drift.
-fn render_jump_to_last_change_pill(session: &Session, area: Rect, buf: &mut Buffer) {
-    let Some(pill_area) = session.jump_pill_rect() else {
-        return;
-    };
-    if pill_area.right() > area.right() || pill_area.bottom() > area.bottom() {
-        return;
-    }
-    let text = session.jump_pill_text();
-    Clear.render(pill_area, buf);
-    let style = session.styles.accent_style().add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    let paragraph = Paragraph::new(Line::from(vec![Span::styled(format!(" {text} "), style)]));
-    paragraph.render(pill_area, buf);
 }
 
 const FILE_OPERATION_STATUS_TOOLS: &[&str] = &[

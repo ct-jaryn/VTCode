@@ -10,7 +10,6 @@ const WINDOWS_INSTALL_COMMAND: &str =
     "irm https://raw.githubusercontent.com/vinhnx/vtcode/main/scripts/install.ps1 | iex";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew upgrade vinhnx/tap/vtcode";
 const CARGO_UPDATE_COMMAND: &str = "cargo install vtcode --force";
-const NPM_UPDATE_COMMAND: &str = "npm install -g @vinhnx/vtcode@latest --registry=https://npm.pkg.github.com";
 const SCOOP_UPDATE_COMMAND: &str = "scoop update vtcode";
 const SNAP_UPDATE_COMMAND: &str = "sudo snap refresh vtcode";
 const FLATPAK_UPDATE_COMMAND: &str = "flatpak update com.vinhnx.Vtcode";
@@ -22,7 +21,6 @@ pub(crate) enum InstallSource {
     Standalone,
     Homebrew,
     Cargo,
-    Npm,
     Scoop,
     Snap,
     Flatpak,
@@ -40,7 +38,6 @@ impl InstallSource {
             Self::Standalone => "standalone",
             Self::Homebrew => "homebrew",
             Self::Cargo => "cargo",
-            Self::Npm => "npm",
             Self::Scoop => "scoop",
             Self::Snap => "snap",
             Self::Flatpak => "flatpak",
@@ -76,12 +73,6 @@ impl InstallSource {
             Self::Cargo => UpdateAction {
                 source_label: self.label(),
                 display_command: CARGO_UPDATE_COMMAND,
-                execution: UpdateExecutionStrategy::Shell,
-                prefer_path_relaunch: true,
-            },
-            Self::Npm => UpdateAction {
-                source_label: self.label(),
-                display_command: NPM_UPDATE_COMMAND,
                 execution: UpdateExecutionStrategy::Shell,
                 prefer_path_relaunch: true,
             },
@@ -144,10 +135,6 @@ pub(super) fn detect_install_source_from_path(path: &Path) -> InstallSource {
 
     if path_text.contains("/.cargo/bin/") {
         return InstallSource::Cargo;
-    }
-
-    if path_text.contains("/node_modules/") || path_text.contains("/npm/") {
-        return InstallSource::Npm;
     }
 
     // Nix: after canonicalize(), ~/.nix-profile/bin/vtcode resolves to /nix/store/...
@@ -258,16 +245,6 @@ mod tests {
         let action = InstallSource::Homebrew.update_action_for_os("linux");
         assert_eq!(action.display_command, "brew upgrade vinhnx/tap/vtcode");
         assert_eq!(action.execution, UpdateExecutionStrategy::Shell);
-        assert!(action.prefer_path_relaunch);
-    }
-
-    #[test]
-    fn npm_uses_scoped_registry_command() {
-        let action = InstallSource::Npm.update_action_for_os("linux");
-        assert_eq!(
-            action.display_command,
-            "npm install -g @vinhnx/vtcode@latest --registry=https://npm.pkg.github.com"
-        );
         assert!(action.prefer_path_relaunch);
     }
 

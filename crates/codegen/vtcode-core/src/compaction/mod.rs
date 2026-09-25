@@ -467,6 +467,11 @@ mod summarization_fork_bounds_tests {
 /// `tool_choice` is forced to `none` so the summarizer cannot spend the
 /// compaction pass on tool calls while the system/tools/messages prefix
 /// stays identical to the parent's last request.
+///
+/// `supports_turn_scoped` mirrors the live turn path: canonical history keeps
+/// the typed `clear_at` marker, but routes without native support receive it
+/// as an ordinary system directive (text preserved, `clear_at` stripped) so
+/// `merge-gateway` and other non-Anthropic wires do not fail validation.
 fn compaction_summary_request(
     model: &str,
     history: &[Message],
@@ -474,10 +479,19 @@ fn compaction_summary_request(
     max_output_tokens: Option<u32>,
     reasoning_effort: Option<ReasoningEffortLevel>,
     verbosity: Option<VerbosityLevel>,
+    supports_turn_scoped: bool,
     parent: Option<&CompactionParentContext>,
 ) -> LLMRequest {
+    let mut forked = build_cache_safe_compaction_history(history, instructions);
+    if !supports_turn_scoped {
+        for message in forked.iter_mut() {
+            if message.clear_at.is_some() {
+                message.clear_at = None;
+            }
+        }
+    }
     LLMRequest {
-        messages: Arc::new(build_cache_safe_compaction_history(history, instructions)),
+        messages: Arc::new(forked),
         model: model.to_string(),
         system_prompt: parent.and_then(|parent| parent.system_prompt.clone()),
         tools: parent.and_then(|parent| parent.tools.clone()).filter(|tools| !tools.is_empty()),
@@ -1122,6 +1136,7 @@ async fn generate_local_summary_with_retry(
     options: &ManualCompactionOptions,
     parent: Option<&CompactionParentContext>,
 ) -> Result<String> {
+    let supports_turn_scoped = provider.supports_turn_scoped_system_messages(model);
     generate_summary_with_capacity_retry(
         provider,
         model,
@@ -1139,6 +1154,7 @@ async fn generate_local_summary_with_retry(
                 options.max_output_tokens,
                 options.reasoning_effort,
                 options.verbosity,
+                supports_turn_scoped,
                 parent,
             )
         },
@@ -3356,7 +3372,16 @@ mod tests {
             2,
             "Failed to generate compaction summary",
             |source| {
-                super::compaction_summary_request("stub-model", source, "test instructions", None, None, None, None)
+                super::compaction_summary_request(
+                    "stub-model",
+                    source,
+                    "test instructions",
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                )
             },
         )
         .await
@@ -3395,7 +3420,16 @@ mod tests {
             1,
             "Failed to generate compaction summary",
             |source| {
-                super::compaction_summary_request("stub-model", source, "test instructions", None, None, None, None)
+                super::compaction_summary_request(
+                    "stub-model",
+                    source,
+                    "test instructions",
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                )
             },
         )
         .await
@@ -3423,7 +3457,16 @@ mod tests {
             1,
             "Failed to generate compaction summary",
             |source| {
-                super::compaction_summary_request("stub-model", source, "test instructions", None, None, None, None)
+                super::compaction_summary_request(
+                    "stub-model",
+                    source,
+                    "test instructions",
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                )
             },
         )
         .await
@@ -4011,13 +4054,93 @@ mod tests {
             )])),
         };
         let request =
-            compaction_summary_request("stub-model", &history, "Summarize now.", None, None, None, Some(&parent));
+            compaction_summary_request("stub-model", &history, "Summarize now.", None, None, None, true, Some(&parent));
         assert_eq!(request.system_prompt.as_deref(), Some("stable system"));
         assert_eq!(request.tools.as_deref().map(Vec::len), Some(1));
         assert_eq!(request.messages.len(), history.len() + 1);
         assert!(matches!(request.tool_choice, Some(crate::llm::provider::ToolChoice::None)));
         assert!(!parent.is_empty());
         assert!(CompactionParentContext::default().is_empty());
+    }
+
+    #[test]
+    fn compaction_summary_request_strips_turn_scoped_without_native_support() {
+        use super::compaction_summary_request;
+
+        let history = vec![
+            Message::user("do the thing".to_string()),
+            Message::turn_scoped_system("collapsed output notice".to_string()),
+        ];
+        let request =
+            compaction_summary_request("stub-model", &history, "Summarize now.", None, None, None, false, None);
+        let scoped = request
+            .messages
+            .iter()
+            .find(|message| message.content.as_text().as_ref() == "collapsed output notice")
+            .expect("collapsed notice text must survive sanitization");
+        assert!(scoped.clear_at.is_none(), "merge-gateway wire must not carry clear_at");
+        assert_eq!(request.messages.len(), history.len() + 1);
+    }
+
+    #[test]
+    fn compaction_summary_request_preserves_turn_scoped_with_native_support() {
+        use super::compaction_summary_request;
+
+        let history = vec![
+            Message::user("do the thing".to_string()),
+            Message::turn_scoped_system("collapsed output notice".to_string()),
+        ];
+        let request =
+            compaction_summary_request("stub-model", &history, "Summarize now.", None, None, None, true, None);
+        let scoped = request
+            .messages
+            .iter()
+            .find(|message| message.content.as_text().as_ref() == "collapsed output notice")
+            .expect("collapsed notice must be present");
+        assert!(scoped.clear_at.is_some(), "anthropic wire must keep clear_at");
+    }
+
+    #[tokio::test]
+    async fn local_summary_fork_omits_clear_at_for_gateway_routes() {
+        use super::compact_history_manual_with_parent_context;
+
+        let history = vec![
+            Message::user("do the thing".to_string()),
+            Message::turn_scoped_system("collapsed output notice".to_string()),
+            Message::user("continue".to_string()),
+        ];
+        let config = CompactionConfig {
+            always_summarize: true,
+            ..CompactionConfig::default()
+        };
+        // CapturingProvider uses the trait default
+        // `supports_turn_scoped_system_messages == false`, like merge-gateway.
+        let provider = CapturingProvider { last_request: Mutex::new(None) };
+        let (compacted, mode) = compact_history_manual_with_parent_context(
+            &provider,
+            "openai/gpt-6-luna",
+            &history,
+            &config,
+            &ManualCompactionOptions::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("gateway local compaction must succeed");
+        assert_eq!(mode, CompactionMode::Local);
+        let captured = provider.last_request.lock().unwrap().clone().expect("captured request");
+        assert!(
+            captured.messages.iter().all(|message| message.clear_at.is_none()),
+            "gateway summary fork must not carry clear_at"
+        );
+        assert!(
+            captured
+                .messages
+                .iter()
+                .any(|message| message.content.as_text().as_ref() == "collapsed output notice"),
+            "collapsed notice text must survive as ordinary directive"
+        );
+        assert!(!compacted.is_empty());
     }
 
     #[tokio::test]

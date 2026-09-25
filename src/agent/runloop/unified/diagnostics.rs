@@ -323,7 +323,7 @@ pub(crate) async fn run_checkup_diagnostics(
             } else {
                 renderer.line(MessageStyle::Output, &format!("  {} loaded skill(s):", skills.len()))?;
                 let mut sorted_skills: Vec<_> = skills.iter().collect();
-                sorted_skills.sort_by(|(name_a, _), (name_b, _)| name_a.cmp(name_b));
+                sorted_skills.sort_by_key(|(name_a, _)| *name_a);
                 for (idx, (name, skill)) in sorted_skills.iter().enumerate() {
                     let scope = format!("{:?}", skill.scope).to_lowercase();
                     renderer.line(MessageStyle::Output, &format!("    [{}] {} ({})", idx + 1, name, scope))?;

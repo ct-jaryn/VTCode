@@ -4,8 +4,9 @@
 //! don't need access to `&mut self`.
 
 use crate::core::agent::events::ExecEventRecorder;
+use crate::core::agent::session::AgentSessionState;
 use crate::core::agent::task::TaskOutcome;
-use crate::llm::provider::{FinishReason, Message, ResponsesContinuationState};
+use crate::llm::provider::{FinishReason, Message, MessageRole, ResponsesContinuationState};
 use vtcode_exec_events::Usage;
 
 /// Record the terminal turn event (TurnCompleted or TurnFailed) based on outcome.
@@ -19,6 +20,29 @@ pub(super) fn record_terminal_turn_event(event_recorder: &mut ExecEventRecorder,
         event_recorder.turn_completed(usage);
     } else {
         event_recorder.turn_failed(&outcome.description(), Some(usage));
+    }
+}
+
+/// Drop the refused assistant message that `run_turn_once` appended.
+///
+/// Output that ends in a refusal was cut off by the provider, so it is not a
+/// committed answer and must not be replayed to the model if this history is
+/// resumed (for example a subagent receiving follow-up input). Only a trailing
+/// assistant message is removed; earlier history stays append-only.
+pub(super) fn discard_refused_assistant_message(state: &mut AgentSessionState) {
+    if state
+        .messages
+        .last()
+        .is_none_or(|message| message.role != MessageRole::Assistant)
+    {
+        return;
+    }
+    if let Some(message) = state.messages_mut().pop() {
+        state.adjust_token_count(-(message.estimate_tokens() as isize));
+    }
+    if state.conversation.last().is_some_and(|content| content.role == "model") {
+        state.conversation.pop();
+        state.last_processed_message_idx = state.last_processed_message_idx.min(state.conversation.len());
     }
 }
 

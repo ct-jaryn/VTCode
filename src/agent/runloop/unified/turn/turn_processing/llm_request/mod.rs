@@ -15,6 +15,7 @@ mod prompt_assembly;
 mod prompt_runtime;
 mod prompt_sections;
 mod request_builder;
+mod request_context;
 mod response_chain;
 mod retry;
 mod snapshot;

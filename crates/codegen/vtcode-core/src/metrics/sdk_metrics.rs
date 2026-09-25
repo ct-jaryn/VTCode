@@ -45,19 +45,11 @@ impl SdkMetrics {
     }
 
     pub fn avg_generation_time_ms(&self) -> u64 {
-        if self.total_generations > 0 {
-            self.total_generation_time_ms / self.total_generations
-        } else {
-            0
-        }
+        self.total_generation_time_ms.checked_div(self.total_generations).unwrap_or(0)
     }
 
     pub fn avg_tools_per_generation(&self) -> u64 {
-        if self.total_generations > 0 {
-            self.tools_total_generated / self.total_generations
-        } else {
-            0
-        }
+        self.tools_total_generated.checked_div(self.total_generations).unwrap_or(0)
     }
 
     pub fn cache_hit_rate(&self) -> f64 {
@@ -70,11 +62,9 @@ impl SdkMetrics {
 
     /// Average tool definition tokens per generation.
     pub fn avg_tool_definition_tokens_per_generation(&self) -> u64 {
-        if self.total_generations > 0 {
-            self.total_tool_definition_tokens / self.total_generations
-        } else {
-            0
-        }
+        self.total_tool_definition_tokens
+            .checked_div(self.total_generations)
+            .unwrap_or(0)
     }
 }
 

@@ -22,8 +22,9 @@ const INIT_GROUNDING_TIMEOUT_MS: u64 = 120_000;
 const INIT_GROUNDING_AGENT_NAME: &str = "init-grounding-explorer";
 const INIT_GROUNDING_AGENT_PROMPT: &str = r#"You are the VT Code `/init` project grounding explorer.
 
-Inspect the repository directly and extract only the agent-facing facts needed to ground `AGENTS.md`.
-Stay read-only, prefer direct repository evidence, and return concise structured results."#;
+Your findings seed the project's `AGENTS.md`, which coding agents read at the start of every session, so a wrong
+field misleads every later run. Inspect the repository directly, read-only, and extract only the agent-facing facts
+that repository evidence supports."#;
 const INIT_GROUNDING_TASK: &str = r#"Inspect the current repository and ground `/init` setup.
 
 Return JSON only with this shape:
@@ -41,7 +42,7 @@ Requirements:
 - `orientation_doc`: the best file path to read first for orientation, or null.
 - `critical_instruction`: one repo-wide always-follow instruction, or null.
 - Use null for anything that is not well supported by the repository.
-- Do not include explanations, markdown fences, or extra keys."#;
+- The reply is parsed as JSON, so include no explanations, markdown fences, or extra keys."#;
 
 pub(crate) async fn handle_initialize_workspace(
     ctx: SlashCommandContext<'_>,
@@ -303,10 +304,8 @@ fn extract_first_json_block(text: &str) -> Option<&str> {
                     return None;
                 }
             }
-            ']' => {
-                if stack.pop() != Some('[') {
-                    return None;
-                }
+            ']' if stack.pop() != Some('[') => {
+                return None;
             }
             _ => {}
         }

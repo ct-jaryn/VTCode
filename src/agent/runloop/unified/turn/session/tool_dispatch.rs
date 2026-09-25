@@ -9,7 +9,7 @@ use crate::agent::runloop::unified::shell::shell_quote_if_needed;
 use crate::agent::runloop::unified::status_line::InputStatusState;
 use crate::agent::runloop::unified::turn::context::{TurnHandlerOutcome, TurnLoopResult};
 use crate::agent::runloop::unified::turn::session::direct_tool_completion::{
-    ReplyKind, generate_completion_reply_with_suggestions,
+    ReplyKind, generate_completion_reply_with_suggestions, latest_direct_background_completion_identity,
 };
 use crate::agent::runloop::unified::turn::session::interaction_loop::{InteractionLoopContext, InteractionOutcome};
 use crate::agent::runloop::unified::turn::tool_outcomes::handlers::{ToolOutcomeContext, handle_single_tool_call};
@@ -42,6 +42,24 @@ enum DirectToolInput {
     },
 }
 
+fn begin_direct_tool_turn(
+    tool_registry: &vtcode_core::tools::registry::ToolRegistry,
+    harness_config: &vtcode_config::core::agent::AgentHarnessConfig,
+) -> HarnessTurnState {
+    // Direct tool calls bypass `run_turn_loop`, so start their own preview window.
+    tool_registry.begin_turn_preview_window();
+
+    let direct_turn_id = SessionId::generate();
+    let direct_turn_id_str = direct_turn_id.as_str().to_string();
+    HarnessTurnState::new(
+        TurnRunId(direct_turn_id_str.clone()),
+        TurnId(direct_turn_id_str),
+        harness_config.max_tool_calls_per_turn,
+        harness_config.max_tool_wall_clock_secs,
+        harness_config.max_tool_retries,
+    )
+}
+
 pub(crate) async fn handle_direct_tool_execution(
     input: &str,
     ctx: &mut DirectToolContext<'_, '_>,
@@ -57,16 +75,21 @@ pub(crate) async fn handle_direct_tool_execution(
     let (tool_name_str, args, is_bang_prefix) = match parsed {
         DirectToolInput::Execute { tool_name, args, is_bang_prefix } => (tool_name, args, is_bang_prefix),
         DirectToolInput::InvalidBang { command, diagnosis } => {
+            // TUI stays concise: one rejection line + one actionable line.
+            // The full parser diagnosis is kept in trace logs for forensics.
+            tracing::debug!(command = %command, diagnosis = %diagnosis, "rejected invalid bang shell command");
+            let detail: String = if diagnosis.chars().count() > 160 {
+                format!("{}…", diagnosis.chars().take(159).collect::<String>())
+            } else {
+                diagnosis.clone()
+            };
             ctx.interaction_ctx.renderer.line(
                 vtcode_core::utils::ansi::MessageStyle::Info,
                 "Shell mode (!): command rejected (invalid shell syntax).",
             )?;
-            ctx.interaction_ctx
-                .renderer
-                .line(vtcode_core::utils::ansi::MessageStyle::Info, &format!("Diagnosis: {diagnosis}"))?;
             ctx.interaction_ctx.renderer.line(
                 vtcode_core::utils::ansi::MessageStyle::Info,
-                &format!("Recovery: fix syntax and retry as `!{command}`, or remove `!` to ask in natural language."),
+                &format!("Fix syntax and retry as `!{command}`, or ask without `!`. ({detail})"),
             )?;
             return Ok(Some(InteractionOutcome::DirectToolHandled));
         }
@@ -84,15 +107,8 @@ pub(crate) async fn execute_direct_tool_call(
     ctx: &mut DirectToolContext<'_, '_>,
 ) -> Result<Option<InteractionOutcome>> {
     // Construct HarnessTurnState (simplified for direct execution)
-    let direct_turn_id = SessionId::generate();
-    let direct_turn_id_str = direct_turn_id.as_str().to_string();
-    let mut harness_state = HarnessTurnState::new(
-        TurnRunId(direct_turn_id_str.clone()),
-        TurnId(direct_turn_id_str),
-        ctx.interaction_ctx.harness_config.max_tool_calls_per_turn,
-        ctx.interaction_ctx.harness_config.max_tool_wall_clock_secs,
-        ctx.interaction_ctx.harness_config.max_tool_retries,
-    );
+    let mut harness_state =
+        begin_direct_tool_turn(ctx.interaction_ctx.tool_registry, &ctx.interaction_ctx.harness_config);
 
     let mut auto_finish_planning_attempted = false;
 
@@ -205,8 +221,15 @@ pub(crate) async fn execute_direct_tool_call(
     );
 
     // Direct tool paths already executed and rendered output; skip creating an
-    // immediate LLM turn for this interaction loop iteration.
-    Ok(Some(InteractionOutcome::DirectToolHandled))
+    // immediate LLM turn for this interaction loop iteration. If this call
+    // launched background work, retain its stable completion identity so only
+    // that user-directed completion stays non-autonomous.
+    Ok(Some(
+        latest_direct_background_completion_identity(ctx.interaction_ctx.conversation_history)
+            .map_or(InteractionOutcome::DirectToolHandled, |completion_identity| {
+                InteractionOutcome::DirectBackgroundToolHandled { completion_identity }
+            }),
+    ))
 }
 
 fn direct_tool_skips_confirmations(tool_name: &str) -> bool {
@@ -584,15 +607,59 @@ mod tests {
 
     use super::normalize_direct_tool_mentions;
     use super::{
-        DirectToolInput, direct_subagent_spawn_args, direct_subagent_tool_name, direct_tool_fallback,
-        direct_tool_skips_confirmations, parse_direct_tool_input,
+        DirectToolInput, begin_direct_tool_turn, direct_subagent_spawn_args, direct_subagent_tool_name,
+        direct_tool_fallback, direct_tool_skips_confirmations, parse_direct_tool_input,
     };
+    use serde_json::json;
     use tempfile::TempDir;
     use vtcode_config::SubagentSource;
     use vtcode_config::SubagentSpec;
+    use vtcode_config::core::agent::AgentHarnessConfig;
     use vtcode_config::core::permissions::{AgentPermissionsConfig, PermissionDefault};
     use vtcode_core::config::constants::tools;
     use vtcode_core::llm::provider as uni;
+    use vtcode_core::tools::registry::ToolRegistry;
+
+    #[tokio::test]
+    async fn direct_tool_turn_resets_tiny_preview_budget() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+        let harness_config = AgentHarnessConfig::default();
+        let body = "v".repeat(vtcode_config::constants::output_limits::TINY_PREVIEW_BYPASS_BYTES / 4);
+        let previews_per_turn = vtcode_config::constants::output_limits::TURN_TINY_PREVIEW_BUDGET_BYTES / body.len();
+
+        let mut next_file = 0;
+        let _first_turn = begin_direct_tool_turn(&registry, &harness_config);
+        for _ in 0..previews_per_turn {
+            let file_path = temp_dir.path().join(format!("preview-{next_file}.txt"));
+            next_file += 1;
+            fs::write(&file_path, &body).expect("write preview file");
+            let result = registry
+                .execute_tool_ref(tools::READ_FILE, &json!({ "path": file_path.to_string_lossy() }))
+                .await
+                .expect("read preview file");
+            assert_eq!(result["content"].as_str(), Some(body.as_str()));
+        }
+
+        let exhausted_path = temp_dir.path().join(format!("preview-{next_file}.txt"));
+        next_file += 1;
+        fs::write(&exhausted_path, &body).expect("write exhausted preview file");
+        let exhausted = registry
+            .execute_tool_ref(tools::READ_FILE, &json!({ "path": exhausted_path.to_string_lossy() }))
+            .await
+            .expect("read exhausted preview file");
+        assert_eq!(exhausted["preview_budget_exhausted"], true);
+        assert!(exhausted.get("content").is_none());
+
+        let _second_turn = begin_direct_tool_turn(&registry, &harness_config);
+        let fresh_path = temp_dir.path().join(format!("preview-{next_file}.txt"));
+        fs::write(&fresh_path, &body).expect("write fresh preview file");
+        let fresh = registry
+            .execute_tool_ref(tools::READ_FILE, &json!({ "path": fresh_path.to_string_lossy() }))
+            .await
+            .expect("read fresh preview file");
+        assert_eq!(fresh["content"].as_str(), Some(body.as_str()));
+    }
 
     fn test_subagent_spec(name: &str) -> SubagentSpec {
         SubagentSpec {

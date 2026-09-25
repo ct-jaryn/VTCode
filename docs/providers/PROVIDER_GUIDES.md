@@ -132,8 +132,8 @@ Name-based OpenAI sampling gates apply to custom endpoints too: models named
 `gpt`, `gpt-5.2`, `gpt-5.4`, `gpt-5.5*` accept sampling only while reasoning
 effort resolves to `none` (pinned values are silently omitted otherwise),
 `gpt-5`/`gpt-5-mini`/`gpt-5-nano` never receive sampling parameters, and
-`gpt-6-astra` never receives sampling parameters (`temperature`/`top_p` are
-unsupported by the model). Prefer neutral model IDs on gateways if you need
+`gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna` never receive sampling parameters (`temperature`/`top_p` are
+unsupported by the GPT-6 family). Prefer neutral model IDs on gateways if you need
 pinned values on such names.
 
 ### Validate the configuration
@@ -158,8 +158,11 @@ complete field reference and precedence rules.
 ## Collapsed tool-result disclosure
 
 When compact transcript review or bounded tool-output mode hides most of a
-tool result, VT Code adds one exact disclosure to canonical conversation
-history for every provider and model:
+tool result, VT Code adds one exact disclosure per user turn to canonical
+conversation history, after the first bounded tool result of that turn, for
+every provider and model. Copies already sent are never moved or removed, so
+each request only appends to the previous one (required by models that bind
+replayed thinking to the exact prior prefix, and by prompt caches):
 
 ```text
 Only you see that command's output — the user's terminal shows at most a few lines of it. If the user needs to read any of it, put it in your reply.
@@ -170,7 +173,8 @@ system, history, instructions, or transcript representation. Anthropic wire
 routes whose selected provider/model capability supports it use
 `clear_at: "next_user_message"` with the required beta; unsupported Anthropic
 models and gateways use a top-level system directive. Routes without that
-capability never receive the Anthropic-only `clear_at` field. Complete tool
+capability never receive the Anthropic-only `clear_at` field, and receive only
+the latest copy, so a folded system prompt stays constant. Complete tool
 output remains available in Transcript Review, so this disclosure does not
 replace the retained evidence or expose provider chain-of-thought.
 
@@ -208,6 +212,8 @@ replace the retained evidence or expose provider chain-of-thought.
 -   VT Code applies a compact GPT-5.4 prompt contract rather than a verbatim cookbook prompt: compact outputs, low-risk follow-through, dependency-aware tool use, completeness checks, verification, and conditional grounding/citation rules.
 -   Deprecated models (gpt-5, gpt-5-mini, gpt-5-nano, o3, o4-mini, gpt-5-codex, gpt-5.1-codex, etc.) are removed from the model picker but retained in routing constants for backward compatibility with existing configs.
 -   **GPT-6 Astra (`gpt-6-astra`):** most capable OpenAI model for end-to-end agentic work (1,050,000 context, 128k max output, reasoning `low`/`medium`/`high`/`xhigh`/`max`). The catalog drives its Responses API route, sampling and logprob capabilities, cache TTL, prompt contract, and supported reasoning levels. Unsupported reasoning requests are blocked before transport unless `agent.allow_reasoning_effort_downgrade` explicitly permits selection of the nearest lower catalog level.
+-   **GPT-6 Sol (`gpt-6-sol`):** cost-efficient high-end GPT-6 model for demanding professional work (1,050,000 context, 128k max output, reasoning `low`/`medium`/`high`/`xhigh`/`max`, default `medium`). Same Responses API route, GPT-6 prompt contract, explicit cache breakpoints, and `30m` cache TTL as Astra; sampling and logprobs unsupported.
+-   **GPT-6 Luna (`gpt-6-luna`):** fast cost-efficient GPT-6 model for high-volume latency-sensitive workloads (1,050,000 context, 128k max output, reasoning `low`/`medium`/`high`/`xhigh`/`max`, default `medium`). Same Responses API route, GPT-6 prompt contract, explicit cache breakpoints, and `30m` cache TTL as Astra; sampling and logprobs unsupported.
 -   File inputs are supported for native OpenAI Responses API requests through `input_file` parts.
 -   Supported file input fields in VT Code message parts: `file_id`, `file_data`, `file_url`, `filename`.
 -   `file_url` is Responses API only; VT Code rejects `file_url` when a request uses Chat Completions.
@@ -287,7 +293,7 @@ replace the retained evidence or expose provider chain-of-thought.
 -   **Authentication:** `MERGE_GATEWAY_API_KEY` (Bearer token; create a key in the [Merge dashboard](https://dashboard.merge.dev/))
 -   **Base URL:** `https://api-gateway.merge.dev/v1` (native Responses), override with `MERGE_GATEWAY_BASE_URL`; explicit `/v1/openai` selects legacy Chat Completions
 -   **Default model:** `default_routing`
--   **Curated picker models:** `openai/gpt-5.5`, `anthropic/claude-opus-5`, `google/gemini-3.6-flash`, `google/gemini-3.7-flash`, `deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`, `xai/grok-4.6`, `qwen/qwen3.8-max`, `minimax/minimax-h3`, `moonshot/kimi-k3`, `thinkingmachines/inkling`, `meta/muse-spark-1.1`, `zai/glm-5.3-flash`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, and `openai/gpt-5.6-terra`
+-   **Curated picker models:** `openai/gpt-5.5`, `anthropic/claude-opus-5`, `anthropic/claude-opus-5-5`, `google/gemini-3.6-flash`, `google/gemini-3.7-flash`, `deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`, `xai/grok-4.6`, `qwen/qwen3.8-max`, `minimax/minimax-h3`, `moonshot/kimi-k3`, `thinkingmachines/inkling`, `meta/muse-spark-1.1`, `zai/glm-5.3-flash`, `zai/glm-5.3-flashx`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-6-astra`, `openai/gpt-6-sol`, and `openai/gpt-6-luna`
 -   **Features:** Native Responses, streaming, tool calling, structured outputs, authenticated paginated model catalog, cache-backed picker metadata, and arbitrary explicit Merge route IDs
 -   **Limitations:** Reasoning controls remain route-specific and are not inferred generically; routing metadata and billed cost remain outside VT Code's normalized response fields. Explicit `/v1/openai` endpoints retain the legacy compatibility path.
 
@@ -305,13 +311,14 @@ replace the retained evidence or expose provider chain-of-thought.
     -   [API overview](https://openrouter.ai/docs/api-reference/overview/llms)
     -   [Streaming](https://openrouter.ai/docs/api-reference/streaming/llms)
     -   [Model catalog](https://openrouter.ai/docs/llms)
--   Default model: `xiaomi/mimo-v2.5-pro` (VT Code's default). Xiaomi MiMo V2.5 and V2.5 Pro are also available.
+-   Default model: `xiaomi/mimo-v2.6-pro` (VT Code's default). Xiaomi MiMo V2.6 Flash and V2.6 Pro UltraSpeed are also available.
 -   For Meta Muse, prefer the official [`meta` provider](./meta.md) when direct Meta access is desired. OpenRouter's `meta/...` entries are separately namespaced marketplace routes.
 -   **Meta Muse models via OpenRouter:** `meta/muse-glimmer-30b` and `meta/muse-spark-1.2`
--   **Curated picker catalog:** `openrouter/meta/muse-glimmer-30b`, `openrouter/meta/muse-spark-1.2`, `openrouter/deepseek/deepseek-chat`, `openrouter/z-ai/glm-5.1`, `openrouter/z-ai/glm-5.2`, `openrouter/z-ai/glm-5.3-flash`, `openrouter/moonshotai/kimi-k3`, `openrouter/moonshotai/kimi-k2.6`, `openrouter/moonshotai/kimi-k2.7-code`, `openrouter/qwen/qwen3.7-max`, `openrouter/tencent/hy3-preview`, `openrouter/x-ai/grok-build-0.1`, `openrouter/x-ai/grok-4.6`, `openrouter/xiaomi/mimo-v2.5`, `openrouter/xiaomi/mimo-v2.5-pro`, `openrouter/poolside/laguna-m.1:free`, `openrouter/poolside/laguna-s-2.1:free`, `openrouter/google/gemini-3.5-flash-lite`, `openrouter/google/gemini-3.6-flash`, `openrouter/google/gemini-3.7-flash`, and `openrouter/qwen/qwen3.8-27b`
+-   **Curated picker catalog:** `openrouter/meta/muse-glimmer-30b`, `openrouter/meta/muse-spark-1.2`, `openrouter/deepseek/deepseek-chat`, `openrouter/z-ai/glm-5.1`, `openrouter/z-ai/glm-5.2`, `openrouter/z-ai/glm-5.3-flash`, `openrouter/z-ai/glm-5.3-flashx`, `openrouter/moonshotai/kimi-k3`, `openrouter/moonshotai/kimi-k2.6`, `openrouter/moonshotai/kimi-k2.7-code`, `openrouter/qwen/qwen3.7-max`, `openrouter/tencent/hy3-preview`, `openrouter/x-ai/grok-build-0.1`, `openrouter/x-ai/grok-4.6`, `openrouter/xiaomi/mimo-v2.6-pro`, `openrouter/xiaomi/mimo-v2.6-flash`, `openrouter/xiaomi/mimo-v2.6-pro-ultraspeed`, `openrouter/poolside/laguna-m.1:free`, `openrouter/poolside/laguna-s-2.1:free`, `openrouter/google/gemini-3.5-flash-lite`, `openrouter/google/gemini-3.6-flash`, `openrouter/google/gemini-3.7-flash`, and `openrouter/qwen/qwen3.8-27b`
 -   **Xiaomi MiMo models:**
-    -   `xiaomi/mimo-v2.5-pro` — flagship agentic model, 1M context, reasoning + tool calls
-    -   `xiaomi/mimo-v2.5` — omnimodal model, 1M context, reasoning + tool calls
+    -   `xiaomi/mimo-v2.6-pro` — flagship agentic model, 1M context, reasoning + tool calls
+    -   `xiaomi/mimo-v2.6-flash` — efficient high-volume model, 1M context, reasoning + tool calls
+    -   `xiaomi/mimo-v2.6-pro-ultraspeed` — fastest flagship variant, 1M context, reasoning + tool calls
 
 ## Atlas Cloud
 
@@ -350,8 +357,9 @@ replace the retained evidence or expose provider chain-of-thought.
 -   **Pricing:** [Pay-as-you-go](https://platform.xiaomimimo.com/docs/en-US/price/pay-as-you-go) · [Subscription](https://platform.xiaomimimo.com/docs/en-US/price/tokenplan/subscription) · [Quick Access](https://platform.xiaomimimo.com/docs/en-US/price/tokenplan/quick-access)
 -   **Setup:** Set `MIMO_API_KEY` or use the MiMo provider in VT Code's configuration
 -   **Models:**
-    -   `mimo-v2.5-pro` — flagship agentic model, 1M context, deep thinking
-    -   `mimo-v2.5` — omnimodal model (text, image, audio, video), 1M context
+    -   `mimo-v2.6-pro` — flagship agentic model, 1M context, deep thinking
+    -   `mimo-v2.6-flash` — efficient high-volume model (text, image, audio, video), 1M context
+    -   `mimo-v2.6-pro-ultraspeed` — fastest flagship variant, 1M context
 
 ## Ollama Local & Cloud Models
 
@@ -426,6 +434,7 @@ VT Code provides compatibility with the Anthropic Messages API to help connect e
 -   **Models:**
     -   `glm-5.3` — flagship coding model, 1M context, reasoning + tool calls
     -   `glm-5.3-flash` — efficient multimodal model, 320B total / 18B active, hybrid sparse+linear attention, 1M context, native vision (text+image), reasoning + tool calls
+    -   `glm-5.3-flashx` — high-speed Flash variant (up to 200 tok/s), same Flash multimodal stack, 1M context, native vision, reasoning + tool calls
     -   `glm-5.2` — flagship model for long-horizon tasks, 1M context, reasoning + tool calls
 -   **Default:** `glm-5.3`
 -   **Features:** Streaming, tool calling, reasoning effort support, native vision (Flash), context caching, structured output, tool streaming
@@ -523,7 +532,7 @@ VT Code provides compatibility with the Anthropic Messages API to help connect e
 -   **Authentication:** `OPENCODE_GO_API_KEY` environment variable
 -   **Base URL:** `https://opencode.ai/zen/go/v1`, override with `OPENCODE_GO_BASE_URL`
 -   **Default model:** `opencode-go/glm-5.1`
--   **Curated picker models:** `opencode-go/glm-5.1`, `opencode-go/glm-5.2`, `opencode-go/kimi-k2.7-code`, `opencode-go/kimi-k2.6`, `opencode-go/mimo-v2.5-pro`, `opencode-go/mimo-v2.5`, `opencode-go/minimax-m3`, `opencode-go/minimax-m2.7`, `opencode-go/qwen3.7-max`, `opencode-go/qwen3.7-plus`, `opencode-go/qwen3.6-plus`, `opencode-go/deepseek-v4-pro`, `opencode-go/deepseek-v4-flash`
+-   **Curated picker models:** `opencode-go/glm-5.1`, `opencode-go/glm-5.2`, `opencode-go/kimi-k2.7-code`, `opencode-go/kimi-k2.6`, `opencode-go/minimax-m3`, `opencode-go/minimax-m2.7`, `opencode-go/qwen3.7-max`, `opencode-go/qwen3.7-plus`, `opencode-go/qwen3.6-plus`, `opencode-go/deepseek-v4-pro`, `opencode-go/deepseek-v4-flash`
 -   **Setup:** Set `OPENCODE_GO_API_KEY` from the [OpenCode Go console](https://opencode.ai/docs/go/), then configure `provider = "opencode-go"` in `vtcode.toml`
 -   **Features:** Subscription-based access to flagship open models for agentic coding
 

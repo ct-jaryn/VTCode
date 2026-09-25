@@ -321,19 +321,17 @@ fn apply_sgr_codes(sequence: &str, current: &mut InlineTextStyle, fallback: &Inl
                                 index += 2;
                             }
                         }
-                        2 => {
-                            if index + 4 < params.len() {
-                                let r = params[index + 2] as u8;
-                                let g = params[index + 3] as u8;
-                                let b = params[index + 4] as u8;
-                                let color = AnsiColorEnum::Rgb(RgbColor(r, g, b));
-                                if is_fg {
-                                    current.color = Some(color);
-                                } else {
-                                    current.bg_color = Some(color);
-                                }
-                                index += 4;
+                        2 if index + 4 < params.len() => {
+                            let r = params[index + 2] as u8;
+                            let g = params[index + 3] as u8;
+                            let b = params[index + 4] as u8;
+                            let color = AnsiColorEnum::Rgb(RgbColor(r, g, b));
+                            if is_fg {
+                                current.color = Some(color);
+                            } else {
+                                current.bg_color = Some(color);
                             }
+                            index += 4;
                         }
                         _ => {}
                     }

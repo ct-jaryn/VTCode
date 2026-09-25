@@ -17,17 +17,17 @@ pub use vtcode_commons::reasoning::ReasoningEffortLevel;
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum SystemPromptMode {
-    /// Minimal prompt (~500-800 tokens) - Pi-inspired, modern models need less guidance
+    /// Minimal prompt (~500 tokens base) - Pi-inspired, modern models need less guidance
     /// Best for: Power users, token-constrained contexts, fast responses
     Minimal,
-    /// Lightweight prompt (~1-2k tokens) - Essential guidance only
+    /// Lightweight prompt (~750 tokens base) - Essential guidance only
     /// Best for: Resource-constrained operations, simple tasks
     Lightweight,
-    /// Default prompt (~6-7k tokens) - Full guidance with all features
+    /// Default prompt (~900 tokens base) - Full guidance with all features
     /// Best for: General usage, comprehensive error handling
     #[default]
     Default,
-    /// Specialized prompt (~7-8k tokens) - Complex refactoring and analysis
+    /// Specialized prompt (~900 tokens base) - Complex refactoring and analysis
     /// Best for: Multi-file changes, sophisticated code analysis
     Specialized,
 }
@@ -92,15 +92,17 @@ impl<'de> Deserialize<'de> for SystemPromptMode {
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum ToolDocumentationMode {
-    /// Minimal signatures only (~800 tokens total) - Pi-style, power users
+    /// First sentence of each tool description (at most 64 chars) and no
+    /// parameter descriptions - Pi-style, power users
     /// Best for: Maximum efficiency, experienced users, token-constrained contexts
     Minimal,
-    /// Signatures + common parameters (~1,200 tokens total) - Smart hints
-    /// Best for: General usage, balances overhead vs guidance (recommended)
+    /// Complete tool and parameter descriptions; only unusually long tails are
+    /// trimmed at a sentence boundary (~1,800 tokens for the builtin catalog)
+    /// Best for: General usage (recommended)
     #[default]
     Progressive,
-    /// Full documentation upfront (~3,000 tokens total) - Current behavior
-    /// Best for: Maximum hand-holding, comprehensive parameter documentation
+    /// Every tool and parameter description sent unmodified
+    /// Best for: Debugging tool definitions, comprehensive documentation
     Full,
 }
 

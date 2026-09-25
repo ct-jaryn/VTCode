@@ -24,7 +24,7 @@ pub mod atif;
 pub mod trace;
 
 /// Semantic version of the serialized event schema exported by this crate.
-pub const EVENT_SCHEMA_VERSION: &str = "0.15.0";
+pub const EVENT_SCHEMA_VERSION: &str = "0.16.0";
 
 /// Wraps a [`ThreadEvent`] with schema metadata so downstream consumers can
 /// negotiate compatibility before processing an event stream.
@@ -1204,6 +1204,8 @@ pub enum HarnessEventKind {
     SessionToolLimitIncreased,
     /// The user granted additional tool-loop capacity for the current turn.
     ToolLoopLimitIncreased,
+    /// A background subprocess or exec session reached a terminal state.
+    BackgroundSubprocessCompleted,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1287,6 +1289,24 @@ pub struct HarnessEventItem {
     /// Latency in milliseconds for tool-execution latency events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Stable task identifier for background completion events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Child session identifier for background completion events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Exec-session identifier for background completion events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec_session_id: Option<String>,
+    /// Terminal background status, when the event represents a subprocess.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Archived transcript reference for background completion events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// Archived session reference for background completion events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1760,6 +1780,12 @@ mod tests {
                     attempt: None,
                     error_category: None,
                     duration_ms: None,
+                    task_id: None,
+                    session_id: None,
+                    exec_session_id: None,
+                    status: None,
+                    transcript_path: None,
+                    archive_path: None,
                 })),
             },
         });
@@ -1767,6 +1793,41 @@ mod tests {
         let json = serde_json::to_string(&event)?;
         let restored: ThreadEvent = serde_json::from_str(&json)?;
 
+        assert_eq!(restored, event);
+        Ok(())
+    }
+
+    #[test]
+    fn background_completion_harness_item_preserves_terminal_identity() -> Result<(), Box<dyn Error>> {
+        let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "background-completion:task:exec:0".to_string(),
+                details: ThreadItemDetails::Harness(Box::new(HarnessEventItem {
+                    event: HarnessEventKind::BackgroundSubprocessCompleted,
+                    message: Some("Background subprocess completed successfully".to_string()),
+                    command: None,
+                    path: None,
+                    exit_code: Some(0),
+                    attempt: None,
+                    error_category: None,
+                    duration_ms: None,
+                    task_id: Some("task".to_string()),
+                    session_id: Some("child-session".to_string()),
+                    exec_session_id: Some("exec-session".to_string()),
+                    status: Some("stopped".to_string()),
+                    transcript_path: Some("/tmp/transcript.jsonl".to_string()),
+                    archive_path: Some("/tmp/archive.json".to_string()),
+                })),
+            },
+        });
+
+        let value = serde_json::to_value(&event)?;
+        assert_eq!(value["item"]["event"], "background_subprocess_completed");
+        assert_eq!(value["item"]["task_id"], "task");
+        assert_eq!(value["item"]["exec_session_id"], "exec-session");
+        assert_eq!(value["item"]["status"], "stopped");
+
+        let restored: ThreadEvent = serde_json::from_value(value)?;
         assert_eq!(restored, event);
         Ok(())
     }
@@ -1785,6 +1846,12 @@ mod tests {
                     attempt: None,
                     error_category: None,
                     duration_ms: None,
+                    task_id: None,
+                    session_id: None,
+                    exec_session_id: None,
+                    status: None,
+                    transcript_path: None,
+                    archive_path: None,
                 })),
             },
         });

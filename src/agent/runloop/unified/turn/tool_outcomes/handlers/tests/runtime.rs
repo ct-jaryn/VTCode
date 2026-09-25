@@ -1197,14 +1197,20 @@ async fn repeated_identical_slice_read_trips_read_family_cap() {
 async fn repeated_paginated_sed_reads_eventually_trip_per_file_path_cap() {
     // turn_911-style regression: simple `sed -n` pagination should behave like
     // file reads. Different ranges must not trip the identical-slice family
-    // cap, but repeated exploration of the same file should still hit the
-    // shared per-file-path fuse and stop the loop.
+    // cap, but repeated exploration of the same file should still block that
+    // path without disabling unrelated reads or edits for the turn.
     let mut backing = TestContextBacking::new(20).await;
     backing.select_build_primary_agent();
     let sample_file = backing.sample_file.clone();
     std::fs::write(&sample_file, (1..=16).map(|idx| format!("line {idx}\n")).collect::<String>())
         .expect("rewrite sample file");
     let sample_path = sample_file.to_string_lossy().to_string();
+    let other_file = sample_file.with_file_name("other.txt");
+    std::fs::write(&other_file, "other evidence\n").expect("write unrelated read fixture");
+    let patch_args = json!({
+        "input": "*** Begin Patch\n*** Update File: sample.txt\n@@\n-line 1\n+edited line 1\n*** End Patch\n"
+    });
+    cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &patch_args, PermissionGrant::Permanent).await;
 
     let mut repeated_tool_attempts = LoopTracker::new();
     let mut turn_modified_files = BTreeSet::new();
@@ -1220,12 +1226,24 @@ async fn repeated_paginated_sed_reads_eventually_trip_per_file_path_cap() {
         let args = json!({
             "cmd": format!("sed -n '{idx},{idx}p' {sample_path}")
         });
+        let execution_history_len = outcome_ctx.ctx.tool_registry.execution_history_len();
         let outcome =
             handle_single_tool_call(&mut outcome_ctx, &format!("sed_read_{idx}"), tool_names::EXEC_COMMAND, args)
                 .await
                 .expect("sed read should complete");
 
-        if outcome.is_some() {
+        if outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .any(|message| message.content.as_text().contains("repeated_read_path"))
+        {
+            assert!(outcome.is_none(), "path-specific rejection should not schedule broad recovery");
+            assert_eq!(
+                outcome_ctx.ctx.tool_registry.execution_history_len(),
+                execution_history_len,
+                "the capped read must not execute"
+            );
             blocked_at = Some(idx);
             break;
         }
@@ -1236,15 +1254,86 @@ async fn repeated_paginated_sed_reads_eventually_trip_per_file_path_cap() {
         outcome_ctx.ctx.harness_state.consecutive_same_file_read_family_calls, 1,
         "different sed ranges must reset the identical-slice family streak"
     );
-    assert!(outcome_ctx.ctx.is_recovery_active());
+    assert!(!outcome_ctx.ctx.is_recovery_active(), "path cap must not disable tools for the turn");
+    assert!(
+        outcome_ctx.ctx.working_history.iter().any(|message| {
+            let content = message.content.as_text();
+            content.contains("repeated_read_path")
+                && content.contains("further reads of this path are blocked")
+                && content.contains("Reads of other paths, edits")
+        }),
+        "path-cap error should explain its scope and available next actions"
+    );
+
+    let path_error_count_before_retry = outcome_ctx
+        .ctx
+        .working_history
+        .iter()
+        .filter(|message| message.content.as_text().contains("repeated_read_path"))
+        .count();
+    let execution_history_len_before_retry = outcome_ctx.ctx.tool_registry.execution_history_len();
+    let repeated_path_read = handle_single_tool_call(
+        &mut outcome_ctx,
+        "sed_read_same_path_blocked",
+        tool_names::EXEC_COMMAND,
+        json!({"cmd": format!("sed -n '17,17p' {sample_path}")}),
+    )
+    .await
+    .expect("a read of the capped path should be rejected");
+    assert!(repeated_path_read.is_none(), "path-scoped blocks do not schedule recovery by themselves");
+    assert_eq!(
+        outcome_ctx.ctx.tool_registry.execution_history_len(),
+        execution_history_len_before_retry,
+        "a later read of the capped path must remain unexecuted"
+    );
+    assert_eq!(
+        outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .filter(|message| message.content.as_text().contains("repeated_read_path"))
+            .count(),
+        path_error_count_before_retry + 1,
+        "the later read should receive a path-cap error"
+    );
+    assert!(!outcome_ctx.ctx.is_recovery_active(), "a repeated blocked read must remain path-scoped");
+
+    let execution_history_len_before_other_read = outcome_ctx.ctx.tool_registry.execution_history_len();
+    let unrelated_read = handle_single_tool_call(
+        &mut outcome_ctx,
+        "sed_read_other_path",
+        tool_names::EXEC_COMMAND,
+        json!({"cmd": format!("sed -n '1,1p' {}", other_file.display())}),
+    )
+    .await
+    .expect("an unrelated read should execute");
+    assert!(unrelated_read.is_none());
+    assert!(
+        outcome_ctx.ctx.tool_registry.execution_history_len() > execution_history_len_before_other_read,
+        "an unrelated path read must execute after the capped path is blocked"
+    );
     assert!(
         outcome_ctx
             .ctx
             .working_history
             .iter()
-            .any(|message| { message.content.as_text().contains("repeated_read_family") }),
-        "sed pagination cap should reuse the existing repeated-read guard payload"
+            .any(|message| message.content.as_text().contains("other evidence")),
+        "the unrelated read should return its content"
     );
+
+    let patch =
+        handle_single_tool_call(&mut outcome_ctx, "patch_after_path_read_cap", tool_names::APPLY_PATCH, patch_args)
+            .await
+            .expect("an edit should execute after the path cap");
+    assert!(patch.is_none());
+    assert_eq!(
+        std::fs::read_to_string(sample_file)
+            .expect("read edited fixture")
+            .lines()
+            .next(),
+        Some("edited line 1")
+    );
+    assert!(!outcome_ctx.ctx.is_recovery_active(), "productive tools should remain enabled");
 }
 
 #[tokio::test]
@@ -1706,7 +1795,7 @@ async fn registry_exhaustion_latches_runloop_and_blocks_the_next_inspection() {
             &json!({"cmd": command}),
             true,
         );
-        assert!(matches!(blocked, Some(ValidationResult::Blocked)), "{command}");
+        assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)), "{command}");
     }
 }
 
@@ -1738,7 +1827,7 @@ async fn preview_exhaustion_gate_blocks_blind_inspection_but_keeps_useful_channe
         &json!({"path": "src/main.rs"}),
         true,
     );
-    assert!(matches!(blocked, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
     assert!(
         ctx.working_history
             .iter()
@@ -1752,7 +1841,7 @@ async fn preview_exhaustion_gate_blocks_blind_inspection_but_keeps_useful_channe
         &json!({"query": "fn main"}),
         true,
     );
-    assert!(matches!(blocked_search, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked_search, Some(ValidationResult::PreviewExhausted)));
 
     let blocked_grep = enforce_preview_exhaustion_inspection_gate(
         &mut ctx,
@@ -1761,7 +1850,7 @@ async fn preview_exhaustion_gate_blocks_blind_inspection_but_keeps_useful_channe
         &json!({"cmd": "rg -n 'fn run' src/main.rs"}),
         true,
     );
-    assert!(matches!(blocked_grep, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked_grep, Some(ValidationResult::PreviewExhausted)));
 
     // A tiny ordinary inspection is still an inspection: output size must not
     // turn it into a verifier or bypass the post-exhaustion gate.
@@ -1772,7 +1861,7 @@ async fn preview_exhaustion_gate_blocks_blind_inspection_but_keeps_useful_channe
         &json!({"cmd": "printf tiny"}),
         true,
     );
-    assert!(matches!(blocked_tiny, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked_tiny, Some(ValidationResult::PreviewExhausted)));
 
     // Verification verdicts survive in stub metadata: checks keep running.
     let check = enforce_preview_exhaustion_inspection_gate(
@@ -1820,6 +1909,71 @@ async fn preview_exhaustion_gate_blocks_blind_inspection_but_keeps_useful_channe
 }
 
 #[tokio::test]
+async fn parallel_preview_gate_rejections_allow_one_corrective_response() {
+    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
+
+    let mut backing = TestContextBacking::new(8).await;
+    let mut ctx = backing.turn_processing_context();
+    exhaust_preview_budget_for_test(&mut ctx);
+
+    // The latest session sent four inspection calls together. They were one
+    // model decision, so they must not exhaust the policy-denial fuse.
+    for index in 0..4 {
+        let call_id = format!("blind-{index}");
+        let args = json!({"cmd": "rg -n 'reduce_motion' crates/codegen/vtcode-ui/src"});
+        let result =
+            enforce_preview_exhaustion_inspection_gate(&mut ctx, &call_id, tool_names::EXEC_COMMAND, &args, true)
+                .expect("inspection should be rejected");
+        assert!(matches!(result, ValidationResult::PreviewExhausted));
+        assert!(matches!(
+            finalize_validation_result(&mut ctx, &call_id, tool_names::EXEC_COMMAND, &args, result),
+            ValidationTransition::Return(None)
+        ));
+    }
+    flush_blocked_tool_recovery(&mut ctx);
+    assert_eq!(ctx.blocked_tool_calls(), 0);
+    assert!(!ctx.harness_state.recovery_is_tool_free());
+
+    // A spool page remains available on the corrective response.
+    let spool_args = json!({"cmd": "sed -n '1,20p' .vtcode/context/tool_outputs/write_stdin_run-abc123.txt"});
+    assert!(
+        enforce_preview_exhaustion_inspection_gate(
+            &mut ctx,
+            "spool-page",
+            tool_names::EXEC_COMMAND,
+            &spool_args,
+            true,
+        )
+        .is_none()
+    );
+
+    // A successfully handled tool on the corrective response resets the
+    // blind-batch streak; the next rejection gets its own chance to recover.
+    assert!(matches!(
+        finalize_validation_result(
+            &mut ctx,
+            "handled-page",
+            tool_names::READ_FILE,
+            &json!({"path": ".vtcode/context/tool_outputs/write_stdin_run-abc123.txt"}),
+            ValidationResult::Handled,
+        ),
+        ValidationTransition::Return(None)
+    ));
+
+    // Repeated blind batches still converge to bounded recovery.
+    let args = json!({"path": "src/main.rs"});
+    for (index, should_recover) in [(0, false), (1, true)] {
+        let call_id = format!("blind-again-{index}");
+        let result = enforce_preview_exhaustion_inspection_gate(&mut ctx, &call_id, tool_names::READ_FILE, &args, true)
+            .expect("inspection should be rejected");
+        finalize_validation_result(&mut ctx, &call_id, tool_names::READ_FILE, &args, result);
+        flush_blocked_tool_recovery(&mut ctx);
+        assert_eq!(ctx.harness_state.recovery_is_tool_free(), should_recover);
+    }
+    assert!(ctx.harness_state.recovery_is_tool_free());
+}
+
+#[tokio::test]
 async fn preview_exhaustion_gate_directs_planning_toward_synthesis() {
     use crate::agent::runloop::unified::turn::tool_outcomes::handlers::ValidationResult;
     use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
@@ -1836,7 +1990,7 @@ async fn preview_exhaustion_gate_directs_planning_toward_synthesis() {
         &json!({"path": "src/main.rs"}),
         true,
     );
-    assert!(matches!(blocked, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
     assert!(
         ctx.working_history
             .iter()
@@ -1861,7 +2015,7 @@ async fn preview_exhaustion_guidance_names_open_channels_without_inviting_retry(
         &json!({"path": "src/main.rs"}),
         true,
     );
-    assert!(matches!(blocked, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
     let planning_text = planning_ctx
         .working_history
         .iter()
@@ -1870,7 +2024,7 @@ async fn preview_exhaustion_guidance_names_open_channels_without_inviting_retry(
         .join("\n");
     assert!(planning_text.contains("<proposed_plan>"));
     assert!(planning_text.contains("spool paging"));
-    assert!(planning_text.contains("do not repeat exhausted inspections"));
+    assert!(planning_text.contains("exhausted inspections are blocked"));
     assert!(!planning_text.contains("repeat the call"));
 
     // Execution: spool-paging recovery without a plan directive (asymmetric).
@@ -1884,7 +2038,7 @@ async fn preview_exhaustion_guidance_names_open_channels_without_inviting_retry(
         &json!({"path": "src/main.rs"}),
         true,
     );
-    assert!(matches!(blocked, Some(ValidationResult::Blocked)));
+    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
     let exec_text = exec_ctx
         .working_history
         .iter()

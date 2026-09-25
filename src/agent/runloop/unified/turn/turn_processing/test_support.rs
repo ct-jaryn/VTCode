@@ -327,6 +327,10 @@ impl TestTurnProcessingBacking {
         self.autonomous_executor.is_hard_limit_exceeded(tool_name)
     }
 
+    pub(crate) fn turn_refused(&self) -> bool {
+        self.harness_state.turn_refused()
+    }
+
     pub(crate) fn recovery_is_tool_free(&self) -> bool {
         self.harness_state.recovery_is_tool_free()
     }

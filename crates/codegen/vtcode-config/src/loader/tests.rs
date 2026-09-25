@@ -1613,3 +1613,38 @@ fn explicit_session_override_file_with_use_root_config_drops_lower_layers() {
     assert_eq!(manager.config().agent.provider, "openai");
     assert!(manager.config().workspace.use_root_config, "use_root_config from the override file must be honored");
 }
+
+#[test]
+#[serial]
+fn legacy_top_level_default_provider_and_model_promote_to_agent() {
+    let workspace = assert_fs::TempDir::new().expect("workspace");
+    let user_config_path = workspace.path().join("vtcode.toml");
+    fs::write(&user_config_path, "default_provider = \"ollama\"\ndefault_model = \"gpt-oss:20b\"\n")
+        .expect("legacy top-level config");
+
+    let paths = StaticWorkspacePaths::new(workspace.path(), workspace.path().join(".vtcode"));
+    let provider = WorkspacePathsDefaults::new(Arc::new(paths)).with_home_paths(vec![user_config_path.clone()]);
+
+    defaults::provider::with_config_defaults_provider_for_test(Arc::new(provider), || {
+        let manager = ConfigManager::load_from_workspace(workspace.path()).expect("load legacy config");
+        assert_eq!(manager.config().agent.provider, "ollama");
+        assert_eq!(manager.config().agent.default_model, "gpt-oss:20b");
+    });
+}
+
+#[test]
+#[serial]
+fn explicit_agent_table_wins_over_legacy_top_level_alias_in_same_file() {
+    let workspace = assert_fs::TempDir::new().expect("workspace");
+    let user_config_path = workspace.path().join("vtcode.toml");
+    fs::write(&user_config_path, "default_provider = \"ollama\"\n[agent]\nprovider = \"openai\"\n")
+        .expect("mixed config");
+
+    let paths = StaticWorkspacePaths::new(workspace.path(), workspace.path().join(".vtcode"));
+    let provider = WorkspacePathsDefaults::new(Arc::new(paths)).with_home_paths(vec![user_config_path.clone()]);
+
+    defaults::provider::with_config_defaults_provider_for_test(Arc::new(provider), || {
+        let manager = ConfigManager::load_from_workspace(workspace.path()).expect("load mixed config");
+        assert_eq!(manager.config().agent.provider, "openai");
+    });
+}

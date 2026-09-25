@@ -38,6 +38,12 @@ See [docs.rs/vtcode-utility-tool-specs](https://docs.rs/vtcode-utility-tool-spec
 - `SEMANTIC_ANCHOR_GUIDANCE` – default guidance string for semantic anchors
 - `APPLY_PATCH_ALIAS_DESCRIPTION` – alias description for the apply-patch tool
 - `DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION` – default input description for apply-patch
+- `APPLY_PATCH_TOOL_DESCRIPTION` – model-visible description of the apply-patch tool
+- `SEARCH_TOOLS_DESCRIPTION` – model-visible description of the search_tools tool
+- `MCP_DESCRIPTION` – model-visible description of the mcp tool
+- `AGENT_DESCRIPTION` – model-visible description of the agent tool
+- `SUBAGENT_REASONING_EFFORT_VALUES` – reasoning effort values accepted by the agent tool override (from `vtcode-commons`)
+- `EXEC_COMMAND_DESCRIPTION` – model-visible description of the exec_command tool
 
 ### Schema functions
 

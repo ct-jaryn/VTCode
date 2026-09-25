@@ -145,7 +145,7 @@ fn parse_grep_output(output: &str) -> GrepStats {
 
     // Sort files by match count (descending)
     let mut sorted_files: Vec<(String, usize)> = file_matches.into_iter().collect();
-    sorted_files.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_files.sort_by_key(|a| std::cmp::Reverse(a.1));
     stats.top_files = sorted_files.into_iter().take(10).collect();
 
     stats.symbols = symbols_set.into_iter().take(10).collect();

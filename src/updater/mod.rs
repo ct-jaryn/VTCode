@@ -21,6 +21,7 @@ pub(crate) use interactive::{
 };
 pub(crate) use preflight::{get_preflight_notice, run_preflight_check};
 pub(crate) use progress::UpdateProgress;
+pub(crate) use release_notes::parse_highlights;
 pub(crate) use types::{
     InstallOutcome, StartupUpdateCheck, StartupUpdateNotice, UpdateExecutionStrategy, UpdateGuidance, UpdateInfo,
     VersionInfo,
@@ -238,6 +239,14 @@ impl Updater {
 
         on_progress(UpdateProgress::ReplacingBinary);
         self_replace::self_replace(&extracted_binary).context("Failed to replace the current VT Code binary")?;
+        // Seed the update cache with the newly installed version's release
+        // notes so the next `vtcode` launch shows highlights on its first
+        // start (N) instead of waiting for a background refresh to populate
+        // the cache (N+1). `latest_was_newer` is false because the installed
+        // version is now current. `last_seen_version` is left untouched so
+        // `should_show_release_notes_for_current_version` stays true until
+        // the TUI displays the notes and records the version as seen.
+        seed_release_notes_for_installed_version(&release.version, &release.release_notes);
         Ok(InstallOutcome::Updated(release.version.to_string()))
     }
 
@@ -305,8 +314,19 @@ pub(crate) fn should_show_release_notes_for_current_version() -> bool {
 pub(crate) fn cached_current_release_highlights() -> Option<(Version, Vec<String>)> {
     let current = Version::parse(env!("CARGO_PKG_VERSION")).ok()?;
     let (_, release_notes) = cache::current_release_info(&current)?;
-    let parsed = release_notes::parse_highlights(&current, &release_notes);
+    let parsed = parse_highlights(&current, &release_notes);
     (!parsed.items.is_empty()).then_some((current, parsed.items))
+}
+
+/// Seed the update cache with the release notes for a newly installed version.
+///
+/// Called immediately after a successful install (standalone `self_replace`
+/// or a managed package-manager command) so the next `vtcode` launch finds
+/// `latest_version == current` with notes available and shows highlights on
+/// its first start. Best effort: cache failures are ignored.
+pub(crate) fn seed_release_notes_for_installed_version(version: &Version, release_notes: &str) {
+    let _ = cache::record_successful_check_with_notes(Some(version), false, Some(release_notes));
+    let _ = cache::clear_dismissed_version();
 }
 
 /// Record that the current version's release notes have been shown.
@@ -338,10 +358,6 @@ mod tests {
         assert_eq!(
             install_source::detect_install_source_from_path(Path::new("/Users/dev/.cargo/bin/vtcode")),
             InstallSource::Cargo
-        );
-        assert_eq!(
-            install_source::detect_install_source_from_path(Path::new("/usr/local/lib/node_modules/vtcode/bin/vtcode")),
-            InstallSource::Npm
         );
         assert_eq!(
             install_source::detect_install_source_from_path(Path::new("/usr/local/bin/vtcode")),
@@ -416,6 +432,31 @@ mod tests {
 
         let check = updater.startup_update_check().expect("startup check");
         assert!(check.cached_notice.is_some(), "Newer, non-dismissed version should produce a cached notice");
+
+        cache::set_cache_dir_override_for_tests(previous);
+    }
+
+    #[test]
+    fn seeded_release_notes_show_on_first_launch_after_install() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let previous = cache::set_cache_dir_override_for_tests(Some(temp_dir.path().to_path_buf()));
+
+        // Simulate `vtcode update` installing the running version: seed the
+        // cache with highlights, then the first startup must find them without
+        // waiting for a background refresh (the N vs N+1 regression).
+        let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("current version");
+        let body = "### Highlights\n- Fresh feature (abc1234)\n";
+        seed_release_notes_for_installed_version(&current, body);
+
+        assert!(should_show_release_notes_for_current_version(), "freshly installed version must not be marked seen");
+        let highlights = cached_current_release_highlights().expect("seeded highlights must be readable");
+        assert_eq!(highlights.0, current);
+        assert_eq!(highlights.1, vec!["Fresh feature".to_string()]);
+
+        record_current_version_seen();
+        assert!(!should_show_release_notes_for_current_version(), "notes must show once, then be marked seen");
 
         cache::set_cache_dir_override_for_tests(previous);
     }

@@ -99,6 +99,20 @@ model_id_table! {
         display: "GPT-6 Astra",
         description: "Most capable model for hardest end-to-end work with complex reasoning, coding, computer use, research, and document creation",
     },
+    GPT6Sol {
+        provider: OpenAI,
+        id: models::openai::GPT_6_SOL,
+        parse: [models::openai::GPT_6_SOL],
+        display: "GPT-6 Sol",
+        description: "Cost-efficient high-end model in the GPT-6 series for demanding professional work",
+    },
+    GPT6Luna {
+        provider: OpenAI,
+        id: models::openai::GPT_6_LUNA,
+        parse: [models::openai::GPT_6_LUNA],
+        display: "GPT-6 Luna",
+        description: "Fast cost-efficient model in the GPT-6 series for high-volume latency-sensitive workloads",
+    },
     GPT56Sol {
         provider: OpenAI,
         id: models::openai::GPT_5_6_SOL,
@@ -162,6 +176,13 @@ model_id_table! {
         parse: [models::CLAUDE_OPUS_5],
         display: "Claude Opus 5",
         description: "Anthropic's newest Opus-tier model with 1M context, thinking on by default, and full effort ladder support",
+    },
+    ClaudeOpus55 {
+        provider: Anthropic,
+        id: models::CLAUDE_OPUS_5_5,
+        parse: [models::CLAUDE_OPUS_5_5],
+        display: "Claude Opus 5.5",
+        description: "Opus-tier successor for long-running agentic coding and knowledge work, adaptive thinking always on, 1M context, 128K output, default effort medium",
     },
     // GitHub Copilot models
     CopilotAuto {
@@ -266,6 +287,13 @@ model_id_table! {
         display: "Claude Opus 5 (Merge Gateway)",
         description: "Anthropic Claude Opus 5 accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
+    MergeGatewayAnthropicClaudeOpus55 {
+        provider: MergeGateway,
+        id: models::merge_gateway::ANTHROPIC_CLAUDE_OPUS_5_5,
+        parse: [models::merge_gateway::ANTHROPIC_CLAUDE_OPUS_5_5],
+        display: "Claude Opus 5.5 (Merge Gateway)",
+        description: "Anthropic Claude Opus 5.5 accessed through Merge Gateway's OpenAI-compatible endpoint",
+    },
     MergeGatewayAnthropicClaudeSonnet5 {
         provider: MergeGateway,
         id: models::merge_gateway::ANTHROPIC_CLAUDE_SONNET_5,
@@ -336,6 +364,13 @@ model_id_table! {
         display: "GLM-5.3 Flash (Merge Gateway)",
         description: "Z.AI GLM-5.3 Flash efficient multimodal model via Merge Gateway",
     },
+    MergeGatewayZaiGlm53Flashx {
+        provider: MergeGateway,
+        id: models::merge_gateway::ZAI_GLM_5_3_FLASHX,
+        parse: [models::merge_gateway::ZAI_GLM_5_3_FLASHX],
+        display: "GLM-5.3 FlashX (Merge Gateway)",
+        description: "Z.AI GLM-5.3 FlashX high-speed efficient multimodal model via Merge Gateway",
+    },
     MergeGatewayOpenAIGpt56Luna {
         provider: MergeGateway,
         id: models::merge_gateway::OPENAI_GPT_5_6_LUNA,
@@ -363,6 +398,20 @@ model_id_table! {
         parse: [models::merge_gateway::OPENAI_GPT_6_ASTRA],
         display: "GPT-6 Astra (Merge Gateway)",
         description: "OpenAI GPT-6 Astra accessed through Merge Gateway's OpenAI-compatible endpoint",
+    },
+    MergeGatewayOpenAIGpt6Sol {
+        provider: MergeGateway,
+        id: models::merge_gateway::OPENAI_GPT_6_SOL,
+        parse: [models::merge_gateway::OPENAI_GPT_6_SOL],
+        display: "GPT-6 Sol (Merge Gateway)",
+        description: "OpenAI GPT-6 Sol accessed through Merge Gateway's OpenAI-compatible endpoint",
+    },
+    MergeGatewayOpenAIGpt6Luna {
+        provider: MergeGateway,
+        id: models::merge_gateway::OPENAI_GPT_6_LUNA,
+        parse: [models::merge_gateway::OPENAI_GPT_6_LUNA],
+        display: "GPT-6 Luna (Merge Gateway)",
+        description: "OpenAI GPT-6 Luna accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
     MergeGatewayGoogleGemini38Flash {
         provider: MergeGateway,
@@ -488,20 +537,34 @@ model_id_table! {
         display: "GLM 5.3 Flash",
         description: "Z.ai efficient multimodal model with hybrid sparse+linear attention, 320B total / 18B active, 1M context and native vision",
     },
+    ZaiGlm53Flashx {
+        provider: ZAI,
+        id: models::zai::GLM_5_3_FLASHX,
+        parse: [models::zai::GLM_5_3_FLASHX],
+        display: "GLM 5.3 FlashX",
+        description: "Z.ai high-speed Flash variant with faster inference (up to 200 tok/s), 320B total / 18B active, 1M context and native vision",
+    },
     // MiMo models
-    MiMoV25Pro {
+    MiMoV26Pro {
         provider: MiMo,
-        id: models::mimo::MIMO_V2_5_PRO,
-        parse: [models::mimo::MIMO_V2_5_PRO],
-        display: "MiMo V2.5 Pro",
+        id: models::mimo::MIMO_V2_6_PRO,
+        parse: [models::mimo::MIMO_V2_6_PRO],
+        display: "MiMo V2.6 Pro",
         description: "Xiaomi's flagship reasoning model with advanced capabilities (1M context)",
     },
-    MiMoV25 {
+    MiMoV26Flash {
         provider: MiMo,
-        id: models::mimo::MIMO_V2_5,
-        parse: [models::mimo::MIMO_V2_5],
-        display: "MiMo V2.5",
-        description: "Xiaomi's omni-modal model with full-modal understanding and 1M context",
+        id: models::mimo::MIMO_V2_6_FLASH,
+        parse: [models::mimo::MIMO_V2_6_FLASH],
+        display: "MiMo V2.6 Flash",
+        description: "Xiaomi's efficient high-volume model for professional office scenarios (1M context)",
+    },
+    MiMoV26ProUltraspeed {
+        provider: MiMo,
+        id: models::mimo::MIMO_V2_6_PRO_ULTRASPEED,
+        parse: [models::mimo::MIMO_V2_6_PRO_ULTRASPEED],
+        display: "MiMo V2.6 Pro UltraSpeed",
+        description: "Xiaomi's fastest flagship variant for real-time production scenarios (1M context)",
     },
     // Moonshot models
     MoonshotKimiK3 {
@@ -533,20 +596,6 @@ model_id_table! {
         parse: [],
         display: "Kimi K3 (OpenCode Go)",
         description: "Kimi K3 included with the OpenCode Go subscription for frontier agentic coding",
-    },
-    OpenCodeGoMimoV25 {
-        provider: OpenCodeGo,
-        id: models::opencode_go::MIMO_V2_5,
-        parse: [],
-        display: "MiMo-V2.5 (OpenCode Go)",
-        description: "MiMo-V2.5 included with the OpenCode Go subscription for high-volume coding workloads",
-    },
-    OpenCodeGoMimoV25Pro {
-        provider: OpenCodeGo,
-        id: models::opencode_go::MIMO_V2_5_PRO,
-        parse: [],
-        display: "MiMo-V2.5-Pro (OpenCode Go)",
-        description: "MiMo-V2.5-Pro included with the OpenCode Go subscription for complex agentic tasks",
     },
     OpenCodeGoMinimaxM3 {
         provider: OpenCodeGo,
@@ -665,6 +714,13 @@ model_id_table! {
         display: "Claude Opus 5 (Vercel AI Gateway)",
         description: "Anthropic Claude Opus 5 flagship model served through the Vercel AI Gateway (ai-gateway.vercel.sh)",
     },
+    VercelAnthropicClaudeOpus55 {
+        provider: Vercel,
+        id: models::vercel::ANTHROPIC_CLAUDE_OPUS_5_5,
+        parse: [models::vercel::ANTHROPIC_CLAUDE_OPUS_5_5],
+        display: "Claude Opus 5.5 (Vercel AI Gateway)",
+        description: "Anthropic Claude Opus 5.5 flagship model served through the Vercel AI Gateway (ai-gateway.vercel.sh)",
+    },
     VercelAnthropicClaudeHaiku45 {
         provider: Vercel,
         id: models::vercel::ANTHROPIC_CLAUDE_HAIKU_4_5,
@@ -749,16 +805,20 @@ mod tests {
             || matches!(
                 model,
                 ModelId::MergeGatewayAnthropicClaudeOpus5
+                    | ModelId::MergeGatewayAnthropicClaudeOpus55
                     | ModelId::MergeGatewayAnthropicClaudeSonnet5
                     | ModelId::MergeGatewayGoogleGemini38Flash
                     | ModelId::MergeGatewayMetaMuseSpark13
                     | ModelId::MergeGatewayOpenAIGpt6Astra
+                    | ModelId::MergeGatewayOpenAIGpt6Sol
+                    | ModelId::MergeGatewayOpenAIGpt6Luna
                     | ModelId::MergeGatewayDeepseekFlash
             )
             || matches!(
                 model,
                 ModelId::VercelAnthropicClaudeSonnet5
                     | ModelId::VercelAnthropicClaudeOpus5
+                    | ModelId::VercelAnthropicClaudeOpus55
                     | ModelId::VercelOpenAiGpt6Astra
                     | ModelId::VercelOpenAiGpt56Sol
                     | ModelId::VercelOpenAiGpt56Luna

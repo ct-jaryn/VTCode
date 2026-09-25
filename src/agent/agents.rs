@@ -131,12 +131,11 @@ pub(crate) async fn run_single_agent_loop(
     planning_entry_source: PlanningEntrySource,
     resume: Option<SessionContinuation>,
 ) -> Result<()> {
-    // The terminal palette probe was started during bootstrap to overlap
-    // with startup-context resolution.  Await it here so the probe's
-    // RawModeGuard restore completes before crossterm sets up the terminal
-    // (avoids a termios race).  In the common case the probe is already
-    // done and this returns immediately.
-    crate::agent::probe::await_terminal_palette_probe().await;
+    // The terminal palette probe was started during bootstrap. Do not await
+    // it here: a silent terminal can hold the 50 ms probe timeout on the
+    // critical path. `initialize_session_ui` awaits it immediately before
+    // crossterm raw mode so the probe's RawModeGuard restore still cannot
+    // race terminal setup.
 
     let mut runtime_cfg = config.clone();
     if let Some(resume_session) = resume.as_ref() {

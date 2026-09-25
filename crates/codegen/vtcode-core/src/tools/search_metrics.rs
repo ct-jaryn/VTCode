@@ -96,14 +96,14 @@ impl SearchMetrics {
     /// Find most expensive searches
     pub fn expensive_searches(&self, limit: usize) -> Vec<&SearchMetric> {
         let mut searches: Vec<_> = self.searches.values().filter(|s| s.is_expensive).collect();
-        searches.sort_by(|a, b| b.result_tokens.cmp(&a.result_tokens));
+        searches.sort_by_key(|a| std::cmp::Reverse(a.result_tokens));
         searches.into_iter().take(limit).collect()
     }
 
     /// Find slowest searches
     pub fn slowest_searches(&self, limit: usize) -> Vec<&SearchMetric> {
         let mut searches: Vec<_> = self.searches.values().collect();
-        searches.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+        searches.sort_by_key(|a| std::cmp::Reverse(a.duration_ms));
         searches.into_iter().take(limit).collect()
     }
 

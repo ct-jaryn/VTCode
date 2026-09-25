@@ -37,7 +37,44 @@ const TEMP_SUBDIR: &str = "web_fetch";
 /// Max age in seconds before temp files are cleaned up (1 hour).
 const TEMP_MAX_AGE_SECS: u64 = 3600;
 
-pub(crate) const WEB_FETCH_DESCRIPTION: &str = "Fetches content from a URL and returns an analyzed summary. Accepts: { url: string, prompt?: string, format?: 'summary'|'markdown', max_bytes?: number, timeout_secs?: number }. Set format='markdown' to get the page as cleaned markdown via the defuddle.md extraction service instead of a summary — that service is rate-limited to ONE call per session, so use it sparingly and only for remote http(s) URLs (never local files). Omit prompt for a default summary. For docs domains, try /llms.txt first: for 'abc.com', fetch https://abc.com/llms.txt before the homepage, then traverse linked URLs for relevant Markdown sources. Default max_bytes is 500KB (fits most pages). Do NOT set max_bytes without reason — the default is generous. Truncated responses include truncation metadata so you can retry with a higher budget. Prefer llms.txt over llms-full.txt (can be multi-megabyte). Returns a `temp_file` path to ephemeral fetched content. Read it to analyze. Temp files are auto-cleaned; do not persist elsewhere.";
+pub(crate) const WEB_FETCH_DESCRIPTION: &str = "Fetch a remote URL and return the start of the page inline. The result contains `preview` (the first 8000 bytes of the body), `content_length`, and a `temp_file` path holding the full fetched body; read `temp_file` only when the preview is not enough. The tool does not analyze the page: `prompt` is returned with the result to guide your own reading. Set format=markdown to get cleaned markdown inline from the defuddle.md extraction service instead; that mode allows 1 call per session. For docs domains, try /llms.txt first: for 'abc.com', fetch https://abc.com/llms.txt before the homepage, then traverse linked URLs for relevant Markdown sources. Prefer llms.txt over llms-full.txt, which can be multi-megabyte. A body larger than max_bytes is cut off and the result reports truncated_by_max_bytes and source_size_bytes, so you can retry with a larger max_bytes. Temp files are ephemeral and may be cleaned up after about an hour.";
+
+/// Parameter schema for `web_fetch`, shared by the distributed builtin
+/// registration and the web tool pack so the two surfaces cannot drift.
+///
+/// `format` must be declared here: argument validation rejects unknown
+/// properties (`additionalProperties: false`), so an undeclared `format`
+/// would make the markdown route in [`WebFetchTool::execute`] unreachable.
+pub(crate) fn web_fetch_parameter_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "URL to fetch (HTTPS required by default)"
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Question or instruction describing what to look for in the fetched content. It is returned with the result to guide your analysis; omit it to get a default summarize instruction."
+            },
+            "format": {
+                "type": "string",
+                "enum": ["summary", "markdown"],
+                "description": "Output mode (default: summary). summary fetches the page directly and returns a preview plus a temp_file path. markdown returns the page as cleaned markdown inline via the defuddle.md extraction service; it allows 1 call per session, accepts only remote http(s) URLs, caps max_bytes at 262144, and ignores prompt and timeout_secs."
+            },
+            "max_bytes": {
+                "type": "integer",
+                "description": "Maximum response body size in bytes (default: 500000, max: 2000000). The default fits most pages, including llms.txt, so set this only to raise the limit after a truncated_by_max_bytes result or to cap a very large page."
+            },
+            "timeout_secs": {
+                "type": "integer",
+                "description": "Request timeout in seconds (default: 30, max: 120)"
+            }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+    })
+}
 
 #[derive(Debug, Deserialize)]
 struct WebFetchArgs {

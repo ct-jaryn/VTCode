@@ -108,31 +108,104 @@ fn transcript_line_from_message(message: &Message) -> Option<String> {
     Some(format!("{role}: {content}"))
 }
 
+/// Parse an explicit `Decision: APPROVED` / `Decision: REJECTED` line from a
+/// verifier summary. Markdown emphasis around the label is ignored, and the
+/// last decision line wins. Returns `None` only when no decision line is
+/// present, so the caller can fall back to keyword heuristics. A decision line
+/// whose value is not a clean approval (for example `NOT APPROVED`, `pending`,
+/// or `approved, but ...` with a negation) fails closed as `Some(false)`.
+pub(super) fn parse_verifier_decision(summary: &str) -> Option<bool> {
+    summary.lines().rev().find_map(|line| {
+        let lower = line.trim().trim_start_matches(['-', '*', '#', ' ']).to_ascii_lowercase();
+        let rest = lower.strip_prefix("decision")?;
+        let value = rest.trim_start_matches(['*', ' ']).strip_prefix(':')?;
+        Some(decision_value_approves(value))
+    })
+}
+
+/// Words that turn an approval-looking decision value into a non-approval.
+const DECISION_NEGATIONS: &[&str] = &["not", "no", "never", "cannot", "cant", "dont", "isnt", "wont"];
+
+/// A decision value approves only when its first word is `approve`/`approved`
+/// and no word negates it. Everything else, including `reject`, rejects.
+fn decision_value_approves(value: &str) -> bool {
+    let words = value
+        .split(|c: char| !c.is_ascii_alphabetic() && c != '\'')
+        .map(|word| word.replace('\'', ""))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let Some(first) = words.first() else {
+        return false;
+    };
+    matches!(first.as_str(), "approve" | "approved")
+        && !words.iter().any(|word| DECISION_NEGATIONS.contains(&word.as_str()))
+}
+
+/// Keyword fallback for verifier summaries without a `Decision:` line.
+/// Rejection keywords (including negated approvals such as "not approved")
+/// win over approval keywords, and any structured issue blocks approval.
+pub(super) fn heuristic_verifier_approval(summary: &str, issues: &[String]) -> bool {
+    let lower = summary.to_lowercase();
+    let explicitly_rejected = lower.contains("reject")
+        || lower.contains("not approve")
+        || lower.contains("disapprove")
+        || lower.contains("unapproved")
+        || lower.contains("denied")
+        || lower.contains("unsafe")
+        || lower.contains("blocked")
+        || lower.contains("dangerous")
+        || lower.contains("malicious")
+        || lower.contains("vulnerability");
+    if explicitly_rejected {
+        return false;
+    }
+    let explicitly_approved = lower.contains("approved")
+        || lower.contains("safe to merge")
+        || lower.contains("no issues found")
+        || lower.contains("looks correct")
+        || lower.contains("verification passed");
+    explicitly_approved && issues.is_empty()
+}
+
 /// Extract issue descriptions from a verifier sub-agent's summary text.
 ///
-/// Looks for lines starting with common issue markers (e.g. "- ISSUE:",
-/// "- REJECT:", numbered items) and collects them. Returns an empty vec
-/// if no structured issues are found.
+/// Only structured issue lines count: after an optional list marker (`-`,
+/// `*`, `+`, `1.`, `1)`) and optional Markdown emphasis, the line must start
+/// with `ISSUE:` (case-insensitive), the one prefix the verifier response
+/// format defines. Prose that merely mentions "error:" or quoted compiler
+/// output is ignored. Returns the text after the marker, e.g.
+/// `ISSUE: src/lib.rs:3 missing check`.
 pub(super) fn extract_issues_from_summary(summary: &str) -> Vec<String> {
-    let mut issues = Vec::new();
-    for line in summary.lines() {
-        let trimmed = line.trim();
-        // Match patterns like "- ISSUE: ...", "- REJECT: ...", "1. ISSUE: ..."
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.contains("issue:")
-            || lower.contains("reject:")
-            || lower.contains("problem:")
-            || lower.contains("error:")
-            || lower.contains("violation:")
-        {
-            // Strip leading list markers ("- ", "1. ", "* ", etc.)
-            let cleaned = trimmed
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '*' || c == ' ')
-                .trim();
-            if !cleaned.is_empty() {
-                issues.push(cleaned.to_string());
-            }
-        }
+    summary.lines().filter_map(structured_issue_line).collect()
+}
+
+fn structured_issue_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let unlisted = strip_list_marker(trimmed);
+    let body = unlisted.trim_start_matches(['*', '_', '`']);
+    let label = body.get(..5)?;
+    if !label.eq_ignore_ascii_case("issue") {
+        return None;
     }
-    issues
+    let after_label = body[5..].trim_start_matches(['*', '_', '`']);
+    let description = after_label.strip_prefix(':')?.trim_start_matches(['*', '_', '`']).trim();
+    if description.is_empty() {
+        return None;
+    }
+    Some(format!("ISSUE: {description}"))
+}
+
+fn strip_list_marker(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix(['-', '*', '+'])
+        && rest.starts_with(char::is_whitespace)
+    {
+        return rest.trim_start();
+    }
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0
+        && let Some(rest) = line[digits..].strip_prefix(['.', ')'])
+    {
+        return rest.trim_start();
+    }
+    line
 }

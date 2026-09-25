@@ -63,7 +63,6 @@ mod headless {
         ScrollLineDown,
         ScrollPageUp,
         ScrollPageDown,
-        JumpToLastChange,
         OpenFileInEditor(String),
         OpenUrl(String),
         LaunchEditor,

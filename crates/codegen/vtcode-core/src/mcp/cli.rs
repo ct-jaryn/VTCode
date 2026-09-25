@@ -558,7 +558,7 @@ fn open_browser_or_print_url(url: &str) -> Result<()> {
 
 fn format_env_map(map: &HashMap<String, String>) -> String {
     let mut entries: Vec<_> = map.iter().collect();
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    entries.sort_by_key(|(a, _)| *a);
     entries
         .into_iter()
         .map(|(k, v)| format!("{k}={v}"))

@@ -297,7 +297,9 @@ impl DotManager {
         )
         .map_err(|error| DotError::Io(std::io::Error::other(error.to_string())))?;
 
-        toml::from_str(&content).map_err(DotError::TomlDe)
+        let mut value: toml::Value = toml::from_str(&content).map_err(DotError::TomlDe)?;
+        normalize_legacy_top_level_provider_aliases(&mut value);
+        value.try_into().map_err(|error: toml::de::Error| DotError::TomlDe(error))
     }
 
     /// Save configuration to disk.
@@ -545,7 +547,7 @@ impl DotManager {
             let time = fs::metadata(backup).await.ok().and_then(|m| m.modified().ok());
             backup_times.push((backup.clone(), time));
         }
-        backup_times.sort_by(|a, b| b.1.cmp(&a.1));
+        backup_times.sort_by_key(|a| std::cmp::Reverse(a.1));
 
         Ok(backup_times.into_iter().map(|(path, _)| path).collect())
     }
@@ -635,6 +637,61 @@ fn unix_timestamp_secs() -> Result<u64, DotError> {
 
 fn workspace_trust_key(workspace: &Path) -> String {
     canonicalize_workspace(workspace).to_string_lossy().into_owned()
+}
+
+/// Promote legacy bare `default_provider` / `default_model` keys at the
+/// document root of the auxiliary `config.toml` into `[preferences]`.
+///
+/// Hand-edited global files commonly contain:
+///
+/// ```toml
+/// default_provider = "ollama"
+/// ```
+///
+/// `DotConfig` only deserializes `preferences.default_provider` /
+/// `preferences.default_model`, so without this promotion the bare keys are
+/// silently dropped and the runtime keeps the previous (often openrouter)
+/// selection. An explicit `[preferences]` entry in the same file wins over
+/// its own top-level alias.
+fn normalize_legacy_top_level_provider_aliases(value: &mut toml::Value) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+
+    let legacy_provider = table
+        .get("default_provider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let legacy_model = table
+        .get("default_model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+
+    if legacy_provider.is_none() && legacy_model.is_none() {
+        return;
+    }
+
+    let prefs_entry = table
+        .entry("preferences".to_string())
+        .or_insert(toml::Value::Table(toml::Table::new()));
+    let Some(prefs_table) = prefs_entry.as_table_mut() else {
+        return;
+    };
+
+    if let Some(provider) = legacy_provider
+        && !prefs_table.contains_key("default_provider")
+    {
+        prefs_table.insert("default_provider".to_string(), toml::Value::String(provider));
+    }
+    if let Some(model) = legacy_model
+        && !prefs_table.contains_key("default_model")
+    {
+        prefs_table.insert("default_model".to_string(), toml::Value::String(model));
+    }
 }
 
 fn ensure_user_dir(path: &Path) -> Result<(), DotError> {
@@ -833,5 +890,33 @@ mod tests {
         let other_workspace = temp_dir.path().join("other");
         std::fs::create_dir_all(&other_workspace).unwrap();
         assert!(manager.lifecycle_hook_approval(&other_workspace).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_top_level_default_provider_promotes_to_preferences() {
+        let mut value: toml::Value = toml::from_str("default_provider = \"ollama\"\n").expect("legacy toml");
+        normalize_legacy_top_level_provider_aliases(&mut value);
+        assert_eq!(
+            value
+                .get("preferences")
+                .and_then(|prefs| prefs.get("default_provider"))
+                .and_then(|v| v.as_str()),
+            Some("ollama")
+        );
+    }
+
+    #[test]
+    fn explicit_preferences_win_over_legacy_top_level_alias() {
+        let mut value: toml::Value =
+            toml::from_str("default_provider = \"ollama\"\n[preferences]\ndefault_provider = \"openai\"\n")
+                .expect("mixed toml");
+        normalize_legacy_top_level_provider_aliases(&mut value);
+        assert_eq!(
+            value
+                .get("preferences")
+                .and_then(|prefs| prefs.get("default_provider"))
+                .and_then(|v| v.as_str()),
+            Some("openai")
+        );
     }
 }

@@ -311,6 +311,13 @@ pub(super) fn human_event_line(event: &ThreadEvent) -> Option<String> {
                     vtcode_core::exec::events::HarnessEventKind::ToolLoopLimitIncreased => {
                         style("[LOOP LIMIT]").green().bold()
                     }
+                    vtcode_core::exec::events::HarnessEventKind::BackgroundSubprocessCompleted => {
+                        if item.status.as_deref() == Some("error") {
+                            style("[BACKGROUND ERROR]").red().bold()
+                        } else {
+                            style("[BACKGROUND]").green().bold()
+                        }
+                    }
                 };
                 let detail = match (item.message.as_deref(), item.path.as_deref()) {
                     (Some(message), Some(path)) => format!("{message}: {path}"),

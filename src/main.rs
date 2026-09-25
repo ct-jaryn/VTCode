@@ -225,20 +225,19 @@ fn bootstrap_main() -> Result<BootstrapOutcome> {
     let tui_log_capture_enabled = debug_runtime_flag_enabled(args.debug, "VTCODE_TUI_LOGS");
     vtcode_ui::tui::log::set_tui_log_capture_enabled(tui_log_capture_enabled);
 
-    // Load .env and migrate legacy paths only for commands whose startup
-    // policy needs provider credentials or the normal user runtime. Offline
-    // metadata must remain read-only and independent of user state.
-    if startup_policy.load_dotenv() || startup_policy.migrate_legacy_paths() {
+    // Load .env on the critical path. Legacy path migration is maintenance
+    // (marker-checked, idempotent) and must not stall first paint — a large
+    // pre-XDG `~/.vtcode` tree has been observed to add 1s+ here.
+    if startup_policy.load_dotenv() {
         let environment_phase = vtcode_commons::startup_trace::phase_started();
-        if startup_policy.load_dotenv()
-            && let Err(_err) = load_dotenv()
+        if let Err(_err) = load_dotenv()
             && !args.quiet
         {}
-
-        if startup_policy.migrate_legacy_paths() {
-            migrate_legacy_global_paths(args.quiet);
-        }
         vtcode_commons::startup_trace::record_phase("dotenv_and_migration", environment_phase);
+    }
+    if startup_policy.migrate_legacy_paths() && !startup_policy.run_interactive_maintenance() {
+        // Non-interactive consumers still need migrated paths before dispatch.
+        migrate_legacy_global_paths(args.quiet);
     }
 
     if args.print.is_some() && args.command.is_some() {
@@ -387,6 +386,16 @@ async fn run(prepared: PreparedRun) -> Result<()> {
         tokio::spawn(updater::run_preflight_check());
     }
 
+    // Interactive legacy-path migration runs after the runtime exists so it
+    // never shares the pre-dispatch critical path with dotenv/config/auth.
+    // Marker-checked and idempotent; non-interactive paths already migrated.
+    if startup_policy.migrate_legacy_paths() && startup_policy.run_interactive_maintenance() {
+        let quiet = args.quiet;
+        tokio::task::spawn_blocking(move || {
+            migrate_legacy_global_paths(quiet);
+        });
+    }
+
     // Clean up old spooled large output files (>24h) at startup to prevent
     // unbounded growth. Deferred to a blocking task so a cold cache does not
     // block first user I/O on the critical startup path.
@@ -403,24 +412,37 @@ async fn run(prepared: PreparedRun) -> Result<()> {
         });
     }
 
-    // First-run iTerm2 tab icon: install the VT Code dynamic profile so
-    // the tab shows the logo while sessions run. Best effort and
-    // idempotent; deleting DynamicProfiles/vtcode.json uninstalls.
-    // Inline (not spawned): two small reads when up to date, and the
-    // install notice must print before TUI alternate-screen entry.
+    // First-run iTerm2 tab icon: best-effort background install. The notice
+    // is non-critical, so it must not sit on the pre-TUI critical path.
     if startup_policy.run_interactive_maintenance() {
-        match vtcode_core::terminal_setup::terminals::iterm2::ensure_profile_icon() {
-            Ok(Some(report)) => {
-                if !args.quiet {
-                    println!("Installed VT Code iTerm2 tab icon profile ({}).", report.profile_path.display());
+        let quiet = args.quiet;
+        tokio::task::spawn_blocking(
+            move || match vtcode_core::terminal_setup::terminals::iterm2::ensure_profile_icon() {
+                Ok(Some(report)) => {
+                    if !quiet {
+                        tracing::info!(
+                            profile = %report.profile_path.display(),
+                            "Installed VT Code iTerm2 tab icon profile"
+                        );
+                    }
                 }
-            }
-            Ok(None) => {}
-            Err(error) => tracing::debug!(error = %error, "iTerm2 tab icon install skipped"),
-        }
+                Ok(None) => {}
+                Err(error) => tracing::debug!(error = %error, "iTerm2 tab icon install skipped"),
+            },
+        );
     }
 
     let dispatch_result = cli::dispatch(&args, &startup, print_mode).await;
+    // The interactive palette probe runs concurrently with startup and
+    // dispatch. Paths that never enter the agent loop (e.g. `continue` with
+    // no archived sessions) would otherwise exit while the probe is still
+    // waiting on `/dev/tty`, leaving the terminal's OSC/DA1 replies to be
+    // printed by the shell as visible escape-code garbage after exit.
+    // Finish it here so TTY replies are consumed before returning; when the
+    // agent loop already awaited the probe this returns immediately.
+    if startup_policy.run_terminal_probe() {
+        agent::probe::finish_terminal_palette_probe().await;
+    }
     perform_queued_runtime_relaunch();
     vtcode_core::utils::trace_writer::flush_trace_log();
     dispatch_result?;

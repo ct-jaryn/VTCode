@@ -25,6 +25,7 @@ pub(crate) use crate::agent::runloop::unified::model_switch_compaction::ModelSwi
 use crate::agent::runloop::welcome::SessionBootstrap;
 
 use crate::agent::runloop::ui::build_inline_header_context;
+use crate::agent::runloop::unified::session_setup::configured_anthropic_config;
 
 fn service_tier_message_label(service_tier: Option<vtcode_config::OpenAIServiceTier>) -> &'static str {
     match service_tier {
@@ -68,25 +69,7 @@ pub(crate) async fn finalize_model_selection(
     let (new_client, rig_payload, reasoning_adjustment) = if client_installed {
         let new_client = create_provider_with_config(
             &provider_name,
-            ProviderConfig {
-                api_key: Some(api_key.clone()),
-                openai_chatgpt_auth: openai_chatgpt_auth.clone(),
-                copilot_auth: Some(auth_cfg.auth.copilot.clone()),
-                base_url: None,
-                model: Some(selection.model.clone()),
-                prompt_cache: Some(config.prompt_cache.clone()),
-                timeouts: None,
-                openai: Some({
-                    let mut openai = auth_cfg.provider.openai.clone();
-                    if selection.provider_enum == Some(Provider::OpenAI) && selection.service_tier_supported {
-                        openai.service_tier = selection.service_tier;
-                    }
-                    openai
-                }),
-                anthropic: None,
-                model_behavior: config.model_behavior.clone(),
-                workspace_root: Some(config.workspace.clone()),
-            },
+            selected_provider_config(&selection, &auth_cfg, config, &api_key, openai_chatgpt_auth.clone()),
         )
         .context("Failed to initialize provider for the selected model")?;
         let mapping = match ReasoningEffortMapper::resolve(
@@ -448,6 +431,36 @@ async fn resolve_runtime_api_key(
     Ok((String::new(), None))
 }
 
+/// Provider client configuration for a model picked mid-session. It carries
+/// the same workspace provider sections as the startup client
+/// (`session_setup::create_provider_client`), with the picker's OpenAI service
+/// tier applied on top.
+fn selected_provider_config(
+    selection: &ModelSelectionResult,
+    auth_cfg: &VTCodeConfig,
+    config: &CoreAgentConfig,
+    api_key: &str,
+    openai_chatgpt_auth: Option<vtcode_config::auth::OpenAIChatGptAuthHandle>,
+) -> ProviderConfig {
+    let mut openai = auth_cfg.provider.openai.clone();
+    if selection.provider_enum == Some(Provider::OpenAI) && selection.service_tier_supported {
+        openai.service_tier = selection.service_tier;
+    }
+    ProviderConfig {
+        api_key: Some(api_key.to_string()),
+        openai_chatgpt_auth,
+        copilot_auth: Some(auth_cfg.auth.copilot.clone()),
+        base_url: None,
+        model: Some(selection.model.clone()),
+        prompt_cache: Some(config.prompt_cache.clone()),
+        timeouts: None,
+        openai: Some(openai),
+        anthropic: configured_anthropic_config(Some(auth_cfg)),
+        model_behavior: config.model_behavior.clone(),
+        workspace_root: Some(config.workspace.clone()),
+    }
+}
+
 #[cfg(test)]
 fn read_workspace_api_key(workspace: &Path, env_key: &str) -> Result<Option<String>> {
     vtcode_config::read_workspace_env_value(workspace, env_key)
@@ -537,7 +550,7 @@ fn best_effort_reasoning(
 
 #[cfg(test)]
 mod tests {
-    use super::{best_effort_reasoning, read_workspace_api_key, resolve_runtime_api_key};
+    use super::{best_effort_reasoning, read_workspace_api_key, resolve_runtime_api_key, selected_provider_config};
     use crate::agent::runloop::model_picker::ModelSelectionResult;
     use tempfile::tempdir;
     use vtcode_config::VTCodeConfig;
@@ -571,6 +584,31 @@ mod tests {
             requires_api_key,
             uses_chatgpt_auth: false,
             mimo_auth_method: None,
+        }
+    }
+
+    fn runtime_config() -> vtcode_core::config::types::AgentConfig {
+        vtcode_core::config::types::AgentConfig {
+            model: "test-model".to_string(),
+            api_key: String::new(),
+            provider: "anthropic".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            workspace: std::env::temp_dir(),
+            verbose: false,
+            quiet: false,
+            theme: vtcode_core::ui::theme::DEFAULT_THEME_ID.to_string(),
+            reasoning_effort: ReasoningEffortLevel::default(),
+            ui_surface: vtcode_core::config::types::UiSurfacePreference::default(),
+            prompt_cache: vtcode_core::config::core::PromptCachingConfig::default(),
+            model_source: vtcode_core::config::types::ModelSelectionSource::WorkspaceConfig,
+            custom_api_keys: std::collections::BTreeMap::new(),
+            checkpointing_enabled: false,
+            checkpointing_storage_dir: None,
+            checkpointing_max_snapshots: 1,
+            checkpointing_max_age_days: None,
+            max_conversation_turns: 1000,
+            model_behavior: None,
+            openai_chatgpt_auth: None,
         }
     }
 
@@ -646,6 +684,41 @@ mod tests {
 
         assert!(resolved.0.is_empty());
         assert!(resolved.1.is_none());
+    }
+
+    #[test]
+    fn selected_provider_config_carries_workspace_anthropic_settings() {
+        let mut auth_cfg = VTCodeConfig::default();
+        auth_cfg.provider.anthropic.count_tokens_enabled = !auth_cfg.provider.anthropic.count_tokens_enabled;
+        auth_cfg.provider.anthropic.task_budget_tokens = Some(64_000);
+        let selection = selection("anthropic", Some(Provider::Anthropic), "ANTHROPIC_API_KEY", None, true);
+        let config = runtime_config();
+
+        let provider_config = selected_provider_config(&selection, &auth_cfg, &config, "key", None);
+        let anthropic = provider_config
+            .anthropic
+            .expect("a model switch must pass [provider.anthropic] like the startup client");
+
+        assert_eq!(anthropic.count_tokens_enabled, auth_cfg.provider.anthropic.count_tokens_enabled);
+        assert_eq!(anthropic.task_budget_tokens, Some(64_000));
+        assert_eq!(provider_config.model.as_deref(), Some("test-model"));
+        assert_eq!(provider_config.api_key.as_deref(), Some("key"));
+    }
+
+    #[test]
+    fn selected_provider_config_applies_picked_openai_service_tier() {
+        let auth_cfg = VTCodeConfig::default();
+        let mut selection = selection("openai", Some(Provider::OpenAI), "OPENAI_API_KEY", None, true);
+        selection.service_tier_supported = true;
+        selection.service_tier = Some(vtcode_config::OpenAIServiceTier::Priority);
+        let config = runtime_config();
+
+        let provider_config = selected_provider_config(&selection, &auth_cfg, &config, "key", None);
+
+        assert_eq!(
+            provider_config.openai.and_then(|openai| openai.service_tier),
+            Some(vtcode_config::OpenAIServiceTier::Priority)
+        );
     }
 
     #[test]

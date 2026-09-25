@@ -56,6 +56,32 @@ pub(crate) fn streams_pty_output(tool_name: &str, args: &Value) -> bool {
     }
 }
 
+/// The tool names that address an already-running exec session.
+///
+/// Shared by the transcript-summary folding and the bounded-session-body
+/// rendering so the two cannot drift as legacy session aliases evolve. `UNIFIED_EXEC`
+/// is excluded here because follow-up detection needs the call's `action`, which
+/// [`is_exec_session_call`] layers on top of this set.
+pub(crate) const EXEC_SESSION_FOLLOWUP_TOOLS: &[&str] =
+    &[tools::WRITE_STDIN, tools::SEND_PTY_INPUT, tools::READ_PTY_SESSION];
+
+/// Whether a tool name addresses an already-running exec session rather than
+/// launching one.
+pub(crate) fn is_exec_session_tool_name(tool_name: &str) -> bool {
+    EXEC_SESSION_FOLLOWUP_TOOLS.contains(&tool_name)
+}
+
+/// Whether a call addresses an exec session, handling `unified_exec` follow-ups.
+///
+/// Every `unified_exec` action except `run` is a follow-up; `run` (explicit or
+/// inferred from a command field) is the launch path. An actionless call also
+/// falls on the follow-up side, which is harmless because it fails execution
+/// before rendering.
+pub(crate) fn is_exec_session_call(tool_name: &str, args: &Value) -> bool {
+    is_exec_session_tool_name(tool_name)
+        || (tool_name == tools::UNIFIED_EXEC && tool_intent::command_session_action(args) != Some("run"))
+}
+
 /// Returns whether the live PTY block contains the `• Ran ...` command
 /// header. Input forwarding streams output but has no command header of its
 /// own, so it must use the ordinary tool summary path for status display.

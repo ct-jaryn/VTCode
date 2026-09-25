@@ -42,8 +42,6 @@ pub enum Action {
     ToggleTranscriptRenderMode,
     /// Generate an inline prompt suggestion via the LLM.
     GeneratePromptSuggestion,
-    /// Jump to the most recent transcript change, pinned to the bottom edge.
-    JumpToLastChange,
 }
 
 impl Action {
@@ -66,7 +64,6 @@ impl Action {
             Action::OpenTranscriptReview => "open_transcript_review",
             Action::ToggleTranscriptRenderMode => "toggle_transcript_render_mode",
             Action::GeneratePromptSuggestion => "generate_prompt_suggestion",
-            Action::JumpToLastChange => "jump_to_last_change",
         }
     }
 
@@ -89,7 +86,6 @@ impl Action {
             Action::OpenTranscriptReview,
             Action::ToggleTranscriptRenderMode,
             Action::GeneratePromptSuggestion,
-            Action::JumpToLastChange,
         ]
     }
 
@@ -265,7 +261,6 @@ fn default_bindings() -> HashMap<Action, Vec<(KeyCode, KeyModifiers)>> {
             (KeyCode::Char('P'), KeyModifiers::ALT),
         ],
     );
-    m.insert(JumpToLastChange, vec![(KeyCode::End, KeyModifiers::CONTROL)]);
 
     m
 }

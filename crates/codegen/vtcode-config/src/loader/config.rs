@@ -879,6 +879,12 @@ auto_apply_detected_patches = false
 
 # UI configuration - Terminal and display settings
 [ui]
+# Enable reduced-motion presentation explicitly. When omitted, VT Code honors
+# VTCODE_REDUCE_MOTION first, then supported OS accessibility preferences.
+# reduce_motion_mode = true
+# To keep progress animation in reduced-motion mode, set this to true.
+# reduce_motion_keep_progress_animation = false
+
 # Tool output display mode
 # "compact" - Concise tool output
 # "full" - Detailed tool output

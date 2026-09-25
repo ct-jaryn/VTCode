@@ -86,7 +86,7 @@ impl TaskManager {
             .map(|(id, task)| (id.clone(), task.status.timestamp))
             .collect();
 
-        completed_tasks.sort_by(|a, b| a.1.cmp(&b.1));
+        completed_tasks.sort_by_key(|a| a.1);
 
         let evict_count = (self.max_tasks / 10).max(1);
         let evicted_ids: HashSet<_> = completed_tasks.into_iter().take(evict_count).map(|(id, _)| id).collect();
@@ -262,7 +262,7 @@ impl TaskManager {
             }
         };
 
-        matching_tasks.sort_by(|a, b| b.1.cmp(&a.1));
+        matching_tasks.sort_by_key(|a| std::cmp::Reverse(a.1));
 
         let total_size = u32::try_from(matching_tasks.len()).unwrap_or(u32::MAX);
         let page_size = params.page_size.unwrap_or(50).min(100);

@@ -211,7 +211,7 @@ impl BackupManager {
         // Get backups for this file, sorted by date (newest first)
         let mut file_backups: Vec<_> = backups.iter().filter(|b| b.original_path == file_path_str).collect();
 
-        file_backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        file_backups.sort_by_key(|a| std::cmp::Reverse(a.created_at));
 
         // Delete old backups beyond max_backups
         for backup in file_backups.iter().skip(self.max_backups) {
@@ -257,7 +257,7 @@ impl BackupManager {
 
         let mut file_backups: Vec<_> = backups.into_iter().filter(|b| b.original_path == file_path_str).collect();
 
-        file_backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        file_backups.sort_by_key(|a| std::cmp::Reverse(a.created_at));
 
         Ok(file_backups)
     }

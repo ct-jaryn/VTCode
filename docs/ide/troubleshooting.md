@@ -15,11 +15,13 @@ This guide covers common issues and solutions when using VT Code with your IDE.
     cargo install vtcode
 
     # Or with Homebrew
-    brew install vtcode
-
-    # Or with NPM
+    brew trust vinhnx/tap
+    brew install vinhnx/tap/vtcode
 
     ```
+
+    See the [installation guide](../installation/README.md) for all methods,
+    including the native installer.
 
 2. Check that VT Code is in your PATH:
     ```bash
@@ -46,10 +48,17 @@ This guide covers common issues and solutions when using VT Code with your IDE.
 
 **Solution**:
 
-1. Ensure you have valid API keys in your `vtcode.toml` configuration file
-2. Check that your API key has sufficient permissions
-3. Verify your internet connection
-4. Check if the AI provider has any service interruptions
+1. Ensure your provider credentials are set up — most providers read an
+   environment variable (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `GEMINI_API_KEY`); see the provider list in the
+   [installation guide](../installation/README.md#supported-ai-providers)
+2. For OAuth-based providers (GitHub Copilot), run `vtcode login` and make
+   sure the `copilot` CLI is installed
+3. Alternatively, store credentials with `vtcode secret add` (or `/secret add`
+   inside a session) instead of plain environment variables
+4. Check that your API key has sufficient permissions
+5. Verify your internet connection
+6. Check if the AI provider has any service interruptions
 
 ## Slow Performance
 

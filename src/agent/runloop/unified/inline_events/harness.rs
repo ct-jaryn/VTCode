@@ -609,6 +609,12 @@ fn harness_event_with_duration(
                 attempt,
                 error_category,
                 duration_ms,
+                task_id: None,
+                session_id: None,
+                exec_session_id: None,
+                status: None,
+                transcript_path: None,
+                archive_path: None,
             })),
         },
     })

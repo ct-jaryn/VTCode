@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{Value, json};
 
+use crate::tools::names::is_apply_patch_shell_collision_command;
+
 static CARGO_SELECTOR_ERROR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?m)^error: no test target named `([^`]+)` in `([^`]+)` package$")
         .expect("cargo selector error regex is valid")
@@ -248,6 +250,14 @@ pub(super) fn attach_exec_recovery_guidance(response: &mut Value, command: &str,
         return;
     }
 
+    if is_apply_patch_shell_collision_command(command) {
+        response["critical_note"] =
+            json!("Command `apply_patch` is not a shell binary — use the `apply_patch` tool instead.");
+        response["next_action"] = json!(
+            "Call the `apply_patch` tool with `input` containing the patch (run `search_tools` first if it is deferred); do not run `apply_patch` via `exec_command`."
+        );
+        return;
+    }
     let command_name = first_command_token(command).unwrap_or_else(|| "command".to_string());
     response["critical_note"] = json!(format!("Command `{command_name}` was not found in PATH."));
     response["next_action"] = json!("Check the command name or install the missing binary, then rerun the command.");

@@ -326,12 +326,12 @@ impl AgentRunner {
         &self,
         tool_name: &str,
         args: &Value,
-    ) -> std::result::Result<Value, ToolExecutionError> {
+    ) -> std::result::Result<Value, Box<ToolExecutionError>> {
         let prepared = self.tool_registry.admit_public_tool_call(tool_name, args).map_err(|error| {
             ToolExecutionError::from_anyhow(tool_name, &error, 0, false, false, Some("agent_runner"))
                 .with_tool_call_context(tool_name, args)
         })?;
-        self.execute_prepared_tool_internal(&prepared).await.result
+        self.execute_prepared_tool_internal(&prepared).await.result.map_err(Box::new)
     }
 }
 

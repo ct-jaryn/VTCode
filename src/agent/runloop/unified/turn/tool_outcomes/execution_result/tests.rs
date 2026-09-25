@@ -82,7 +82,7 @@ fn build_error_content_preview_exhaustion_gate_is_terminal_for_inspections() {
     assert_eq!(payload.get("error_class").and_then(|v| v.as_str()), Some("execution_failure"));
     assert_eq!(payload.get("is_recoverable").and_then(|v| v.as_bool()), Some(true));
     let next_action = payload.get("next_action").and_then(|v| v.as_str()).expect("next_action");
-    assert!(next_action.contains("Do NOT retry or narrow the scope"), "unexpected next_action: {next_action}");
+    assert!(next_action.contains("returns another stub"), "unexpected next_action: {next_action}");
     assert!(!next_action.contains("narrower scope"), "retry-inviting wording survived: {next_action}");
 
     // The generic default is unchanged for ordinary execution failures.
@@ -215,7 +215,7 @@ fn build_structured_error_content_preview_exhaustion_gate_is_terminal_for_inspec
         .get("next_action")
         .and_then(|value| value.as_str())
         .expect("next_action");
-    assert!(next_action.contains("Do NOT retry or narrow the scope"), "unexpected next_action: {next_action}");
+    assert!(next_action.contains("returns another stub"), "unexpected next_action: {next_action}");
     assert!(!next_action.contains("narrower scope"), "retry-inviting wording survived: {next_action}");
 }
 

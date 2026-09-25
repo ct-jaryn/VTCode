@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use crate::agent::runloop::unified::session_setup::configured_anthropic_config;
 use anyhow::Result;
 use vtcode_auth::AuthCredentialsStoreMode;
 use vtcode_config::VTCodeConfig;
@@ -535,7 +536,7 @@ fn reload_provider_client_if_matching(
             prompt_cache: Some(ctx.config.prompt_cache.clone()),
             timeouts: None,
             openai: ctx.vt_cfg.as_ref().map(|cfg| cfg.provider.openai.clone()),
-            anthropic: None,
+            anthropic: configured_anthropic_config(ctx.vt_cfg.as_ref()),
             model_behavior: ctx.config.model_behavior.clone(),
             workspace_root: Some(ctx.config.workspace.clone()),
         },

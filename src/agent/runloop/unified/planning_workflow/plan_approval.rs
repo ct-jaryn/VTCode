@@ -1266,14 +1266,13 @@ mod tests {
                     let text: String = segments.into_iter().map(|seg| seg.text).collect();
                     transcript_messages.push(text);
                 }
-                InlineCommand::ShowTransient { request: req } => {
+                InlineCommand::ShowTransient { request: req }
                     // Overlay-first: the gate is published before the heavy
                     // transcript render, so the request may arrive before or
                     // after transcript rows. Keep the first gate.
-                    if request.is_none() {
+                    if request.is_none() => {
                         request = Some(req);
                     }
-                }
                 _ => {}
             }
         }

@@ -18,7 +18,7 @@ const BUILTIN_DEFAULT_AGENT: &str = r#"You are the default VT Code execution sub
 
 Work directly, keep context isolated from the parent session, and return concise summaries.
 Match the repository's local patterns, verify changes, and avoid unrelated edits.
-Never speculate about code you have not read. If a file is referenced, read it before answering.
+If a file is referenced, read it before answering; base claims about code on what you have read.
 Only make changes that are directly requested or clearly necessary. Keep solutions simple and focused.
 Do not add features, refactor code, or make improvements beyond what was asked.
 Verify your work by running the smallest relevant check before reporting completion."#;
@@ -27,16 +27,15 @@ const BUILTIN_EXPLORER_AGENT: &str = r#"You are a fast read-only exploration sub
 
 Search the codebase, inspect relevant files, and return concise findings with file references.
 Do not modify files or take mutating actions.
-Read files before making claims about their contents. Never speculate about code you have not opened.
+Read files before making claims about their contents.
 Use structural search and grep over shell exploration when possible.
-When reading multiple files, read them all in parallel for efficiency.
 Return findings with file paths and line numbers for easy navigation."#;
 
 const BUILTIN_WORKER_AGENT: &str = r#"You are a write-capable worker subagent.
 
 Handle bounded implementation work, verify results, and return a concise outcome summary with
 any important risks or follow-up items.
-Read files before editing them. Never speculate about code you have not read.
+Read files before editing them or describing what they contain.
 Only make changes that are directly requested. Keep solutions simple and focused.
 Do not add features, refactor surrounding code, or make improvements beyond the scope.
 Verify your changes by running relevant tests or checks before reporting completion.
@@ -67,12 +66,11 @@ const BUILTIN_PLAN_AGENT_ROLE: &str = r#"You are a read-only planning agent.
 
 Use repository-grounded, read-only discovery to gather the minimum context needed to support a plan or design decision.
 Return findings, risks, and constraints clearly, with specific code references and file paths.
-Read relevant files before making claims about the codebase. Never speculate.
+Read relevant files before making claims about the codebase.
 Use structural search to find patterns across the repository.
-When reading multiple files, read them all in parallel for efficiency.
 When ready, emit exactly one final <proposed_plan> block for review.
 Never write the plan file with shell or file-editing tools; the runtime persists the plan and tracker artifacts.
-Implementation requests must wait for approval instead of suggesting an immediate edit; they must wait for explicit user approval before implementation."#;
+When the user asks for implementation, present the plan and wait for explicit user approval before implementation instead of suggesting an immediate edit."#;
 
 const BUILTIN_DUCK_PRIMARY_AGENT_ROLE: &str = r#"You are the duck agent.
 
@@ -1533,9 +1531,9 @@ mod tests {
     use super::{
         AgentMode, AgentSpecFieldClass, BackgroundSubagentConfig, IsolationMode, ReasoningEffortLevel,
         SubagentDiscoveryInput, SubagentMcpServer, SubagentMemoryScope, SubagentRuntimeLimits, SubagentSource,
-        builtin_plan_agent, builtin_primary_duck_agent, builtin_subagents, classify_agent_spec_field,
-        discover_subagents, load_cli_agents, load_subagent_from_file, normalize_subagent_tools,
-        readonly_agent_permissions, readonly_interview_agent_permissions,
+        builtin_plan_agent, builtin_primary_auto_agent, builtin_primary_build_agent, builtin_primary_duck_agent,
+        builtin_subagents, classify_agent_spec_field, discover_subagents, load_cli_agents, load_subagent_from_file,
+        normalize_subagent_tools, readonly_agent_permissions, readonly_interview_agent_permissions,
     };
     use crate::constants::tools;
     use crate::core::permissions::PermissionDefault;
@@ -2452,7 +2450,33 @@ Legacy prompt."#,
         assert!(prompt.contains("exactly one final <proposed_plan> block"));
         assert!(prompt.contains("Never write the plan file with shell or file-editing tools"));
         assert!(prompt.contains("wait for explicit user approval before implementation"));
-        assert!(prompt.contains("must wait for approval instead of suggesting an immediate edit"));
+        assert!(prompt.contains("instead of suggesting an immediate edit"));
+        assert_eq!(prompt.matches("wait for").count(), 1, "approval rule should be stated once");
+    }
+
+    #[test]
+    fn builtin_agent_prompts_ground_claims_without_repeated_absolutes() {
+        let mut prompts: Vec<(String, String)> =
+            builtin_subagents().into_iter().map(|spec| (spec.name, spec.prompt)).collect();
+        for spec in [
+            builtin_primary_build_agent(),
+            builtin_primary_auto_agent(),
+            builtin_plan_agent(),
+            builtin_primary_duck_agent(),
+        ] {
+            prompts.push((spec.name, spec.prompt));
+        }
+
+        for (name, prompt) in &prompts {
+            assert!(!prompt.contains("Never speculate"), "{name} prompt repeats a bare absolute");
+            assert!(!prompt.contains("in parallel for efficiency"), "{name} prompt coaches read strategy");
+        }
+        for (name, prompt) in prompts.iter().filter(|(name, _)| name != "duck" && name != "auto") {
+            assert!(
+                prompt.to_lowercase().contains("read") && prompt.contains("before"),
+                "{name} prompt should still ask to read files before claiming or editing"
+            );
+        }
     }
 
     #[test]

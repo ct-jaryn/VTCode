@@ -20,6 +20,8 @@ impl ModelId {
             ModelId::Gemini38Flash,
             // OpenAI models
             ModelId::GPT6Astra,
+            ModelId::GPT6Sol,
+            ModelId::GPT6Luna,
             ModelId::GPT56Sol,
             ModelId::GPT56Terra,
             ModelId::GPT56Luna,
@@ -30,6 +32,7 @@ impl ModelId {
             ModelId::ClaudeFable5,
             ModelId::ClaudeFable51,
             ModelId::ClaudeOpus5,
+            ModelId::ClaudeOpus55,
             ModelId::CopilotAuto,
             ModelId::CopilotGPT52Codex,
             ModelId::CopilotGPT51CodexMax,
@@ -48,6 +51,7 @@ impl ModelId {
             // Merge Gateway routes
             ModelId::MergeGatewayDefaultRouting,
             ModelId::MergeGatewayAnthropicClaudeOpus5,
+            ModelId::MergeGatewayAnthropicClaudeOpus55,
             ModelId::MergeGatewayAnthropicClaudeSonnet5,
             ModelId::MergeGatewayXaiGrok46,
             ModelId::MergeGatewayXaiGrok47,
@@ -57,6 +61,7 @@ impl ModelId {
             ModelId::MergeGatewayMetaMuseSpark11,
             ModelId::MergeGatewayMetaMuseSpark13,
             ModelId::MergeGatewayZaiGlm53Flash,
+            ModelId::MergeGatewayZaiGlm53Flashx,
             ModelId::MergeGatewayOpenAIGpt56Luna,
             ModelId::MergeGatewayOpenAIGpt56Sol,
             ModelId::MergeGatewayOpenAIGpt56Terra,
@@ -65,14 +70,18 @@ impl ModelId {
             ModelId::MergeGatewayAnthropicClaudeFable51,
             ModelId::MergeGatewayDeepseekFlash,
             ModelId::MergeGatewayOpenAIGpt6Astra,
+            ModelId::MergeGatewayOpenAIGpt6Sol,
+            ModelId::MergeGatewayOpenAIGpt6Luna,
             // Mistral models
             ModelId::MistralLarge3,
             // Z.AI models
             ModelId::ZaiGlm53,
             ModelId::ZaiGlm53Flash,
+            ModelId::ZaiGlm53Flashx,
             // MiMo models
-            ModelId::MiMoV25Pro,
-            ModelId::MiMoV25,
+            ModelId::MiMoV26Pro,
+            ModelId::MiMoV26Flash,
+            ModelId::MiMoV26ProUltraspeed,
             // Moonshot models
             ModelId::MoonshotKimiK3,
             // OpenCode Zen models
@@ -80,8 +89,6 @@ impl ModelId {
             ModelId::OpenCodeGoGlm53,
             ModelId::OpenCodeGoGpt56Luna,
             ModelId::OpenCodeGoKimiK3,
-            ModelId::OpenCodeGoMimoV25,
-            ModelId::OpenCodeGoMimoV25Pro,
             ModelId::OpenCodeGoMinimaxM3,
             // Ollama models
             ModelId::OllamaGptOss20b,
@@ -111,12 +118,14 @@ impl ModelId {
             ModelId::EvolinkClaudeHaiku45,
             ModelId::OpenRouterMoonshotaiKimiK3,
             ModelId::OpenRouterZaiGlm53Flash,
+            ModelId::OpenRouterZaiGlm53Flashx,
             // xAI models
             ModelId::XaiGrok46,
             ModelId::XaiGrok47,
             // Vercel AI Gateway models
             ModelId::VercelAnthropicClaudeSonnet5,
             ModelId::VercelAnthropicClaudeOpus5,
+            ModelId::VercelAnthropicClaudeOpus55,
             ModelId::VercelAnthropicClaudeHaiku45,
             ModelId::VercelOpenAiGpt56Sol,
             ModelId::VercelOpenAiGpt6Astra,

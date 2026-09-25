@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 pub use crate::tools::editing::{Patch, PatchError, PatchHunk, PatchLine, PatchOperation};
 pub use vtcode_utility_tool_specs::{
-    APPLY_PATCH_ALIAS_DESCRIPTION, DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION, SEMANTIC_ANCHOR_GUIDANCE,
-    with_semantic_anchor_guidance,
+    APPLY_PATCH_ALIAS_DESCRIPTION, APPLY_PATCH_TOOL_DESCRIPTION, DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION,
+    SEMANTIC_ANCHOR_GUIDANCE, with_semantic_anchor_guidance,
 };
 
 /// Input structure for the apply_patch tool

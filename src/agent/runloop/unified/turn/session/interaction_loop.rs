@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc};
 
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::config::types::AgentConfig;
@@ -91,6 +91,14 @@ pub(crate) struct InteractionLoopContext<'a> {
     pub startup_update_notice_rx: &'a mut Option<mpsc::UnboundedReceiver<StartupUpdateNotice>>,
     pub editor_open_sender: &'a crate::agent::runloop::unified::session_setup::EditorOpenRequestSender,
     pub editor_open_dispatcher: Arc<crate::agent::runloop::unified::session_setup::EditorOpenDispatcher>,
+    pub background_completion_notify: Option<Arc<Notify>>,
+    pub exec_completion_notify: Option<Arc<Notify>>,
+    pub background_completion_receiver:
+        &'a mut Option<broadcast::Receiver<vtcode_core::subagents::BackgroundCompletionEvent>>,
+    pub exec_completion_receiver:
+        &'a mut Option<broadcast::Receiver<vtcode_core::tools::exec_session::ExecSessionCompletionEvent>>,
+    pub pending_background_completions:
+        &'a mut crate::agent::runloop::unified::turn::background_completion::PendingBackgroundCompletions,
 }
 
 impl<'a> InteractionLoopContext<'a> {
@@ -182,6 +190,14 @@ pub(crate) enum InteractionOutcome {
     /// A direct tool command (e.g. `!cmd` / `run ...`) was executed and rendered;
     /// no LLM turn should be started for this loop iteration.
     DirectToolHandled,
+    /// A direct user command launched background work. Its matching terminal
+    /// notice updates state and transcript but does not create a model turn.
+    DirectBackgroundToolHandled {
+        completion_identity: String,
+    },
+    /// The idle boundary consumed one or more background completion events.
+    /// The outer loop decides whether to schedule the bounded continuation.
+    BackgroundCompletionReady,
     Exit {
         reason: SessionEndReason,
     },

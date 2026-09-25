@@ -1301,7 +1301,7 @@ pub async fn list_recent_sessions(limit: usize) -> Result<Vec<SessionListing>> {
     }
 
     // Sort and limit results
-    all_listings.sort_by(|a, b| b.snapshot.ended_at.cmp(&a.snapshot.ended_at));
+    all_listings.sort_by_key(|a| std::cmp::Reverse(a.snapshot.ended_at));
     if limit > 0 && all_listings.len() > limit {
         all_listings.truncate(limit);
     }
@@ -1560,7 +1560,7 @@ fn apply_session_retention_with_limits(sessions_dir: &Path, limits: SessionReten
     remove_session_files(expired);
     entries = retained;
 
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+    entries.sort_by_key(|a| std::cmp::Reverse(a.modified));
 
     if limits.max_files > 0 && entries.len() > limits.max_files {
         let overflow = entries.split_off(limits.max_files);

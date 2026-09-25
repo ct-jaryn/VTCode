@@ -441,7 +441,7 @@ pub async fn discover_instruction_sources(options: &InstructionDiscoveryOptions<
 
         let (user_unconditional_rules, user_matched_rules) =
             discover_rule_sources(user_rules_roots(home), InstructionScope::User, &match_context, &excludes).await?;
-        for source in user_unconditional_rules.into_iter().chain(user_matched_rules.into_iter()) {
+        for source in user_unconditional_rules.into_iter().chain(user_matched_rules) {
             if seen_paths.insert(source.path.clone()) {
                 sources.push(source);
             }
@@ -507,10 +507,7 @@ pub async fn discover_instruction_sources(options: &InstructionDiscoveryOptions<
     let (workspace_unconditional_rules, workspace_matched_rules) =
         discover_rule_sources(vec![root.join(RULES_DIRECTORY)], InstructionScope::Workspace, &match_context, &excludes)
             .await?;
-    for source in workspace_unconditional_rules
-        .into_iter()
-        .chain(workspace_matched_rules.into_iter())
-    {
+    for source in workspace_unconditional_rules.into_iter().chain(workspace_matched_rules) {
         if seen_paths.insert(source.path.clone()) {
             sources.push(source);
         }

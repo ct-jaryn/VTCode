@@ -285,7 +285,7 @@ pub(crate) async fn run_tool_call_with_args(
         {
             Ok(justification) => justification,
             Err(safety_failure) => {
-                return Ok(finish_with_status(safety_failure, false, effective_args.as_ref()));
+                return Ok(finish_with_status(*safety_failure, false, effective_args.as_ref()));
             }
         };
 
@@ -338,12 +338,12 @@ pub(crate) async fn run_tool_call_with_args(
                     )
                     .await
                 {
-                    return Ok(finish_with_status(safety_failure, false, effective_args.as_ref()));
+                    return Ok(finish_with_status(*safety_failure, false, effective_args.as_ref()));
                 }
             }
             Ok(None) => {}
             Err(permission_failure) => {
-                return Ok(finish_with_status(permission_failure, false, effective_args.as_ref()));
+                return Ok(finish_with_status(*permission_failure, false, effective_args.as_ref()));
             }
         }
 
@@ -574,7 +574,7 @@ async fn check_tool_safety(
     ctrl_c_state: &Arc<CtrlCState>,
     ctrl_c_notify: &Arc<Notify>,
     auto_grant: bool,
-) -> Result<Option<String>, ToolExecutionStatus> {
+) -> Result<Option<String>, Box<ToolExecutionStatus>> {
     let Some(safety_validator) = ctx.safety_validator else {
         return Ok(None);
     };
@@ -598,16 +598,16 @@ async fn check_tool_safety(
     .await
     {
         Ok(()) => Ok(None),
-        Err(SafetyValidationFailure::SessionLimitNotIncreased) => Err(ToolExecutionStatus::Failure {
+        Err(SafetyValidationFailure::SessionLimitNotIncreased) => Err(Box::new(ToolExecutionStatus::Failure {
             error: structured_failure_from_message(name, "Session tool limit reached and not increased by user"),
-        }),
-        Err(SafetyValidationFailure::SessionLimitPromptFailed(error)) => Err(ToolExecutionStatus::Failure {
+        })),
+        Err(SafetyValidationFailure::SessionLimitPromptFailed(error)) => Err(Box::new(ToolExecutionStatus::Failure {
             error: structured_failure(name, &anyhow!("Failed while requesting a session tool-limit increase: {error}")),
-        }),
+        })),
         Err(SafetyValidationFailure::NeedsApproval(justification)) => Ok(Some(justification)),
-        Err(SafetyValidationFailure::Validation(error)) => Err(ToolExecutionStatus::Failure {
+        Err(SafetyValidationFailure::Validation(error)) => Err(Box::new(ToolExecutionStatus::Failure {
             error: structured_failure(name, &anyhow!("Safety validation failed: {error}")),
-        }),
+        })),
     }
 }
 
@@ -628,7 +628,7 @@ async fn check_tool_permission(
     vt_cfg: Option<&VTCodeConfig>,
     safety_approval_justification: Option<&str>,
     hook_phase: Option<PreToolHookPhaseResult>,
-) -> Result<Option<Value>, ToolExecutionStatus> {
+) -> Result<Option<Value>, Box<ToolExecutionStatus>> {
     // PreToolUse hooks already ran upstream (see run_tool_call_with_args), so
     // the permission flow consumes the forwarded phase result instead of
     // running them again. The engine is still passed through for the later
@@ -648,14 +648,14 @@ async fn check_tool_permission(
         .await
     {
         Ok(ToolPermissionFlow::Approved { updated_args }) => Ok(updated_args),
-        Ok(ToolPermissionFlow::Denied) => Err(ToolExecutionStatus::Failure {
+        Ok(ToolPermissionFlow::Denied) => Err(Box::new(ToolExecutionStatus::Failure {
             error: structured_failure_from_message(name, "Tool permission denied"),
-        }),
-        Ok(ToolPermissionFlow::Blocked { reason }) => Err(ToolExecutionStatus::Failure {
+        })),
+        Ok(ToolPermissionFlow::Blocked { reason }) => Err(Box::new(ToolExecutionStatus::Failure {
             error: structured_failure_from_message(name, reason),
-        }),
-        Ok(ToolPermissionFlow::Interrupted | ToolPermissionFlow::Exit) => Err(ToolExecutionStatus::Cancelled),
-        Err(error) => Err(ToolExecutionStatus::Failure { error: structured_failure(name, &error) }),
+        })),
+        Ok(ToolPermissionFlow::Interrupted | ToolPermissionFlow::Exit) => Err(Box::new(ToolExecutionStatus::Cancelled)),
+        Err(error) => Err(Box::new(ToolExecutionStatus::Failure { error: structured_failure(name, &error) })),
     }
 }
 

@@ -18,7 +18,7 @@ use crate::core::agent::task::Task;
 use crate::core::threads::{ThreadBootstrap, ThreadId, ThreadRuntimeHandle, ThreadSnapshot};
 use crate::hooks::{LifecycleHookEngine, SessionStartTrigger};
 use crate::llm::provider::Message;
-use crate::tools::exec_session::ExecSessionManager;
+use crate::tools::exec_session::{ExecSessionCompletionEvent, ExecSessionManager};
 use crate::tools::pty::{PtyManager, PtySize};
 use crate::utils::session_archive::{SessionArchive, find_session_by_identifier};
 use vtcode_config::SubagentSpec;
@@ -37,12 +37,171 @@ use vtcode_config::subagents::SUBAGENT_HARD_CONCURRENCY_LIMIT;
 )]
 use super::*;
 
-/// Poll cadence for [`SubagentController::wait_for_background`]. Background
-/// records have no completion `Notify` (unlike delegated child records), so
-/// the wait refreshes on a bounded interval instead of an event.
-const BACKGROUND_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const BACKGROUND_COMPLETION_IDENTITY_CAPACITY: usize = 256;
 
 impl SubagentController {
+    fn clone_for_background_completion_monitor(&self) -> Self {
+        Self {
+            config: Arc::clone(&self.config),
+            parent_session_id: Arc::clone(&self.parent_session_id),
+            lifecycle_hooks: self.lifecycle_hooks.clone(),
+            state: Arc::clone(&self.state),
+            shutdown_requested: Arc::clone(&self.shutdown_requested),
+            closing: Arc::clone(&self.closing),
+            background_completion_channel: Arc::clone(&self.background_completion_channel),
+            background_completion_notify: Arc::clone(&self.background_completion_notify),
+            background_completion_shutdown: self.background_completion_shutdown.clone(),
+            background_completion_monitor: Arc::clone(&self.background_completion_monitor),
+            background_completion_owners: Arc::clone(&self.background_completion_owners),
+            background_completion_monitor_owner: false,
+        }
+    }
+
+    pub(super) async fn start_background_completion_monitor(&self) {
+        let mut completion_rx = self.config.exec_sessions.subscribe_completion();
+        let controller = self.clone_for_background_completion_monitor();
+        let shutdown = self.background_completion_shutdown.clone();
+        let monitor = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => break,
+                    result = completion_rx.recv() => match result {
+                        Ok(event) => {
+                            if let Err(error) = controller.handle_exec_session_completion(event).await {
+                                tracing::warn!(error = %error, "Background completion handling failed");
+                            }
+                        }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(skipped, "Background completion monitor lagged; reconciling records");
+                            if let Err(error) = controller.refresh_background_processes().await {
+                                tracing::warn!(error = %error, "Background completion reconciliation failed");
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                }
+            }
+        });
+        let mut monitor_slot = self.background_completion_monitor.lock().await;
+        if let Some(previous) = monitor_slot.replace(monitor) {
+            previous.abort();
+            let _ = previous.await;
+        }
+    }
+
+    pub(super) async fn stop_background_completion_monitor(&self) {
+        self.background_completion_shutdown.cancel();
+        let monitor = self.background_completion_monitor.lock().await.take();
+        if let Some(monitor) = monitor {
+            monitor.abort();
+            let _ = monitor.await;
+        }
+    }
+
+    async fn handle_exec_session_completion(&self, event: ExecSessionCompletionEvent) -> Result<()> {
+        if self.shutdown_requested.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        if !event.managed_background {
+            return Ok(());
+        }
+
+        let record_id = {
+            let state = self.state.read().await;
+            let Some(record_id) = state
+                .background_children
+                .values()
+                .find(|record| record.exec_session_id == event.session_id.as_str())
+                .map(|record| record.id.clone())
+            else {
+                // The session may be a user-managed background command or a
+                // stale completion from a previous controller incarnation.
+                return Ok(());
+            };
+            record_id
+        };
+
+        let Some(snapshot) = self.config.exec_sessions.snapshot_session(event.session_id.as_str()).await.ok() else {
+            return Ok(());
+        };
+        let respawn = self.update_background_record_state(&record_id, Some(snapshot)).await?;
+        if let Some((agent_name, stable_id, restart_attempts)) = respawn {
+            self.ensure_background_record_running(
+                agent_name.as_str(),
+                Some(stable_id.as_str()),
+                restart_attempts,
+                None,
+            )
+            .await?;
+        }
+        self.refresh_background_archive_metadata(&record_id).await?;
+        self.save_background_state().await?;
+
+        self.publish_terminal_background_completion(&record_id, event.session_id.as_str(), Some(event.exit_code))
+            .await
+    }
+
+    async fn publish_terminal_background_completion(
+        &self,
+        record_id: &str,
+        expected_exec_session_id: &str,
+        exit_code: Option<i32>,
+    ) -> Result<()> {
+        if self.shutdown_requested.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        let completion = {
+            let mut state = self.state.write().await;
+            let (task_id, status, summary, error, session_id, exec_session_id, archive_path, transcript_path) = {
+                let Some(record) = state.background_children.get(record_id) else {
+                    return Ok(());
+                };
+                if record.exec_session_id != expected_exec_session_id
+                    || !matches!(record.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
+                {
+                    return Ok(());
+                }
+                (
+                    record.id.clone(),
+                    record.status,
+                    record.summary.clone(),
+                    record.error.clone(),
+                    record.session_id.clone(),
+                    record.exec_session_id.clone(),
+                    record.archive_path.clone(),
+                    record.transcript_path.clone(),
+                )
+            };
+
+            let identity = format!("{task_id}:{expected_exec_session_id}");
+            if state.background_completion_identities.iter().any(|seen| seen == &identity) {
+                return Ok(());
+            }
+            if state.background_completion_identities.len() >= BACKGROUND_COMPLETION_IDENTITY_CAPACITY {
+                state.background_completion_identities.pop_front();
+            }
+            state.background_completion_identities.push_back(identity);
+
+            BackgroundCompletionEvent {
+                task_id,
+                status,
+                summary,
+                error,
+                session_id,
+                exec_session_id,
+                archive_path,
+                transcript_path,
+                exit_code,
+            }
+        };
+
+        self.background_completion_channel.lock().publish(completion);
+        self.background_completion_notify.notify_one();
+        Ok(())
+    }
+
     /// Returns status entries for all tracked background subprocesses.
     pub async fn background_status_entries(&self) -> Vec<BackgroundSubprocessEntry> {
         let state = self.state.read().await;
@@ -193,13 +352,15 @@ impl SubagentController {
 
         let mut changed = false;
         for record_id in record_ids {
-            let (snapshot_target, before_status, before_error) = {
+            let (snapshot_target, before_status, before_error, before_summary, before_desired_enabled) = {
                 let state = self.state.read().await;
                 let record = state.background_children.get(&record_id);
                 (
                     record.map(|r| r.exec_session_id.clone()),
                     record.map(|r| r.status),
                     record.and_then(|r| r.error.clone()),
+                    record.and_then(|r| r.summary.clone()),
+                    record.is_some_and(|r| r.desired_enabled),
                 )
             };
 
@@ -226,7 +387,10 @@ impl SubagentController {
             let changed_this_record = {
                 let state = self.state.read().await;
                 state.background_children.get(&record_id).is_some_and(|r| {
-                    r.status != before_status.unwrap_or(BackgroundSubprocessStatus::Starting) || r.error != before_error
+                    r.status != before_status.unwrap_or(BackgroundSubprocessStatus::Starting)
+                        || r.error != before_error
+                        || r.summary != before_summary
+                        || r.desired_enabled != before_desired_enabled
                 })
             };
             changed |= changed_this_record;
@@ -280,6 +444,7 @@ impl SubagentController {
                 if matches!(snapshot.exit_code, Some(0)) {
                     record.desired_enabled = false;
                     record.status = BackgroundSubprocessStatus::Stopped;
+                    record.summary = Some("Background subprocess completed successfully".to_string());
                     record.error = None;
                     return Ok(None);
                 }
@@ -343,18 +508,21 @@ impl SubagentController {
         if matches!(snapshot.exit_code, Some(0)) {
             record.desired_enabled = false;
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.summary = Some("Background subprocess completed successfully".to_string());
             record.error = None;
             record.ended_at.get_or_insert(Utc::now());
             return;
         }
         if record.desired_enabled {
             record.status = BackgroundSubprocessStatus::Error;
+            record.summary = None;
             record.error = Some(match snapshot.exit_code {
                 Some(exit_code) => format!("Background subprocess exited with code {exit_code}"),
                 None => "Background subprocess exited unexpectedly".to_string(),
             });
         } else {
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.summary = Some("Background subprocess stopped".to_string());
             record.error = None;
         }
     }
@@ -377,6 +545,7 @@ impl SubagentController {
         if targets.is_empty() {
             return Ok(None);
         }
+        let mut completion_rx = self.subscribe_background_completions();
         let _ = self.refresh_background_processes().await?;
         for target in targets {
             if let Ok(entry) = self.background_status_for(target).await
@@ -402,13 +571,42 @@ impl SubagentController {
             if remaining.is_zero() {
                 return Ok(None);
             }
-            tokio::time::sleep(remaining.min(BACKGROUND_WAIT_POLL_INTERVAL)).await;
-            let _ = self.refresh_background_processes().await?;
-            for target in targets {
-                if let Ok(entry) = self.background_status_for(target).await
-                    && matches!(entry.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
-                {
-                    return Ok(Some(entry));
+            tokio::select! {
+                result = completion_rx.recv() => {
+                    match result {
+                        Ok(event) if targets.iter().any(|target| target == &event.task_id || target == &event.exec_session_id) => {
+                            for target in targets {
+                                if let Ok(entry) = self.background_status_for(target).await
+                                    && matches!(entry.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
+                                {
+                                    return Ok(Some(entry));
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let _ = self.refresh_background_processes().await?;
+                            for target in targets {
+                                if let Ok(entry) = self.background_status_for(target).await
+                                    && matches!(entry.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
+                                {
+                                    return Ok(Some(entry));
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return Ok(None),
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => {
+                    let _ = self.refresh_background_processes().await?;
+                    for target in targets {
+                        if let Ok(entry) = self.background_status_for(target).await
+                            && matches!(entry.status, BackgroundSubprocessStatus::Stopped | BackgroundSubprocessStatus::Error)
+                        {
+                            return Ok(Some(entry));
+                        }
+                    }
+                    return Ok(None);
                 }
             }
         }
@@ -424,6 +622,7 @@ impl SubagentController {
                 .ok_or_else(|| anyhow!("Unknown background subprocess {target}"))?;
             record.desired_enabled = false;
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.summary = Some("Background subprocess stopped".to_string());
             record.error = None;
             record.updated_at = Utc::now();
             record.ended_at = Some(Utc::now());
@@ -457,6 +656,7 @@ impl SubagentController {
                 .ok_or_else(|| anyhow!("Unknown background subprocess {target}"))?;
             record.desired_enabled = false;
             record.status = BackgroundSubprocessStatus::Stopped;
+            record.summary = Some("Background subprocess stopped".to_string());
             record.error = None;
             record.updated_at = Utc::now();
             record.ended_at = Some(Utc::now());
@@ -476,6 +676,8 @@ impl SubagentController {
 
         self.refresh_background_archive_metadata(target).await?;
         self.save_background_state().await?;
+        self.publish_terminal_background_completion(target, &exec_session_id, None)
+            .await?;
         self.background_status_for(target).await
     }
 

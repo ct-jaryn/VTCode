@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use serde_json::Value;
 use vtcode_core::config::constants::tools;
+use vtcode_core::tools::error_messages::agent_execution::is_loop_detection_block_message;
 use vtcode_core::tools::registry::{ToolErrorType, ToolExecutionError};
 use vtcode_core::tools::tool_intent;
 
@@ -15,7 +16,10 @@ pub(super) fn is_loop_detection_status(status: &ToolExecutionStatus) -> bool {
         ToolExecutionStatus::Success { output, .. } => {
             output.get("loop_detected").and_then(|value| value.as_bool()).unwrap_or(false)
         }
-        ToolExecutionStatus::Failure { error } => error.message.contains("LOOP DETECTION"),
+        // The registry's loop block carries `loop_detected` and is turned into
+        // a Success above; a failure counts only when its message is the exact
+        // generated block message, never because stderr mentions the phrase.
+        ToolExecutionStatus::Failure { error } => is_loop_detection_block_message(&error.message),
         _ => false,
     }
 }
@@ -141,6 +145,24 @@ mod tests {
         }));
 
         assert!(is_loop_detection_status(&status));
+    }
+
+    #[test]
+    fn loop_detection_status_requires_generated_block_message() {
+        let failure = |message: String| ToolExecutionStatus::Failure {
+            error: ToolExecutionError::new("exec_command", ToolErrorType::ExecutionError, message),
+        };
+
+        let generated =
+            vtcode_core::tools::error_messages::agent_execution::loop_detection_block_message("exec_command", 4, None);
+        assert!(is_loop_detection_status(&failure(generated)));
+
+        let stderr = "command failed: warning: loop detection skipped; Loop detection: see docs".to_string();
+        assert!(!is_loop_detection_status(&failure(stderr)));
+        let status = process_llm_tool_output(json!({
+            "error": {"message": "cargo: loop detection enabled for build graph"}
+        }));
+        assert!(!is_loop_detection_status(&status));
     }
 
     #[test]

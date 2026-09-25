@@ -118,6 +118,11 @@ pub(crate) async fn handle_input_commands(
                     SlashCommandControl::Continue => {
                         return Ok(CommandProcessingResult::ContinueLoop);
                     }
+                    SlashCommandControl::BackgroundCompletionHandled { completion_identity } => {
+                        return Ok(CommandProcessingResult::Outcome(InteractionOutcome::DirectBackgroundToolHandled {
+                            completion_identity,
+                        }));
+                    }
                     SlashCommandControl::BreakWithReason(reason) => {
                         return Ok(CommandProcessingResult::Outcome(InteractionOutcome::Exit { reason }));
                     }

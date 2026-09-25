@@ -15,8 +15,6 @@ brew install vtcode
 # Cargo
 cargo install vtcode
 
-# npm
-npm install -g @vinhnx/vtcode --registry=https://npm.pkg.github.com
 ```
 
 ## Quick Start
@@ -38,8 +36,6 @@ brew uninstall vtcode
 # Cargo
 cargo uninstall vtcode
 
-# npm
-npm uninstall -g @vinhnx/vtcode
 ```
 
 ## Verify
@@ -152,3 +148,13 @@ are separate — `/secret` manages API keys; `/login` manages OAuth.
 - Issues: https://github.com/vinhnx/vtcode/issues
 - [Full Installation Guide](./README.md)
 - [Technical Details](./NATIVE_INSTALLERS.md)
+
+## Conversation and file history
+
+| In-chat command | Action |
+| --- | --- |
+| `/rewind` | Pick a saved prompt and confirm restoring files and conversation together. |
+| `/redo` | Reverse the last rewind, including conversation. |
+| `/rewind-recover` | Recover after an interrupted rewind (pending-only; no-op without pending recovery, never touches redo). |
+
+New prompts are checkpointed automatically. See [checkpoint details](../development/filesnap-checkpoints.md).

@@ -1,3 +1,5 @@
+#[path = "session_loop_runner/background_completion.rs"]
+pub(crate) mod background_completion;
 pub(crate) mod compaction;
 pub(crate) mod context;
 mod finalization;

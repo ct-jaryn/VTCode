@@ -104,7 +104,7 @@ impl AtomicStats {
     fn snapshot(&self) -> ExecutorStats {
         let count = self.duration_count.load(Ordering::Relaxed);
         let total = self.total_duration_ms.load(Ordering::Relaxed);
-        let avg = if count > 0 { total / count } else { 0 };
+        let avg = total.checked_div(count).unwrap_or(0);
         ExecutorStats {
             total_calls: self.total_calls.load(Ordering::Relaxed),
             successful_calls: self.successful_calls.load(Ordering::Relaxed),

@@ -55,16 +55,15 @@ pub fn contains_dynamic_shell_syntax(command: &str) -> bool {
             Some(ShellQuote::Double) => match character {
                 '"' => quote = None,
                 '$' | '`' => return true,
-                '\\' => {
+                '\\'
                     // Backslash escapes inside double quotes are literal
                     // argument syntax. Consume the escaped character so an
                     // escaped quote cannot incorrectly end the quoted region;
                     // unquoted escapes remain rejected below because they can
                     // alter the command token or its shell structure.
-                    if characters.next().is_none() {
+                    if characters.next().is_none() => {
                         return true;
                     }
-                }
                 _ => {}
             },
             None => match character {

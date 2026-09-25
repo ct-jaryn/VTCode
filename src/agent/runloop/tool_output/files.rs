@@ -448,17 +448,17 @@ pub(crate) fn render_list_dir_output(renderer: &mut AnsiRenderer, val: &Value, _
             match sort_order {
                 "size" => {
                     // Sort by size (largest first), with None sizes treated as 0
-                    directories.sort_by(|a, b| b.1.unwrap_or(0).cmp(&a.1.unwrap_or(0)));
-                    files.sort_by(|a, b| b.1.unwrap_or(0).cmp(&a.1.unwrap_or(0)));
+                    directories.sort_by_key(|a| std::cmp::Reverse(a.1.unwrap_or(0)));
+                    files.sort_by_key(|a| std::cmp::Reverse(a.1.unwrap_or(0)));
                 }
                 "name" => {
                     // Sort alphabetically (case-insensitive for natural sorting)
-                    directories.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-                    files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                    directories.sort_by_key(|a| a.0.to_lowercase());
+                    files.sort_by_key(|a| a.0.to_lowercase());
                 }
                 "type" => {
                     // Sort by type/extension (files with extensions first, then by extension)
-                    directories.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                    directories.sort_by_key(|a| a.0.to_lowercase());
                     files.sort_by(|a, b| {
                         let ext_a = std::path::Path::new(&a.0)
                             .extension()
@@ -474,8 +474,8 @@ pub(crate) fn render_list_dir_output(renderer: &mut AnsiRenderer, val: &Value, _
                 }
                 _ => {
                     // Default to alphabetical sorting
-                    directories.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-                    files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                    directories.sort_by_key(|a| a.0.to_lowercase());
+                    files.sort_by_key(|a| a.0.to_lowercase());
                 }
             }
 

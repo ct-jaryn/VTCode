@@ -10,14 +10,24 @@ use std::fmt;
 
 /// Reasoning effort level string constants.
 pub mod constants {
-    pub(crate) const NONE: &str = "none";
-    pub(crate) const MINIMAL: &str = "minimal";
+    pub const NONE: &str = "none";
+    pub const MINIMAL: &str = "minimal";
     pub const LOW: &str = "low";
     pub const MEDIUM: &str = "medium";
     pub const HIGH: &str = "high";
     pub const XHIGH: &str = "xhigh";
     pub const MAX: &str = "max";
-    pub(crate) const ALLOWED_LEVELS: &[&str] = &[MINIMAL, LOW, MEDIUM, HIGH, XHIGH, MAX];
+    /// Every value [`super::ReasoningEffortLevel::parse`] accepts, in
+    /// ascending order. This is the single source list: tool schemas that
+    /// accept a reasoning effort override use it verbatim.
+    pub const PARSEABLE_LEVELS: &[&str] = &[NONE, MINIMAL, LOW, MEDIUM, HIGH, XHIGH, MAX];
+    /// Effort levels offered for configuration and selection: every
+    /// [`PARSEABLE_LEVELS`] entry except the leading `none`, which means
+    /// "send no reasoning configuration" rather than an effort level.
+    pub const ALLOWED_LEVELS: &[&str] = match PARSEABLE_LEVELS.split_first() {
+        Some((_none, levels)) => levels,
+        None => &[],
+    };
     pub const LABEL_LOW: &str = "Low";
     pub const LABEL_MEDIUM: &str = "Medium";
     pub const LABEL_HIGH: &str = "High";
@@ -128,5 +138,38 @@ mod tests {
         assert_eq!(ReasoningEffortLevel::parse("max"), Some(ReasoningEffortLevel::Max));
         assert_eq!(ReasoningEffortLevel::Max.as_str(), "max");
         assert!(ReasoningEffortLevel::allowed_values().contains(&"max"));
+    }
+
+    /// Every named level, with an exhaustive match so a new variant fails to
+    /// compile here until it is added to the level lists.
+    fn named_levels() -> Vec<ReasoningEffortLevel> {
+        use ReasoningEffortLevel::*;
+        let levels = vec![None, Minimal, Low, Medium, High, XHigh, Max];
+        for level in &levels {
+            match level {
+                None | Minimal | Low | Medium | High | XHigh | Max | Unknown => {}
+            }
+        }
+        levels
+    }
+
+    #[test]
+    fn parseable_levels_match_the_parser_in_both_directions() {
+        for value in constants::PARSEABLE_LEVELS {
+            let parsed = ReasoningEffortLevel::parse(value).unwrap_or_else(|| panic!("{value} must parse"));
+            assert_eq!(parsed.as_str(), *value);
+        }
+        let named = named_levels();
+        assert_eq!(named.len(), constants::PARSEABLE_LEVELS.len());
+        for level in named {
+            assert!(constants::PARSEABLE_LEVELS.contains(&level.as_str()), "{level} missing from PARSEABLE_LEVELS");
+        }
+        assert_eq!(ReasoningEffortLevel::parse("unknown"), None);
+    }
+
+    #[test]
+    fn allowed_levels_are_parseable_levels_without_none() {
+        assert_eq!(constants::PARSEABLE_LEVELS[0], constants::NONE);
+        assert_eq!(constants::ALLOWED_LEVELS, &constants::PARSEABLE_LEVELS[1..]);
     }
 }

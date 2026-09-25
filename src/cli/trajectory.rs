@@ -278,7 +278,7 @@ pub async fn handle_trajectory_command(_cfg: &CoreAgentConfig, file: Option<Path
                 (k.clone(), *ok, err, rate)
             })
             .collect();
-        tools.sort_by(|a, b| b.1.cmp(&a.1));
+        tools.sort_by_key(|a| Reverse(a.1));
         for (i, (name, ok, err, rate)) in tools.into_iter().take(top).enumerate() {
             let status = if rate >= 0.9 {
                 style("[OK]").green()

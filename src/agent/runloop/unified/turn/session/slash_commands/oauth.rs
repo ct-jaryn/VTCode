@@ -1,3 +1,4 @@
+use crate::agent::runloop::unified::session_setup::configured_anthropic_config;
 use anstyle::{AnsiColor, Color, Effects, Style as AnsiStyle};
 use anyhow::Result;
 use vtcode_auth::{
@@ -1063,7 +1064,7 @@ async fn sync_openai_runtime_if_active(ctx: &mut SlashCommandContext<'_>) -> Res
             prompt_cache: Some(ctx.config.prompt_cache.clone()),
             timeouts: None,
             openai: ctx.vt_cfg.as_ref().map(|cfg| cfg.provider.openai.clone()),
-            anthropic: None,
+            anthropic: configured_anthropic_config(ctx.vt_cfg.as_ref()),
             model_behavior: ctx.config.model_behavior.clone(),
             workspace_root: Some(ctx.config.workspace.clone()),
         },
@@ -1109,7 +1110,7 @@ async fn sync_copilot_runtime_if_active(ctx: &mut SlashCommandContext<'_>) -> Re
             prompt_cache: Some(ctx.config.prompt_cache.clone()),
             timeouts: None,
             openai: ctx.vt_cfg.as_ref().map(|cfg| cfg.provider.openai.clone()),
-            anthropic: None,
+            anthropic: configured_anthropic_config(ctx.vt_cfg.as_ref()),
             model_behavior: ctx.config.model_behavior.clone(),
             workspace_root: Some(ctx.config.workspace.clone()),
         },

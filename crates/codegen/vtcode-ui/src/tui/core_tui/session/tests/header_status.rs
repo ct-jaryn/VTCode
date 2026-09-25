@@ -189,6 +189,19 @@ fn permission_overlay_surfaces_action_required_status() {
 }
 
 #[test]
+fn reduced_motion_keeps_background_task_status_as_static_text() {
+    let mut session = fresh_session();
+    session.appearance.reduce_motion_mode = true;
+    session.set_background_activity_count(2);
+
+    let rendered = session.render_input_status_line(VIEW_WIDTH).expect("background status line");
+    let text = rendered.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+
+    assert!(text.contains("Running 2 background tasks..."), "background status should remain readable: {text}");
+    assert_eq!(rendered.spans[0].content.as_ref(), "Running 2 background tasks...");
+}
+
+#[test]
 fn header_meta_line_renders_active_primary_agent() {
     let mut session = fresh_session();
     session.header_context.primary_agent = Some("planner".to_string());
@@ -441,7 +454,7 @@ fn hidden_header_summary_combines_provider_model_and_styles_effort_label() {
     session.appearance.hide_header = true;
     session.apply_transcript_width(VIEW_WIDTH);
     session.header_context.provider = format!("{}mimo", ui::HEADER_PROVIDER_PREFIX);
-    session.header_context.model = format!("{}mimo-v2.5", ui::HEADER_MODEL_PREFIX);
+    session.header_context.model = format!("{}mimo-v2.6-pro", ui::HEADER_MODEL_PREFIX);
     session.header_context.reasoning = format!("{}medium", ui::HEADER_REASONING_PREFIX);
 
     let lines = session.header_lines();
@@ -449,8 +462,8 @@ fn hidden_header_summary_combines_provider_model_and_styles_effort_label() {
 
     let line = &lines[0];
     let summary = line_text(line);
-    assert!(summary.contains("Mimo Mimo-V2.5"));
-    assert!(!summary.contains("Mimo · Mimo-V2.5"));
+    assert!(summary.contains("Mimo Mimo-V2.6-Pro"));
+    assert!(!summary.contains("Mimo · Mimo-V2.6-Pro"));
     assert!(summary.contains("medium"));
 }
 
@@ -460,11 +473,11 @@ fn hidden_header_summary_live_reloads_model_changes() {
     session.appearance.hide_header = true;
     session.apply_transcript_width(VIEW_WIDTH);
     session.header_context.provider = format!("{}mimo", ui::HEADER_PROVIDER_PREFIX);
-    session.header_context.model = format!("{}mimo-v2.5", ui::HEADER_MODEL_PREFIX);
+    session.header_context.model = format!("{}mimo-v2.6-pro", ui::HEADER_MODEL_PREFIX);
     session.header_context.reasoning = format!("{}medium", ui::HEADER_REASONING_PREFIX);
 
     let initial = header_line_text(&mut session);
-    assert!(initial.contains("Mimo Mimo-V2.5"));
+    assert!(initial.contains("Mimo Mimo-V2.6-Pro"));
 
     let mut next_context = session.header_context.clone();
     next_context.provider = format!("{}moonshot", ui::HEADER_PROVIDER_PREFIX);
@@ -475,7 +488,7 @@ fn hidden_header_summary_live_reloads_model_changes() {
     let updated = header_line_text(&mut session);
     assert!(updated.contains("Moonshot Kimi-K2"));
     assert!(updated.contains("high"));
-    assert!(!updated.contains("Mimo Mimo-V2.5"));
+    assert!(!updated.contains("Mimo Mimo-V2.6-Pro"));
 }
 
 #[test]
@@ -488,13 +501,13 @@ fn hidden_header_summary_appears_after_width_set_post_measure() {
     let mut session = fresh_session();
     session.appearance.hide_header = true;
     session.header_context.provider = format!("{}mimo", ui::HEADER_PROVIDER_PREFIX);
-    session.header_context.model = format!("{}mimo-v2.5", ui::HEADER_MODEL_PREFIX);
+    session.header_context.model = format!("{}mimo-v2.6-pro", ui::HEADER_MODEL_PREFIX);
     session.header_context.reasoning = format!("{}medium", ui::HEADER_REASONING_PREFIX);
 
     // First frame's measure step: width is still 0, so the summary is omitted
     // and the line is cached.
     let first = header_line_text(&mut session);
-    assert!(!first.contains("Mimo Mimo-V2.5"), "width=0 header must omit the summary, got: {first}");
+    assert!(!first.contains("Mimo Mimo-V2.6-Pro"), "width=0 header must omit the summary, got: {first}");
 
     // Transcript widget sets the real width during render.
     session.apply_transcript_width(VIEW_WIDTH);
@@ -502,7 +515,7 @@ fn hidden_header_summary_appears_after_width_set_post_measure() {
     // The next read must reflect the now-known width without any keypress.
     let second = header_line_text(&mut session);
     assert!(
-        second.contains("Mimo Mimo-V2.5"),
+        second.contains("Mimo Mimo-V2.6-Pro"),
         "header summary should appear once transcript width is known, got: {second}"
     );
 }
@@ -531,7 +544,7 @@ fn header_context_updates_preserve_active_primary_agent_without_mode_badges() {
 
     let mut replacement = session.header_context.clone();
     replacement.provider = format!("{}mimo", ui::HEADER_PROVIDER_PREFIX);
-    replacement.model = format!("{}mimo-v2.5", ui::HEADER_MODEL_PREFIX);
+    replacement.model = format!("{}mimo-v2.6-pro", ui::HEADER_MODEL_PREFIX);
     replacement.reasoning = format!("{}low", ui::HEADER_REASONING_PREFIX);
     session.handle_command(InlineCommand::SetHeaderContext { context: Box::new(replacement) });
 

@@ -8,18 +8,23 @@
 pub mod agent_execution {
     /// Marker used when planning workflow blocks a mutating tool call.
     pub const PLANNING_DENIED_CONTEXT: &str = "tool denied by planning workflow";
-    /// Prefix for loop detection failures.
-    pub const LOOP_DETECTION_PREFIX: &str = "LOOP DETECTION";
-    /// Canonical action-required line for loop detection blocks.
+    /// Prefix for loop detection failures. Classify a failure with
+    /// [`is_loop_detection_block_message`], which matches the whole generated
+    /// shape, rather than searching for this prefix inside arbitrary text.
+    pub const LOOP_DETECTION_PREFIX: &str = "Loop detection";
+    const LOOP_BLOCK_TOOL_OPEN: &str = ": Tool '";
+    const LOOP_BLOCK_CALLED: &str = "' has been called ";
+    const LOOP_BLOCK_BLOCKED: &str = " times with identical parameters and is now blocked.";
+    /// Canonical line stating the consequence of a loop detection block.
     pub const LOOP_RETRY_BLOCKED_LINE: &str =
-        "ACTION REQUIRED: DO NOT retry this tool call. The tool execution has been prevented to avoid infinite loops.";
+        "The call was not executed, and repeating it with the same parameters will be blocked again.";
 
     /// Build the canonical Planning workflow denial message.
     pub fn planning_workflow_denial_message(tool_name: &str) -> String {
         format!(
             "Tool '{tool_name}' execution failed: tool denied by planning workflow\n\n\
-             This tool is MUTATING and blocked during planning.\n\n\
-             What you CAN do during planning:\n\
+             This tool can modify the workspace, so it is blocked during planning.\n\n\
+             Available during planning:\n\
              - Read files: exec_command with readonly shell inspection commands such as sed, rg, ls, find, and git show\n\
              - Run readonly commands: cargo check, cargo test, git status, ls, grep, find, diff\n\
              - Search code: exec_command with rg or other readonly search commands\n\
@@ -34,7 +39,7 @@ pub mod agent_execution {
     /// Build the canonical loop-detection block message.
     pub fn loop_detection_block_message(tool_name: &str, repeat_count: u64, original_error: Option<&str>) -> String {
         let mut message = format!(
-            "{LOOP_DETECTION_PREFIX}: Tool '{tool_name}' has been called {repeat_count} times with identical parameters and is now blocked.\n\n\
+            "{LOOP_DETECTION_PREFIX}{LOOP_BLOCK_TOOL_OPEN}{tool_name}{LOOP_BLOCK_CALLED}{repeat_count}{LOOP_BLOCK_BLOCKED}\n\n\
              {LOOP_RETRY_BLOCKED_LINE}\n\n\
              If you need the result from this tool:\n\
              1. Check if you already have the result from a previous successful call in your conversation history\n\
@@ -47,6 +52,25 @@ pub mod agent_execution {
         }
 
         message
+    }
+
+    /// Whether `message` is a block message built by
+    /// [`loop_detection_block_message`]: it must start with the exact
+    /// generated opening, `Loop detection: Tool '<name>' has been called <n>
+    /// times with identical parameters and is now blocked.`, so tool stderr
+    /// or prose that merely mentions loop detection is not classified.
+    pub fn is_loop_detection_block_message(message: &str) -> bool {
+        let Some(rest) = message
+            .strip_prefix(LOOP_DETECTION_PREFIX)
+            .and_then(|rest| rest.strip_prefix(LOOP_BLOCK_TOOL_OPEN))
+        else {
+            return false;
+        };
+        let Some((tool_name, rest)) = rest.split_once(LOOP_BLOCK_CALLED) else {
+            return false;
+        };
+        let count_len = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        !tool_name.is_empty() && count_len > 0 && rest[count_len..].starts_with(LOOP_BLOCK_BLOCKED)
     }
 
     /// Check whether an error string corresponds to planning workflow denial.
@@ -81,7 +105,7 @@ mod tests {
     fn test_agent_execution_message_helpers() {
         let planning_msg = agent_execution::planning_workflow_denial_message("write_file");
         assert!(agent_execution::is_planning_active_denial(&planning_msg));
-        assert!(planning_msg.contains("MUTATING"));
+        assert!(planning_msg.contains("blocked during planning"));
         assert!(planning_msg.contains("cargo check"));
         assert!(planning_msg.contains("exec_command"));
         assert!(planning_msg.contains("apply_patch"));
@@ -92,8 +116,28 @@ mod tests {
         assert!(!planning_msg.contains("DO NOT retry this tool or use /plan off"));
 
         let loop_msg = agent_execution::loop_detection_block_message("read_file", 3, Some("base error"));
-        assert!(loop_msg.contains("LOOP DETECTION"));
-        assert!(loop_msg.contains("DO NOT retry"));
+        assert!(loop_msg.starts_with(agent_execution::LOOP_DETECTION_PREFIX));
+        assert!(loop_msg.contains(agent_execution::LOOP_RETRY_BLOCKED_LINE));
         assert!(loop_msg.contains("Original error: base error"));
+        assert!(agent_execution::is_loop_detection_block_message(&loop_msg));
+    }
+
+    #[test]
+    fn loop_detection_classification_ignores_prose_mentions() {
+        use agent_execution::is_loop_detection_block_message;
+
+        let generated = agent_execution::loop_detection_block_message("mcp::fs::read", 12, None);
+        assert!(is_loop_detection_block_message(&generated));
+
+        for message in [
+            "warning: loop detection disabled for this target",
+            "Loop detection is off; running tests",
+            "stderr: Loop detection: Tool 'x' has been called 3 times with identical parameters and is now blocked.",
+            "Loop detection: Tool 'x' has been called many times with identical parameters and is now blocked.",
+            "Loop detection: Tool '' has been called 3 times with identical parameters and is now blocked.",
+            "LOOP DETECTION: Tool 'x' has been called 3 times with identical parameters and is now blocked.",
+        ] {
+            assert!(!is_loop_detection_block_message(message), "{message:?}");
+        }
     }
 }

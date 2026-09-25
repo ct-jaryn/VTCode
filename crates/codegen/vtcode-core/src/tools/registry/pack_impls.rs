@@ -31,12 +31,13 @@ use crate::tools::registry::pack::{ToolPack, batch_register};
 use crate::tools::registry::registration::ToolRegistration;
 use crate::tools::registry::{ToolInventory, ToolRegistry, native_cgp_tool_factory};
 use crate::tools::request_user_input::RequestUserInputTool;
-use crate::tools::web_fetch::{WEB_FETCH_DESCRIPTION, WebFetchTool};
+use crate::tools::web_fetch::{WEB_FETCH_DESCRIPTION, WebFetchTool, web_fetch_parameter_schema};
 use crate::tools::web_search::{WEB_SEARCH_DESCRIPTION, WebSearchTool};
 use serde_json::json;
 use vtcode_utility_tool_specs::{
-    agent_parameters, apply_patch_parameters, code_search_parameters, cron_parameters, exec_command_parameters,
-    list_files_parameters, mcp_parameters, search_tools_parameters, write_stdin_parameters,
+    AGENT_DESCRIPTION, EXEC_COMMAND_DESCRIPTION, MCP_DESCRIPTION, SEARCH_TOOLS_DESCRIPTION, agent_parameters,
+    apply_patch_parameters, code_search_parameters, cron_parameters, exec_command_parameters, list_files_parameters,
+    mcp_parameters, search_tools_parameters, write_stdin_parameters,
 };
 
 // ===========================================================================
@@ -71,9 +72,7 @@ impl ToolPack for HitlPack {
                 false,
                 ToolRegistry::memory_executor,
             )
-            .with_description(
-                "Access VT Code persistent memory files under /memories. Use action=view to list available notes before reading or updating; writes are limited to preferences.md, repository-facts.md, and notes/**. Returns file listing or file content.",
-            )
+            .with_description(native_memory::MEMORY_TOOL_DESCRIPTION)
             .with_parameter_schema(native_memory::parameter_schema())
             .with_permission(ToolPolicy::Allow),
             ToolRegistration::new(
@@ -170,33 +169,28 @@ impl ToolPack for MultiAgentPack {
         _plan_state: &PlanningWorkflowState,
         _tool_config: &ToolConfigSnapshot,
     ) {
-        let registrations = vec![ToolRegistration::new(
-            tools::AGENT,
-            CapabilityLevel::Basic,
-            false,
-            ToolRegistry::agent_executor,
-        )
-        .with_description(
-            "Spawn and steer delegated child agents. Use action=spawn to delegate a scoped task, action=spawn_subprocess for a managed background process, action=send_input to continue a child, action=resume to reopen a completed child, action=wait for results, or action=close to cancel a child. Use exec_command for one-shot shell commands.",
-        )
-        .with_parameter_schema(agent_parameters())
-        .with_aliases([
-            tools::SPAWN_AGENT,
-            tools::SPAWN_BACKGROUND_SUBPROCESS,
-            tools::SEND_INPUT,
-            tools::RESUME_AGENT,
-            tools::WAIT_AGENT,
-            tools::CLOSE_AGENT,
-            "delegate",
-            "subagent",
-            "background_subagent",
-            "launch_background_helper",
-            "message_agent",
-            "continue_agent",
-            "resume_subagent",
-            "wait_subagent",
-            "close_subagent",
-        ])];
+        let registrations = vec![
+            ToolRegistration::new(tools::AGENT, CapabilityLevel::Basic, false, ToolRegistry::agent_executor)
+                .with_description(AGENT_DESCRIPTION)
+                .with_parameter_schema(agent_parameters())
+                .with_aliases([
+                    tools::SPAWN_AGENT,
+                    tools::SPAWN_BACKGROUND_SUBPROCESS,
+                    tools::SEND_INPUT,
+                    tools::RESUME_AGENT,
+                    tools::WAIT_AGENT,
+                    tools::CLOSE_AGENT,
+                    "delegate",
+                    "subagent",
+                    "background_subagent",
+                    "launch_background_helper",
+                    "message_agent",
+                    "continue_agent",
+                    "resume_subagent",
+                    "wait_subagent",
+                    "close_subagent",
+                ]),
+        ];
         batch_register(inventory, registrations);
     }
 }
@@ -238,9 +232,7 @@ impl ToolPack for SearchPack {
                 false,
                 ToolRegistry::mcp_executor,
             )
-            .with_description(
-                "Discover and manage Model Context Protocol capabilities. Use action=search_tools to find tools, action=get_tool_details to fetch one schema, action=list_servers to inspect configured servers, or action=connect and action=disconnect to manage a named server. Do not disconnect a server while one of its tool calls is active.",
-            )
+            .with_description(MCP_DESCRIPTION)
             .with_parameter_schema(mcp_parameters())
             .with_permission(ToolPolicy::Allow)
             .with_aliases([
@@ -258,9 +250,7 @@ impl ToolPack for SearchPack {
                 false,
                 ToolRegistry::search_tools_executor,
             )
-            .with_description(
-                "Search the deferred local tool catalog by capability. Matching definitions are expanded deterministically for the next request segment.",
-            )
+            .with_description(SEARCH_TOOLS_DESCRIPTION)
             .with_parameter_schema(search_tools_parameters())
             .with_permission(ToolPolicy::Allow),
         ];
@@ -303,29 +293,7 @@ impl ToolPack for WebPack {
             ToolRegistration::from_tool_instance(tools::WEB_FETCH, CapabilityLevel::Basic, web_fetch)
                 .with_native_cgp_factory(web_fetch_factory)
                 .with_description(WEB_FETCH_DESCRIPTION)
-                .with_parameter_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "URL to fetch (HTTPS required by default)"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Question or instruction for analyzing the fetched content. Omit for a default summary."
-                        },
-                        "max_bytes": {
-                            "type": "integer",
-                            "description": "Maximum response body size in bytes (default: 500000). The default is generous — most pages including llms.txt fit easily. Only set this if you need to cap a very large page."
-                        },
-                        "timeout_secs": {
-                            "type": "integer",
-                            "description": "Request timeout in seconds (default: 30)"
-                        }
-                    },
-                    "required": ["url"],
-                    "additionalProperties": false
-                }))
+                .with_parameter_schema(web_fetch_parameter_schema())
                 .with_permission(ToolPolicy::Prompt)
                 .with_aliases(["fetch_url", "web"]),
             ToolRegistration::from_tool_instance(tools::WEB_SEARCH, CapabilityLevel::Basic, web_search)
@@ -402,9 +370,7 @@ impl ToolPack for ShellPack {
                 false,
                 ToolRegistry::exec_command_executor,
             )
-            .with_description(
-                "Use this to execute a shell command through the active sandbox policy and permission checks. Put normal shell tools such as ls, rg, find, cat, sed, awk, build tools, and test tools in cmd. Returns output, exit status, and a reusable session id when the command is still running.",
-            )
+            .with_description(EXEC_COMMAND_DESCRIPTION)
             .with_parameter_schema(exec_command_parameters())
             .with_permission(ToolPolicy::Allow),
             ToolRegistration::new(
@@ -539,17 +505,19 @@ impl ToolPack for EditingPack {
         _plan_state: &PlanningWorkflowState,
         _tool_config: &ToolConfigSnapshot,
     ) {
-        let registrations = vec![ToolRegistration::new(
-            tools::APPLY_PATCH,
-            CapabilityLevel::Editing,
-            false,
-            ToolRegistry::apply_patch_executor,
-        )
-        .with_description(crate::tools::apply_patch::with_semantic_anchor_guidance(
-            "Apply patches to files after permission checks. IMPORTANT: Use VT Code patch format (*** Begin Patch, *** Update File: path, @@ hunks with -/+ lines, *** End Patch), NOT standard unified diff (---/+++ format). Every patch path must be workspace-relative; never use absolute paths, `..`, or traversal-like forms.",
-        ))
-        .with_parameter_schema(apply_patch_parameters())
-        .with_permission(ToolPolicy::Prompt)];
+        let registrations = vec![
+            ToolRegistration::new(
+                tools::APPLY_PATCH,
+                CapabilityLevel::Editing,
+                false,
+                ToolRegistry::apply_patch_executor,
+            )
+            .with_description(crate::tools::apply_patch::with_semantic_anchor_guidance(
+                crate::tools::apply_patch::APPLY_PATCH_TOOL_DESCRIPTION,
+            ))
+            .with_parameter_schema(apply_patch_parameters())
+            .with_permission(ToolPolicy::Prompt),
+        ];
         batch_register(inventory, registrations);
     }
 }

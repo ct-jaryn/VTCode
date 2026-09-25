@@ -194,6 +194,19 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_commands_are_visible_and_suggested() {
+        let visible = visible_commands_for_terminal(TerminalType::Unknown);
+        let suggestions = suggestions_for_terminal("re", TerminalType::Unknown);
+        for name in ["rewind", "redo", "rewind-recover"] {
+            assert!(visible.iter().any(|command| command.name == name), "{name} must be visible");
+            assert!(suggestions.iter().any(|command| command.name == name), "{name} must be suggested");
+            assert_eq!(find_command(name).expect("checkpoint command").name, name);
+        }
+        assert_eq!(names_for("redo"), vec!["redo"]);
+        assert_eq!(names_for("rewind-re"), vec!["rewind-recover"]);
+    }
+
+    #[test]
     fn suggestions_include_new_interactive_mode_commands() {
         let names = names_for("task");
         assert_eq!(names, vec!["tasks"]);

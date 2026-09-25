@@ -51,8 +51,10 @@ the native `clear_at: "next_user_message"` field and the required
 without that capability promote the same text to their top-level system
 prompt. All remaining provider routes receive it through their native system,
 history, instructions, or transcript mapping, without the Anthropic-only
-`clear_at` field. VT Code keeps one typed marker in canonical session history
-so provider switching and replay preserve the disclosure. This tells the model
+`clear_at` field; those routes receive only the latest copy. VT Code keeps one
+typed marker per user turn in canonical session history and never moves or
+deletes a copy that was already sent, so provider switching and replay
+preserve the disclosure and every request stays append-only. This tells the model
 when it must quote or summarize output for the user; it does not expose raw
 provider reasoning or replace the complete output retained by Transcript
 Review.
@@ -60,8 +62,8 @@ Review.
 In compact mode, PTY commands keep their complete capture and grouped completion row without emitting a transient live PTY block. Progress remains available through the active status/spinner, while warnings, failures, diffs, stderr, and meaningful artifacts stay inline. Expanded mode preserves the bounded live tail.
 
 Model-facing progress guidance complements these UI summaries: for non-trivial
-tool work, the model may give one or two concise sentences when the phase or
-next action changes, and ends with a standalone recap. Structured tool-call
+tool work, the model updates only on findings, direction changes, or
+blockers, and ends with an outcome-first summary. Structured tool-call
 events are the authoritative status signal. The model should summarize
 material findings instead of rerunning a command whose successful body is
 available through Transcript Review.
@@ -70,10 +72,43 @@ The runtime mode can be changed for the current session with `Alt+T`. This actio
 
 Explicit `expanded` mode preserves the existing per-call summary and live-output layout.
 
+## Exec-session calls (`write_stdin` and the session readers)
+
+Exec-session calls repeat on every poll or wait of a long command, so their
+transcript rows stay minimal: the session identity plus an explicit wait
+deadline is the only parameter row shown (`└ Session run-2d5752f2 · wait 600s`),
+and the generic stream label is dropped next to it so the header reads
+`• Send command input` instead of appending `Use write_stdin output`.
+Output-token caps, yield windows, and the raw stdin payload are not rendered;
+the model still receives the full arguments and result.
+
+The captured stdin/stdout body is capped at 10 visible rows, taken from the
+tail, followed by the same `… +N lines (/share html for full transcript)` notice
+used for bounded command previews. A session body is terminal text, so it renders
+plain in the subdued PTY body color from the active theme: git-diff detection and
+`LS_COLORS` per-line styling are skipped, because both misfire on build logs
+(`PASS … .rs` picked up file-type colors). The spooled branch already bounds to
+six rows (three head, three tail). Complete output stays in the session-local
+Transcript Review and the spool file referenced in the spool message; only the
+rendered preview is bounded.
+
+The redundant stream label is only dropped for the generic capture label
+(`output`), which repeats the body already shown below the row. Diagnostic labels
+(`error`, `stderr`, `stdout`, `stdio`) survive so a failed session read does not
+lose its failure signal on the header.
+
+`• Ran` headers for long commands head-truncate at a word boundary with a single
+trailing ellipsis, sharing `preview_command` between the summary headline and the
+command line so a path is never cut in half (`…crates/…onfig/…`).
+
+Command launches (`exec_command`, `unified_exec` action `run`, `run_pty_cmd`)
+are unaffected: they keep the `• Ran …` header and the three-line head plus
+three-line tail command preview.
+
 ## Model-visible tool output budget
 
 Tool-result previews copied into provider-facing history share an
-aggregate budget per turn (32 KiB execution, 96 KiB planning). The existing per-result spool limit still applies;
+aggregate budget per turn (64 KiB execution, 96 KiB planning). The existing per-result spool limit still applies;
 when the aggregate budget is exhausted, later results expose only bounded
 metadata such as the tool name, spool path, byte count, completion state, and a
 short note. Complete output remains in the internal spool and current-session
@@ -89,7 +124,7 @@ commands remain fail-closed; they cannot opt out of normal spooling.
 
 | Signal | Expected behavior | Where it is defined |
 | --- | --- | --- |
-| `preview_budget_exhausted` | Trust preserved metadata, run one `&&` verifier, then synthesize; never repeat an equivalent call | `generate_tool_guidelines` in `crates/codegen/vtcode-core/src/prompts/guidelines.rs` |
+| `preview_budget_exhausted` | Trust preserved metadata, run one `&&` verifier, then synthesize; never repeat an equivalent call | `RUNTIME_GUIDANCE_SECTION` in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs` |
 | `turn.blocked` | Resumable stop with streak and counter metadata; one tool-free synthesis, then checkpoint resume | `ThreadEvent::TurnBlocked` in `crates/common/vtcode-exec-events`, `docs/guides/agent-loop-contract.md` |
 | Mid-execution replan | Keep scopes, add falsifiers, continue the run on existing `plan.delta` events | `docs/guides/planning-workflow.md` |
 

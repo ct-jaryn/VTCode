@@ -49,6 +49,7 @@ use vtcode_core::{
 use crate::startup::take_search_tools_bundle_notice;
 use crate::updater::{Updater, append_notice_highlight};
 use vtcode_config::MiMoAuthMethod;
+use vtcode_config::core::AnthropicConfig;
 use vtcode_config::models::detect_mimo_auth_method;
 
 #[cfg(test)]
@@ -143,6 +144,17 @@ pub(crate) async fn initialize_session(
         session_primary_agent_override,
     )
     .await?;
+    complete_session_registry(
+        &mut session_state,
+        config,
+        vt_cfg,
+        full_auto,
+        primary_agent_explicitly_configured,
+        resume,
+        parent_session_id,
+        session_primary_agent_override,
+    )
+    .await?;
     let mut context_manager = ContextManager::new(
         session_state.base_system_prompt.clone(),
         (),
@@ -167,19 +179,19 @@ pub(crate) async fn initialize_session(
 
 /// Critical-path session state required to spawn the TUI.
 ///
-/// Completes provider construction, one primary-agent discovery pass, a
-/// lightweight tool registry, resume history, and cheap bootstrap metadata.
-/// Full tool catalog projection, system-prompt composition, subagent
-/// controller creation, CGP wiring, and MCP reconfigure run in
-/// [`hydrate_session_runtime`] after first paint.
+/// Registry-light critical path: provider construction, resume history, and
+/// cheap bootstrap metadata only. `ToolRegistry` construction and subagent
+/// discovery run in [`complete_session_registry`] after first paint; full tool
+/// catalog projection, system-prompt composition, subagent controller
+/// creation, CGP wiring, and MCP reconfigure run in [`hydrate_session_runtime`].
 pub(crate) async fn initialize_session_critical(
     config: &CoreAgentConfig,
     vt_cfg: Option<&VTCodeConfig>,
-    full_auto: bool,
-    primary_agent_explicitly_configured: bool,
+    _full_auto: bool,
+    _primary_agent_explicitly_configured: bool,
     resume: Option<&ResumeSession>,
-    parent_session_id: &str,
-    session_primary_agent_override: Option<&str>,
+    _parent_session_id: &str,
+    _session_primary_agent_override: Option<&str>,
 ) -> Result<SessionState> {
     if let Some(cfg) = vt_cfg {
         if let Err(err) = apply_global_notification_config_from_vtcode(cfg) {
@@ -227,51 +239,13 @@ pub(crate) async fn initialize_session_critical(
         mcp_events::McpPanelState::default()
     };
 
-    // Overlap the two heavy I/O builders on the critical path: registry
-    // construction (builtin packs, no policy file read) and workspace/plugin
-    // agent discovery. Both are required before first paint (lightweight
-    // registry + plugin-aware primary-agent selection), but they are
-    // independent of each other. The registry reuses the already-loaded
-    // session config so it does not pay a second workspace TOML parse on the
-    // paint path; the policy manager attaches in hydration.
-    let workspace_for_registry = config.workspace.clone();
-    let workspace_for_discovery = config.workspace.clone();
-    let vt_cfg_snapshot = vt_cfg.cloned();
-    let (tool_registry, discovered) = tokio::join!(
-        async move {
-            if let Some(snapshot) = vt_cfg_snapshot.as_ref() {
-                ToolRegistry::new_for_first_paint_with_loaded_config(workspace_for_registry, snapshot).await
-            } else {
-                ToolRegistry::new(workspace_for_registry).await
-            }
-        },
-        async move { vtcode_core::subagents::discover_controller_subagents(&workspace_for_discovery).await },
-    );
-    let tool_registry = tool_registry;
-    tool_registry.set_harness_session(parent_session_id.to_string());
-
-    // Archive metadata is authoritative when resuming an existing thread.
-
-    // One workspace+plugin discovery pass on the critical path, matching the
-    // controller's discovery input so primary-agent selection (hooks, header)
-    // is not computed from a plugin-blind subset. Subagent controller
-    // construction still happens during hydration.
-    let resumed_primary_agent = resume
-        .and_then(|r| r.snapshot().metadata.primary_agent.clone())
-        .or_else(|| session_primary_agent_override.map(str::to_owned));
-    let discovered =
-        discovered.with_context(|| format!("Failed to discover primary agents in {}", config.workspace.display()))?;
-    let active_primary_agent = active_primary_agent_from_specs_for_mode(
-        &discovered.effective,
-        vt_cfg,
-        full_auto,
-        primary_agent_explicitly_configured,
-        resumed_primary_agent.clone(),
-    )?;
-
-    let tool_catalog = tool_registry.tool_catalog_state();
+    // Registry-light critical path: `ToolRegistry` and workspace/plugin
+    // discovery run in `complete_session_registry` after first paint. The
+    // painted shell only needs bootstrap chrome and a typeable input.
     let tools = Arc::new(RwLock::new(Vec::new()));
-    tool_registry.attach_session_model_tools(tools.clone());
+    let tool_catalog = Arc::new(ToolCatalogState::new());
+    // Config/default primary agent until discovery re-drives the header.
+    let active_primary_agent = vtcode_core::primary_agent::ActivePrimaryAgentState::default();
 
     let tool_result_cache = Arc::new(RwLock::new(ToolResultCache::new(128)));
     let tool_permission_cache = Arc::new(RwLock::new(ToolPermissionCache::new()));
@@ -291,12 +265,10 @@ pub(crate) async fn initialize_session_critical(
     ];
     let approval_recorder = Arc::new(ApprovalRecorder::new_deferred(cache_dir, legacy_cache_dirs));
     let permissions_state = Arc::new(RwLock::new(vt_cfg.map(|cfg| cfg.permissions.clone()).unwrap_or_default()));
-    let circuit_breaker = Arc::new(vtcode_core::tools::circuit_breaker::CircuitBreaker::with_metrics(
+    let circuit_breaker = Arc::new(vtcode_core::tools::circuit_breaker::CircuitBreaker::new(
         vtcode_config_circuit_breaker_to_core(vt_cfg, config),
-        tool_registry.metrics_collector(),
     ));
-    tool_registry.set_shared_circuit_breaker(circuit_breaker.clone());
-    let shared_safety_gateway = tool_registry.safety_gateway();
+    let shared_safety_gateway = Arc::new(vtcode_core::tools::safety_gateway::SafetyGateway::new());
 
     // Seed prompt only; full composition runs after first paint.
     let base_system_prompt = fallback_base_system_prompt(vt_cfg).to_string();
@@ -305,7 +277,7 @@ pub(crate) async fn initialize_session_critical(
         session_bootstrap,
         startup_update_check,
         provider_client,
-        tool_registry,
+        tool_registry: None,
         tools,
         tool_catalog,
         conversation_history,
@@ -341,8 +313,68 @@ pub(crate) async fn initialize_session_critical(
         mcp_panel_state,
         loaded_skills: skill_setup.active_skills_map,
         active_primary_agent,
-        discovered_subagents: Some(discovered),
+        discovered_subagents: None,
     })
+}
+
+/// Build `ToolRegistry` and run workspace/plugin discovery after first paint.
+pub(crate) async fn complete_session_registry(
+    session_state: &mut SessionState,
+    config: &CoreAgentConfig,
+    vt_cfg: Option<&VTCodeConfig>,
+    full_auto: bool,
+    primary_agent_explicitly_configured: bool,
+    resume: Option<&ResumeSession>,
+    parent_session_id: &str,
+    session_primary_agent_override: Option<&str>,
+) -> Result<()> {
+    let registry_phase = vtcode_commons::startup_trace::phase_started();
+    let workspace_for_registry = config.workspace.clone();
+    let workspace_for_discovery = config.workspace.clone();
+    let vt_cfg_snapshot = vt_cfg.cloned();
+    let (tool_registry, discovered) = tokio::join!(
+        async move {
+            if let Some(snapshot) = vt_cfg_snapshot.as_ref() {
+                ToolRegistry::new_for_first_paint_with_loaded_config(workspace_for_registry, snapshot).await
+            } else {
+                ToolRegistry::new(workspace_for_registry).await
+            }
+        },
+        async move { vtcode_core::subagents::discover_controller_subagents(&workspace_for_discovery).await },
+    );
+    let tool_registry = tool_registry;
+    tool_registry.set_harness_session(parent_session_id.to_string());
+
+    let resumed_primary_agent = resume
+        .and_then(|r| r.snapshot().metadata.primary_agent.clone())
+        .or_else(|| session_primary_agent_override.map(str::to_owned));
+    let discovered =
+        discovered.with_context(|| format!("Failed to discover primary agents in {}", config.workspace.display()))?;
+    let active_primary_agent = active_primary_agent_from_specs_for_mode(
+        &discovered.effective,
+        vt_cfg,
+        full_auto,
+        primary_agent_explicitly_configured,
+        resumed_primary_agent.clone(),
+    )?;
+
+    let tools = session_state.tools.clone();
+    tool_registry.attach_session_model_tools(tools.clone());
+    // Rebuild the shared breaker with registry metrics now that it exists.
+    let circuit_breaker = Arc::new(vtcode_core::tools::circuit_breaker::CircuitBreaker::with_metrics(
+        vtcode_config_circuit_breaker_to_core(vt_cfg, config),
+        tool_registry.metrics_collector(),
+    ));
+    tool_registry.set_shared_circuit_breaker(circuit_breaker.clone());
+    session_state.execution.circuit_breaker = circuit_breaker;
+    session_state.execution.safety_validator =
+        Arc::new(ToolCallSafetyValidator::with_gateway(tool_registry.safety_gateway()));
+    session_state.tool_catalog = tool_registry.tool_catalog_state();
+    session_state.tool_registry = Some(tool_registry);
+    session_state.active_primary_agent = active_primary_agent;
+    session_state.discovered_subagents = Some(discovered);
+    vtcode_commons::startup_trace::record_phase("session_setup_registry", registry_phase);
+    Ok(())
 }
 
 /// Finish session runtime setup after the TUI first frame.
@@ -416,7 +448,9 @@ pub(crate) async fn hydrate_session_runtime(
 
     let deferred_tool_policy = active_deferred_tool_policy(config, vt_cfg, &*session_state.provider_client);
 
-    let tool_registry = &mut session_state.tool_registry;
+    let Some(tool_registry) = session_state.tool_registry.as_mut() else {
+        anyhow::bail!("session hydration requires the post-paint tool registry (complete_session_registry)");
+    };
     // Attach the workspace policy manager skipped on the paint path before any
     // tool runs; evaluation fails open to metadata defaults until then.
     tool_registry.ensure_workspace_policy_manager(&config.workspace).await;
@@ -779,12 +813,22 @@ pub(crate) fn create_provider_client(
             prompt_cache: Some(config.prompt_cache.clone()),
             timeouts: None,
             openai: vt_cfg.map(|cfg| cfg.provider.openai.clone()),
-            anthropic: vt_cfg.map(|cfg| cfg.provider.anthropic.clone()),
+            anthropic: configured_anthropic_config(vt_cfg),
             model_behavior: vt_cfg.map(|cfg| cfg.model.clone()),
             workspace_root: Some(config.workspace.clone()),
         },
     )
     .context("Failed to initialize provider client")
+}
+
+/// `[provider.anthropic]` settings for a runtime provider client.
+///
+/// The startup client and every client rebuilt mid-session (model switch, API
+/// key update, OAuth sync) read the Anthropic section through this helper, so a
+/// rebuilt client keeps the thinking, advisor, fallback, and budget settings
+/// the startup client had instead of silently reverting to defaults.
+pub(crate) fn configured_anthropic_config(vt_cfg: Option<&VTCodeConfig>) -> Option<AnthropicConfig> {
+    vt_cfg.map(|cfg| cfg.provider.anthropic.clone())
 }
 
 pub(crate) fn active_deferred_tool_policy(
@@ -908,6 +952,24 @@ async fn apply_workspace_trust_prompt_policy(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn critical_path_avoids_registry_and_discovery() {
+        let src = include_str!("init.rs");
+        // Use full source: a #[cfg(test)] helper sits above initialize_session_critical.
+        let production = src;
+        let start = production
+            .find("pub(crate) async fn initialize_session_critical")
+            .expect("critical present");
+        let end = production
+            .find("pub(crate) async fn complete_session_registry")
+            .expect("completer present");
+        let critical = &production[start..end];
+        for forbidden in ["ToolRegistry::new", "discover_controller_subagents"] {
+            assert!(!critical.contains(forbidden), "critical must not call {forbidden}");
+        }
+        assert!(production.contains("session_setup_registry"), "completer emits phase");
+    }
+
     use std::collections::BTreeMap;
 
     use clap::Parser;
@@ -1085,6 +1147,9 @@ mod tests {
             Some(cfg.agent.clone()),
         );
         context_manager.set_workspace_root(&runtime_config.workspace);
+        complete_session_registry(&mut critical, &runtime_config, Some(&cfg), false, false, None, "test-hydrate", None)
+            .await
+            .expect("complete registry");
         hydrate_session_runtime(
             &mut critical,
             &mut context_manager,
@@ -1169,6 +1234,9 @@ mod tests {
             Some(cfg.agent.clone()),
         );
         context_manager.set_workspace_root(&runtime_config.workspace);
+        complete_session_registry(&mut critical, &runtime_config, Some(&cfg), false, false, None, "test-hydrate", None)
+            .await
+            .expect("complete registry");
         hydrate_session_runtime(
             &mut critical,
             &mut context_manager,
@@ -1215,10 +1283,13 @@ mod tests {
             initialize_session_critical(&runtime_config, Some(&cfg), false, false, None, "test-reuse", None)
                 .await
                 .expect("critical session");
+        complete_session_registry(&mut critical, &runtime_config, Some(&cfg), false, false, None, "test-reuse", None)
+            .await
+            .expect("complete registry");
         let critical_names = critical
             .discovered_subagents
             .as_ref()
-            .expect("critical must cache discovery")
+            .expect("complete_session_registry must cache discovery")
             .effective
             .iter()
             .map(|spec| spec.name.clone())
@@ -1247,6 +1318,8 @@ mod tests {
 
         let controller = critical
             .tool_registry
+            .as_ref()
+            .expect("registry")
             .subagent_controller()
             .expect("controller when subagents enabled");
         let controller_names = controller
@@ -1286,7 +1359,7 @@ mod tests {
             initialize_session_critical(&runtime_config, Some(&cfg), false, false, None, "test-defer-policy", None)
                 .await
                 .expect("critical session");
-        assert!(!critical.tool_registry.has_policy_manager().await, "critical path must skip policy file I/O");
+        assert!(critical.tool_registry.is_none(), "critical path must not build a tool registry before first paint");
 
         let mut context_manager = ContextManager::new(
             critical.base_system_prompt.clone(),
@@ -1295,6 +1368,9 @@ mod tests {
             Some(cfg.agent.clone()),
         );
         context_manager.set_workspace_root(&runtime_config.workspace);
+        complete_session_registry(&mut critical, &runtime_config, Some(&cfg), false, false, None, "test-hydrate", None)
+            .await
+            .expect("complete registry");
         hydrate_session_runtime(
             &mut critical,
             &mut context_manager,
@@ -1309,7 +1385,12 @@ mod tests {
         .await
         .expect("hydrate session");
         assert!(
-            critical.tool_registry.has_policy_manager().await,
+            critical
+                .tool_registry
+                .as_ref()
+                .expect("hydrated registry")
+                .has_policy_manager()
+                .await,
             "hydration must attach the policy manager before the first turn"
         );
     }
@@ -1356,6 +1437,9 @@ mod tests {
             Some(cfg.agent.clone()),
         );
         context_manager.set_workspace_root(&runtime_config.workspace);
+        complete_session_registry(&mut critical, &runtime_config, Some(&cfg), false, false, None, "test-hydrate", None)
+            .await
+            .expect("complete registry");
         hydrate_session_runtime(
             &mut critical,
             &mut context_manager,

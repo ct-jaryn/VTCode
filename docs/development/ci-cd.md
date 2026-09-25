@@ -313,7 +313,7 @@ cargo clippy -- -W clippy::all
 
 ```bash
 cargo msrv --workspace
-cargo msrv --workspace set 1.93.0  # Set specific version
+cargo msrv --workspace set 1.98.1  # Set specific version
 ```
 
 #### Dependency issues

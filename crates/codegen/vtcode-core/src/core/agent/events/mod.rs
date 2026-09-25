@@ -859,6 +859,12 @@ impl ExecEventRecorder {
                 attempt,
                 error_category,
                 duration_ms: None,
+                task_id: None,
+                session_id: None,
+                exec_session_id: None,
+                status: None,
+                transcript_path: None,
+                archive_path: None,
             })),
         };
         self.record(ThreadEvent::ItemCompleted(ItemCompletedEvent { item }));
@@ -888,6 +894,12 @@ impl ExecEventRecorder {
                 attempt: Some(attempts),
                 error_category: error_category.map(str::to_string),
                 duration_ms: Some(duration_ms),
+                task_id: None,
+                session_id: None,
+                exec_session_id: None,
+                status: None,
+                transcript_path: None,
+                archive_path: None,
             })),
         };
         self.record(ThreadEvent::ItemCompleted(ItemCompletedEvent { item }));

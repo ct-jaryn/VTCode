@@ -346,7 +346,10 @@ impl ContextManager {
         Cow::Owned(normalized)
     }
 
-    pub(crate) fn request_editor_context_message(&self) -> Option<uni::Message> {
+    /// The `## Active Editor Context` block for the current snapshot, when IDE
+    /// context injection is enabled for its provider family. The request
+    /// builder persists it in history only when it changes.
+    pub(crate) fn request_editor_context_block(&self) -> Option<String> {
         let ide_context_config = self.effective_ide_context_config();
         if !ide_context_config.enabled || !ide_context_config.inject_into_prompt {
             return None;
@@ -359,7 +362,7 @@ impl ContextManager {
             .filter(|snapshot| ide_context_config.allows_provider_family(snapshot.provider_family))
             .and_then(|snapshot| snapshot.prompt_block(workspace, ide_context_config.include_selection_text))?;
 
-        Some(uni::Message::user(block))
+        Some(block)
     }
 
     fn active_instruction_directory(&self) -> Option<PathBuf> {

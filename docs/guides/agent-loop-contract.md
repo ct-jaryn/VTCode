@@ -173,11 +173,11 @@ typed marker remains in canonical history for provider switching and replay.
 ### User-facing progress updates
 
 The model-facing runtime contract is intentionally separate from provider
-native reasoning. For non-trivial tool work, the model may provide concise
-progress updates when the phase or next action changes, and ends with a
-standalone recap of findings, changes, verification, and next steps. Structured
-tool-call events are the authoritative status signal. It must not narrate every
-tool call or expose hidden chain-of-thought. When compact UI hides successful
+native reasoning. The model states in one sentence what it will do, updates
+only on findings, direction changes, or blockers, and ends with the outcome
+first, then what changed, what it checked, and anything the user must do.
+Structured tool-call events are the authoritative status signal. It must not
+narrate every tool call. When compact UI hides successful
 output, it should summarize material findings in those visible updates or the
 final reply instead of rerunning commands solely to display output; complete
 evidence remains available through Transcript Review.
@@ -409,6 +409,17 @@ returned session ID is reusable for a later wait. Wait time is excluded from
 the ordinary per-turn harness wall-clock budget, while cancellation, shutdown,
 safety policy, and the configured long-running-command ceiling remain active.
 
+Managed background subprocess completion and user-launched background exec
+completion are delivered independently of that explicit wait. The controller
+persists managed terminal state before publishing its bounded payload; the raw
+exec watcher publishes the user-session terminal signal after confirmed exit.
+The run loop can therefore trust the status and exit code without a manual poll.
+It drains these events only at a safe boundary: active turns defer them, queued
+user input takes precedence, and an idle loop schedules at most one follow-up
+reasoning turn. Direct commands update state and transcript without creating an
+unrelated autonomous turn. The canonical `ThreadEvent` item is
+`background_subprocess_completed` (event schema 0.16.0).
+
 When a turn ends while a foreground `run-*` exec session is still running, the next turn
 start injects a bounded resume hint (`Exec session resume:`, at most 4 sessions
 newest first, per-command display truncated to 160 bytes, single-session hint
@@ -417,7 +428,7 @@ under 1 KiB) with a pre-filled `write_stdin {"session_id", "action": "wait",
 normal next-turn and session restore/resume, so a compacted session needs zero
 identity reconstruction. `wait`/`inspect` stay exempt from the per-turn
 tool-call budget. Turn-end `SnapshotTurnDiagnostics.in_progress_exec_sessions`
-and `turn.completed.in_progress_exec_sessions` (schema 0.15.0, bounded to 4)
+and `turn.completed.in_progress_exec_sessions` (schema 0.16.0, bounded to 4)
 record all live ids, including retained background sessions; the resume hint
 uses the foreground subset. See invariant #22 in
 `docs/harness/ARCHITECTURAL_INVARIANTS.md` and the agent-facing settle shape in
@@ -456,7 +467,7 @@ PTY/session actions, polling, and stdin writes remain sequential. Both runloops
 honor `max_parallel_tool_calls` and trace the configured limit, admitted calls,
 group count, parallel-group count, and maximum group size.
 
-Across a turn, provider-visible tool previews are capped at 32 KiB execution
+Across a turn, provider-visible tool previews are capped at 64 KiB execution
 (96 KiB planning). The
 budget is enforced twice: at the tool-registry output boundary (which charges
 each response's payload bodies and truncates or strips them, marked with
@@ -469,8 +480,15 @@ model received. Replacing an in-progress result with its terminal result does
 not double-count suppression. Once that
 aggregate budget is exhausted, VTCode retains bounded outcome and control
 metadata while omitting payload bodies. A successful verifier therefore stays
-authoritative without encouraging duplicate reads or checks. Blocker live
-pointers are cleared only by the session that created them; archived blocker
+authoritative without encouraging duplicate reads or checks.
+
+Preview-gate rejections from parallel inspections count as one assistant batch;
+the agent gets one response to page a known spool, edit from visible evidence,
+verify, or finish. A second blind-inspection batch without an admitted tool
+between them triggers bounded
+tool-free recovery. The preview gate does not revoke access to all tools.
+
+Blocker live pointers are cleared only by the session that created them; archived blocker
 files remain self-contained, append a durable resolution marker before pointer
 cleanup, and do not claim ownership of the workspace-global task tracker. An
 ordinary user exit after a completed non-fallback turn is reported as successful

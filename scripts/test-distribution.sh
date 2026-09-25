@@ -37,15 +37,6 @@ check_cargo() {
     print_success "Cargo is available"
 }
 
-# Function to check if npm is available
-check_npm() {
-    if ! command -v npm &> /dev/null; then
-        print_warning "npm is not available - npm distribution won't work"
-        return 1
-    fi
-    print_success "npm is available"
-}
-
 # Function to validate Cargo.toml metadata
 validate_cargo_toml() {
     print_info "Validating Cargo.toml metadata..."
@@ -102,48 +93,6 @@ test_build() {
     print_success "Build successful"
 }
 
-# Function to validate npm package
-validate_npm_package() {
-    print_info "Validating npm package..."
-
-    if [[ ! -f "npm/package.json" ]]; then
-        print_error "npm package.json not found"
-        return 1
-    fi
-
-    if [[ ! -f "npm/README.md" ]]; then
-        print_error "npm README.md not found"
-        return 1
-    fi
-
-    if [[ ! -f "npm/scripts/postinstall.js" ]]; then
-        print_error "npm postinstall script not found"
-        return 1
-    fi
-
-    if [[ ! -f "npm/bin/vtcode" ]]; then
-        print_error "npm bin script not found"
-        return 1
-    fi
-
-    # Test npm package structure
-    local original_dir=$(pwd)
-    cd npm || {
-        print_error "Failed to change to npm directory"
-        return 1
-    }
-
-    # Validate package.json structure (not version)
-    if ! node -e "const pkg = require('./package.json'); if (!pkg.name || !pkg.description) throw new Error('Invalid package.json');" &>/dev/null; then
-        print_error "npm package.json structure invalid"
-        cd "$original_dir"
-        return 1
-    fi
-
-    cd "$original_dir"
-    print_success "npm package structure is valid"
-}
-
 # Function to check GitHub Actions workflows
 validate_workflows() {
     print_info "Validating GitHub Actions workflows..."
@@ -173,14 +122,12 @@ main() {
     local errors=0
 
     check_cargo || ((errors++))
-    check_npm || true  # Don't fail if npm not available
 
     validate_cargo_toml || ((errors++))
     validate_vtcode_core_toml || ((errors++))
 
     test_build || ((errors++))
 
-    validate_npm_package || ((errors++))
     validate_workflows || ((errors++))
 
     echo

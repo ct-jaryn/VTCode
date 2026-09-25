@@ -49,7 +49,7 @@ pub fn probe_and_cache_terminal_palette_harmony() {
             return;
         }
 
-        let timeout = Duration::from_millis(200);
+        let timeout = Duration::from_millis(50);
         match probe_terminal_colors(timeout) {
             Ok(result) => {
                 // The Contour color-scheme report is an explicit answer from the
@@ -311,6 +311,16 @@ fn lightness((r, g, b): (u8, u8, u8)) -> f64 {
     0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b)
 }
 
+/// Set when crossterm takes over the TTY so a late probe restore is a no-op.
+#[cfg(unix)]
+static CROSSTERM_OWNS_RAW_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark the TTY as owned by crossterm raw mode (probe restore becomes a no-op).
+#[cfg(unix)]
+pub fn note_crossterm_raw_mode() {
+    CROSSTERM_OWNS_RAW_MODE.store(true, std::sync::atomic::Ordering::Release);
+}
+
 #[cfg(unix)]
 struct RawModeGuard {
     tty: File,
@@ -333,6 +343,11 @@ impl RawModeGuard {
 #[cfg(unix)]
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        // If crossterm already enabled raw mode, restoring the pre-probe
+        // termios would undo terminal setup. Skip restore in that case.
+        if CROSSTERM_OWNS_RAW_MODE.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         let _ = termios::tcsetattr(&self.tty, SetArg::TCSANOW, &self.original);
     }
 }
@@ -406,3 +421,7 @@ mod tests {
         assert_eq!(parse_scheme_report(response), Some(ColorScheme::Light));
     }
 }
+
+#[cfg(not(unix))]
+/// No-op on non-unix: the probe does not touch termios there.
+pub fn note_crossterm_raw_mode() {}

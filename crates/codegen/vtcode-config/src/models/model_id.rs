@@ -29,6 +29,10 @@ pub enum ModelId {
     // OpenAI models
     /// GPT-6 Astra - Most capable model for hardest end-to-end work with complex reasoning, coding, computer use, and research
     GPT6Astra,
+    /// GPT-6 Sol - Cost-efficient high-end model in the GPT-6 series for demanding professional work
+    GPT6Sol,
+    /// GPT-6 Luna - Fast cost-efficient model in the GPT-6 series for high-volume latency-sensitive workloads
+    GPT6Luna,
     /// GPT-5.6 Sol - Frontier model for complex professional work in the GPT-5.6 family
     GPT56Sol,
     /// GPT-5.6 Terra - GPT-5.6 model that balances intelligence and cost
@@ -50,6 +54,8 @@ pub enum ModelId {
     ClaudeFable51,
     /// Claude Opus 5 - Anthropic's newest Opus-tier model with 1M context, thinking on by default
     ClaudeOpus5,
+    /// Claude Opus 5.5 - Opus-tier successor for long-running agentic coding, adaptive thinking always on, 1M context, 128K output, default effort medium
+    ClaudeOpus55,
     /// GitHub Copilot auto model selection
     CopilotAuto,
     /// GitHub Copilot GPT-5.2 Codex
@@ -86,6 +92,8 @@ pub enum ModelId {
     MergeGatewayDefaultRouting,
     /// Anthropic Claude Opus 5 through Merge Gateway
     MergeGatewayAnthropicClaudeOpus5,
+    /// Anthropic Claude Opus 5.5 through Merge Gateway
+    MergeGatewayAnthropicClaudeOpus55,
     /// Anthropic Claude Sonnet 5 through Merge Gateway
     MergeGatewayAnthropicClaudeSonnet5,
     /// Google Gemini 3.6 Flash through Merge Gateway
@@ -108,6 +116,8 @@ pub enum ModelId {
     MergeGatewayMetaMuseSpark13,
     /// Z.AI GLM-5.3 Flash through Merge Gateway
     MergeGatewayZaiGlm53Flash,
+    /// Z.AI GLM-5.3 FlashX through Merge Gateway
+    MergeGatewayZaiGlm53Flashx,
     /// OpenAI GPT-5.6 Luna through Merge Gateway
     MergeGatewayOpenAIGpt56Luna,
     /// OpenAI GPT-5.6 Sol through Merge Gateway
@@ -122,6 +132,10 @@ pub enum ModelId {
     MergeGatewayAnthropicClaudeFable51,
     /// OpenAI GPT-6 Astra through Merge Gateway
     MergeGatewayOpenAIGpt6Astra,
+    /// OpenAI GPT-6 Sol through Merge Gateway
+    MergeGatewayOpenAIGpt6Sol,
+    /// OpenAI GPT-6 Luna through Merge Gateway
+    MergeGatewayOpenAIGpt6Luna,
 
     // Mistral AI models
     /// Mistral Large 3 - State-of-the-art open-weight general-purpose multimodal model
@@ -162,12 +176,16 @@ pub enum ModelId {
     ZaiGlm53,
     /// GLM-5.3 Flash - Z.ai efficient multimodal model with hybrid sparse+linear attention, 320B total / 18B active, 1M context, native vision
     ZaiGlm53Flash,
+    /// GLM-5.3 FlashX - Z.ai high-speed Flash variant with faster inference (up to 200 tok/s), 320B total / 18B active, 1M context, native vision
+    ZaiGlm53Flashx,
 
     // MiMo models
-    /// MiMo V2.5 Pro - Xiaomi's flagship reasoning model with 1M context
-    MiMoV25Pro,
-    /// MiMo V2.5 - Xiaomi's omni-modal model with full-modal understanding and 1M context
-    MiMoV25,
+    /// MiMo V2.6 Pro - Xiaomi's flagship reasoning model with 1M context
+    MiMoV26Pro,
+    /// MiMo V2.6 Flash - Xiaomi's efficient high-volume model with 1M context
+    MiMoV26Flash,
+    /// MiMo V2.6 Pro UltraSpeed - Xiaomi's fastest flagship variant with 1M context
+    MiMoV26ProUltraspeed,
 
     // Moonshot models
     /// Kimi K3 - Moonshot.ai's 2.8T parameter flagship with Delta Attention, native vision, 1M context
@@ -183,10 +201,6 @@ pub enum ModelId {
     OpenCodeGoGpt56Luna,
     /// Kimi K3 - Moonshot flagship 2.8T agentic model on OpenCode Go
     OpenCodeGoKimiK3,
-    /// MiMo-V2.5 - Xiaomi's omnimodal model on OpenCode Go
-    OpenCodeGoMimoV25,
-    /// MiMo-V2.5-Pro - Xiaomi's flagship reasoning model on OpenCode Go
-    OpenCodeGoMimoV25Pro,
     /// MiniMax M3 - Frontier multimodal coding model on OpenCode Go
     OpenCodeGoMinimaxM3,
     /// Muse Spark 1.2 Contributor - Meta long-context reasoning on OpenCode Go (limited regions)
@@ -234,6 +248,10 @@ pub enum ModelId {
     OpenRouterOpenAIGptOss20b,
     /// OpenAI GPT-6 Astra - OpenAI's flagship model for demanding end-to-end work via OpenRouter
     OpenRouterOpenAIGpt6Astra,
+    /// GPT-6 Sol - Cost-efficient high-end model in the GPT-6 series via OpenRouter
+    OpenRouterOpenAIGpt6Sol,
+    /// GPT-6 Luna - Fast cost-efficient model in the GPT-6 series via OpenRouter
+    OpenRouterOpenAIGpt6Luna,
 
     /// Meta Muse Glimmer 30B via OpenRouter
     OpenRouterMetaMuseGlimmer30b,
@@ -253,22 +271,28 @@ pub enum ModelId {
     /// GLM-5.2 - Z.AI GLM-5.2 flagship model for long-horizon tasks via OpenRouter
     /// GLM-5.3 Flash - Z.AI efficient multimodal model with hybrid sparse+linear attention via OpenRouter
     OpenRouterZaiGlm53Flash,
+    /// GLM-5.3 FlashX - Z.AI high-speed Flash variant with faster inference via OpenRouter
+    OpenRouterZaiGlm53Flashx,
     /// Kimi K3 - Moonshot AI's 2.8T parameter flagship via OpenRouter
     OpenRouterMoonshotaiKimiK3,
     /// Grok 4.6 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter
     OpenRouterXAiGrok46,
     /// Grok 4.7 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter
     OpenRouterXAiGrok47,
-    /// MiMo-V2.5 - Xiaomi's omnimodal agentic model for complex software engineering via OpenRouter
-    OpenRouterXiaomiMimoV25,
-    /// MiMo-V2.5-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter
-    OpenRouterXiaomiMimoV25Pro,
+    /// MiMo-V2.6-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter
+    OpenRouterXiaomiMimoV26Pro,
+    /// MiMo-V2.6-Flash - Xiaomi's efficient high-volume agentic model via OpenRouter
+    OpenRouterXiaomiMimoV26Flash,
+    /// MiMo-V2.6-Pro-UltraSpeed - Xiaomi's fastest flagship variant via OpenRouter
+    OpenRouterXiaomiMimoV26ProUltraspeed,
 
     // Vercel AI Gateway models (namespaced as `vendor/model` on the gateway)
     /// Claude Sonnet 5 served through the Vercel AI Gateway
     VercelAnthropicClaudeSonnet5,
     /// Claude Opus 5 served through the Vercel AI Gateway
     VercelAnthropicClaudeOpus5,
+    /// Claude Opus 5.5 served through the Vercel AI Gateway
+    VercelAnthropicClaudeOpus55,
     /// Claude Haiku 4.5 served through the Vercel AI Gateway
     VercelAnthropicClaudeHaiku45,
     /// GPT-5.6 Sol served through the Vercel AI Gateway

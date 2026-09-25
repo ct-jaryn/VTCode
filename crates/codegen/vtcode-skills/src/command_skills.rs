@@ -340,6 +340,13 @@ const COMMAND_SKILL_SPECS: &[CommandSkillSpec] = &[
         "/rewind [turn] [conversation|code|both]",
         "session"
     ),
+    built_in_command_spec!("redo", "Restore files and conversation from before the last rewind", "/redo", "session"),
+    built_in_command_spec!(
+        "rewind-recover",
+        "Recover files and conversation after an interrupted rewind",
+        "/rewind-recover",
+        "session"
+    ),
     built_in_command_spec!(
         "plan",
         "Start or continue the planning workflow with an optional task prompt (usage: /plan [task])",

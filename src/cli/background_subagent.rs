@@ -184,3 +184,27 @@ async fn run_background_demo_subprocess(startup: &StartupContext, args: &Backgro
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use vtcode_config::{SubagentSource, load_subagent_from_file};
+    use vtcode_core::config::constants::tools;
+
+    use super::BACKGROUND_DEMO_AGENT;
+
+    /// The child's tool list is intersected with public tool names, so an
+    /// internal alias here would leave the demo child with no tools while its
+    /// prompt names a tool it cannot call.
+    #[test]
+    fn background_demo_spec_names_the_public_exec_tool() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(".vtcode/agents/background-demo.md");
+        let spec = load_subagent_from_file(&path, SubagentSource::ProjectVtcode).expect("load background-demo spec");
+
+        assert_eq!(spec.name, BACKGROUND_DEMO_AGENT);
+        assert_eq!(spec.tools.as_deref(), Some([tools::EXEC_COMMAND.to_string()].as_slice()));
+        assert!(spec.prompt.contains(&format!("`{}`", tools::EXEC_COMMAND)));
+        assert!(!spec.prompt.contains("unified_exec"));
+    }
+}

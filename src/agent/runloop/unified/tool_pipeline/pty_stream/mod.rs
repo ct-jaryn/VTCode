@@ -168,6 +168,25 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_grep_pipeline_header_renders_in_full_without_truncation() {
+        // Screenshot 2026-09-24 16:37: `• Ran grep -rn "@vinhnx/..." docs`
+        // wrapped across `│` lines must keep every pipe segment with no `…`.
+        // Exact screenshot bytes: `||` inside the quoted pattern and the
+        // backslash-escaped `\.backup` arg must both survive (3 pattern pipes
+        // + 3 shell pipes = 6).
+        let command = "grep -rn \"@vinhnx/vtcode|npm install -g||npx @vinhnx\" docs | grep -v node_modules | grep -v package-lock | grep -v \"\\.backup\"";
+        assert!(command.chars().count() > 120, "fixture must overflow the old preview cap");
+        let state = PtyStreamState::new(Some(command.to_string()), test_pty_config(), None);
+        let rendered = state.render_lines(8);
+        let joined = rendered.join("\n");
+        assert!(!joined.contains('…'), "command header must not truncate, got: {joined:?}");
+        assert!(joined.contains("node_modules"), "got: {joined:?}");
+        assert!(joined.contains("package-lock"), "got: {joined:?}");
+        assert!(joined.contains("\"\\.backup\""), "final pipe arg must survive, got: {joined:?}");
+        assert_eq!(joined.matches('|').count(), 6, "pattern pipes + shell pipes must survive: {joined:?}");
+    }
+
+    #[test]
     fn pty_stream_state_uses_terminal_snapshot_for_screen_rewrites() {
         let mut state = PtyStreamState::new(None, test_pty_config(), None);
         state.apply_chunk("before\n\x1b[2J\x1b[Hmenu\nitem\n", 6);
@@ -357,6 +376,41 @@ mod tests {
                 .any(|command| matches!(command, InlineCommand::ReplaceLast { .. })),
             "expanded PTY execution should retain its live preview"
         );
+    }
+
+    #[tokio::test]
+    async fn expanded_live_preview_never_exceeds_ten_rows() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(sender);
+        let (runtime, callback) =
+            PtyStreamRuntime::start(handle, Default::default(), 50, None, test_pty_config(), None, true);
+
+        let chunk = (1..=15).map(|n| format!("line-{n:02}")).collect::<Vec<_>>().join("\n") + "\n";
+        callback("run_pty_cmd", &chunk);
+        runtime.shutdown(anstyle::Color::Ansi(AnsiColor::Green)).await;
+
+        let commands = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let last_preview = commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                InlineCommand::ReplaceLast { lines, .. } => Some(lines),
+                _ => None,
+            })
+            .expect("expanded execution should emit a live preview");
+        assert!(
+            last_preview.len() <= 10,
+            "live preview must stay within the 10-row budget, got {} rows",
+            last_preview.len()
+        );
+        let text = last_preview
+            .iter()
+            .map(|row| row.iter().map(|segment| segment.text.as_str()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("line-01"), "head row should survive: {text:?}");
+        assert!(text.contains("line-15"), "tail row should survive: {text:?}");
+        assert!(!text.contains("line-05"), "middle row should be trimmed: {text:?}");
     }
 
     #[tokio::test]

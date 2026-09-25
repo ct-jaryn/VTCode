@@ -43,8 +43,8 @@ caches reject inserts. Keep these accounting rules intact when changing cache
 entry representations.
 
 Clean request histories are borrowed and shared with continuation state through
-`Arc<Vec<Message>>`. Copy only when editor/few-shot context must be injected or
-the provider requires compaction. This keeps the common no-injection path from
+`Arc<Vec<Message>>`. Copy only when persisted editor/few-shot context must be
+shaped for the route or the provider requires compaction. This keeps the common no-injection path from
 allocating multiple equivalent histories while preserving the existing
 normalization and continuation boundaries.
 
@@ -215,9 +215,20 @@ early startup work is observable without adding work to normal launches.
   (`cleanup_old_temp_spools`) runs in `spawn_blocking` so a cold user-cache
   `large-output/` directory
   never blocks first user I/O.
+- **Registry-light critical path.** `initialize_session_critical` no longer
+  constructs `ToolRegistry` or runs `discover_controller_subagents`. Those run
+  in `complete_session_registry` after first paint (trace phase
+  `session_setup_registry`) and re-drive the ready UI before hydration. Ratchet:
+  `critical_path_avoids_registry_and_discovery`.
+- **Static-first typeable shell.** `initialize_session_shell` paints a typeable
+  TUI (bootstrap placeholder + built-in slash commands) *before*
+  `initialize_session_critical` builds `ToolRegistry`, discovers subagents, or
+  constructs the provider client. Keystrokes typed into the shell survive the
+  ready re-drive (no respawn). Structural ratchet: `shell::tests::shell_module_avoids_heavy_init_before_paint`.
 - **Interactive first frame uses a critical/hydrate split.** `initialize_session_critical`
-  builds only what the TUI needs to paint (provider client, one primary-agent
-  discovery pass, lightweight tool registry, resume history, cheap bootstrap).
+  builds the heavy session runtime (provider client, primary-agent discovery,
+  lightweight tool registry, resume history, cheap bootstrap) **after** the
+  typeable shell is painted.
   `initialize_session_ui` spawns the session; `hydrate_session_runtime` then
   finishes tool-catalog projection, system-prompt composition, CGP wiring,
   subagent controller creation, trajectory, dynamic context, and MCP reconfigure
@@ -227,6 +238,20 @@ early startup work is observable without adding work to normal launches.
 - **Keep update/release I/O off first paint.** The critical path consults only
   the in-memory preflight notice; `Updater::new` + cache reads and release-notes
   reads run in hydration and merge header highlights there.
+- **Maintenance never sits on the first-paint path.** Interactive legacy path
+  migration (`VtCodePaths::migrate_legacy`) is fire-and-forget `spawn_blocking`
+  scheduled from `run()` before dispatch; non-interactive consumers still
+  migrate synchronously before dispatch. Harness session-store retention
+  (`apply_retention_preserving`) and legacy harness-log pruning run in
+  `run_harness_retention`, spawned only after `initialize_session_ui` returns
+  (first paint is available), never inside `initialize_harness`. iTerm2 icon
+  ensure is `spawn_blocking`.
+- **Palette probe must not block first paint.** The OSC probe (50 ms timeout)
+  is started in bootstrap. `initialize_session_ui` only calls
+  `note_crossterm_raw_mode()` before `spawn_session_with_options` so a late
+  `RawModeGuard` restore cannot undo crossterm raw mode; it does **not** await
+  the probe before spawn. `await_terminal_palette_probe()` runs after spawn to
+  drain TTY replies and settle theme before the first model turn.
 - **Reuse the loaded session config.** `ToolRegistry::new_with_loaded_config`
   reuses the merged `VTCodeConfig` snapshot instead of a second
   `ConfigManager::load_from_workspace` parse; `ToolRegistry::new` remains for
@@ -311,14 +336,56 @@ These scripts append `-C target-cpu=native` for local runs only. They do not cha
 
 ## Benchmarks
 
-Current Criterion benches:
+Current benches (`criterion` except standalone `startup`):
 
 ```bash
+cargo bench --bench allocator_throughput
 cargo bench -p vtcode-core --bench tool_pipeline
 cargo bench -p vtcode-core --bench agent_harness
+cargo bench -p vtcode-ui --bench markdown_render
+cargo bench -p vtcode-ui --bench transcript
 ```
 
+Standalone process startup (needs a release binary) stays separate; see
+[Standalone startup benchmark](#standalone-startup-benchmark).
+
 Use benches when a hotspot is stable and repeatable. Use the baseline/profile scripts when the question is broader end-to-end behavior.
+
+### Benchmark discipline (benchmaxxing guardrails)
+
+Follow this loop for any claimed speedup; it adapts iterative
+`criterion` benchmaxxing to an I/O-bound agent loop where 1.2-1.5x per
+converged pass is a strong result:
+
+- Capture a True Performance Baseline first: run the relevant bench
+  without library changes, sequentially, on a fixed machine/binary/env.
+- Optimize library code only. Do not modify existing bench measurement
+  logic to hit a goal; a speedup claim that edits timed code paths is
+  invalid. Adding new coverage benches in a separate change is allowed.
+- Run benches sequentially. Never run two benches in parallel; they
+  compete for resources and invalidate results.
+- Keep comparisons portable. Never use `RUSTFLAGS` or
+  `-C target-cpu=native` for before/after numbers; native builds are
+  local-only via `scripts/perf/native-*.sh`.
+- Keep iterations independent. Use `iter_batched` with fresh setup per
+  iteration so no cache built in one iteration leaks into the next,
+  except explicit `cache_hit` benches where a shared warm cache is the
+  point being measured. Filesystem setup stays outside the timed
+  section.
+- Use `criterion` directly with `black_box` on outputs. Do not invent
+  custom timing harnesses.
+- Cover small and large inputs. A win on one size only is not a win;
+  report median + statistical significance from `criterion`.
+- Gate on correctness. Compare output against the known-good path
+  (golden tests, `size_of` guards, catalog-hash stability asserts);
+  accept at most a documented minor regression for a major speedup.
+- Target at least 1.2x faster than baseline per pass, then keep
+  iterating on quick high-impact wins until gains converge to ~3-5%
+  noise. Prefer single-agent iteration; spawn parallel hypothesis work
+  only when the slices are independent.
+- No `unsafe` for speed. VT Code prohibits `unsafe` in product code;
+  use iterators, `memchr`, `with_capacity`, `Arc` sharing, and enum
+  footprint reduction per `rust-performance-principles.md`.
 
 ### Interactive latency workloads
 

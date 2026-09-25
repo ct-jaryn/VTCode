@@ -3,6 +3,7 @@
 pub const DEFAULT_ROUTING: &str = "default_routing";
 pub const OPENAI_GPT_5_5: &str = "openai/gpt-5.5";
 pub const ANTHROPIC_CLAUDE_OPUS_5: &str = "anthropic/claude-opus-5";
+pub const ANTHROPIC_CLAUDE_OPUS_5_5: &str = "anthropic/claude-opus-5-5";
 pub const ANTHROPIC_CLAUDE_SONNET_5: &str = "anthropic/claude-sonnet-5";
 pub const GOOGLE_GEMINI_3_6_FLASH: &str = "google/gemini-3.6-flash";
 pub const GOOGLE_GEMINI_3_7_FLASH: &str = "google/gemini-3.7-flash";
@@ -14,10 +15,13 @@ pub const THINKINGMACHINES_INKLING: &str = "thinkingmachines/inkling";
 pub const META_MUSE_SPARK_1_1: &str = "meta/muse-spark-1.1";
 pub const META_MUSE_SPARK_1_3: &str = "meta/muse-spark-1.3";
 pub const ZAI_GLM_5_3_FLASH: &str = "zai/glm-5.3-flash";
+pub const ZAI_GLM_5_3_FLASHX: &str = "zai/glm-5.3-flashx";
 pub const OPENAI_GPT_5_6_LUNA: &str = "openai/gpt-5.6-luna";
 pub const OPENAI_GPT_5_6_SOL: &str = "openai/gpt-5.6-sol";
 pub const OPENAI_GPT_5_6_TERRA: &str = "openai/gpt-5.6-terra";
 pub const OPENAI_GPT_6_ASTRA: &str = "openai/gpt-6-astra";
+pub const OPENAI_GPT_6_SOL: &str = "openai/gpt-6-sol";
+pub const OPENAI_GPT_6_LUNA: &str = "openai/gpt-6-luna";
 pub const GOOGLE_GEMINI_3_8_FLASH: &str = "google/gemini-3.8-flash";
 pub const ANTHROPIC_CLAUDE_HAIKU_4_5_20251001: &str = "anthropic/claude-haiku-4-5-20251001";
 pub const ANTHROPIC_CLAUDE_FABLE_5_1: &str = "anthropic/claude-fable-5-1";
@@ -31,6 +35,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     DEFAULT_ROUTING,
     OPENAI_GPT_5_5,
     ANTHROPIC_CLAUDE_OPUS_5,
+    ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_SONNET_5,
     ANTHROPIC_CLAUDE_HAIKU_4_5_20251001,
     ANTHROPIC_CLAUDE_FABLE_5_1,
@@ -46,10 +51,13 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     META_MUSE_SPARK_1_1,
     META_MUSE_SPARK_1_3,
     ZAI_GLM_5_3_FLASH,
+    ZAI_GLM_5_3_FLASHX,
     OPENAI_GPT_5_6_LUNA,
     OPENAI_GPT_5_6_SOL,
     OPENAI_GPT_5_6_TERRA,
     OPENAI_GPT_6_ASTRA,
+    OPENAI_GPT_6_SOL,
+    OPENAI_GPT_6_LUNA,
 ];
 
 /// Routes that advertise provider-native `reasoning_effort` controls through
@@ -62,15 +70,19 @@ pub const REASONING_EFFORT_ROUTES: &[&str] = &[
     META_MUSE_SPARK_1_1,
     META_MUSE_SPARK_1_3,
     ZAI_GLM_5_3_FLASH,
+    ZAI_GLM_5_3_FLASHX,
     OPENAI_GPT_5_6_LUNA,
     OPENAI_GPT_5_6_SOL,
     OPENAI_GPT_5_6_TERRA,
     OPENAI_GPT_6_ASTRA,
+    OPENAI_GPT_6_SOL,
+    OPENAI_GPT_6_LUNA,
 ];
 
 /// Routes that advertise Gateway-controlled `thinking.budget_tokens` controls.
 pub const THINKING_BUDGET_ROUTES: &[&str] = &[
     ANTHROPIC_CLAUDE_OPUS_5,
+    ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_SONNET_5,
     ANTHROPIC_CLAUDE_FABLE_5_1,
     GOOGLE_GEMINI_3_6_FLASH,
@@ -86,6 +98,7 @@ pub const THINKING_BUDGET_ROUTES: &[&str] = &[
 /// thinking budget.
 pub const REASONING_MODELS: &[&str] = &[
     ANTHROPIC_CLAUDE_OPUS_5,
+    ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_SONNET_5,
     ANTHROPIC_CLAUDE_FABLE_5_1,
     GOOGLE_GEMINI_3_8_FLASH,
@@ -98,10 +111,13 @@ pub const REASONING_MODELS: &[&str] = &[
     META_MUSE_SPARK_1_1,
     META_MUSE_SPARK_1_3,
     ZAI_GLM_5_3_FLASH,
+    ZAI_GLM_5_3_FLASHX,
     OPENAI_GPT_5_6_LUNA,
     OPENAI_GPT_5_6_SOL,
     OPENAI_GPT_5_6_TERRA,
     OPENAI_GPT_6_ASTRA,
+    OPENAI_GPT_6_SOL,
+    OPENAI_GPT_6_LUNA,
 ];
 
 /// Returns true when the route exposes a provider-native `reasoning_effort`

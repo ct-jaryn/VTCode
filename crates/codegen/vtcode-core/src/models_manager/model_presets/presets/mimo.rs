@@ -7,9 +7,9 @@ use crate::config::types::ReasoningEffortLevel;
 pub(crate) fn mimo_presets() -> Vec<ModelPreset> {
     vec![
         ModelPreset {
-            id: mimo_models::MIMO_V2_5_PRO.to_string(),
-            model: mimo_models::MIMO_V2_5_PRO.to_string(),
-            display_name: "MiMo V2.5 Pro".to_string(),
+            id: mimo_models::MIMO_V2_6_PRO.to_string(),
+            model: mimo_models::MIMO_V2_6_PRO.to_string(),
+            display_name: "MiMo V2.6 Pro".to_string(),
             description: "Xiaomi's flagship reasoning model with advanced capabilities (1M context)".to_string(),
             provider: Provider::MiMo,
             default_reasoning_effort: ReasoningEffortLevel::Medium,
@@ -24,10 +24,29 @@ pub(crate) fn mimo_presets() -> Vec<ModelPreset> {
             context_window: Some(1_048_576),
         },
         ModelPreset {
-            id: mimo_models::MIMO_V2_5.to_string(),
-            model: mimo_models::MIMO_V2_5.to_string(),
-            display_name: "MiMo V2.5".to_string(),
-            description: "Xiaomi's general-purpose model with strong reasoning (1M context)".to_string(),
+            id: mimo_models::MIMO_V2_6_FLASH.to_string(),
+            model: mimo_models::MIMO_V2_6_FLASH.to_string(),
+            display_name: "MiMo V2.6 Flash".to_string(),
+            description: "Xiaomi's efficient high-volume model for professional office scenarios (1M context)"
+                .to_string(),
+            provider: Provider::MiMo,
+            default_reasoning_effort: ReasoningEffortLevel::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffortLevel::Medium,
+                description: "Balanced".to_string(),
+            }],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            context_window: Some(1_048_576),
+        },
+        ModelPreset {
+            id: mimo_models::MIMO_V2_6_PRO_ULTRASPEED.to_string(),
+            model: mimo_models::MIMO_V2_6_PRO_ULTRASPEED.to_string(),
+            display_name: "MiMo V2.6 Pro UltraSpeed".to_string(),
+            description: "Xiaomi's fastest flagship variant for real-time production scenarios (1M context)"
+                .to_string(),
             provider: Provider::MiMo,
             default_reasoning_effort: ReasoningEffortLevel::Medium,
             supported_reasoning_efforts: vec![ReasoningEffortPreset {

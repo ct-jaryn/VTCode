@@ -347,11 +347,7 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
         if current.join(".git").exists() {
             return Some(current.to_path_buf());
         }
-        if let Some(parent) = current.parent() {
-            current = parent;
-        } else {
-            return None;
-        }
+        current = current.parent()?;
     }
 }
 

@@ -1274,6 +1274,34 @@ mod unified_action_error_tests {
     }
 
     #[test]
+    fn exec_recovery_guidance_redirects_apply_patch_shell_collision_to_tool() {
+        let mut response = json!({});
+        attach_exec_recovery_guidance(&mut response, "apply_patch", Some(127));
+        assert_eq!(
+            response["critical_note"],
+            "Command `apply_patch` is not a shell binary — use the `apply_patch` tool instead."
+        );
+        assert!(
+            response["next_action"]
+                .as_str()
+                .expect("next_action present")
+                .contains("Call the `apply_patch` tool")
+        );
+
+        let mut aliased = json!({});
+        attach_exec_recovery_guidance(&mut aliased, "applypatch", Some(127));
+        assert_eq!(aliased["critical_note"], response["critical_note"]);
+
+        let mut with_args = json!({});
+        attach_exec_recovery_guidance(&mut with_args, "/usr/bin/apply_patch --help", Some(127));
+        assert_eq!(with_args["critical_note"], response["critical_note"]);
+
+        let mut sudo_prefixed = json!({});
+        attach_exec_recovery_guidance(&mut sudo_prefixed, "sudo apply_patch", Some(127));
+        assert_eq!(sudo_prefixed["critical_note"], "Command `sudo` was not found in PATH.");
+    }
+
+    #[test]
     fn cargo_selector_error_diagnostics_classifies_missing_test_target() {
         let output = "error: no test target named `exec_only_policy_skips_when_full_auto_is_disabled` in `vtcode-core` package\n";
 

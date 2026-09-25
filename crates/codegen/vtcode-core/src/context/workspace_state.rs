@@ -136,7 +136,7 @@ impl WorkspaceState {
         }
 
         // Sort by edit count (descending)
-        self.hot_files.sort_by(|a, b| b.1.cmp(&a.1));
+        self.hot_files.sort_by_key(|a| std::cmp::Reverse(a.1));
 
         // Keep bounded
         self.hot_files.truncate(MAX_HOT_FILES);

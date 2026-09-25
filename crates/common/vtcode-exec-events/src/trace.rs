@@ -516,7 +516,6 @@ pub fn compute_content_hash_with(content: &str, algorithm: HashAlgorithm) -> Str
 
 /// MurmurHash3 x86_32 implementation.
 #[expect(
-    clippy::expect_used,
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     reason = "MurmurHash3 intentionally processes fixed four-byte chunks and folds arbitrary input length modulo u32."
@@ -532,13 +531,12 @@ fn murmur3_32(data: &[u8], seed: u32) -> u32 {
     let mut hash = seed;
     let len = data.len();
 
-    // Process 4-byte chunks using chunks_exact iteration. `try_into` on a
-    // `chunks_exact(4)` item is provably length-4, so this avoids one bounds
-    // check per byte and keeps the hot slice shape simple for LLVM.
-    let mut chunks = data.chunks_exact(4);
-    for chunk in &mut chunks {
-        let chunk_array: [u8; 4] = chunk.try_into().expect("chunks_exact(4) yields len-4 slices");
-        let mut k = u32::from_le_bytes(chunk_array);
+    // Process 4-byte chunks with `as_chunks` destructuring. The chunk items
+    // are provably length-4 arrays, so this avoids one bounds check per
+    // byte and keeps the hot slice shape simple for LLVM.
+    let (chunks, tail) = data.as_chunks::<4>();
+    for chunk in chunks {
+        let mut k = u32::from_le_bytes(*chunk);
         k = k.wrapping_mul(C1);
         k = k.rotate_left(R1);
         k = k.wrapping_mul(C2);
@@ -548,7 +546,6 @@ fn murmur3_32(data: &[u8], seed: u32) -> u32 {
     }
 
     // Process remaining bytes
-    let tail = chunks.remainder();
     let mut k1: u32 = 0;
     match tail.len() {
         3 => {

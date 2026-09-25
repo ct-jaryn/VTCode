@@ -74,7 +74,7 @@ fn bench_event_burst(c: &mut Criterion) {
     let events = 200usize;
     let tokens = 1000usize;
     let _throughput = group.throughput(Throughput::Elements((events * tokens) as u64));
-    let _benchmark = group.bench_function(BenchmarkId::new("payload_and_tokens", "{events}x{tokens}"), |b| {
+    let _benchmark = group.bench_function(BenchmarkId::new("payload_and_tokens", format!("{events}x{tokens}")), |b| {
         b.iter(|| {
             for _ in 0..events {
                 let payload = make_payload(4096);

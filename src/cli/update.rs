@@ -1,4 +1,4 @@
-use crate::updater::{InstallOutcome, UpdateExecutionStrategy, UpdateInfo, Updater};
+use crate::updater::{InstallOutcome, UpdateExecutionStrategy, UpdateInfo, Updater, parse_highlights};
 use anyhow::{Context, Result, anyhow};
 use crossterm::style::Stylize;
 use std::env;
@@ -69,7 +69,7 @@ pub async fn handle_update_command(options: UpdateCommandOptions) -> Result<()> 
 
             if options.force {
                 println!("{} Force mode enabled, attempting reinstall...", "→".cyan());
-                install_update(&updater, true).await?;
+                install_update(&updater, None, true).await?;
             }
 
             Ok(())
@@ -254,7 +254,7 @@ async fn handle_update_available(updater: &Updater, update: &UpdateInfo, options
         return Ok(());
     }
 
-    install_update(updater, options.force).await
+    install_update(updater, Some(update), options.force).await
 }
 
 fn run_update_command(command: &str, strategy: UpdateExecutionStrategy) -> Result<std::process::ExitStatus> {
@@ -287,7 +287,20 @@ fn run_update_command(command: &str, strategy: UpdateExecutionStrategy) -> Resul
     cmd.status().with_context(|| format!("failed to run update command: {command}"))
 }
 
-async fn install_update(updater: &Updater, force: bool) -> Result<()> {
+async fn print_installed_release_notes(version: &semver::Version, release_notes: &str) {
+    let parsed = parse_highlights(version, release_notes);
+    println!("\n{}", format!("What's new in v{version}:").bold());
+    if parsed.items.is_empty() {
+        println!("{}", release_notes.trim());
+    } else {
+        for item in &parsed.items {
+            println!(" • {item}");
+        }
+    }
+    println!("{} {}", "→".cyan(), Updater::release_url(version).cyan());
+}
+
+async fn install_update(updater: &Updater, update_info: Option<&UpdateInfo>, force: bool) -> Result<()> {
     let guidance = updater.update_guidance();
     if guidance.source.is_managed() {
         println!("{} Managed install detected ({}).", "!".yellow(), guidance.source.label());
@@ -305,6 +318,14 @@ async fn install_update(updater: &Updater, force: bool) -> Result<()> {
 
         if status.success() {
             println!("{} Update command completed successfully!", "✓".green());
+            // The managed installer replaced the binary outside of
+            // `install_update_reported`, so seed the cache here. Otherwise the
+            // next `vtcode` launch reads a stale `latest_version` and only
+            // shows release notes on its second start (N+1).
+            if let Some(info) = update_info {
+                crate::updater::seed_release_notes_for_installed_version(&info.version, &info.release_notes);
+                print_installed_release_notes(&info.version, &info.release_notes).await;
+            }
             println!("\n{} Restart VT Code to use the new version", "→".cyan());
             println!("{} vtcode init   # scaffold project if needed", "→".cyan());
             println!("{} vtcode        # launch TUI", "→".cyan());
@@ -322,6 +343,13 @@ async fn install_update(updater: &Updater, force: bool) -> Result<()> {
     match updater.install_update(force).await? {
         InstallOutcome::Updated(version) => {
             println!("{} {} installed successfully!", "✓".green(), version.bold());
+            // `install_update_reported` already seeded the cache with the fresh
+            // release metadata so the TUI shows notes on its first launch.
+            // Echo the highlights here as well so they are visible right after
+            // `vtcode update` succeeds, without waiting for a restart.
+            if let Some(info) = update_info {
+                print_installed_release_notes(&info.version, &info.release_notes).await;
+            }
             println!("\n{} Restart VT Code to use the new version", "→".cyan());
             println!("{} vtcode init   # scaffold project if needed", "→".cyan());
             println!("{} vtcode        # launch TUI", "→".cyan());

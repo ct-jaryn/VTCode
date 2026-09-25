@@ -111,8 +111,6 @@ const USER_PREFIX: &str = "";
 const PLACEHOLDER_COLOR: RgbColor = RgbColor(ui::PLACEHOLDER_R, ui::PLACEHOLDER_G, ui::PLACEHOLDER_B);
 const MAX_LOG_LINES: usize = 256;
 const MAX_LOG_DRAIN_PER_TICK: usize = 256;
-/// Bounded history of distinct transcript changes backing Jump to last change.
-pub(crate) const MAX_TRACKED_TRANSCRIPT_CHANGES: usize = 32;
 
 #[derive(Clone, Debug)]
 struct CollapsedPaste {
@@ -252,14 +250,6 @@ pub struct Session {
     /// Number of new transcript lines that arrived while the user was scrolled
     /// away from the live bottom edge.
     pub(crate) pending_new_messages: usize,
-    /// Most recent transcript line index that was created or revised.
-    pub(crate) last_change_line_idx: Option<usize>,
-    /// Bounded history of distinct changed line indices, oldest first.
-    /// Gates the jump-to-last-change affordance (visible when >= 2).
-    pub(crate) recent_change_line_idxs: VecDeque<usize>,
-    /// Sticky highlight target set by jump-to-last-change. Cleared on manual
-    /// scroll, new change, or clear screen — never on timeout.
-    pub(crate) jump_highlight_line_idx: Option<usize>,
     should_exit: bool,
     /// Timestamp of the last Ctrl+C press for double-press exit detection.
     pub(crate) last_interrupt_press: Option<Instant>,

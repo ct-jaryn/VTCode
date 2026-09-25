@@ -5,7 +5,7 @@
 use proptest::prelude::*;
 use serde_json::json;
 use vtcode_config::constants::tools;
-use vtcode_core::core::loop_detector::LoopDetector;
+use vtcode_core::core::loop_detector::{HARD_STOP_PREFIX, LoopDetector};
 
 // Property 1: Loop detection prevents infinite repetition (Req 1.1)
 proptest! {
@@ -21,7 +21,7 @@ proptest! {
         // Third identical call must trigger a halt warning
         let warning = detector.record_call(&tool_name, &args);
         prop_assert!(warning.is_some());
-        prop_assert!(warning.unwrap().contains("HARD STOP"));
+        prop_assert!(warning.unwrap().contains(HARD_STOP_PREFIX));
     }
 }
 

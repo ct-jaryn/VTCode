@@ -234,3 +234,36 @@ fn test_create_timeout_error() {
         panic!("Expected Timeout variant");
     }
 }
+
+#[test]
+fn is_exec_session_call_covers_session_tools_only() {
+    let session_args = json!({ "session_id": "run-abc", "chars": "y\n" });
+    for tool in EXEC_SESSION_FOLLOWUP_TOOLS {
+        assert!(is_exec_session_call(tool, &session_args), "{tool} should be a session call");
+    }
+
+    let poll = json!({ "session_id": "run-abc", "action": "poll" });
+    assert!(is_exec_session_call(tools::UNIFIED_EXEC, &poll));
+
+    // Command launches are not session follow-ups: they preview the command.
+    let run = json!({ "action": "run", "cmd": "cargo check" });
+    assert!(!is_exec_session_call(tools::UNIFIED_EXEC, &run));
+    assert!(!is_exec_session_call(tools::EXEC_COMMAND, &json!({ "cmd": "ls" })));
+    assert!(!is_exec_session_call(tools::READ_FILE, &json!({ "path": "AGENTS.md" })));
+}
+
+#[test]
+fn is_exec_session_call_treats_actionless_unified_exec_as_followup() {
+    // An uninferable action (`command_session_action` returns `None`) is not
+    // `run`, so it lands on the follow-up side. Such a call fails execution
+    // before rendering and collapses to no detail rows either way, so this only
+    // pins a degenerate input.
+    assert!(is_exec_session_call(tools::UNIFIED_EXEC, &json!({})));
+    // A command field infers `run`, which is the launch path.
+    assert!(!is_exec_session_call(tools::UNIFIED_EXEC, &json!({ "cmd": "cargo check" })));
+    // An explicit `run` action is a launch even with a session id present.
+    assert!(!is_exec_session_call(
+        tools::UNIFIED_EXEC,
+        &json!({ "action": "run", "cmd": "cargo check", "session_id": "run-abc" })
+    ));
+}

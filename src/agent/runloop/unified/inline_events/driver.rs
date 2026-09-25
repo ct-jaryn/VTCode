@@ -53,6 +53,8 @@ struct InlineEventLoop<'a> {
     editor_open_sender: &'a EditorOpenRequestSender,
     editor_open_dispatcher: Arc<EditorOpenDispatcher>,
     exec_sessions: Option<vtcode_core::tools::exec_session::ExecSessionManager>,
+    background_completion_notify: Option<Arc<Notify>>,
+    exec_completion_notify: Option<Arc<Notify>>,
     webmcp_prompt_receiver: &'a mut Option<tokio::sync::mpsc::Receiver<String>>,
     idle_wake_delay: Duration,
 }
@@ -94,6 +96,8 @@ impl<'a> InlineEventLoop<'a> {
             editor_open_sender,
             editor_open_dispatcher,
             exec_sessions,
+            background_completion_notify,
+            exec_completion_notify,
             webmcp_prompt_receiver,
             idle_wake_delay,
         } = resources;
@@ -127,6 +131,8 @@ impl<'a> InlineEventLoop<'a> {
             editor_open_sender,
             editor_open_dispatcher,
             exec_sessions,
+            background_completion_notify,
+            exec_completion_notify,
             webmcp_prompt_receiver,
             idle_wake_delay,
         }
@@ -213,6 +219,10 @@ impl<'a> InlineEventLoop<'a> {
             prompt = recv_webmcp_prompt(self.webmcp_prompt_receiver) => {
                 prompt.map(|prompt| InlineEvent::WebmcpSubmit(prompt.into()))
             }
+            _ = wait_for_background_completion(
+                self.background_completion_notify.as_ref(),
+                self.exec_completion_notify.as_ref(),
+            ) => None,
             _ = ctrl_c_notify.notified() => None,
             _ = tokio::time::sleep(self.idle_wake_delay) => None,
         };
@@ -390,6 +400,8 @@ pub(crate) struct InlineEventLoopResources<'a> {
     pub editor_open_sender: &'a EditorOpenRequestSender,
     pub editor_open_dispatcher: Arc<EditorOpenDispatcher>,
     pub exec_sessions: Option<vtcode_core::tools::exec_session::ExecSessionManager>,
+    pub background_completion_notify: Option<Arc<Notify>>,
+    pub exec_completion_notify: Option<Arc<Notify>>,
     pub webmcp_prompt_receiver: &'a mut Option<tokio::sync::mpsc::Receiver<String>>,
     pub idle_wake_delay: Duration,
 }
@@ -427,6 +439,19 @@ async fn recv_webmcp_prompt(receiver: &mut Option<tokio::sync::mpsc::Receiver<St
             }
         },
         None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_background_completion(controller_notify: Option<&Arc<Notify>>, exec_notify: Option<&Arc<Notify>>) {
+    match (controller_notify, exec_notify) {
+        (Some(controller), Some(exec)) => {
+            tokio::select! {
+                _ = controller.notified() => {},
+                _ = exec.notified() => {},
+            }
+        }
+        (Some(notify), None) | (None, Some(notify)) => notify.notified().await,
+        (None, None) => std::future::pending().await,
     }
 }
 
@@ -480,6 +505,30 @@ mod tests {
         fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn background_completion_wait_consumes_retained_controller_permit() {
+        let controller_notify = Arc::new(Notify::new());
+        controller_notify.notify_one();
+
+        tokio::time::timeout(Duration::from_millis(50), wait_for_background_completion(Some(&controller_notify), None))
+            .await
+            .expect("a completion published before the idle wait must still wake it");
+    }
+
+    #[tokio::test]
+    async fn raw_exec_completion_wakes_when_both_sources_are_installed() {
+        let controller_notify = Arc::new(Notify::new());
+        let exec_notify = Arc::new(Notify::new());
+        exec_notify.notify_one();
+
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            wait_for_background_completion(Some(&controller_notify), Some(&exec_notify)),
+        )
+        .await
+        .expect("either completion source must wake the idle loop");
     }
 
     fn runtime_config() -> CoreAgentConfig {
@@ -589,6 +638,8 @@ mod tests {
             editor_open_sender: &editor_open_sender,
             editor_open_dispatcher: Arc::new(EditorOpenDispatcher::new(true)),
             exec_sessions: None,
+            background_completion_notify: None,
+            exec_completion_notify: None,
             webmcp_prompt_receiver: &mut webmcp_prompt_receiver,
             idle_wake_delay: Duration::from_millis(5),
             ctrl_c_state: &ctrl_c_state,
@@ -666,6 +717,8 @@ mod tests {
             editor_open_sender: &editor_open_sender,
             editor_open_dispatcher: Arc::new(EditorOpenDispatcher::new(true)),
             exec_sessions: None,
+            background_completion_notify: None,
+            exec_completion_notify: None,
             webmcp_prompt_receiver: &mut webmcp_prompt_receiver,
             idle_wake_delay: Duration::from_millis(5),
             ctrl_c_state: &ctrl_c_state,

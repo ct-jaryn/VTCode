@@ -185,6 +185,27 @@ fn latest_direct_tool_completion(history: &[uni::Message]) -> Option<DirectToolC
     None
 }
 
+pub(crate) fn latest_direct_background_completion_identity(history: &[uni::Message]) -> Option<String> {
+    let completion = latest_direct_tool_completion(history)?;
+    if completion.has_error() {
+        return None;
+    }
+    let function = completion.tool_call.function.as_ref()?;
+    let payload = completion.payload.as_ref()?;
+    match function.name.as_str() {
+        tool_names::UNIFIED_EXEC if payload.get("background").and_then(Value::as_bool) == Some(true) => payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(|session_id| format!("exec:{session_id}:{session_id}")),
+        tool_names::SPAWN_BACKGROUND_SUBPROCESS => payload
+            .get("id")
+            .and_then(Value::as_str)
+            .zip(payload.get("exec_session_id").and_then(Value::as_str))
+            .map(|(task_id, exec_session_id)| format!("{task_id}:{exec_session_id}")),
+        _ => None,
+    }
+}
+
 impl DirectToolCompletion<'_> {
     fn is_spawn_tool(&self) -> bool {
         self.tool_call.function.as_ref().is_some_and(|function| {
@@ -466,7 +487,7 @@ impl DirectToolCompletion<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReplyKind, completion_reply_text};
+    use super::{ReplyKind, completion_reply_text, latest_direct_background_completion_identity};
     use vtcode_core::config::constants::tools as tool_names;
     use vtcode_core::llm::provider as uni;
     use vtcode_core::llm::provider::{LLMError, LLMRequest, LLMResponse};
@@ -619,6 +640,54 @@ mod tests {
         let text = completion_reply_text(&history, ReplyKind::Immediate).expect("direct completion reply");
         assert!(text.contains("`background-demo subagent` started in the background."));
         assert!(text.contains("Use `/agent` to inspect or continue it."));
+    }
+
+    #[test]
+    fn direct_background_completion_identity_matches_raw_and_managed_events() {
+        let raw_history = vec![
+            uni::Message::assistant_with_tools(
+                String::new(),
+                vec![uni::ToolCall::function(
+                    "direct_exec_command_1".to_string(),
+                    tool_names::UNIFIED_EXEC.to_string(),
+                    serde_json::json!({"action":"run","command":"cargo check"}).to_string(),
+                )],
+            ),
+            uni::Message::tool_response(
+                "direct_exec_command_1".to_string(),
+                serde_json::json!({
+                    "background": true,
+                    "session_id": "run-123",
+                    "lifecycle_state": "running"
+                })
+                .to_string(),
+            ),
+        ];
+        assert_eq!(latest_direct_background_completion_identity(&raw_history).as_deref(), Some("exec:run-123:run-123"));
+
+        let managed_history = vec![
+            uni::Message::assistant_with_tools(
+                String::new(),
+                vec![uni::ToolCall::function(
+                    "direct_spawn_background_subprocess_1".to_string(),
+                    tool_names::SPAWN_BACKGROUND_SUBPROCESS.to_string(),
+                    serde_json::json!({"agent_type":"background-demo","message":"run"}).to_string(),
+                )],
+            ),
+            uni::Message::tool_response(
+                "direct_spawn_background_subprocess_1".to_string(),
+                serde_json::json!({
+                    "id": "background-background-demo",
+                    "exec_session_id": "exec-session-123",
+                    "status": "running"
+                })
+                .to_string(),
+            ),
+        ];
+        assert_eq!(
+            latest_direct_background_completion_identity(&managed_history).as_deref(),
+            Some("background-background-demo:exec-session-123")
+        );
     }
 
     #[test]

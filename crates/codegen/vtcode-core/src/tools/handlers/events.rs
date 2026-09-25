@@ -159,7 +159,7 @@ impl ToolEmitter {
             }
 
             // Apply patch success
-            (Self::ApplyPatch { changes: _, .. }, ToolEventStage::Success(output)) => {
+            (Self::ApplyPatch { .. }, ToolEventStage::Success(output)) => {
                 self.emit_patch_end(ctx, output.stdout.clone(), output.stderr.clone(), true)
                     .await;
             }

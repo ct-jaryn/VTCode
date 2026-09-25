@@ -204,6 +204,17 @@ impl ConfigValidator {
             result.warnings.push(message);
         }
 
+        if let Some(message) = config
+            .provider
+            .anthropic
+            .fallbacks
+            .validation_error("provider.anthropic.fallbacks")
+        {
+            result
+                .warnings
+                .push(format!("{message} VT Code will not request server-side fallbacks until this is corrected."));
+        }
+
         // Check if workspace exists (if specified)
         if let Ok(cwd) = std::env::current_dir() {
             // Basic check only, actual workspace validation happens in StartupContext
@@ -650,6 +661,28 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| { warning.contains("provider.openai.hosted_shell.skills[0].skill_id") })
+        );
+    }
+
+    #[test]
+    fn validate_surfaces_invalid_anthropic_fallbacks_warning() {
+        let dir = create_test_models_db();
+        let validator = ConfigValidator::new(&dir.path().join("models.json")).unwrap();
+        let mut config = VTCodeConfig::default();
+        let target = vtcode_config::core::AnthropicFallbackTarget {
+            model: "claude-opus-4-8".to_string(),
+            max_tokens: None,
+        };
+        config.provider.anthropic.fallbacks =
+            vtcode_config::core::AnthropicFallbacks::Models(vec![target.clone(), target]);
+
+        let result = validator.validate(&config).unwrap();
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("provider.anthropic.fallbacks") && warning.contains("distinct"))
         );
     }
 

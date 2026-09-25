@@ -17,7 +17,7 @@ pub fn color_from_hex(hex: &str) -> Option<Color> {
         return None;
     }
 
-    let mut components = hex.as_bytes().chunks_exact(2);
+    let mut components = hex.as_bytes().as_chunks::<2>().0.iter();
     let r = u8::from_str_radix(std::str::from_utf8(components.next()?).ok()?, 16).ok()?;
     let g = u8::from_str_radix(std::str::from_utf8(components.next()?).ok()?, 16).ok()?;
     let b = u8::from_str_radix(std::str::from_utf8(components.next()?).ok()?, 16).ok()?;

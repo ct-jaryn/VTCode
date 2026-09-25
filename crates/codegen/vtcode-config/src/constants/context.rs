@@ -61,6 +61,7 @@ pub const BETA_CONTEXT_1M: &str = "context-1m-2025-08-07";
 pub const EXTENDED_CONTEXT_ELIGIBLE_MODELS: &[&str] = &[
     crate::constants::models::anthropic::CLAUDE_SONNET_5,
     crate::constants::models::anthropic::CLAUDE_OPUS_5,
+    crate::constants::models::anthropic::CLAUDE_OPUS_5_5,
 ];
 
 /// Check if a model is eligible for 1M context window

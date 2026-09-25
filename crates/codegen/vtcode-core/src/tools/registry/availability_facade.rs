@@ -127,10 +127,8 @@ impl ToolRegistry {
                 crate::tools::handlers::task_tracker::task_tracker_parameter_schema_for_workflow(
                     self.is_planning_active(),
                 )
-            } else if let Some(schema) = registration.parameter_schema() {
-                schema.clone()
             } else {
-                return None;
+                registration.parameter_schema()?.clone()
             };
             return Some(wrap_schema(tool_name, description, &schema));
         }

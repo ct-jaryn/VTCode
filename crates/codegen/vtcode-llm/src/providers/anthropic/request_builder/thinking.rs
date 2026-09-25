@@ -12,42 +12,146 @@ use vtcode_config::types::ReasoningEffortLevel;
 use vtcode_config::constants::models::anthropic;
 
 use super::super::capabilities::{
-    claude_thinking_profile, default_effort_for_model, effort_is_at_most_high, matches_model, resolve_model_name,
-    supports_reasoning_effort,
+    ClaudeThinkingProfile, claude_thinking_profile, default_max_tokens_for_model, default_thinking_display,
+    effort_is_at_most_high, effort_str_is_at_most_high, matches_model, resolve_model_name, supports_reasoning_effort,
+    supports_thinking_display_updates,
 };
 
 fn resolve_configured_thinking_display(anthropic_config: &AnthropicConfig) -> Option<ThinkingDisplay> {
     anthropic_config.thinking_display.and_then(|d| match d {
         vtcode_config::ThinkingDisplayMode::Summarized => Some(ThinkingDisplay::Summarized),
         vtcode_config::ThinkingDisplayMode::Omitted => Some(ThinkingDisplay::Omitted),
+        vtcode_config::ThinkingDisplayMode::Updates => Some(ThinkingDisplay::Updates),
         vtcode_config::ThinkingDisplayMode::Unknown => None,
     })
 }
 
-fn resolve_thinking_display(request: &LLMRequest, anthropic_config: &AnthropicConfig) -> Option<ThinkingDisplay> {
-    if let Some(overrides) = request.anthropic_request_overrides.as_ref() {
-        return match overrides.thinking_display {
-            AnthropicThinkingDisplayOverride::Inherit => None,
-            AnthropicThinkingDisplayOverride::Summarized => Some(ThinkingDisplay::Summarized),
-            AnthropicThinkingDisplayOverride::Omitted => Some(ThinkingDisplay::Omitted),
-        };
-    }
+/// Resolves `thinking.display` for the request.
+///
+/// Per-request overrides (the Anthropic-compatible endpoint) take precedence
+/// over the `[provider.anthropic]` setting; with neither set, the model's VT
+/// Code default applies (`updates` on Claude Opus 5.5). Either source may name
+/// `updates`, which only some models accept: the override comes from a caller
+/// that may name any model, and the setting applies to every Claude model the
+/// session switches to. On models that reject it the field is omitted, so the
+/// model default display applies instead of the request failing.
+fn resolve_thinking_display(
+    request: &LLMRequest,
+    anthropic_config: &AnthropicConfig,
+    resolved_model: &str,
+    default_model: &str,
+) -> Option<ThinkingDisplay> {
+    let (display, source) = match request.anthropic_request_overrides.as_ref() {
+        Some(overrides) => match overrides.thinking_display {
+            AnthropicThinkingDisplayOverride::Inherit => return None,
+            AnthropicThinkingDisplayOverride::Summarized => (ThinkingDisplay::Summarized, "request"),
+            AnthropicThinkingDisplayOverride::Omitted => (ThinkingDisplay::Omitted, "request"),
+            AnthropicThinkingDisplayOverride::Updates => (ThinkingDisplay::Updates, "request"),
+        },
+        None => match resolve_configured_thinking_display(anthropic_config) {
+            Some(display) => (display, "provider.anthropic.thinking_display"),
+            None => return default_thinking_display(resolved_model, default_model),
+        },
+    };
 
-    resolve_configured_thinking_display(anthropic_config)
+    if display == ThinkingDisplay::Updates && !supports_thinking_display_updates(resolved_model, default_model) {
+        tracing::debug!(
+            model = %resolved_model,
+            source,
+            "thinking display \"updates\" is not supported by this model; using the model default display"
+        );
+        return None;
+    }
+    Some(display)
 }
 
-fn manual_thinking_config(
-    budget: u32,
-    max_tokens: Option<u32>,
-    display: Option<ThinkingDisplay>,
-) -> Option<ThinkingConfig> {
+/// Builds a manual `budget_tokens` config clamped below `max_tokens`, which
+/// must be the value the request will actually send.
+fn manual_thinking_config(budget: u32, max_tokens: u32, display: Option<ThinkingDisplay>) -> Option<ThinkingConfig> {
     if budget < 1024 {
         return None;
     }
 
-    let max_tokens = max_tokens.unwrap_or(16000);
     let effective_budget = budget.min(max_tokens.saturating_sub(100)).max(1024);
     Some(ThinkingConfig::Enabled { budget_tokens: effective_budget, display })
+}
+
+/// Whether a profiled model accepts `thinking: {type: "disabled"}`.
+/// Adaptive-only models (Opus 5.5, Fable 5.x) reject it outright, and Opus 5
+/// accepts it only at effort `high` or below. The Opus 5.5 id contains the
+/// Opus 5 id, so the adaptive-only check must run first.
+fn disabled_thinking_allowed(
+    profile: &ClaudeThinkingProfile,
+    model: &str,
+    effort_is_at_most_high: impl FnOnce() -> bool,
+) -> bool {
+    if profile.adaptive_only {
+        return false;
+    }
+    if matches_model(model, anthropic::CLAUDE_OPUS_5) {
+        return effort_is_at_most_high();
+    }
+    true
+}
+
+/// Rewrites `thinking` into a config that is valid as a direct request to
+/// `model`, or returns `None` when it is already valid (or the model has no
+/// capability profile to check against).
+///
+/// Server-side fallback entries are merged into the primary request, so the
+/// merged request must satisfy the fallback model's own rules: models without
+/// manual-budget support get adaptive thinking instead of `budget_tokens`, and
+/// a `disabled` config the model rejects becomes adaptive. `effort` is the
+/// request's `output_config.effort`, which fallback entries inherit; `None`
+/// means the model's default effort applies.
+pub(crate) fn rewrite_thinking_for_model(
+    thinking: &ThinkingConfig,
+    model: &str,
+    default_model: &str,
+    effort: Option<&str>,
+) -> Option<ThinkingConfig> {
+    let resolved_model = resolve_model_name(model, default_model);
+    let rewritten = claude_thinking_profile(resolved_model, default_model).and_then(|profile| match thinking {
+        ThinkingConfig::Enabled { display, .. } if !profile.supports_manual_budget => {
+            Some(ThinkingConfig::Adaptive { display: *display })
+        }
+        ThinkingConfig::Disabled
+            if !disabled_thinking_allowed(&profile, resolved_model, || {
+                effort_str_is_at_most_high(effort.unwrap_or(profile.default_effort))
+            }) =>
+        {
+            Some(ThinkingConfig::Adaptive { display: None })
+        }
+        _ => None,
+    });
+
+    // `display: "updates"` is rejected by models without progress updates,
+    // so a config carrying it (for example inherited from an Opus 5.5
+    // primary) falls back to that model's default display.
+    let candidate = rewritten.as_ref().unwrap_or(thinking);
+    if thinking_display(candidate) == Some(ThinkingDisplay::Updates)
+        && !supports_thinking_display_updates(resolved_model, default_model)
+    {
+        return Some(with_thinking_display(candidate, None));
+    }
+    rewritten
+}
+
+fn thinking_display(thinking: &ThinkingConfig) -> Option<ThinkingDisplay> {
+    match thinking {
+        ThinkingConfig::Adaptive { display } | ThinkingConfig::Enabled { display, .. } => *display,
+        ThinkingConfig::Disabled | ThinkingConfig::Unknown => None,
+    }
+}
+
+fn with_thinking_display(thinking: &ThinkingConfig, display: Option<ThinkingDisplay>) -> ThinkingConfig {
+    match thinking {
+        ThinkingConfig::Adaptive { .. } => ThinkingConfig::Adaptive { display },
+        ThinkingConfig::Enabled { budget_tokens, .. } => {
+            ThinkingConfig::Enabled { budget_tokens: *budget_tokens, display }
+        }
+        other => other.clone(),
+    }
 }
 
 pub(crate) fn build_thinking_config(
@@ -57,22 +161,26 @@ pub(crate) fn build_thinking_config(
 ) -> Result<(Option<ThinkingConfig>, Option<Value>), crate::provider::LLMError> {
     let resolved_model = resolve_model_name(&request.model, default_model);
     let profile = claude_thinking_profile(resolved_model, default_model);
-    let display = resolve_thinking_display(request, anthropic_config);
+    let display = resolve_thinking_display(request, anthropic_config, resolved_model, default_model);
     let default_thinking = profile.is_some_and(|p| p.default_thinking_enabled);
+    // The request builder sends this same default whenever thinking is on, so
+    // manual budgets are clamped against the real `max_tokens`.
+    let thinking_max_tokens = request
+        .max_tokens
+        .unwrap_or_else(|| default_max_tokens_for_model(resolved_model, default_model, true));
 
     if let Some(overrides) = request.anthropic_request_overrides.as_ref() {
         match overrides.thinking_mode {
             AnthropicThinkingModeOverride::Disabled => {
-                if default_thinking {
-                    if matches_model(resolved_model, anthropic::CLAUDE_OPUS_5) {
-                        if effort_is_at_most_high(request, anthropic_config) {
-                            return Ok((Some(ThinkingConfig::Disabled), None));
-                        }
-                        return Ok((None, None));
-                    }
-                    if matches_model(resolved_model, anthropic::CLAUDE_SONNET_5) {
-                        return Ok((Some(ThinkingConfig::Disabled), None));
-                    }
+                // Models that think by default need an explicit `disabled`
+                // when they accept one; otherwise the field is omitted and the
+                // model runs its default thinking mode.
+                if let Some(profile) = profile.filter(|p| p.default_thinking_enabled)
+                    && disabled_thinking_allowed(&profile, resolved_model, || {
+                        effort_is_at_most_high(request, anthropic_config)
+                    })
+                {
+                    return Ok((Some(ThinkingConfig::Disabled), None));
                 }
                 return Ok((None, None));
             }
@@ -80,7 +188,13 @@ pub(crate) fn build_thinking_config(
                 return Ok((Some(ThinkingConfig::Adaptive { display }), None));
             }
             AnthropicThinkingModeOverride::ManualBudget(budget) => {
-                return Ok((manual_thinking_config(budget, request.max_tokens, display), None));
+                // Profiled models without manual-budget support (every
+                // current Claude 5.x model) reject `budget_tokens` with a
+                // 400, so an explicit budget is served as adaptive thinking.
+                if profile.is_some_and(|p| !p.supports_manual_budget) {
+                    return Ok((Some(ThinkingConfig::Adaptive { display }), None));
+                }
+                return Ok((manual_thinking_config(budget, thinking_max_tokens, display), None));
             }
             AnthropicThinkingModeOverride::Inherit => {}
         }
@@ -103,7 +217,7 @@ pub(crate) fn build_thinking_config(
             if profile.is_some_and(|p| p.supports_manual_budget)
                 && let Some(explicit_budget) = request.thinking_budget
             {
-                return Ok((manual_thinking_config(explicit_budget, request.max_tokens, display), None));
+                return Ok((manual_thinking_config(explicit_budget, thinking_max_tokens, display), None));
             }
             return Ok((Some(ThinkingConfig::Adaptive { display }), None));
         }
@@ -129,7 +243,7 @@ pub(crate) fn build_thinking_config(
             anthropic_config.interleaved_thinking_budget_tokens
         };
 
-        if let Some(thinking) = manual_thinking_config(budget, request.max_tokens, display) {
+        if let Some(thinking) = manual_thinking_config(budget, thinking_max_tokens, display) {
             return Ok((Some(thinking), None));
         }
     } else if let Some(effort) = request.reasoning_effort {
@@ -155,7 +269,7 @@ mod tests {
     use vtcode_config::constants::models::anthropic;
 
     #[test]
-    fn ignores_explicit_budget_for_opus_4_8() {
+    fn ignores_explicit_budget_for_opus_5() {
         let request = LLMRequest {
             model: anthropic::CLAUDE_OPUS_5.to_string(),
             thinking_budget: Some(2048),
@@ -166,6 +280,74 @@ mod tests {
             build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
 
         assert!(matches!(thinking, Some(ThinkingConfig::Adaptive { .. })));
+    }
+
+    fn manual_budget_override_request(model: &str, budget: u32) -> LLMRequest {
+        LLMRequest {
+            model: model.to_string(),
+            anthropic_request_overrides: Some(crate::provider::AnthropicRequestOverrides {
+                thinking_mode: AnthropicThinkingModeOverride::ManualBudget(budget),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn manual_budget_override_becomes_adaptive_for_opus_5_5() {
+        let request = manual_budget_override_request(anthropic::CLAUDE_OPUS_5_5, 4096);
+        let config = AnthropicConfig::default();
+        let (thinking, reasoning) =
+            build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+        assert!(matches!(thinking, Some(ThinkingConfig::Adaptive { display: None })), "got {thinking:?}");
+        assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn manual_budget_override_becomes_adaptive_for_every_profiled_model() {
+        let config = AnthropicConfig::default();
+        for model in [
+            anthropic::CLAUDE_SONNET_5,
+            anthropic::CLAUDE_OPUS_5,
+            anthropic::CLAUDE_OPUS_5_5,
+            anthropic::CLAUDE_FABLE_5,
+            anthropic::CLAUDE_FABLE_5_1,
+        ] {
+            let request = manual_budget_override_request(model, 8192);
+            let (thinking, _) =
+                build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+            assert!(
+                matches!(thinking, Some(ThinkingConfig::Adaptive { .. })),
+                "{model} must not receive budget_tokens, got {thinking:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_budget_override_keeps_display_when_downgraded_to_adaptive() {
+        let mut request = manual_budget_override_request(anthropic::CLAUDE_OPUS_5_5, 4096);
+        if let Some(overrides) = request.anthropic_request_overrides.as_mut() {
+            overrides.thinking_display = AnthropicThinkingDisplayOverride::Summarized;
+        }
+        let config = AnthropicConfig::default();
+        let (thinking, _) =
+            build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+        assert!(
+            matches!(thinking, Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Summarized) })),
+            "got {thinking:?}"
+        );
+    }
+
+    #[test]
+    fn manual_budget_override_is_kept_for_unprofiled_models() {
+        let request = manual_budget_override_request("claude-unlisted-model", 4096);
+        let config = AnthropicConfig::default();
+        let (thinking, _) =
+            build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+        assert!(matches!(thinking, Some(ThinkingConfig::Enabled { budget_tokens: 4096, .. })), "got {thinking:?}");
     }
 
     #[test]
@@ -223,6 +405,155 @@ mod tests {
             Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Summarized) }) => {}
             other => panic!("expected Adaptive with Summarized display, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn opus_5_5_defaults_to_updates_display() {
+        let request = LLMRequest {
+            model: anthropic::CLAUDE_OPUS_5_5.to_string(),
+            ..Default::default()
+        };
+        let config = AnthropicConfig::default();
+        let (thinking, _) =
+            build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+        match thinking {
+            Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Updates) }) => {}
+            other => panic!("expected Adaptive with Updates display, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opus_5_5_respects_configured_display() {
+        let request = LLMRequest {
+            model: anthropic::CLAUDE_OPUS_5_5.to_string(),
+            ..Default::default()
+        };
+        let config = AnthropicConfig {
+            thinking_display: Some(vtcode_config::ThinkingDisplayMode::Omitted),
+            ..AnthropicConfig::default()
+        };
+        let (thinking, _) =
+            build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+        match thinking {
+            Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Omitted) }) => {}
+            other => panic!("expected Adaptive with Omitted display, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn configured_updates_display_applies_on_fable_5() {
+        let request = LLMRequest {
+            model: anthropic::CLAUDE_FABLE_5.to_string(),
+            ..Default::default()
+        };
+        let config = AnthropicConfig {
+            thinking_display: Some(vtcode_config::ThinkingDisplayMode::Updates),
+            ..AnthropicConfig::default()
+        };
+        let (thinking, _) =
+            build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+        match thinking {
+            Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Updates) }) => {}
+            other => panic!("expected Adaptive with Updates display, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn configured_updates_display_falls_back_on_unsupported_models() {
+        let config = AnthropicConfig {
+            thinking_display: Some(vtcode_config::ThinkingDisplayMode::Updates),
+            ..AnthropicConfig::default()
+        };
+        for model in [anthropic::CLAUDE_SONNET_5, anthropic::CLAUDE_OPUS_5] {
+            let request = LLMRequest { model: model.to_string(), ..Default::default() };
+            let (thinking, _) =
+                build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+            match thinking {
+                Some(ThinkingConfig::Adaptive { display: None }) => {}
+                other => panic!("{model}: expected Adaptive with no display, got {other:?}"),
+            }
+        }
+    }
+
+    fn display_override_request(model: &str, display: AnthropicThinkingDisplayOverride) -> LLMRequest {
+        LLMRequest {
+            model: model.to_string(),
+            anthropic_request_overrides: Some(crate::provider::AnthropicRequestOverrides {
+                thinking_mode: AnthropicThinkingModeOverride::Adaptive,
+                thinking_display: display,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn requested_updates_display_is_kept_on_supporting_models() {
+        let config = AnthropicConfig::default();
+        for model in [
+            anthropic::CLAUDE_OPUS_5_5,
+            anthropic::CLAUDE_FABLE_5,
+            anthropic::CLAUDE_FABLE_5_1,
+        ] {
+            let request = display_override_request(model, AnthropicThinkingDisplayOverride::Updates);
+            let (thinking, _) =
+                build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+            match thinking {
+                Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Updates) }) => {}
+                other => panic!("{model}: expected Adaptive with Updates display, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn requested_updates_display_is_omitted_on_unsupported_models() {
+        let config = AnthropicConfig::default();
+        for model in [
+            anthropic::CLAUDE_SONNET_5,
+            anthropic::CLAUDE_OPUS_5,
+            "claude-opus-4-8",
+            vtcode_config::constants::models::minimax::MINIMAX_M3,
+        ] {
+            let request = display_override_request(model, AnthropicThinkingDisplayOverride::Updates);
+            let (thinking, _) =
+                build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+            match thinking {
+                Some(ThinkingConfig::Adaptive { display: None }) => {}
+                other => panic!("{model}: expected Adaptive with no display, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn requested_summarized_display_is_kept_on_every_model() {
+        let config = AnthropicConfig::default();
+        for model in [
+            anthropic::CLAUDE_OPUS_5_5,
+            anthropic::CLAUDE_SONNET_5,
+            "claude-opus-4-8",
+        ] {
+            let request = display_override_request(model, AnthropicThinkingDisplayOverride::Summarized);
+            let (thinking, _) =
+                build_thinking_config(&request, &config, anthropic::DEFAULT_MODEL).expect("thinking config");
+
+            match thinking {
+                Some(ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Summarized) }) => {}
+                other => panic!("{model}: expected Adaptive with Summarized display, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn updates_display_serializes_as_updates() {
+        let thinking = ThinkingConfig::Adaptive { display: Some(ThinkingDisplay::Updates) };
+        let value = serde_json::to_value(thinking).expect("serialize thinking");
+        assert_eq!(value, json!({ "type": "adaptive", "display": "updates" }));
     }
 
     #[test]

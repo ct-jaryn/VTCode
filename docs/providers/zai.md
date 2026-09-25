@@ -1,6 +1,6 @@
 # Z.AI Provider Guide
 
-VT Code has a first-class Z.AI provider for GLM models. This guide covers setup, curated models, and the new **GLM-5.3 Flash** multimodal model.
+VT Code has a first-class Z.AI provider for GLM models. This guide covers setup, curated models, and the **GLM-5.3 Flash** multimodal model plus its high-speed **GLM-5.3 FlashX** variant.
 
 ## Prerequisites
 
@@ -88,6 +88,7 @@ reasoning_effort = "max"
 | --- | ---: | --- |
 | `glm-5.3` | 1,000,000 | Default flagship coding model, frontier long-horizon agentic performance |
 | `glm-5.3-flash` | 1,000,000 | Efficient multimodal model, hybrid sparse+linear attention, native vision, vision-in-the-loop coding |
+| `glm-5.3-flashx` | 1,000,000 | High-speed Flash variant, faster inference (up to 200 tok/s), same Flash multimodal stack, native vision |
 | `glm-5.2` | 1,000,000 | Flagship for long-horizon tasks with truly usable 1M context |
 
 All three models appear in the Z.AI section of the `/model` picker and support streaming, function tools, structured output, and reasoning effort controls through Z.AI's OpenAI-compatible Chat Completions API.
@@ -120,8 +121,8 @@ See the [announcement blog](https://z.ai/blog/glm-5.3-flash) for full evaluation
 | Symptom | Resolution |
 | --- | --- |
 | Missing credentials | Set `ZAI_API_KEY`. |
-| Model rejected | Use one of `glm-5.3`, `glm-5.3-flash`, `glm-5.2` for the native Z.AI provider. |
-| Vision not working | Use `glm-5.3-flash` and send images as `image_url` blocks; other GLM-5 models are text-only. |
+| Model rejected | Use one of `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flashx`, `glm-5.2` for the native Z.AI provider. |
+| Vision not working | Use `glm-5.3-flash` or `glm-5.3-flashx` and send images as `image_url` blocks; other GLM-5 models are text-only. |
 | Custom endpoint failure | Confirm the endpoint implements `https://api.z.ai/api` Chat Completions protocol and set `ZAI_BASE_URL`. |
 | Reasoning not disabling | Flash only supports `thinking.type: enabled`; this is expected. |
 

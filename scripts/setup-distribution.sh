@@ -58,28 +58,6 @@ setup_cargo() {
     fi
 }
 
-# Function to check npm setup
-setup_npm() {
-    print_step "Setting up npm distribution"
-
-    if ! command -v npm &> /dev/null; then
-        print_warning "npm is not installed - skipping npm setup"
-        return 0
-    fi
-
-    print_info "Checking npm login status..."
-    if npm whoami &> /dev/null; then
-        print_success "npm is logged in"
-    else
-        print_warning "npm is not logged in"
-        echo
-        print_info "To set up npm publishing:"
-        echo "1. Create an npm account at https://www.npmjs.com"
-        echo "2. Run: npm login"
-        echo "3. Enter your credentials"
-    fi
-}
-
 # Function to validate package files
 validate_packages() {
     print_step "Validating package configuration"
@@ -110,19 +88,6 @@ validate_packages() {
 
     print_success "vtcode-core Cargo.toml exists"
 
-    # Check npm package
-    if [[ -d "npm" ]]; then
-        if [[ ! -f "npm/package.json" ]]; then
-            print_error "npm/package.json not found"
-            return 1
-        fi
-        if [[ ! -f "npm/README.md" ]]; then
-            print_warning "npm/README.md not found - npm package will not have a README on npmjs.com"
-        fi
-        print_success "npm package is configured"
-    else
-        print_warning "npm directory not found - npm distribution not set up"
-    fi
 }
 
 # Function to test build
@@ -151,7 +116,6 @@ show_next_steps() {
     echo
     print_info "1. Complete authentication setup:"
     echo "   - Run: cargo login (for crates.io)"
-    echo "   - Run: npm login (for npm, if desired)"
     echo
     print_info "2. Set up GitHub Actions secrets:"
     echo "   - Add CRATES_IO_TOKEN in repository settings"
@@ -178,8 +142,6 @@ main() {
     echo
 
     setup_cargo
-    echo
-    setup_npm
     echo
     validate_packages
     echo

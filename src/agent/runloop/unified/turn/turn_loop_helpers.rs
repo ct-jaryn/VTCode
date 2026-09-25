@@ -173,8 +173,7 @@ fn resolve_tool_loop_limit(configured_limit: usize, planning_active: bool) -> us
 }
 
 fn configured_tool_loop_base_limit(ctx: &TurnLoopContext<'_>) -> usize {
-    let configured = ctx
-        .vt_cfg
+    let configured = super::turn_loop::effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg)
         .map(|cfg| cfg.tools.max_tool_loops)
         .filter(|limit| *limit > 0)
         .unwrap_or(DEFAULT_MAX_TOOL_LOOPS);
@@ -414,7 +413,7 @@ pub(super) async fn handle_steering_messages(
         if let Err(error) = crate::agent::runloop::unified::turn::compaction::refresh_session_memory_envelope_async(
             ctx.config.workspace.as_path(),
             &session_id,
-            ctx.vt_cfg,
+            super::turn_loop::effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
             working_history,
             ctx.session_stats,
             Some(&steering_update),
@@ -592,7 +591,7 @@ pub(super) async fn maybe_handle_planning_enter_trigger(
     let ctrl_c_notify = ctx.ctrl_c_notify;
     let default_placeholder = ctx.default_placeholder.clone();
     let lifecycle_hooks = ctx.lifecycle_hooks;
-    let vt_cfg = ctx.vt_cfg;
+    let effective_cfg = super::turn_loop::effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg).cloned();
     let mut run_ctx = ctx.as_run_loop_context();
 
     match run_tool_call(
@@ -603,7 +602,7 @@ pub(super) async fn maybe_handle_planning_enter_trigger(
         default_placeholder,
         lifecycle_hooks,
         true,
-        vt_cfg,
+        effective_cfg.as_ref(),
         step_count,
         false,
     )
@@ -667,7 +666,10 @@ pub(super) async fn maybe_handle_tool_loop_limit(
         return Ok(ToolLoopLimitAction::BreakLoop);
     }
 
-    let prompt_result = if full_auto_loop_grants_enabled(ctx.full_auto, ctx.vt_cfg) {
+    let prompt_result = if full_auto_loop_grants_enabled(
+        ctx.full_auto,
+        super::turn_loop::effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+    ) {
         let increment = auto_tool_loop_grant_increment(*current_max_tool_loops, hard_cap, planning_active);
         if increment == 0 {
             emit_loop_hard_cap_break_metric(

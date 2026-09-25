@@ -195,7 +195,9 @@ impl ContinuationController {
                 self.note_progress_stall().await;
                 return Ok(CompletionAssessment::Continue {
                     reason: "Task tracker could not be loaded.".to_string(),
-                    prompt: "Continue working. The harness task tracker is missing, so do not stop yet.".to_string(),
+                    prompt: "The harness task tracker could not be loaded, so completion cannot be checked yet. \
+                             Continue with the task, or say what is blocking it."
+                        .to_string(),
                 });
             }
         };
@@ -232,9 +234,7 @@ impl ContinuationController {
             self.note_progress_advance();
             return Ok(CompletionAssessment::Continue {
                 reason: format!("Task tracker is incomplete: {joined}."),
-                prompt: format!(
-                    "Continue working. Do not stop yet. The task tracker still has incomplete steps: {joined}. Complete the remaining steps before finishing."
-                ),
+                prompt: tracker_incomplete_continue_prompt(&joined),
             });
         }
 
@@ -583,6 +583,16 @@ pub(super) fn is_review_like_task(task: &Task) -> bool {
     })
 }
 
+/// Model-facing follow-up injected when the run would end while tracker steps
+/// are still open. Shared by completion assessment and the text-only status
+/// force-continue path in `execute.rs` so both nudges stay identical.
+pub(super) fn tracker_incomplete_continue_prompt(open_steps: &str) -> String {
+    format!(
+        "Task tracker steps still open: {open_steps}. Continue with the next one in this run \
+         instead of asking the user to resume, or say what is blocking it."
+    )
+}
+
 /// Pure eligibility gate for AgentRunner tracker status continuation.
 ///
 /// Honors the `[agent.harness.continuation].auto_continue_tracker` kill-switch,
@@ -734,6 +744,15 @@ mod tests {
             .expect("assessment");
 
         assert!(matches!(assessment, CompletionAssessment::SkipAccept { .. }));
+    }
+
+    #[test]
+    fn tracker_incomplete_continue_prompt_names_open_steps_and_blocker_exit() {
+        let prompt = tracker_incomplete_continue_prompt("#2 change (pending), #3 verify (pending)");
+        assert!(prompt.contains("#2 change (pending), #3 verify (pending)"));
+        assert!(prompt.contains("in this run"));
+        assert!(prompt.contains("what is blocking it"));
+        assert!(!prompt.contains("Do not stop yet"));
     }
 
     #[test]

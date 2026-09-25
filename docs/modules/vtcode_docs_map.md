@@ -65,7 +65,7 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/development/EXTENDED_THINKING.md`
   - **Content**: Anthropic Thinking in VT Code
-  - **Topics**: Compact Runtime Matrix, Configuration, Adaptive Thinking Behavior, Budgeted Thinking Behavior, Feature Compatibility
+  - **Topics**: Compact Runtime Matrix, Configuration, Adaptive Thinking Behavior, Feature Compatibility, Disabling Thinking
   - **User Questions**: "What can you tell me about Anthropic Thinking in VT Code?", "How does Compact Runtime Matrix work?", "How does Configuration work?"
 
 - **File**: `docs/development/CPP_CORE_GUIDELINES_ADOPTION.md`
@@ -82,6 +82,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: Changelog Generation with git-cliff
   - **Topics**: Configuration, Usage, Integration with Release Process, Commit Message Format, Excluded Commits
   - **User Questions**: "What can you tell me about Changelog Generation with git-cliff?", "How does Configuration work?", "How does Usage work?"
+
+- **File**: `docs/development/filesnap-checkpoints.md`
+  - **Content**: Checkpoints and combined rewind
+  - **Topics**: Rewind in the terminal
+  - **User Questions**: "What can you tell me about Checkpoints and combined rewind?", "How does Rewind in the terminal work?"
 
 - **File**: `docs/development/compaction.md`
   - **Content**: Compaction Engine
@@ -194,8 +199,8 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/development/tool-summary-display.md`
   - **Content**: Tool Summary Display
-  - **Topics**: Model-visible tool output budget, Guardrails quick reference
-  - **User Questions**: "What can you tell me about Tool Summary Display?", "How does Model-visible tool output budget work?", "How does Guardrails quick reference work?"
+  - **Topics**: Exec-session calls (`write_stdin` and the session readers), Model-visible tool output budget, Guardrails quick reference
+  - **User Questions**: "What can you tell me about Tool Summary Display?", "How does Exec-session calls (`write_stdin` and the session readers) work?", "How does Model-visible tool output budget work?"
 
 - **File**: `docs/development/async-performance-audit.md`
   - **Content**: VT Code Async Performance Audit
@@ -900,7 +905,7 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/compose/spec/instant-tui-startup.md`
   - **Content**: Instant TUI Startup
-  - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks
+  - **Topics**: Report, [S1] Problem, [S2] Design, Tasks
   - **User Questions**: "What can you tell me about Instant TUI Startup?", "How does Report work?", "How does [S1] Problem work?"
 
 - **File**: `docs/protocols/KITTY_KEYBOARD_PROTOCOL_RESTORATION.md`
@@ -917,6 +922,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: Migrating Claude models in VT Code
   - **Topics**: Quick navigation, Model comparison, Where to make changes in VT Code, Migrating to Claude Fable 5 / Claude Mythos 5, Migrating to Claude Opus 5
   - **User Questions**: "What can you tell me about Migrating Claude models in VT Code?", "How does Quick navigation work?", "How does Model comparison work?"
+
+- **File**: `docs/build-with-claude/migrating-to-claude-opus-5-5.md`
+  - **Content**: Migrating to Claude Opus 5.5 in VT Code
+  - **Topics**: Quick navigation, Model comparison, Where to make changes in VT Code, Opus 5 → Opus 5.5, Opus 4.8 → Opus 5.5
+  - **User Questions**: "What can you tell me about Migrating to Claude Opus 5.5 in VT Code?", "How does Quick navigation work?", "How does Model comparison work?"
 
 - **File**: `docs/installation/NATIVE_INSTALLERS.md`
   - **Content**: Native Installers
@@ -970,7 +980,7 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/harness/prompt-architecture.md`
   - **Content**: Prompt Architecture
-  - **Topics**: Cache-stable segments, Assembly order, Few-shot management (Section 18.3.3), Tool description contract (Section 18.3.4)
+  - **Topics**: Cache-stable segments, Assembly order, Prompt style, Few-shot management (Section 18.3.3), Tool description contract (Section 18.3.4)
   - **User Questions**: "What can you tell me about Prompt Architecture?", "How does Cache-stable segments work?", "How does Assembly order work?"
 
 - **File**: `docs/compose/spec/provider-cache-affinity-p2.md`
@@ -992,6 +1002,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: Quick Reference: Anstyle Crates
   - **Topics**: anstyle-git Syntax, anstyle-ls Syntax, Git Config Color Syntax, Vtcode Integration Points, Cheat Sheet: Common Patterns
   - **User Questions**: "What can you tell me about Quick Reference: Anstyle Crates?", "How does anstyle-git Syntax work?", "How does anstyle-ls Syntax work?"
+
+- **File**: `docs/compose/spec/registry-light-critical.md`
+  - **Content**: Registry-Light Critical Path
+  - **Topics**: Report, [S1] Problem, [S2] Design, Tasks
+  - **User Questions**: "What can you tell me about Registry-Light Critical Path?", "How does Report work?", "How does [S1] Problem work?"
 
 - **File**: `docs/harness/SESSION_LOG_REVIEW.md`
   - **Content**: Session Log Review
@@ -1022,6 +1037,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: Skill Tool Usage
   - **Topics**: Discovery Queries, Prompt Integration, Resource Loading, Storage Locations
   - **User Questions**: "What can you tell me about Skill Tool Usage?", "How does Discovery Queries work?", "How does Prompt Integration work?"
+
+- **File**: `docs/compose/spec/static-first-paint.md`
+  - **Content**: Static First Paint
+  - **Topics**: Report, [S1] Problem, [S2] Design, Tasks
+  - **User Questions**: "What can you tell me about Static First Paint?", "How does Report work?", "How does [S1] Problem work?"
 
 - **File**: `docs/styling/styling_integration.md`
   - **Content**: Styling Integration: anstyle-crossterm
@@ -1272,8 +1292,8 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/user-guide/interactive-mode.md`
   - **Content**: Interactive Mode Reference
-  - **Topics**: Keyboard Shortcuts, Fullscreen Rendering, Scheduled Prompts And Reminders, Vim Mode, Prompt Suggestions, Tasks, and Jobs
-  - **User Questions**: "What can you tell me about Interactive Mode Reference?", "How does Keyboard Shortcuts work?", "How does Fullscreen Rendering work?"
+  - **Topics**: Keyboard Shortcuts, Reduced Motion, Fullscreen Rendering, Scheduled Prompts And Reminders, Vim Mode
+  - **User Questions**: "What can you tell me about Interactive Mode Reference?", "How does Keyboard Shortcuts work?", "How does Reduced Motion work?"
 
 ## Enhanced Trigger Questions
 

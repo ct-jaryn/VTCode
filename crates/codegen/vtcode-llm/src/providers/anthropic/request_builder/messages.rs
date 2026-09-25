@@ -2,10 +2,8 @@ use hashbrown::HashSet;
 
 use crate::error_display;
 use crate::provider::{ContentPart, LLMError, LLMRequest, Message, MessageContent, MessageRole};
-use crate::providers::anthropic::capabilities::{
-    supports_assistant_prefill, supports_mid_conversation_system_messages,
-};
-use crate::providers::anthropic::validation::request_uses_assistant_prefill;
+use crate::providers::anthropic::block_order::{AssistantBlockParts, assemble_assistant_blocks};
+use crate::providers::anthropic::capabilities::supports_mid_conversation_system_messages;
 use crate::providers::anthropic_types::{
     AnthropicContentBlock, AnthropicMessage, AnthropicToolResultBlock, AnthropicToolUseBlock, CacheControl, ImageSource,
 };
@@ -103,20 +101,24 @@ pub(crate) fn build_messages(
                         return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
                     }
                     compaction_seen = true;
-                    blocks.extend(compaction_blocks);
                 }
 
                 // The compaction-history builder removes thinking blocks from
                 // the pre-compaction continuity tail. Keep replaying thinking
                 // here so responses generated after that boundary are not
-                // accidentally dropped on every later request.
-                blocks.extend(build_reasoning_blocks(msg));
-
-                blocks.extend(content_blocks_from_message_content(&msg.content, None, allow_container_uploads));
-
-                blocks.extend(build_advisor_blocks(msg));
-
-                blocks.extend(build_tool_use_blocks(msg));
+                // accidentally dropped on every later request. Blocks are
+                // replayed in the order the model produced them when the
+                // response recorded it (interleaved thinking and text).
+                blocks.extend(assemble_assistant_blocks(
+                    msg,
+                    AssistantBlockParts {
+                        compaction: compaction_blocks,
+                        reasoning: build_reasoning_blocks(msg),
+                        content: content_blocks_from_message_content(&msg.content, None, allow_container_uploads),
+                        advisor: build_advisor_blocks(msg),
+                        tool_use: build_tool_use_blocks(msg),
+                    },
+                ));
 
                 if blocks.is_empty() {
                     blocks.push(AnthropicContentBlock::Text {
@@ -215,15 +217,6 @@ pub(crate) fn build_messages(
                 *breakpoints_remaining -= 1;
             }
         }
-    }
-
-    if supports_assistant_prefill(&request.model, default_model) {
-        add_prefill_message(request, &mut messages);
-    } else if request_uses_assistant_prefill(request) {
-        tracing::warn!(
-            model = %request.model,
-            "assistant prefill omitted: model does not support prefill; request included prefill/coding_agent_settings/character_reinforcement"
-        );
     }
 
     if messages.is_empty() {
@@ -427,54 +420,6 @@ fn build_tool_use_blocks(msg: &Message) -> Vec<AnthropicContentBlock> {
     }
 
     blocks
-}
-
-fn add_prefill_message(request: &LLMRequest, messages: &mut Vec<AnthropicMessage>) {
-    let mut prefill_text = String::new();
-
-    if let Some(settings) = &request.coding_agent_settings
-        && settings.prefill_thought
-    {
-        prefill_text.push_str("<thought>");
-    }
-
-    if let Some(request_prefill) = &request.prefill {
-        if !prefill_text.is_empty() && !request_prefill.is_empty() {
-            prefill_text.push(' ');
-        }
-        prefill_text.push_str(request_prefill);
-    }
-
-    if !prefill_text.is_empty() {
-        let mut text = prefill_text;
-        if request.character_reinforcement
-            && let Some(name) = &request.character_name
-        {
-            let tag = format!("[{name}]");
-            if !text.contains(&tag) {
-                text = format!("{tag} {text}").trim().to_string();
-            }
-        }
-        if !text.is_empty() {
-            messages.push(AnthropicMessage {
-                role: "assistant".to_string(),
-                content: vec![AnthropicContentBlock::Text { text, citations: None, cache_control: None }],
-                clear_at: None,
-            });
-        }
-    } else if request.character_reinforcement
-        && let Some(name) = &request.character_name
-    {
-        messages.push(AnthropicMessage {
-            role: "assistant".to_string(),
-            content: vec![AnthropicContentBlock::Text {
-                text: format!("[{name}]"),
-                citations: None,
-                cache_control: None,
-            }],
-            clear_at: None,
-        });
-    }
 }
 
 pub fn tool_result_blocks(content: &str) -> Vec<Value> {

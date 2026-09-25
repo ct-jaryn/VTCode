@@ -42,7 +42,7 @@ pub(crate) fn maybe_force_planning_workflow_interview(
     plan_session: &mut PlanningWorkflowSessionState,
     conversation_len: usize,
 ) -> TurnProcessingResult {
-    if !plan_session.interview_forcing_allowed() {
+    if !plan_session.interview_forcing_allowed() || matches!(processing_result, TurnProcessingResult::Refusal { .. }) {
         return processing_result;
     }
     let response_has_plan =

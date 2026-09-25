@@ -314,7 +314,6 @@ impl<'a> InlineEventContext<'a> {
             | InlineEvent::ScrollLineDown
             | InlineEvent::ScrollPageUp
             | InlineEvent::ScrollPageDown
-            | InlineEvent::JumpToLastChange
             | InlineEvent::FileSelected(_)
             | InlineEvent::HistoryPrevious
             | InlineEvent::HistoryNext => self.input_processor().passive(),

@@ -15,7 +15,11 @@ use serde::Deserialize;
 use serde_json::json;
 use std::fmt::Write;
 
-const EVIDENCE_BOUNDED_GUIDANCE: &str = "Evidence-bounded reasoning follows Bennett, *The Optimal Choice of Hypothesis Is the Weakest, Not the Shortest* (arXiv:2301.12987): choose the weakest sufficient hypothesis, keep every claim within its explicit scope, cite concrete evidence, and state a falsifier. These observations are task-scoped and must not become global beliefs or persistent memory automatically.";
+const EVIDENCE_BOUNDED_GUIDANCE: &str = "Prefer the smallest claim the evidence supports: keep every claim within its explicit scope, cite concrete evidence, and state a falsifier. These observations are task-scoped and must not become global beliefs or persistent memory automatically.";
+
+/// Shared by the single evaluator and every skeptic-panel model so both judge
+/// against the same contract.
+const EVALUATOR_SYSTEM_PROMPT: &str = "You are the VT Code exec harness evaluator. You are not the builder. Judge the candidate skeptically and prefer failing borderline cases. Return strict JSON only with keys verdict, summary, high_severity_findings, scorecard, findings, unmet_contract_items, residual_risks, required_tracker_updates, generalization_notes. generalization_notes must be an array of objects with non-empty claim, scope, evidence, and falsifier strings, with at most 8 notes. The scorecard must contain 1-5 scores for contract_fidelity, functionality, code_quality, and verification_integrity. Use verdict=pass only when every provided score is at least 4, the tracker/spec/contract all agree, verification evidence is credible, and there are no high-severity issues. If you discover new acceptance criteria through testing, add them to required_tracker_updates so the replanner can update the feature list.";
 
 #[derive(Debug, Clone)]
 pub(super) struct PlannerArtifacts {
@@ -333,7 +337,7 @@ impl AgentRunner {
         const SYSTEM_PROMPT: &str = "You are the VT Code exec harness planner. Expand the task into a concise execution spec, a concrete execution contract, a feature list, and a tracker. Return strict JSON only with keys: spec_markdown, contract_markdown, feature_list_markdown, task_title, items. Keep spec_markdown high-level and implementation-agnostic. Use contract_markdown and items to define observable done conditions and verification. feature_list_markdown should enumerate the project's features with acceptance criteria as a markdown checklist. Each item must include description, outcome, and verify; files is optional. Keep scope tight to the user request and do not invent speculative work.";
         let system_prompt = format!("{SYSTEM_PROMPT}\n{EVIDENCE_BOUNDED_GUIDANCE}");
         let user_prompt = format!(
-            "Plan this task.\n\nTitle: {}\nDescription: {}\nInstructions: {}\n\nProduce:\n- a concise execution spec\n- a concrete execution contract with observable done signals\n- a feature list with acceptance criteria as a markdown checklist\n- tracker items with explicit verification commands\n\nReturn JSON only.",
+            "Plan this task.\n\nTitle: {}\nDescription: {}\nInstructions: {}\n\nProduce:\n- a concise execution spec\n- a concrete execution contract with observable done signals\n- a feature list with acceptance criteria as a markdown checklist\n- tracker items with explicit verification commands",
             task.title,
             task.description,
             task.instructions.as_deref().unwrap_or("(none)")
@@ -403,18 +407,19 @@ impl AgentRunner {
             .ok()
     }
 
-    async fn request_evaluator_response(
-        &mut self,
+    /// System and user prompts for an evaluator request, shared by the single
+    /// evaluator and the skeptic panel.
+    async fn evaluator_prompts(
+        &self,
         task: &Task,
         session_state: &AgentSessionState,
         verification_results: &[VerificationResult],
-    ) -> Result<EvaluatorResponse> {
+    ) -> (String, String) {
         let (spec_content, contract_content, tracker_content, feature_list_content) =
             read_harness_artifacts(&self._workspace).await;
         let changed_files = load_changed_file_snapshots(&self._workspace, &session_state.modified_files).await;
         let verification_summary = format_verification_results(verification_results);
-        const SYSTEM_PROMPT: &str = "You are the VT Code exec harness evaluator. You are not the builder. Judge the candidate skeptically and prefer failing borderline cases. Return strict JSON only with keys verdict, summary, high_severity_findings, scorecard, findings, unmet_contract_items, residual_risks, required_tracker_updates, generalization_notes. generalization_notes must be an array of objects with non-empty claim, scope, evidence, and falsifier strings, with at most 8 notes. The scorecard must contain 1-5 scores for contract_fidelity, functionality, code_quality, and verification_integrity. Use verdict=pass only when every provided score is at least 4, the tracker/spec/contract all agree, verification evidence is credible, and there are no high-severity issues. If you discover new acceptance criteria through testing, add them to required_tracker_updates so the replanner can update the feature list.";
-        let system_prompt = format!("{SYSTEM_PROMPT}\n{EVIDENCE_BOUNDED_GUIDANCE}");
+        let system_prompt = format!("{EVALUATOR_SYSTEM_PROMPT}\n{EVIDENCE_BOUNDED_GUIDANCE}");
         let user_prompt = format!(
             "Evaluate this run against the current execution contract.\n\nTask title: {}\nTask description: {}\n\nCurrent spec:\n{}\n\nCurrent contract:\n{}\n\nCurrent feature list:\n{}\n\nCurrent tracker:\n{}\n\nVerification results:\n{}\n\nModified files:\n{}\n\nWarnings:\n{}\n\nScoring guidance:\n- contract_fidelity: Did the implementation satisfy the spec and contract rather than a looser interpretation?\n- functionality: Do the implemented paths actually work beyond stubs and happy-path claims?\n- code_quality: Are the changes coherent, scoped, and consistent with local patterns?\n- verification_integrity: Do the tracker state and verification evidence really justify completion?\n\nIf you find new acceptance criteria that should be tracked, list them in required_tracker_updates. If a local observation might help the next round, add a bounded generalization note with its claim, scope, evidence, and falsifier.\n\nReturn JSON only.",
             task.title,
@@ -427,6 +432,16 @@ impl AgentRunner {
             changed_files,
             format_string_list(&session_state.warnings)
         );
+        (system_prompt, user_prompt)
+    }
+
+    async fn request_evaluator_response(
+        &mut self,
+        task: &Task,
+        session_state: &AgentSessionState,
+        verification_results: &[VerificationResult],
+    ) -> Result<EvaluatorResponse> {
+        let (system_prompt, user_prompt) = self.evaluator_prompts(task, session_state, verification_results).await;
         self.request_json_only(
             &system_prompt,
             user_prompt,
@@ -463,24 +478,7 @@ impl AgentRunner {
                 .map(|r| SkepticPanelAggregate::from_entries(vec![SkepticPanelEntry { response: r }]));
         }
 
-        let (spec_content, contract_content, tracker_content, feature_list_content) =
-            read_harness_artifacts(&self._workspace).await;
-        let changed_files = load_changed_file_snapshots(&self._workspace, &session_state.modified_files).await;
-        let verification_summary = format_verification_results(verification_results);
-        const SYSTEM_PROMPT: &str = "You are the VT Code exec harness evaluator. You are not the builder. Judge the candidate skeptically and prefer failing borderline cases. Return strict JSON only with keys verdict, summary, high_severity_findings, scorecard, findings, unmet_contract_items, residual_risks, required_tracker_updates, generalization_notes. generalization_notes must be an array of objects with non-empty claim, scope, evidence, and falsifier strings, with at most 8 notes. The scorecard must contain 1-5 scores for contract_fidelity, functionality, code_quality, and verification_integrity. Use verdict=pass only when every provided score is at least 4, the tracker/spec/contract all agree, verification evidence is credible, and there are no high-severity issues. If you discover new acceptance criteria through testing, add them to required_tracker_updates so the replanner can update the feature list.";
-        let system_prompt = format!("{SYSTEM_PROMPT}\n{EVIDENCE_BOUNDED_GUIDANCE}");
-        let user_prompt = format!(
-            "Evaluate this run against the current execution contract.\n\nTask title: {}\nTask description: {}\n\nCurrent spec:\n{}\n\nCurrent contract:\n{}\n\nCurrent feature list:\n{}\n\nCurrent tracker:\n{}\n\nVerification results:\n{}\n\nModified files:\n{}\n\nWarnings:\n{}\n\nScoring guidance:\n- contract_fidelity: Did the implementation satisfy the spec and contract rather than a looser interpretation?\n- functionality: Do the implemented paths actually work beyond stubs and happy-path claims?\n- code_quality: Are the changes coherent, scoped, and consistent with local patterns?\n- verification_integrity: Do the tracker state and verification evidence really justify completion?\n\nIf you find new acceptance criteria that should be tracked, list them in required_tracker_updates. If a local observation might help the next round, add a bounded generalization note with its claim, scope, evidence, and falsifier.\n\nReturn JSON only.",
-            task.title,
-            task.description,
-            spec_content,
-            contract_content,
-            feature_list_content,
-            tracker_content,
-            verification_summary,
-            changed_files,
-            format_string_list(&session_state.warnings)
-        );
+        let (system_prompt, user_prompt) = self.evaluator_prompts(task, session_state, verification_results).await;
 
         let base_request = LLMRequest {
             messages: std::sync::Arc::new(vec![Message::user(user_prompt)]),

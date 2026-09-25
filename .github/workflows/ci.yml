@@ -374,7 +374,7 @@ jobs:
           cargo test --locked -p vtcode --bin vtcode inline_events::tests
 
   msrv:
-    name: MSRV Check (1.88)
+    name: MSRV Check (1.98.1)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -389,7 +389,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@efcb852328a9f50117170cc43094fb6f09eaf1ae # nightly
         with:
-          toolchain: "1.88"
+          toolchain: "1.98.1"
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       - run: cargo check --locked --jobs 4
 

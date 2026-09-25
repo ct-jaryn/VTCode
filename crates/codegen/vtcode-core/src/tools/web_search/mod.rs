@@ -295,7 +295,7 @@ fn classify_search_error(message: &str, provider: &str) -> (&'static str, &'stat
     if message.contains("HTTP 202") || lower.contains("anti-bot") || lower.contains("challenge") {
         (
             "antiban_blocked",
-            "DuckDuckGo declined this request (likely an anti-bot challenge for this network). Do NOT retry immediately; pick a result URL from this session's earlier searches and use web_fetch on it instead, or ask the user to confirm a different search provider.",
+            "DuckDuckGo declined this request (likely an anti-bot challenge for this network). An immediate retry from this network will hit the same block; pick a result URL from this session's earlier searches and use web_fetch on it instead, or ask the user to confirm a different search provider.",
         )
     } else if lower.contains("timeout") || lower.contains("timed out") {
         if provider == "youcom" {
@@ -833,7 +833,7 @@ mod tests {
             "duckduckgo",
         );
         assert_eq!(kind, "antiban_blocked");
-        assert!(action.contains("Do NOT retry"), "action should discourage immediate retry; got: {action}");
+        assert!(action.contains("immediate retry"), "action should discourage immediate retry; got: {action}");
     }
 
     #[test]

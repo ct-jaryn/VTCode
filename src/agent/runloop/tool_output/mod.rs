@@ -233,10 +233,8 @@ pub(crate) async fn render_tool_output(
         Some(tools::EXECUTE_CODE) => {
             return render_terminal_tool_output(renderer, val, vt_config, allow_tool_ansi).await;
         }
-        Some(tools::TASK_TRACKER) => {
-            if render_tracker_view(renderer, val)? {
-                return Ok(());
-            }
+        Some(tools::TASK_TRACKER) if render_tracker_view(renderer, val)? => {
+            return Ok(());
         }
         _ => {}
     }

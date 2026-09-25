@@ -2,6 +2,8 @@ pub const DEFAULT_MODEL: &str = "gpt-5.6-sol";
 pub const SUPPORTED_MODELS: &[&str] = &[
     GPT,
     GPT_6_ASTRA,
+    GPT_6_SOL,
+    GPT_6_LUNA,
     "gpt-5.6",       // GPT-5.6 alias (routes to gpt-5.6-sol)
     "gpt-5.6-sol",   // GPT-5.6 Sol flagship model
     "gpt-5.6-terra", // GPT-5.6 Terra balanced model
@@ -16,6 +18,8 @@ pub const SUPPORTED_MODELS: &[&str] = &[
 pub const RESPONSES_API_MODELS: &[&str] = &[
     GPT,
     GPT_6_ASTRA,
+    GPT_6_SOL,
+    GPT_6_LUNA,
     GPT_5_6,
     GPT_5_6_SOL,
     GPT_5_6_TERRA,
@@ -29,6 +33,8 @@ pub const RESPONSES_API_MODELS: &[&str] = &[
 pub const REASONING_MODELS: &[&str] = &[
     GPT,
     GPT_6_ASTRA,
+    GPT_6_SOL,
+    GPT_6_LUNA,
     GPT_5_6,
     GPT_5_6_SOL,
     GPT_5_6_TERRA,
@@ -54,6 +60,8 @@ pub const STREAMING_REQUIRED_MODELS: &[&str] = &[GPT, GPT_5_6_SOL, GPT_5_6_LUNA]
 // Convenience constants for commonly used models
 pub const GPT: &str = "gpt";
 pub const GPT_6_ASTRA: &str = "gpt-6-astra";
+pub const GPT_6_SOL: &str = "gpt-6-sol";
+pub const GPT_6_LUNA: &str = "gpt-6-luna";
 pub const GPT_5_6_SOL: &str = "gpt-5.6-sol";
 pub const GPT_5_6_TERRA: &str = "gpt-5.6-terra";
 pub const GPT_5_6_LUNA: &str = "gpt-5.6-luna";

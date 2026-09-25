@@ -395,6 +395,33 @@ mod tests {
     }
 
     #[test]
+    fn single_command_row_carries_full_pipeline_without_truncation() {
+        // Screenshot 2026-09-24 16:37: a single-command `• Ran` compact row
+        // must carry the complete pipeline — `||` inside the quoted pattern,
+        // every `| grep -v` segment, and the `\.backup` arg — with no `…`.
+        // (Viewport-aware wrapping owns the overflow at render time.)
+        let styles = ShellLineStyles::new();
+        let command = "grep -rn \"@vinhnx/vtcode|npm install -g||npx @vinhnx\" docs | grep -v node_modules | grep -v package-lock | grep -v \"\\.backup\"";
+        let meta = vtcode_commons::ui_protocol::CompactActivityMetadata {
+            group_id: 1,
+            command_count: 1,
+            command: Some(command.into()),
+            hidden_line_count: 0,
+            suffix: None,
+            review_anchor: None,
+            review_anchors: vec![],
+        };
+        let segs = line_to_compact_segments(&meta, &styles);
+        let text: String = segs.iter().map(|s| s.text.as_str()).collect();
+        assert!(!text.contains('…'), "compact row must not truncate, got: {text:?}");
+        assert!(text.starts_with("• Ran "), "got: {text:?}");
+        assert_eq!(text.matches('|').count(), 6, "pattern pipes + shell pipes must survive: {text:?}");
+        for fragment in ["node_modules", "package-lock", "\\.backup"] {
+            assert!(text.contains(fragment), "missing {fragment:?} in {text:?}");
+        }
+    }
+
+    #[test]
     fn grouped_has_no_single_command_highlight() {
         let styles = ShellLineStyles::new();
         let meta = vtcode_commons::ui_protocol::CompactActivityMetadata {

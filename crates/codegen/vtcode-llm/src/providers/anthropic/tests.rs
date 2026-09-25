@@ -18,6 +18,21 @@ mod capabilities_tests {
     }
 
     #[test]
+    fn structured_output_models_lists_exactly_the_accepted_models() {
+        let listed = structured_output_models();
+        for model in models::anthropic::SUPPORTED_MODELS {
+            assert!(listed.contains(model), "{model} accepts structured output but is not listed");
+        }
+        for model in &listed {
+            assert!(supports_structured_output(model, ""), "{model} is listed but rejected");
+        }
+        for rejected in ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"] {
+            assert!(!supports_structured_output(rejected, ""), "{rejected}");
+            assert!(!listed.contains(&rejected), "{rejected}");
+        }
+    }
+
+    #[test]
     fn test_supports_vision() {
         assert!(supports_vision(models::CLAUDE_SONNET_5, models::anthropic::DEFAULT_MODEL));
         assert!(supports_vision("claude-3-opus", models::anthropic::DEFAULT_MODEL));
@@ -93,6 +108,25 @@ mod validation_tests {
         };
         let config = AnthropicConfig::default();
         assert!(validate_request(&request, models::anthropic::DEFAULT_MODEL, &config, "Anthropic").is_err());
+    }
+
+    #[test]
+    fn unsupported_structured_output_error_names_the_supported_models() {
+        let request = LLMRequest {
+            messages: vec![Message::user("hi".to_string())].into(),
+            model: "claude-haiku-4-5".to_string(),
+            output_format: Some(json!({ "type": "object", "properties": {}, "additionalProperties": false })),
+            ..Default::default()
+        };
+        let config = AnthropicConfig::default();
+        let err = validate_request(&request, models::anthropic::DEFAULT_MODEL, &config, "Anthropic")
+            .expect_err("haiku 4.5 has no structured output support");
+        let message = err.to_string();
+        assert!(message.contains("'claude-haiku-4-5'"), "{message}");
+        for model in crate::providers::anthropic::capabilities::structured_output_models() {
+            assert!(message.contains(model), "missing {model}: {message}");
+        }
+        assert!(!message.contains("4.6") && !message.contains("Haiku 4.5 models"), "{message}");
     }
 
     #[test]
@@ -172,41 +206,6 @@ mod validation_tests {
             messages: vec![Message::user("hi".to_string())].into(),
             model: models::CLAUDE_SONNET_5.to_string(),
             effort: Some("xhigh".to_string()),
-            ..Default::default()
-        };
-
-        assert!(validate_request(&request, models::anthropic::DEFAULT_MODEL, &config, "Anthropic").is_ok());
-    }
-
-    #[test]
-    fn test_validate_sonnet_5_omits_prefill_without_thinking() {
-        let config = AnthropicConfig {
-            extended_thinking_enabled: false,
-            ..AnthropicConfig::default()
-        };
-        let request = LLMRequest {
-            messages: vec![Message::user("hi".to_string())].into(),
-            model: models::CLAUDE_SONNET_5.to_string(),
-            prefill: Some("{".to_string()),
-            ..Default::default()
-        };
-
-        assert!(validate_request(&request, models::anthropic::DEFAULT_MODEL, &config, "Anthropic").is_ok());
-    }
-
-    #[test]
-    fn test_validate_sonnet_5_omits_prefill_thought_without_thinking() {
-        let config = AnthropicConfig {
-            extended_thinking_enabled: false,
-            ..AnthropicConfig::default()
-        };
-        let request = LLMRequest {
-            messages: vec![Message::user("hi".to_string())].into(),
-            model: models::CLAUDE_SONNET_5.to_string(),
-            coding_agent_settings: Some(Box::new(crate::provider::CodingAgentSettings {
-                prefill_thought: true,
-                ..Default::default()
-            })),
             ..Default::default()
         };
 
@@ -322,27 +321,6 @@ mod validation_tests {
     }
 
     #[test]
-    fn test_validate_structured_outputs_omits_prefill_for_fable_5() {
-        let config = AnthropicConfig::default();
-        let request = LLMRequest {
-            messages: vec![Message::user("hi".to_string())].into(),
-            model: models::anthropic::CLAUDE_FABLE_5.to_string(),
-            output_format: Some(json!({
-                "type": "object",
-                "properties": {
-                    "answer": {"type": "string"}
-                },
-                "required": ["answer"],
-                "additionalProperties": false
-            })),
-            prefill: Some("{\"answer\":".to_string()),
-            ..Default::default()
-        };
-
-        assert!(validate_request(&request, models::anthropic::DEFAULT_MODEL, &config, "Anthropic").is_ok());
-    }
-
-    #[test]
     fn test_validate_anthropic_tool_name_rejects_invalid_names() {
         let config = AnthropicConfig::default();
         let request = LLMRequest {
@@ -397,6 +375,44 @@ mod response_parser_tests {
         let response = parse_response(response_json, "claude-sonnet-5".to_string()).expect("parse response");
         assert_eq!(response.content.as_deref(), Some("Hello, world!"));
         assert!(matches!(response.finish_reason, FinishReason::Stop));
+    }
+
+    #[test]
+    fn test_parse_response_carries_refusal_stop_details() {
+        let response_json = json!({
+            "content": [],
+            "stop_reason": "refusal",
+            "stop_details": {
+                "type": "refusal",
+                "category": "cyber",
+                "explanation": "declined",
+                "fallback_credit_token": "credit-1",
+                "fallback_has_prefill_claim": false
+            }
+        });
+
+        let response = parse_response(response_json, "claude-sonnet-5".to_string()).expect("parse response");
+        assert!(matches!(response.finish_reason, FinishReason::Refusal));
+        let details = response.reasoning_details.expect("stop_details detail");
+        assert_eq!(details.len(), 1);
+        let detail: serde_json::Value = serde_json::from_str(&details[0]).expect("serialized stop_details");
+        assert_eq!(detail["type"], "stop_details");
+        assert_eq!(detail["category"], "cyber");
+        assert_eq!(detail["explanation"], "declined");
+        assert_eq!(detail["fallback_credit_token"], "credit-1");
+        assert_eq!(detail["fallback_has_prefill_claim"], false);
+    }
+
+    #[test]
+    fn test_parse_response_ignores_null_stop_details() {
+        let response_json = json!({
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "stop_details": null
+        });
+
+        let response = parse_response(response_json, "claude-sonnet-5".to_string()).expect("parse response");
+        assert!(response.reasoning_details.is_none(), "details: {:?}", response.reasoning_details);
     }
 
     #[test]
@@ -502,7 +518,7 @@ mod request_builder_tests {
     use crate::providers::anthropic::request_builder::{
         RequestBuilderContext, convert_to_anthropic_format, tool_result_blocks,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::Arc;
     use vtcode_config::constants::models;
     use vtcode_config::core::{AnthropicConfig, AnthropicPromptCacheSettings};
@@ -552,6 +568,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -578,6 +595,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -608,6 +626,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -638,6 +657,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -668,6 +688,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -698,6 +719,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -738,6 +760,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -782,6 +805,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -828,6 +852,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -871,6 +896,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -898,6 +924,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -932,6 +959,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -968,6 +996,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -998,6 +1027,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1026,6 +1056,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1046,6 +1077,129 @@ mod request_builder_tests {
         assert_eq!(payload["messages"].as_array().map_or(0, |msgs| msgs.len()), 1);
         assert_eq!(payload["messages"][0]["role"], "user");
         assert!(payload["system"][1].get("cache_control").is_none());
+    }
+
+    fn mid_conversation_payload(messages: Vec<Message>) -> Value {
+        let request = LLMRequest {
+            model: models::anthropic::CLAUDE_OPUS_5_5.to_string(),
+            system_prompt: Some(Arc::from("stable system instructions")),
+            messages: messages.into(),
+            ..Default::default()
+        };
+        let cache_settings = AnthropicPromptCacheSettings::default();
+        let anthropic_config = AnthropicConfig::default();
+        let ctx = RequestBuilderContext {
+            prompt_cache_enabled: true,
+            prompt_cache_settings: &cache_settings,
+            anthropic_config: &anthropic_config,
+            model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
+        };
+        convert_to_anthropic_format(&request, &ctx).expect("payload conversion")
+    }
+
+    #[test]
+    fn test_mid_conversation_system_message_is_not_duplicated_into_system_prompt() {
+        let directive = "Reuse the latest tool outputs instead of rerunning the same exploration.";
+        let payload = mid_conversation_payload(vec![
+            Message::user("explore architecture".to_string()),
+            Message::system(directive.to_string()),
+        ]);
+
+        assert_eq!(payload["messages"][1]["role"], "system");
+        assert_eq!(payload["messages"][1]["content"][0]["text"], directive);
+        let system_text = payload["system"].to_string();
+        assert!(!system_text.contains(directive), "directive must render only in messages[]: {system_text}");
+        assert!(!system_text.contains("[History Directives]"));
+    }
+
+    #[test]
+    fn test_mid_conversation_system_messages_keep_system_prompt_stable_across_turns() {
+        let first_turn = mid_conversation_payload(vec![Message::user("explore architecture".to_string())]);
+        let second_turn = mid_conversation_payload(vec![
+            Message::user("explore architecture".to_string()),
+            Message::system("Previous turn already completed tool execution.".to_string()),
+            Message::assistant("Done exploring.".to_string()),
+            Message::user("now summarize".to_string()),
+            Message::system("Keep the summary under ten lines.".to_string()),
+        ]);
+
+        assert_eq!(first_turn["system"], second_turn["system"]);
+        assert_eq!(first_turn["messages"][0]["content"][0]["text"], second_turn["messages"][0]["content"][0]["text"]);
+        let roles: Vec<&str> = second_turn["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|message| message["role"].as_str())
+            .collect();
+        assert_eq!(roles, ["user", "system", "assistant", "user", "system"]);
+    }
+
+    #[test]
+    fn test_leading_history_system_message_is_folded_once_on_mid_conversation_route() {
+        let summary = "Previous conversation summary: the parser was refactored.";
+        let payload = mid_conversation_payload(vec![
+            Message::system(summary.to_string()),
+            Message::user("continue".to_string()),
+        ]);
+
+        // A system message cannot be messages[0], so the leading run is folded
+        // into the system prompt and dropped from messages[].
+        let messages = payload["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        let system_text = payload["system"].to_string();
+        assert_eq!(system_text.matches(summary).count(), 1, "summary folded exactly once: {system_text}");
+    }
+
+    fn long_context_payload(model: &str) -> Value {
+        let request = LLMRequest {
+            model: model.to_string(),
+            messages: vec![
+                Message::user("short opener".to_string()),
+                Message::assistant("Acknowledged.".to_string()),
+                Message::user(format!("large pasted document: {}", "x".repeat(512))),
+            ]
+            .into(),
+            coding_agent_settings: Some(Box::new(crate::provider::CodingAgentSettings {
+                long_context_optimization: true,
+            })),
+            ..Default::default()
+        };
+        let cache_settings = AnthropicPromptCacheSettings::default();
+        let anthropic_config = AnthropicConfig::default();
+        let ctx = RequestBuilderContext {
+            prompt_cache_enabled: false,
+            prompt_cache_settings: &cache_settings,
+            anthropic_config: &anthropic_config,
+            model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
+        };
+        convert_to_anthropic_format(&request, &ctx).expect("payload conversion")
+    }
+
+    #[test]
+    fn test_long_context_hoisting_is_skipped_for_preserved_thinking_models() {
+        for model in [models::anthropic::CLAUDE_OPUS_5_5, models::anthropic::CLAUDE_FABLE_5_1] {
+            let payload = long_context_payload(model);
+            let messages = payload["messages"].as_array().expect("messages");
+            assert_eq!(messages.len(), 3, "{model}: {payload}");
+            assert_eq!(messages[0]["content"][0]["text"], "short opener", "{model}: history must stay in order");
+            assert_eq!(messages[1]["role"], "assistant");
+            assert!(
+                messages[2]["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("large pasted document")),
+                "{model}: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_long_context_hoisting_still_applies_without_preserved_thinking() {
+        let payload = long_context_payload(models::anthropic::CLAUDE_OPUS_5);
+        let first_text = payload["messages"][0]["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(first_text.starts_with("large pasted document"), "largest user message hoisted: {payload}");
     }
 
     #[test]
@@ -1078,6 +1232,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1119,6 +1274,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         convert_to_anthropic_format(&request, &ctx).unwrap_err();
@@ -1152,6 +1308,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1160,11 +1317,86 @@ mod request_builder_tests {
         assert_eq!(payload["tools"][0]["name"], "code_execution");
     }
 
-    #[test]
-    fn test_convert_to_anthropic_format_uses_configured_default_effort_for_sonnet_5() {
+    fn adaptive_effort_payload(
+        model: &str,
+        reasoning_effort: Option<vtcode_config::types::ReasoningEffortLevel>,
+        configured_effort: Option<vtcode_config::types::ReasoningEffortLevel>,
+    ) -> Value {
         let request = LLMRequest {
-            model: models::CLAUDE_SONNET_5.to_string(),
+            model: model.to_string(),
             messages: vec![Message::user("solve this carefully".to_string())].into(),
+            reasoning_effort,
+            ..Default::default()
+        };
+        let cache_settings = AnthropicPromptCacheSettings::default();
+        let anthropic_config = AnthropicConfig {
+            effort: configured_effort,
+            ..AnthropicConfig::default()
+        };
+        let ctx = RequestBuilderContext {
+            prompt_cache_enabled: false,
+            prompt_cache_settings: &cache_settings,
+            anthropic_config: &anthropic_config,
+            model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
+        };
+
+        let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
+        assert_eq!(payload["thinking"]["type"], "adaptive", "model {model}");
+        payload
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_uses_model_default_effort_when_unset() {
+        // Opus 5.5 is tuned for `medium`; the others default to `high`.
+        for (model, expected) in [
+            (models::anthropic::CLAUDE_OPUS_5_5, "medium"),
+            (models::anthropic::CLAUDE_OPUS_5, "high"),
+            (models::CLAUDE_SONNET_5, "high"),
+            (models::anthropic::CLAUDE_FABLE_5_1, "high"),
+        ] {
+            let payload = adaptive_effort_payload(model, None, None);
+            assert_eq!(payload["output_config"]["effort"], expected, "model {model}");
+        }
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_honors_explicit_reasoning_effort_over_model_default() {
+        use vtcode_config::types::ReasoningEffortLevel;
+
+        let payload =
+            adaptive_effort_payload(models::anthropic::CLAUDE_OPUS_5_5, Some(ReasoningEffortLevel::High), None);
+        assert_eq!(payload["output_config"]["effort"], "high");
+
+        // `agent.reasoning_effort` / `/effort` wins over `provider.anthropic.effort`.
+        let payload = adaptive_effort_payload(
+            models::anthropic::CLAUDE_OPUS_5_5,
+            Some(ReasoningEffortLevel::High),
+            Some(ReasoningEffortLevel::Low),
+        );
+        assert_eq!(payload["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_honors_explicit_configured_effort() {
+        use vtcode_config::types::ReasoningEffortLevel;
+
+        let payload =
+            adaptive_effort_payload(models::anthropic::CLAUDE_OPUS_5_5, None, Some(ReasoningEffortLevel::XHigh));
+        assert_eq!(payload["output_config"]["effort"], "xhigh");
+
+        let payload = adaptive_effort_payload(models::CLAUDE_SONNET_5, None, Some(ReasoningEffortLevel::XHigh));
+        assert_eq!(payload["output_config"]["effort"], "xhigh");
+    }
+
+    fn convert_ending_on_assistant(model: &str) -> Vec<Value> {
+        let request = LLMRequest {
+            model: model.to_string(),
+            messages: vec![
+                Message::user("start the task".to_string()),
+                Message::assistant("partial answer".to_string()),
+            ]
+            .into(),
             ..Default::default()
         };
         let cache_settings = AnthropicPromptCacheSettings::default();
@@ -1174,12 +1406,57 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
+        payload["messages"].as_array().expect("messages array").clone()
+    }
 
-        assert_eq!(payload["thinking"]["type"], "adaptive");
-        assert_eq!(payload["output_config"]["effort"], "xhigh");
+    fn assert_trailing_assistant_is_followed_by_user_sentinel(model: &str) {
+        let messages = convert_ending_on_assistant(model);
+
+        assert_eq!(messages.len(), 3, "model {model}: {messages:?}");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "user", "model {model} must never receive a trailing assistant turn");
+        assert_eq!(messages[2]["content"][0]["text"], "[Continue]");
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_never_ends_on_assistant_for_sonnet_5() {
+        assert_trailing_assistant_is_followed_by_user_sentinel(models::CLAUDE_SONNET_5);
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_never_ends_on_assistant_for_opus_5_5() {
+        assert_trailing_assistant_is_followed_by_user_sentinel(models::anthropic::CLAUDE_OPUS_5_5);
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_never_ends_on_assistant_for_unknown_model() {
+        assert_trailing_assistant_is_followed_by_user_sentinel("claude-unlisted-model");
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_never_ends_on_assistant_for_claude_4_6_and_later() {
+        for model in ["claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6"] {
+            assert_trailing_assistant_is_followed_by_user_sentinel(model);
+        }
+    }
+
+    #[test]
+    fn test_convert_to_anthropic_format_keeps_trailing_assistant_for_prefill_backends() {
+        for model in [
+            models::minimax::MINIMAX_M3,
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5-20250929",
+        ] {
+            let messages = convert_ending_on_assistant(model);
+
+            assert_eq!(messages.len(), 2, "model {model}: {messages:?}");
+            assert_eq!(messages[1]["role"], "assistant", "model {model} continues from the trailing turn");
+            assert_eq!(messages[1]["content"][0]["text"], "partial answer");
+        }
     }
 
     #[test]
@@ -1210,6 +1487,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1246,6 +1524,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1287,6 +1566,7 @@ mod request_builder_tests {
             prompt_cache_settings: &cache_settings,
             anthropic_config: &anthropic_config,
             model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
         };
 
         let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
@@ -1301,5 +1581,174 @@ mod request_builder_tests {
                 }
             }])
         );
+    }
+}
+
+#[cfg(test)]
+mod block_order_round_trip_tests {
+    use crate::provider::{LLMResponse, Message};
+    use crate::providers::anthropic::request_builder::{RequestBuilderContext, convert_to_anthropic_format};
+    use crate::providers::anthropic::response_parser::parse_response;
+    use serde_json::{Value, json};
+    use vtcode_config::constants::models;
+    use vtcode_config::core::{AnthropicConfig, AnthropicPromptCacheSettings};
+
+    /// Mirror of the runloop: an assistant turn stored from a response.
+    fn assistant_message(response: LLMResponse) -> Message {
+        let details = response
+            .reasoning_details
+            .map(|details| details.into_iter().map(Value::String).collect());
+        let content = response.content.unwrap_or_default();
+        match response.tool_calls {
+            Some(tool_calls) => Message::assistant_with_tools_and_reasoning(content, tool_calls, details),
+            None => Message::assistant(content).with_reasoning_details(details),
+        }
+    }
+
+    fn replayed_assistant_content(history: Vec<Message>) -> Vec<Value> {
+        let request = crate::provider::LLMRequest {
+            model: models::anthropic::CLAUDE_OPUS_5_5.to_string(),
+            messages: history.into(),
+            ..Default::default()
+        };
+        let cache_settings = AnthropicPromptCacheSettings::default();
+        let anthropic_config = AnthropicConfig::default();
+        let ctx = RequestBuilderContext {
+            prompt_cache_enabled: false,
+            prompt_cache_settings: &cache_settings,
+            anthropic_config: &anthropic_config,
+            model: models::anthropic::DEFAULT_MODEL,
+            server_side_fallbacks_available: false,
+        };
+        let payload = convert_to_anthropic_format(&request, &ctx).expect("payload conversion");
+        payload["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("assistant message")["content"]
+            .as_array()
+            .expect("assistant content")
+            .clone()
+    }
+
+    fn interleaved_content() -> Value {
+        json!([
+            { "type": "thinking", "thinking": "", "signature": "sig-1" },
+            { "type": "text", "text": "Reading the parser first." },
+            { "type": "thinking", "thinking": "Found the entry point.", "signature": "sig-2" },
+            { "type": "tool_use", "id": "toolu_1", "name": "read_file", "input": { "path": "src/parser.rs" } }
+        ])
+    }
+
+    fn history_with(assistant: Message) -> Vec<Message> {
+        vec![
+            Message::user("fix the parser".to_string()),
+            assistant,
+            Message::tool_response("toolu_1".to_string(), "fn parse() {}".to_string()),
+        ]
+    }
+
+    #[test]
+    fn interleaved_response_replays_blocks_in_received_order() {
+        let response = parse_response(
+            json!({ "content": interleaved_content(), "stop_reason": "tool_use" }),
+            models::anthropic::CLAUDE_OPUS_5_5.to_string(),
+        )
+        .expect("parse");
+
+        let content = replayed_assistant_content(history_with(assistant_message(response)));
+
+        assert_eq!(content, interleaved_content().as_array().expect("array").clone());
+    }
+
+    #[test]
+    fn fixed_order_response_stores_no_block_order_record() {
+        let response = parse_response(
+            json!({
+                "content": [
+                    { "type": "thinking", "thinking": "", "signature": "sig-1" },
+                    { "type": "text", "text": "Reading." },
+                    { "type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {} }
+                ],
+                "stop_reason": "tool_use"
+            }),
+            models::anthropic::CLAUDE_OPUS_5_5.to_string(),
+        )
+        .expect("parse");
+
+        assert!(
+            !response
+                .reasoning_details
+                .as_ref()
+                .expect("details")
+                .iter()
+                .any(|detail| detail.contains("anthropic_block_order"))
+        );
+    }
+
+    #[test]
+    fn mid_output_fallback_drops_declined_thinking_and_tool_use_before_boundary() {
+        let response = parse_response(
+            json!({
+                "content": [
+                    { "type": "thinking", "thinking": "Refused model reasoning.", "signature": "sig-1" },
+                    { "type": "text", "text": "Checking. " },
+                    { "type": "tool_use", "id": "toolu_declined", "name": "read_file", "input": {} },
+                    { "type": "fallback", "from": { "model": "claude-fable-5-1" }, "to": { "model": "claude-opus-4-8" } },
+                    { "type": "text", "text": "Here is the answer." }
+                ],
+                "stop_reason": "end_turn"
+            }),
+            models::anthropic::CLAUDE_OPUS_5_5.to_string(),
+        )
+        .expect("parse");
+
+        assert!(response.tool_calls.is_none());
+        assert!(response.reasoning.is_none());
+        assert_eq!(response.content.as_deref(), Some("Checking. Here is the answer."));
+        let details: Vec<Value> = response
+            .reasoning_details
+            .clone()
+            .expect("details")
+            .iter()
+            .map(|detail| serde_json::from_str(detail).expect("detail json"))
+            .collect();
+        assert!(details.iter().all(|detail| detail["type"] != "thinking"));
+        assert!(details.iter().any(|detail| {
+            detail["type"] == "fallback"
+                && detail["from"]["model"] == "claude-fable-5-1"
+                && detail["to"]["model"] == "claude-opus-4-8"
+        }));
+
+        let content = replayed_assistant_content(vec![
+            Message::user("fix the parser".to_string()),
+            assistant_message(response),
+            Message::user("thanks".to_string()),
+        ]);
+        assert_eq!(
+            content,
+            vec![
+                json!({ "type": "text", "text": "Checking. " }),
+                json!({ "type": "text", "text": "Here is the answer." }),
+            ]
+        );
+    }
+
+    #[test]
+    fn edited_assistant_text_falls_back_to_default_order() {
+        let response = parse_response(
+            json!({ "content": interleaved_content(), "stop_reason": "tool_use" }),
+            models::anthropic::CLAUDE_OPUS_5_5.to_string(),
+        )
+        .expect("parse");
+        let mut assistant = assistant_message(response);
+        assistant.content = crate::provider::MessageContent::Text("rewritten by the runtime".to_string());
+
+        let content = replayed_assistant_content(history_with(assistant));
+        let types: Vec<&str> = content.iter().filter_map(|block| block["type"].as_str()).collect();
+
+        assert_eq!(types, ["thinking", "thinking", "text", "tool_use"]);
+        assert_eq!(content[2]["text"], "rewritten by the runtime");
     }
 }

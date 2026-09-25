@@ -1,4 +1,8 @@
 #![allow(
+    clippy::float_cmp,
+    reason = "phase is a continuous f32; tests assert exact phase transitions"
+)]
+#![allow(
     missing_docs,
     reason = "Intentional compatibility, platform, or test-only suppression."
 )]
@@ -263,6 +267,29 @@ fn active_file_operation_indicator_renders_spinner_frame() {
 }
 
 #[test]
+fn reduced_motion_keeps_file_operation_marker_static() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.appearance.reduce_motion_mode = true;
+    session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Editing vtcode.toml...")]);
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Running tool: edit_file".to_string()),
+        right: None,
+    });
+
+    let rendered = rendered_transcript_widget_lines(&mut session, VIEW_WIDTH, VIEW_ROWS);
+    let animated = format!("{} Editing vtcode.toml...", pulse_spinner_frame_for_phase(0.0));
+
+    assert!(
+        rendered.iter().any(|line| line.contains("❋ Editing vtcode.toml...")),
+        "reduced motion should keep the file operation label visible"
+    );
+    assert!(
+        !rendered.iter().any(|line| line.contains(&animated)),
+        "reduced motion should not replace the static file marker with a spinner"
+    );
+}
+
+#[test]
 fn non_file_tool_status_keeps_static_file_operation_indicator() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Editing vtcode.toml...")]);
@@ -298,7 +325,7 @@ fn active_pty_observer_drives_compact_loading_status() {
 
     assert_eq!(session.status_left_text(), Some("Running PTY command..."));
     assert!(session.has_status_spinner());
-    assert!(session.is_running_activity());
+    assert!(!session.is_running_activity(), "foreground command status must not mark an idle turn busy");
 
     active_pty_sessions.store(0, Ordering::Relaxed);
 
@@ -321,6 +348,46 @@ fn background_activity_animates_loading_shimmer_without_looking_busy() {
     session.set_background_activity_count(0);
     assert!(!session.background_status_shimmer_active());
     assert!(session.background_activity_status_text().is_none());
+}
+
+#[test]
+fn progress_ticks_follow_reduce_motion_override_and_screen_reader_policy() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.thinking_spinner.start();
+    session.set_background_activity_count(1);
+
+    let initial_spinner = session.thinking_spinner.current_frame();
+    let initial_phase = session.shimmer_state.phase();
+    std::thread::sleep(Duration::from_millis(100));
+    session.handle_tick();
+
+    assert_ne!(session.thinking_spinner.current_frame(), initial_spinner);
+    assert_ne!(session.shimmer_state.phase(), initial_phase);
+
+    session.appearance.reduce_motion_mode = true;
+    let reduced_spinner = session.thinking_spinner.current_frame();
+    let reduced_phase = session.shimmer_state.phase();
+    std::thread::sleep(Duration::from_millis(100));
+    session.handle_tick();
+
+    assert_eq!(session.thinking_spinner.current_frame(), reduced_spinner);
+    assert_eq!(session.shimmer_state.phase(), reduced_phase);
+
+    session.appearance.reduce_motion_keep_progress_animation = true;
+    session.handle_tick();
+
+    assert_ne!(session.thinking_spinner.current_frame(), reduced_spinner);
+    assert_ne!(session.shimmer_state.phase(), reduced_phase);
+
+    session.appearance.reduce_motion_mode = false;
+    session.appearance.screen_reader_mode = true;
+    let screen_reader_spinner = session.thinking_spinner.current_frame();
+    let screen_reader_phase = session.shimmer_state.phase();
+    std::thread::sleep(Duration::from_millis(100));
+    session.handle_tick();
+
+    assert_eq!(session.thinking_spinner.current_frame(), screen_reader_spinner);
+    assert_eq!(session.shimmer_state.phase(), screen_reader_phase);
 }
 
 #[test]

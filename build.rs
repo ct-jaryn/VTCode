@@ -54,4 +54,15 @@ fn main() {
     }
 
     println!("cargo:rustc-env=VT_CODE_GIT_INFO={git_describe}");
+
+    // macOS: the `vtcode` binary's `__eh_frame` exceeds ld64's 16 MiB
+    // compact-unwind limit, so every dev link warns `__eh_frame section too
+    // large ... performance of exception handling might be affected`
+    // (rust-lang/rust#159105). Passing `-no_compact_unwind` selects the DWARF
+    // fallback explicitly — the same fallback ld uses after warning — so the
+    // warning disappears with no behavior change. Release builds use
+    // `panic = "abort"` and strip symbols, so unwind tables are unaffected.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-no_compact_unwind");
+    }
 }

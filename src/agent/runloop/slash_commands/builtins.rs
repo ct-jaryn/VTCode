@@ -605,6 +605,8 @@ pub(in crate::agent::runloop::slash_commands) async fn execute_built_in_command_
         "history" => handle_history_command(args, renderer),
         "new" => Ok(SlashCommandOutcome::NewSession),
         "rewind" => handle_rewind_command(args, renderer),
+        "redo" => Ok(SlashCommandOutcome::Redo),
+        "rewind-recover" => Ok(SlashCommandOutcome::RewindRecover),
         "docs" => Ok(SlashCommandOutcome::OpenDocs),
         "feedback" => handle_feedback_command(args, renderer),
         "edit" => handle_edit_command(args),
@@ -747,9 +749,7 @@ pub(in crate::agent::runloop::slash_commands) fn parse_update_args(
     Ok((check_only, install, force))
 }
 
-pub(in crate::agent::runloop::slash_commands) fn parse_effort_args(
-    args: &str,
-) -> std::result::Result<(Option<ReasoningEffortLevel>, bool), String> {
+pub(crate) fn parse_effort_args(args: &str) -> std::result::Result<(Option<ReasoningEffortLevel>, bool), String> {
     let mut persist = false;
     let mut level = None;
 

@@ -97,7 +97,7 @@ fn generate_placeholder_openrouter_constants() -> Result<String> {
     let default_model_id = root
         .get("default_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("xiaomi/mimo-v2.5-pro");
+        .unwrap_or("xiaomi/mimo-v2.6-pro");
 
     // Collect per-model entries: (constant_name, model_id, is_reasoning, tool_call, vendor)
     let mut entries: Vec<(String, String, bool, bool, String)> = Vec::new();
@@ -126,7 +126,7 @@ fn generate_placeholder_openrouter_constants() -> Result<String> {
         entries.push((const_name, model_id, is_reasoning, tool_call, vendor));
     }
 
-    let default_const = default_const_name.as_deref().unwrap_or("XIAOMI_MIMO_V2_5_PRO");
+    let default_const = default_const_name.as_deref().unwrap_or("XIAOMI_MIMO_V2_6_PRO");
 
     let mut output = String::new();
     output.push_str("// Auto-generated placeholder for docs.rs build\n");

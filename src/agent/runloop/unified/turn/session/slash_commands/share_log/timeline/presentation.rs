@@ -947,6 +947,7 @@ fn harness_title(event: &HarnessEventKind) -> &'static str {
         HarnessEventKind::SnapshotRestored => "Snapshot restored",
         HarnessEventKind::SessionToolLimitIncreased => "Session tool limit increased",
         HarnessEventKind::ToolLoopLimitIncreased => "Tool loop limit increased",
+        HarnessEventKind::BackgroundSubprocessCompleted => "Background subprocess completed",
     }
 }
 
@@ -974,7 +975,8 @@ fn harness_status_label(event: &HarnessEventKind) -> &'static str {
         HarnessEventKind::SnapshotCreated
         | HarnessEventKind::SnapshotRestored
         | HarnessEventKind::SessionToolLimitIncreased
-        | HarnessEventKind::ToolLoopLimitIncreased => "completed",
+        | HarnessEventKind::ToolLoopLimitIncreased
+        | HarnessEventKind::BackgroundSubprocessCompleted => "completed",
     }
 }
 

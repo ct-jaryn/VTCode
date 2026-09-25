@@ -9,6 +9,11 @@ use vtcode_config::IdeContextProviderFamily;
 
 use crate::utils::common::{display_language_from_editor_language_id, display_language_from_path};
 
+/// First line of every [`EditorContextSnapshot::prompt_block`]. The runloop
+/// persists the block in history when it changes and recognizes it by this
+/// header.
+pub const EDITOR_CONTEXT_PROMPT_HEADER: &str = "## Active Editor Context";
+
 pub const IDE_CONTEXT_ENV_VAR: &str = "VT_IDE_CONTEXT_FILE";
 pub const LEGACY_VSCODE_CONTEXT_ENV_VAR: &str = "VT_VSCODE_CONTEXT_FILE";
 pub const IDE_CONTEXT_SNAPSHOT_VERSION: u32 = 1;
@@ -162,7 +167,7 @@ impl EditorContextSnapshot {
         let file = self.active_file.as_ref()?;
         let active_path = file.display_path(workspace_root, self.workspace_root.as_deref());
         let mut lines = Vec::new();
-        lines.push("## Active Editor Context".to_string());
+        lines.push(EDITOR_CONTEXT_PROMPT_HEADER.to_string());
         lines.push(format!("- IDE family: {}", provider_family_label(self.provider_family)));
         lines.push(format!("- Active file: {active_path}"));
 

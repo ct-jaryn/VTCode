@@ -259,12 +259,13 @@ impl Session {
                 push_spacing_transcript_lines(&mut wrapped, spacing);
             }
             InlineMessageKind::User => {}
-            // End of an agent turn. Prose glues directly to a following tool
-            // block like a caption to its work log (a tool block after an
-            // agent lead-in owns no top gap of its own, so no trailing gap
-            // either — the section rule provides the separation). Any other
-            // follower keeps at least one blank line (even when
-            // message_block_spacing is 0) so the response stays distinct.
+            // End of an agent turn. Prose keeps one blank line before a
+            // following tool block so the message stays visually distinct
+            // from its work log (single ownership: the agent suppresses its
+            // trailing gap here and the tool block owns the top gap, clamped
+            // to min 1 via `tool_block_spacing`). Any other follower keeps at
+            // least one blank line (even when message_block_spacing is 0) so
+            // the response stays distinct.
             InlineMessageKind::Agent
                 if next_kind.is_some()
                     && next_kind != Some(InlineMessageKind::Agent)
@@ -537,7 +538,9 @@ impl Session {
 pub(crate) fn should_add_tool_block_top_spacing_for_kinds(previous: &MessageLine, current: &MessageLine) -> bool {
     match previous.kind {
         InlineMessageKind::Tool | InlineMessageKind::Pty => false,
-        InlineMessageKind::Agent => false,
+        // Agent prose stays visually distinct from its work log: the tool
+        // block owns exactly one top gap (min 1 via `tool_block_spacing`).
+        InlineMessageKind::Agent => true,
         InlineMessageKind::Info => {
             if !is_tool_summary_line(previous) {
                 return true;

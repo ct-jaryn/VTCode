@@ -409,9 +409,9 @@ fn summarized_tool_response_payload(
                 "hint".to_string(),
                 serde_json::Value::String(
                     "This summary contains sufficient context for most tasks. \
-                     Do NOT re-read this file unless the summary is missing \
-                     specific line-level detail you need. Use raw=true to \
-                     bypass summarization if you need exact content."
+                     Re-read this file only for specific line-level detail the \
+                     summary lacks; use raw=true to bypass summarization when \
+                     you need exact content."
                         .to_string(),
                 ),
             );

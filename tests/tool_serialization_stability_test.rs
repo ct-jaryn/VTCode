@@ -58,7 +58,7 @@ fn canonicalize_json(value: &Value) -> Result<String> {
             Value::Object(map) => {
                 output.push('{');
                 let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                entries.sort_unstable_by_key(|(left, _)| *left);
 
                 for (index, (key, item)) in entries.iter().enumerate() {
                     if index > 0 {

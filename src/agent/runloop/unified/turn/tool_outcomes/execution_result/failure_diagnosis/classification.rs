@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use vtcode_commons::ErrorCategory;
+use vtcode_core::tools::names::is_apply_patch_shell_collision_command;
 use vtcode_core::tools::registry::ToolExecutionError;
 
 use super::ToolFailureDiagnosis;
@@ -55,6 +56,9 @@ pub(crate) fn deterministic_output_diagnosis(tool_name: &str, args: &Value, outp
         .map(|field| field.to_ascii_lowercase())
         .any(|field| field.contains("command not found"));
 
+    let apply_patch_collision = command.as_deref().is_some_and(is_apply_patch_shell_collision_command)
+        && (exit_code == Some(127) || command_not_found);
+
     let mut observed = match exit_code {
         Some(code) => format!("'{tool_name}' returned exit code {code}."),
         None => format!("'{tool_name}' returned a failure-like result."),
@@ -74,6 +78,8 @@ pub(crate) fn deterministic_output_diagnosis(tool_name: &str, args: &Value, outp
 
     let likely_cause = if grep_no_match {
         "The search command completed with no matching results; grep-style tools use exit code 1 for no matches."
+    } else if apply_patch_collision {
+        "`apply_patch` is not a shell binary; it is a core tool. The command was run via `exec_command` instead of calling the `apply_patch` tool."
     } else if exit_code == Some(127) || command_not_found {
         "The command or executable was not found in the runtime PATH."
     } else if exit_code.is_some() {
@@ -83,6 +89,8 @@ pub(crate) fn deterministic_output_diagnosis(tool_name: &str, args: &Value, outp
     };
     let next_action = if grep_no_match {
         "Treat this as an empty search result and refine the query only if a match is still needed."
+    } else if apply_patch_collision {
+        "Call the `apply_patch` tool with `input` containing the patch (run `search_tools` first if it is deferred); do not run `apply_patch` via `exec_command`."
     } else if exit_code == Some(127) || command_not_found {
         "Check the command name and PATH, then retry."
     } else if exit_code.is_some() {

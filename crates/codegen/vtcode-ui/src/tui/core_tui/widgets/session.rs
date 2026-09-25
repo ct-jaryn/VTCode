@@ -367,7 +367,7 @@ impl<'a> SessionWidget<'a> {
             footer_hints::EDITING
         };
 
-        let shimmer_phase = self.session.is_shimmer_active().then_some(self.session.shimmer_state.phase());
+        let shimmer_phase = footer_shimmer_phase(self.session);
 
         let mut footer = FooterWidget::new(&self.session.styles)
             .left_status(left_status)
@@ -389,6 +389,11 @@ impl<'a> SessionWidget<'a> {
     }
 }
 
+fn footer_shimmer_phase(session: &Session) -> Option<f32> {
+    (session.appearance.should_animate_progress_status() && session.is_shimmer_active())
+        .then_some(session.shimmer_state.phase())
+}
+
 #[expect(
     dead_code,
     reason = "Intentional compatibility, platform, test, or API-shape suppression."
@@ -407,7 +412,7 @@ fn has_input_status(session: &Session) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::core_tui::types::{InlineMessageKind, InlineSegment, InlineTextStyle, InlineTheme};
+    use crate::tui::core_tui::types::{InlineCommand, InlineMessageKind, InlineSegment, InlineTextStyle, InlineTheme};
     use std::sync::Arc;
 
     fn segment(text: &str) -> InlineSegment {
@@ -439,5 +444,27 @@ mod tests {
 
         assert!(wide_transcript.width < standard_transcript.width);
         assert!(standard_transcript.height > 0);
+    }
+
+    #[test]
+    fn footer_shimmer_respects_reduce_motion_override_and_screen_reader_mode() {
+        let mut session = Session::new(InlineTheme::default(), None, 12);
+        session.handle_command(InlineCommand::SetInputStatus {
+            left: Some("Running tool: edit_file".to_string()),
+            right: None,
+        });
+        session.thinking_spinner.start();
+
+        assert!(footer_shimmer_phase(&session).is_some());
+
+        session.appearance.reduce_motion_mode = true;
+        assert!(session.is_shimmer_active(), "thinking indicator keeps the shared phase active");
+        assert_eq!(footer_shimmer_phase(&session), None);
+
+        session.appearance.reduce_motion_keep_progress_animation = true;
+        assert!(footer_shimmer_phase(&session).is_some());
+
+        session.appearance.screen_reader_mode = true;
+        assert_eq!(footer_shimmer_phase(&session), None);
     }
 }

@@ -2,8 +2,8 @@ use super::AgentRunner;
 use super::continuation::{CompletionAssessment, VerificationResult};
 use super::escalation::{EscalationDecision, EscalationGate};
 use super::execute_helpers::{
-    emit_blocked_handoff_events, prepare_responses_request_messages, record_terminal_turn_event,
-    stop_reason_from_finish_reason, summarize_verification_output,
+    discard_refused_assistant_message, emit_blocked_handoff_events, prepare_responses_request_messages,
+    record_terminal_turn_event, stop_reason_from_finish_reason, summarize_verification_output,
 };
 use super::helpers::detect_textual_exec_tool_call;
 use super::orchestration::EvaluatorGateOutcome;
@@ -21,6 +21,7 @@ use crate::core::agent::harness_kernel::{
     HarnessRequestPlanInput, SessionToolCatalogSnapshot, build_harness_request_plan,
 };
 use crate::core::agent::hash_utils::stable_system_prefix_hash;
+use crate::core::agent::refusal;
 use crate::core::agent::runtime::{AgentRuntime, RuntimeControl};
 use crate::core::agent::session::AgentSessionState;
 use crate::core::agent::state::normalize_history_for_request_shared;
@@ -932,11 +933,13 @@ impl AgentRunner {
                 super::tool_dispatch_common::drain_and_record_runtime_events(&mut runtime, &mut event_recorder);
                 let response = turn_output.response;
                 runtime.state.stop_reason = Some(stop_reason_from_finish_reason(&response.finish_reason));
+                let refused = refusal::is_refusal(&response);
 
                 // --- Progress stagnation detection ---
                 // If the assistant produces near-identical responses across consecutive
                 // turns (no tool calls, no progress), inject a nudge to break the loop.
-                if !runtime.state.is_completed && runtime.state.record_progress_hash_and_check_stagnation() {
+                if !refused && !runtime.state.is_completed && runtime.state.record_progress_hash_and_check_stagnation()
+                {
                     let nudge = "It looks like you're repeating the same response. \
                                  If you're stuck, try a different approach: break the \
                                  problem into smaller steps, use different tools, or \
@@ -948,10 +951,12 @@ impl AgentRunner {
                     ));
                     runtime.state.add_user_message(nudge.into());
                 }
-                if supports_responses_chaining(
-                    &provider_name,
-                    self.provider_client.supports_responses_compaction(&turn_model),
-                ) {
+                if !refused
+                    && supports_responses_chaining(
+                        &provider_name,
+                        self.provider_client.supports_responses_compaction(&turn_model),
+                    )
+                {
                     runtime.state.set_previous_response_chain_shared(
                         &provider_name,
                         &turn_model,
@@ -1011,6 +1016,26 @@ impl AgentRunner {
                         }
                     }
                 }
+                // A refusal is terminal for this prompt: idle recovery would
+                // resend it and be refused again, and any partial output or
+                // tool calls were cut off by the provider, so neither is
+                // committed as an answer nor executed.
+                if refused {
+                    let reason = refusal::refusal_reason(&response);
+                    discard_refused_assistant_message(&mut runtime.state);
+                    // The refused response is not part of the kept history, so
+                    // a stored continuation id would point past it.
+                    runtime.state.clear_previous_response_chain_for(&provider_name, &turn_model);
+                    self.runner_println(format_args!(
+                        "{} {} {}",
+                        agent_prefix,
+                        style("(REFUSED)").red().bold(),
+                        reason
+                    ));
+                    runtime.state.outcome = TaskOutcome::refused(reason);
+                    break;
+                }
+
                 self.runner_println(format_args!(
                     "{} {} {} received response, processing...",
                     agent_prefix,
@@ -1294,10 +1319,7 @@ impl AgentRunner {
                                         asks_user,
                                         &reason,
                                     ) {
-                                        let prompt = format!(
-                                            "Continue working. Do not stop yet. The task tracker still has incomplete steps: {joined}. \
-                                             Complete the remaining steps before finishing. Do not ask the user to resume."
-                                        );
+                                        let prompt = super::continuation::tracker_incomplete_continue_prompt(&joined);
                                         self.runner_println(format_args!(
                                             "[{}] {}: {}",
                                             self.agent_type,

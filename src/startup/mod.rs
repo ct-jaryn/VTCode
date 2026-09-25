@@ -893,6 +893,23 @@ mod validation_tests {
     }
 
     #[test]
+    fn interactive_policy_still_requests_migration_but_defers_off_paint_path() {
+        // Interactive keeps `migrate_legacy_paths()` so migration still runs,
+        // but `run_interactive_maintenance()` is the signal to defer it off the
+        // pre-dispatch critical path (see `bootstrap_main`).
+        let args = Cli::parse_from(["vtcode"]);
+        let policy = command_startup_policy(&args);
+        assert!(policy.migrate_legacy_paths(), "interactive must still migrate legacy paths");
+        assert!(
+            policy.run_interactive_maintenance(),
+            "interactive maintenance marks migration as deferrable off first paint"
+        );
+        let metadata = Cli::parse_from(["vtcode", "schema", "tools"]);
+        let meta_policy = command_startup_policy(&metadata);
+        assert!(!meta_policy.migrate_legacy_paths(), "metadata must not migrate");
+    }
+
+    #[test]
     fn startup_policy_matrix_covers_metadata_ask_interactive_and_tool_paths() {
         assert_policy(
             Cli::parse_from(["vtcode", "schema", "tools"]),

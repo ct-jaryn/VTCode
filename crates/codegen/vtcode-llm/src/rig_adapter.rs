@@ -183,7 +183,7 @@ mod tests {
             (Provider::LlamaCpp, "gpt-oss-20b"),
             (Provider::Moonshot, "kimi-k3"),
             (Provider::Minimax, "minimax-m2.7"),
-            (Provider::MiMo, "mimo-v2.5-pro"),
+            (Provider::MiMo, "mimo-v2.6-pro"),
             (Provider::Mistral, "ministral-3-3b-2512"),
             (Provider::HuggingFace, "openai/gpt-oss-20b:huggingface"),
             (Provider::OpenCodeZen, "gpt-5.6-sol"),

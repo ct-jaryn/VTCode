@@ -21,12 +21,13 @@ use crate::tools::handlers::{PlanningWorkflowState, StartPlanningTool, TaskTrack
 use crate::tools::native_memory;
 use crate::tools::request_user_input::RequestUserInputTool;
 use crate::tools::tool_intent::builtin_tool_behavior;
-use crate::tools::web_fetch::{WEB_FETCH_DESCRIPTION, WebFetchTool};
+use crate::tools::web_fetch::{WEB_FETCH_DESCRIPTION, WebFetchTool, web_fetch_parameter_schema};
 use crate::tools::web_search::{WEB_SEARCH_DESCRIPTION, WebSearchTool};
 use serde_json::json;
 use vtcode_utility_tool_specs::{
-    agent_parameters, apply_patch_parameters, code_search_parameters, cron_parameters, exec_command_parameters,
-    list_files_parameters, mcp_parameters, search_tools_parameters, write_stdin_parameters,
+    AGENT_DESCRIPTION, EXEC_COMMAND_DESCRIPTION, MCP_DESCRIPTION, SEARCH_TOOLS_DESCRIPTION, agent_parameters,
+    apply_patch_parameters, code_search_parameters, cron_parameters, exec_command_parameters, list_files_parameters,
+    mcp_parameters, search_tools_parameters, write_stdin_parameters,
 };
 
 use super::distributed::{BUILTIN_TOOLS, tool_config};
@@ -88,17 +89,10 @@ fn register_request_user_input(_plan_state: Option<&PlanningWorkflowState>) -> T
 
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_memory(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
-    ToolRegistration::new(
-        tools::MEMORY,
-        CapabilityLevel::Basic,
-        false,
-        ToolRegistry::memory_executor,
-    )
-    .with_description(
-        "Access VT Code persistent memory files under /memories. Use action=view to list available notes before reading or updating; writes are limited to preferences.md, repository-facts.md, and notes/**. Returns file listing or file content.",
-    )
-    .with_parameter_schema(native_memory::parameter_schema())
-    .with_permission(ToolPolicy::Allow)
+    ToolRegistration::new(tools::MEMORY, CapabilityLevel::Basic, false, ToolRegistry::memory_executor)
+        .with_description(native_memory::MEMORY_TOOL_DESCRIPTION)
+        .with_parameter_schema(native_memory::parameter_schema())
+        .with_permission(ToolPolicy::Allow)
 }
 
 #[distributed_slice(BUILTIN_TOOLS)]
@@ -172,33 +166,26 @@ fn register_task_tracker(plan_state: Option<&PlanningWorkflowState>) -> ToolRegi
 
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_agent(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
-    ToolRegistration::new(
-        tools::AGENT,
-        CapabilityLevel::Basic,
-        false,
-        ToolRegistry::agent_executor,
-    )
-    .with_description(
-        "Spawn and steer delegated child agents. Use action=spawn to delegate a scoped task, action=spawn_subprocess for a managed background process, action=send_input to continue a child, action=resume to reopen a completed child, action=wait for results, or action=close to cancel a child. Use exec_command for one-shot shell commands.",
-    )
-    .with_parameter_schema(agent_parameters())
-    .with_aliases([
-        tools::SPAWN_AGENT,
-        tools::SPAWN_BACKGROUND_SUBPROCESS,
-        tools::SEND_INPUT,
-        tools::RESUME_AGENT,
-        tools::WAIT_AGENT,
-        tools::CLOSE_AGENT,
-        "delegate",
-        "subagent",
-        "background_subagent",
-        "launch_background_helper",
-        "message_agent",
-        "continue_agent",
-        "resume_subagent",
-        "wait_subagent",
-        "close_subagent",
-    ])
+    ToolRegistration::new(tools::AGENT, CapabilityLevel::Basic, false, ToolRegistry::agent_executor)
+        .with_description(AGENT_DESCRIPTION)
+        .with_parameter_schema(agent_parameters())
+        .with_aliases([
+            tools::SPAWN_AGENT,
+            tools::SPAWN_BACKGROUND_SUBPROCESS,
+            tools::SEND_INPUT,
+            tools::RESUME_AGENT,
+            tools::WAIT_AGENT,
+            tools::CLOSE_AGENT,
+            "delegate",
+            "subagent",
+            "background_subagent",
+            "launch_background_helper",
+            "message_agent",
+            "continue_agent",
+            "resume_subagent",
+            "wait_subagent",
+            "close_subagent",
+        ])
 }
 
 // ---------------------------------------------------------------------------
@@ -231,38 +218,12 @@ fn register_web_fetch(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegist
         .unwrap_or_default();
     let web_fetch_for_factory = web_fetch.clone();
     let web_fetch_factory = native_cgp_tool_factory(move || web_fetch_for_factory.clone());
-    ToolRegistration::from_tool_instance(
-        tools::WEB_FETCH,
-        CapabilityLevel::Basic,
-        web_fetch,
-    )
-    .with_native_cgp_factory(web_fetch_factory)
-    .with_description(WEB_FETCH_DESCRIPTION)
-    .with_parameter_schema(json!({
-        "type": "object",
-        "properties": {
-            "url": {
-                "type": "string",
-                "description": "URL to fetch (HTTPS required by default)"
-            },
-            "prompt": {
-                "type": "string",
-                "description": "Question or instruction for analyzing the fetched content. Omit for a default summary."
-            },
-            "max_bytes": {
-                "type": "integer",
-                "description": "Maximum response body size in bytes (default: 500000). The default is generous — most pages including llms.txt fit easily. Only set this if you need to cap a very large page."
-            },
-            "timeout_secs": {
-                "type": "integer",
-                "description": "Request timeout in seconds (default: 30)"
-            }
-        },
-        "required": ["url"],
-        "additionalProperties": false
-    }))
-    .with_permission(ToolPolicy::Prompt)
-    .with_aliases(["fetch_url", "web"])
+    ToolRegistration::from_tool_instance(tools::WEB_FETCH, CapabilityLevel::Basic, web_fetch)
+        .with_native_cgp_factory(web_fetch_factory)
+        .with_description(WEB_FETCH_DESCRIPTION)
+        .with_parameter_schema(web_fetch_parameter_schema())
+        .with_permission(ToolPolicy::Prompt)
+        .with_aliases(["fetch_url", "web"])
 }
 
 // ---------------------------------------------------------------------------
@@ -333,41 +294,27 @@ fn register_defuddle_fetch(_plan_state: Option<&PlanningWorkflowState>) -> ToolR
 
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_mcp(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
-    ToolRegistration::new(
-        tools::MCP,
-        CapabilityLevel::CodeSearch,
-        false,
-        ToolRegistry::mcp_executor,
-    )
-    .with_description(
-        "Discover and manage Model Context Protocol capabilities. Use action=search_tools to find tools, action=get_tool_details to fetch one schema, action=list_servers to inspect configured servers, or action=connect and action=disconnect to manage a named server. Do not disconnect a server while one of its tool calls is active.",
-    )
-    .with_parameter_schema(mcp_parameters())
-    .with_permission(ToolPolicy::Allow)
-    .with_aliases([
-        tools::MCP_SEARCH_TOOLS,
-        tools::MCP_GET_TOOL_DETAILS,
-        tools::MCP_LIST_SERVERS,
-        tools::MCP_CONNECT_SERVER,
-        tools::MCP_DISCONNECT_SERVER,
-        "mcp_tool_search",
-        "mcp_tool_details",
-    ])
+    ToolRegistration::new(tools::MCP, CapabilityLevel::CodeSearch, false, ToolRegistry::mcp_executor)
+        .with_description(MCP_DESCRIPTION)
+        .with_parameter_schema(mcp_parameters())
+        .with_permission(ToolPolicy::Allow)
+        .with_aliases([
+            tools::MCP_SEARCH_TOOLS,
+            tools::MCP_GET_TOOL_DETAILS,
+            tools::MCP_LIST_SERVERS,
+            tools::MCP_CONNECT_SERVER,
+            tools::MCP_DISCONNECT_SERVER,
+            "mcp_tool_search",
+            "mcp_tool_details",
+        ])
 }
 
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_search_tools(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
-    ToolRegistration::new(
-        tools::SEARCH_TOOLS,
-        CapabilityLevel::Basic,
-        false,
-        ToolRegistry::search_tools_executor,
-    )
-    .with_description(
-        "Search the deferred local tool catalog by capability. Matching definitions are expanded deterministically for the next request segment.",
-    )
-    .with_parameter_schema(search_tools_parameters())
-    .with_permission(ToolPolicy::Allow)
+    ToolRegistration::new(tools::SEARCH_TOOLS, CapabilityLevel::Basic, false, ToolRegistry::search_tools_executor)
+        .with_description(SEARCH_TOOLS_DESCRIPTION)
+        .with_parameter_schema(search_tools_parameters())
+        .with_permission(ToolPolicy::Allow)
 }
 
 // ---------------------------------------------------------------------------
@@ -376,17 +323,10 @@ fn register_search_tools(_plan_state: Option<&PlanningWorkflowState>) -> ToolReg
 
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_exec_command(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
-    ToolRegistration::new(
-        tools::EXEC_COMMAND,
-        CapabilityLevel::Bash,
-        false,
-        ToolRegistry::exec_command_executor,
-    )
-    .with_description(
-        "Use this to execute a shell command. Optional sandbox_permissions, additional_permissions, and justification fields express request intent. Put normal shell tools such as ls, rg, find, cat, sed, awk, build tools, and test tools in cmd. Returns output, exit status, and a reusable session id when the command is still running.",
-    )
-    .with_parameter_schema(exec_command_parameters())
-    .with_permission(ToolPolicy::Allow)
+    ToolRegistration::new(tools::EXEC_COMMAND, CapabilityLevel::Bash, false, ToolRegistry::exec_command_executor)
+        .with_description(EXEC_COMMAND_DESCRIPTION)
+        .with_parameter_schema(exec_command_parameters())
+        .with_permission(ToolPolicy::Allow)
 }
 
 #[distributed_slice(BUILTIN_TOOLS)]
@@ -528,17 +468,12 @@ fn register_get_errors(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegis
 
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_apply_patch(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
-    ToolRegistration::new(
-        tools::APPLY_PATCH,
-        CapabilityLevel::Editing,
-        false,
-        ToolRegistry::apply_patch_executor,
-    )
-    .with_description(crate::tools::apply_patch::with_semantic_anchor_guidance(
-        "Apply patches to files after permission checks. IMPORTANT: Use VT Code patch format (*** Begin Patch, *** Update File: path, @@ hunks with -/+ lines, *** End Patch), NOT standard unified diff (---/+++ format). Every patch path must be workspace-relative; never use absolute paths, `..`, or traversal-like forms."
-    ))
-    .with_parameter_schema(apply_patch_parameters())
-    .with_permission(ToolPolicy::Prompt)
+    ToolRegistration::new(tools::APPLY_PATCH, CapabilityLevel::Editing, false, ToolRegistry::apply_patch_executor)
+        .with_description(crate::tools::apply_patch::with_semantic_anchor_guidance(
+            crate::tools::apply_patch::APPLY_PATCH_TOOL_DESCRIPTION,
+        ))
+        .with_parameter_schema(apply_patch_parameters())
+        .with_permission(ToolPolicy::Prompt)
 }
 
 // ---------------------------------------------------------------------------
@@ -746,28 +681,72 @@ mod tests {
         assert!(description.contains("traverse"));
     }
 
+    #[test]
+    fn web_fetch_builtin_description_matches_preview_and_temp_file_result() {
+        let registrations = builtin_tool_registrations(None);
+        let web_fetch = registrations
+            .iter()
+            .find(|registration| registration.name() == tools::WEB_FETCH)
+            .expect("web_fetch registration should exist");
+        let description = web_fetch.metadata().description().expect("web_fetch description");
+
+        // The default mode returns a preview plus a temp_file path; it does
+        // not produce an analyzed summary.
+        assert!(description.contains("`preview`"));
+        assert!(description.contains("`temp_file`"));
+        assert!(description.contains("format=markdown"));
+        assert!(!description.contains("analyzed summary"));
+        assert!(!description.contains("Accepts:"));
+        assert!(!description.contains("Do NOT"));
+    }
+
+    #[test]
+    fn web_fetch_schema_accepts_markdown_format() {
+        let registrations = builtin_tool_registrations(None);
+        let web_fetch = registrations
+            .iter()
+            .find(|registration| registration.name() == tools::WEB_FETCH)
+            .expect("web_fetch registration should exist");
+        let schema = web_fetch.metadata().parameter_schema().expect("web_fetch schema");
+
+        assert_eq!(schema["properties"]["format"]["enum"], json!(["summary", "markdown"]));
+        assert_eq!(schema["additionalProperties"], json!(false));
+        let validator = jsonschema::validator_for(schema).expect("web_fetch schema should compile");
+        assert!(validator.is_valid(&json!({"url": "https://example.com", "format": "markdown"})));
+        assert!(validator.is_valid(&json!({"url": "https://example.com", "format": "summary"})));
+        assert!(!validator.is_valid(&json!({"url": "https://example.com", "format": "html"})));
+    }
+
     /// Tool descriptions are part of the prompt and directly drive tool
     /// selection accuracy (Section 18.3.4 of the agentic-AI guide). This test
     /// enforces a structural contract so that regressions in description
     /// quality are caught at `cargo test` time rather than via observed
     /// agent misbehavior.
     ///
-    /// Every LLM-visible tool with a description must satisfy:
-    /// 1. Length is between 40 and 1200 characters.
+    /// Every LLM-visible tool with a description must satisfy the rules
+    /// below. Rules 2 and 3 are checked against the description sent in the
+    /// default Progressive documentation mode, which must be the complete
+    /// source description:
+    /// 1. Length is between 40 and 1500 characters.
     /// 2. Contains at least one verb cue ("Use", "Create", "List", "Fetch",
     ///    "Search", "Send", "Apply", "Read", "Edit", etc.) so the model can
     ///    recognize the action the tool performs.
     /// 3. For tools that mutate state, network-call, schedule work, or
-    ///    require confirmation, the description must contain either an
-    ///    anti-pattern cue ("Do NOT", "Avoid", "sparely", "Don't", etc.) OR
-    ///    a constraint cue ("max", "rate-limit", "session", "Prompt",
-    ///    "blocks", "timeout", etc.) so the model knows the limits and side
-    ///    effects.
+    ///    require confirmation, the description must contain a constraint cue
+    ///    ("max ", "rate-limit", "session", "blocks", "timeout",
+    ///    "requires approval", etc.) so the model knows the limits and side
+    ///    effects. Prohibition phrasing ("Do NOT", "Avoid", "never") does not
+    ///    satisfy this rule: models that follow descriptions literally
+    ///    over-apply it, so descriptions state the concrete limit instead.
     ///
     /// Tools exempted from rule 3 are simple read-only helpers where the
     /// model can safely call them without explicit guard-rails.
     #[test]
     fn tool_descriptions_satisfy_documented_contract() {
+        use crate::config::ToolDocumentationMode;
+        use crate::tools::handlers::compact::compact_tool_description;
+        use crate::tools::handlers::{SessionSurface, SessionToolCatalog, SessionToolsConfig, ToolModelCapabilities};
+
         let plan_state = PlanningWorkflowState::new(PathBuf::from("/workspace"));
         let registrations = builtin_tool_registrations(Some(&plan_state));
 
@@ -803,84 +782,87 @@ mod tests {
             "Track ",
             "Update ",
         ];
-        let anti_pattern_cues = [
-            "Do NOT",
-            "Do not",
-            "Don't",
-            "Avoid ",
-            "sparely",
-            "spareingly",
-            "must not",
-            "must only",
-            "never",
-            "refuse",
-            "Refuse ",
-            "Limit use",
-            "limit use",
-            "no need",
-            "Do not call",
-            "do not call",
-            "not for",
-            "not to be used",
-        ];
         let constraint_cues = [
             "max ",
             "rate-limit",
             "rate limit",
             "session",
-            "Prompt",
             "blocks",
             "timeout",
             "cap ",
             "outlives",
             "inherits",
             "expires",
-            "Limited",
             "limited to",
             "max_bytes",
             "max_results",
             "max_lines",
             "max chars",
             "max size",
-            "Once per",
             "once per",
             "requires ",
-            "Permission",
+            "requires approval",
             "permission",
             "approval",
-            "Prompt ",
-            "spareingly",
             "exceeds",
-            "EXCLUSIVE",
             "scoped",
         ];
-        // Read-only / single-action helpers where explicit anti-pattern and
-        // constraint cues are not strictly required.
+        // Read-only / single-action helpers where a constraint cue is not
+        // strictly required. Entries are registration names; aliases such as
+        // cron_list or mcp_search_tools never reach this check.
         let rule3_allowlist: &[&str] = &[
             tools::REQUEST_USER_INPUT,
-            tools::CRON_LIST,
-            tools::CRON_DELETE,
-            tools::MCP_LIST_SERVERS,
-            tools::MCP_GET_TOOL_DETAILS,
-            tools::MCP_SEARCH_TOOLS,
             tools::SEARCH_TOOLS,
             tools::TASK_TRACKER,
             tools::START_PLANNING,
             tools::CODE_SEARCH,
         ];
 
+        for allowed in rule3_allowlist {
+            assert!(
+                registrations.iter().any(|registration| registration.name() == *allowed),
+                "rule3 allowlist entry {allowed} is not a builtin registration name"
+            );
+        }
+
+        // Rules 2 and 3 are checked against the text the model receives in
+        // the default Progressive documentation mode, not just the source
+        // string, so a projection that drops later sentences cannot hide a
+        // missing cue.
+        let progressive_catalog =
+            SessionToolCatalog::rebuild_from_registrations(builtin_tool_registrations(Some(&plan_state)));
+        let progressive_entries = progressive_catalog.schema_entries(SessionToolsConfig::full_public(
+            SessionSurface::Interactive,
+            CapabilityLevel::CodeSearch,
+            ToolDocumentationMode::Progressive,
+            ToolModelCapabilities::default(),
+        ));
+        assert!(!progressive_entries.is_empty(), "Progressive catalog must expose builtin tools");
+
         for registration in &registrations {
             if !registration.expose_in_llm() {
                 continue;
             }
-            let Some(description) = registration.metadata().description() else {
+            let Some(source_description) = registration.metadata().description() else {
                 continue;
             };
             let tool_name = registration.name();
 
-            // Rule 1: length.
-            let len = description.chars().count();
+            // Rule 1: length of the source description.
+            let len = source_description.chars().count();
             assert!((40..=1500).contains(&len), "{tool_name}: description length {len} outside [40, 1500]");
+
+            let projected = compact_tool_description(source_description, ToolDocumentationMode::Progressive, None);
+            let sent = progressive_entries
+                .iter()
+                .find(|entry| entry.name == tool_name)
+                .map_or(projected.as_str(), |entry| entry.description.as_str());
+            assert_eq!(
+                sent,
+                compact_tool_description(source_description, ToolDocumentationMode::Full, None),
+                "{tool_name}: Progressive mode must send the complete builtin description"
+            );
+            let description = sent;
 
             // Rule 2: verb cue (case-sensitive "Use " is the most common).
             let has_verb = verb_cues.iter().any(|cue| description.contains(cue));
@@ -889,16 +871,15 @@ mod tests {
                 "{tool_name}: description must contain a verb cue like 'Use ', 'Create ', 'Fetch ', etc.\nDescription: {description}"
             );
 
-            // Rule 3: anti-pattern OR constraint cue for side-effect tools.
+            // Rule 3: constraint cue for side-effect tools.
             if rule3_allowlist.contains(&tool_name) {
                 continue;
             }
-            let has_anti = anti_pattern_cues.iter().any(|cue| description.contains(cue));
             let has_constraint = constraint_cues.iter().any(|cue| description.contains(cue));
             assert!(
-                has_anti || has_constraint,
-                "{tool_name}: side-effect description must contain an anti-pattern cue ('Do NOT', 'Avoid ', 'sparely', ...) \
-                 OR a constraint cue ('max ', 'rate-limit', 'session', 'Prompt', 'timeout', 'inherits', ...).\nDescription: {description}"
+                has_constraint,
+                "{tool_name}: side-effect description must state a concrete constraint cue ('max ', 'rate-limit', \
+                 'session', 'timeout', 'requires approval', 'inherits', ...).\nDescription: {description}"
             );
         }
     }
@@ -997,9 +978,16 @@ mod tests {
             })
             .sum();
 
+        // Progressive mode sends complete builtin tool descriptions and keeps
+        // parameter descriptions (trimming only long tails), because models
+        // that follow tool definitions literally act on the whole text. That
+        // raised this measurement from 603 tokens (first sentence only, no
+        // parameter descriptions) to 1,844. The cap leaves ~20% headroom and
+        // the combined first-request budget below still enforces the overall
+        // 12k/15k ceilings.
         assert!(
-            total_tokens <= 1_500,
-            "emitted model tool schema tokens in Progressive mode is {total_tokens}; expected <= 1_500"
+            total_tokens <= 2_200,
+            "emitted model tool schema tokens in Progressive mode is {total_tokens}; expected <= 2_200"
         );
     }
 

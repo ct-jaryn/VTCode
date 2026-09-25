@@ -117,13 +117,13 @@ fn test_model_providers() {
 fn test_provider_defaults() {
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::Gemini), ModelId::Gemini38Flash);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::OpenAI), ModelId::GPT56Sol);
-    assert_eq!(ModelId::default_orchestrator_for_provider(Provider::Anthropic), ModelId::ClaudeOpus5);
+    assert_eq!(ModelId::default_orchestrator_for_provider(Provider::Anthropic), ModelId::ClaudeOpus55);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::DeepSeek), ModelId::DeepSeekFlash);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::Meta), ModelId::MetaMuseSpark13);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::NVIDIA), ModelId::NvidiaNemotron3Ultra550bA55b);
     assert_eq!(
         ModelId::default_orchestrator_for_provider(Provider::OpenRouter),
-        ModelId::OpenRouterXiaomiMimoV25Pro
+        ModelId::OpenRouterXiaomiMimoV26Pro
     );
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::Ollama), ModelId::OllamaGptOss20b);
     assert_eq!(ModelId::default_orchestrator_for_provider(Provider::ZAI), ModelId::ZaiGlm53);
@@ -266,7 +266,7 @@ fn test_models_for_provider() {
     assert!(nvidia_models.contains(&ModelId::NvidiaNemotron3Super120bA12b));
 
     let merge_gateway_models = ModelId::models_for_provider(Provider::MergeGateway);
-    assert_eq!(merge_gateway_models.len(), 19);
+    assert_eq!(merge_gateway_models.len(), 23);
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayDefaultRouting));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayGoogleGemini38Flash));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayAnthropicClaudeFable51));
@@ -274,6 +274,8 @@ fn test_models_for_provider() {
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt56Terra));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayMetaMuseSpark13));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt6Astra));
+    assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt6Sol));
+    assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt6Luna));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayAnthropicClaudeHaiku4520251001));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayXaiGrok47));
 
@@ -539,8 +541,6 @@ fn test_all_models_have_non_empty_metadata_and_parse() {
         assert!(!model.description().is_empty());
         assert!(!model.generation().is_empty());
         let parsed = match model {
-            ModelId::OpenCodeGoMimoV25 => ModelId::from_str("opencode-go/mimo-v2.5"),
-            ModelId::OpenCodeGoMimoV25Pro => ModelId::from_str("opencode-go/mimo-v2.5-pro"),
             ModelId::OpenCodeGoMinimaxM3 => ModelId::from_str("opencode-go/minimax-m3"),
             // LlamaCpp/Ollama GPT-OSS-20B share the same model string as OpenAI's variant;
             // `gpt-oss-20b` resolves to OpenAIGptOss20b first.
@@ -554,15 +554,19 @@ fn test_all_models_have_non_empty_metadata_and_parse() {
             // Merge Gateway deliberately reuses upstream provider/model ids;
             // bare parsing preserves OpenRouter precedence for overlapping ids.
             ModelId::MergeGatewayAnthropicClaudeOpus5
+            | ModelId::MergeGatewayAnthropicClaudeOpus55
             | ModelId::MergeGatewayAnthropicClaudeSonnet5
             | ModelId::MergeGatewayGoogleGemini38Flash
             | ModelId::MergeGatewayMetaMuseSpark13
-            | ModelId::MergeGatewayOpenAIGpt6Astra => continue,
+            | ModelId::MergeGatewayOpenAIGpt6Astra
+            | ModelId::MergeGatewayOpenAIGpt6Sol
+            | ModelId::MergeGatewayOpenAIGpt6Luna => continue,
             // Vercel AI Gateway reuses `vendor/model` ids that overlap with
             // OpenRouter/Merge Gateway; bare parsing preserves the existing
             // precedence and explicit provider configuration selects Vercel.
             ModelId::VercelAnthropicClaudeSonnet5
             | ModelId::VercelAnthropicClaudeOpus5
+            | ModelId::VercelAnthropicClaudeOpus55
             | ModelId::VercelOpenAiGpt6Astra
             | ModelId::VercelOpenAiGpt56Sol
             | ModelId::VercelOpenAiGpt56Luna

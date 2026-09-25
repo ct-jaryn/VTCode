@@ -53,7 +53,9 @@ pub(crate) struct SessionState {
     pub session_bootstrap: SessionBootstrap,
     pub startup_update_check: StartupUpdateCheck,
     pub provider_client: Box<dyn uni::LLMProvider>,
-    pub tool_registry: ToolRegistry,
+    /// Built after first paint (registry-light critical path). `None` until
+    /// `complete_session_registry` runs; the interaction loop requires `Some`.
+    pub tool_registry: Option<ToolRegistry>,
     pub tools: Arc<RwLock<Vec<uni::ToolDefinition>>>,
     pub tool_catalog: Arc<ToolCatalogState>,
     pub conversation_history: Vec<uni::Message>,
@@ -72,6 +74,7 @@ pub(crate) struct SessionState {
 }
 
 pub(crate) struct SessionUISetup {
+    pub settings_task_guard: BackgroundTaskGuard,
     pub renderer: AnsiRenderer,
     pub session: InlineSession,
     pub handle: InlineHandle,
@@ -96,6 +99,10 @@ pub(crate) struct SessionUISetup {
     pub editor_open_sender: crate::agent::runloop::unified::session_setup::EditorOpenRequestSender,
     pub editor_open_dispatcher: Arc<crate::agent::runloop::unified::session_setup::EditorOpenDispatcher>,
     pub editor_open_coordinator_task_guard: BackgroundTaskGuard,
+    /// Shell exec-session handle and pty counter, re-bound after the late-filled
+    /// tool registry exists (`apply_post_hydration_ui`).
+    pub exec_sessions: Option<super::shell::SharedExecSessions>,
+    pub pty_counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 pub(crate) async fn build_conversation_history_from_resume(resume: Option<&ResumeSession>) -> Vec<uni::Message> {

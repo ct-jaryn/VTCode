@@ -48,7 +48,7 @@ Entry point for VT Code contributor workflows.
 - [Desire Paths](./DESIRE_PATHS.md) - Known architecture pressure points.
 - [TUI-Only Refactoring Notes](./TUI_ONLY_REFACTORING.md) - Historical refactor details.
 - [Tool Summary Display](./tool-summary-display.md) - Compact and expanded tool transition summaries, configuration, and testing boundaries.
-- [Preview Budget, Blocked Turns, and Replans](./preview-budget-blocked-replan.md) - Per-turn model-visible budget (32 KiB execution, 96 KiB planning), `turn.blocked` handoff and resume, and mid-execution replan continuation.
+- [Preview Budget, Blocked Turns, and Replans](./preview-budget-blocked-replan.md) - Per-turn model-visible budget (64 KiB execution, 96 KiB planning), `turn.blocked` handoff and resume, and mid-execution replan continuation.
 - [First-party debt scan](../../scripts/first-party-debt-scan.sh) - Detect actionable debt markers while excluding generated and fixture content.
 
 ## Navigation
@@ -56,3 +56,5 @@ Entry point for VT Code contributor workflows.
 - [Documentation Hub](../README.md)
 - [Docs Index](../INDEX.md)
 - [Contributing](../CONTRIBUTING.md)
+
+- [Checkpoint file storage](filesnap-checkpoints.md): filesnap storage, legacy compatibility, and restore boundaries.

@@ -44,6 +44,12 @@ pub struct NativeMemoryRequest {
     pub insert_text: Option<String>,
 }
 
+/// LLM-visible description for the `memory` tool, shared by the builtin
+/// registration and the tool pack. It must name the operation field the way
+/// [`parameter_schema`] does (`command`), since argument validation rejects
+/// unknown properties.
+pub(crate) const MEMORY_TOOL_DESCRIPTION: &str = "Access VT Code persistent memory files under /memories. Use command=view (path defaults to /memories) to list available notes before reading or updating; writes are limited to preferences.md, repository-facts.md, and notes/**. Returns file listing or file content.";
+
 pub fn parameter_schema() -> Value {
     json!({
         "type": "object",
@@ -369,13 +375,21 @@ fn is_writable_relative_path(relative: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MEMORIES_ROOT, execute, parameter_schema};
+    use super::{MEMORIES_ROOT, MEMORY_TOOL_DESCRIPTION, execute, parameter_schema};
     use crate::config::PersistentMemoryConfig;
     use crate::persistent_memory::{
         MEMORY_FILENAME, MEMORY_SUMMARY_FILENAME, ROLLOUT_SUMMARIES_DIRNAME, resolve_persistent_memory_dir,
     };
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn description_names_the_schema_command_field() {
+        assert!(MEMORY_TOOL_DESCRIPTION.contains("command=view"));
+        assert!(!MEMORY_TOOL_DESCRIPTION.contains("action="));
+        assert!(parameter_schema()["properties"]["command"].is_object());
+        assert!(parameter_schema()["properties"].get("action").is_none());
+    }
 
     #[tokio::test]
     async fn parameter_schema_lists_supported_commands() {

@@ -216,6 +216,8 @@ pub(crate) enum SlashCommandOutcome {
     },
     StartTerminalSetup,
     OpenRewindPicker,
+    Redo,
+    RewindRecover,
     RewindToTurn {
         turn: usize,
         scope: vtcode_core::core::agent::snapshots::RevertScope,

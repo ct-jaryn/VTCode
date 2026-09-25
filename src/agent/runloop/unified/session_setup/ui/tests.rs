@@ -1,20 +1,18 @@
 use super::super::{EditorOpenDispatcher, EditorOpenRequest};
 use super::*;
+use crate::agent::runloop::unified::session_setup::shell::{SharedExecSessions, build_session_event_callback};
+use crate::agent::runloop::unified::state;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tokio::sync::Notify;
-use vtcode_core::persistent_memory::MemoryCleanupStatus;
+use vtcode_core::llm::provider as uni;
+use vtcode_core::persistent_memory::{MemoryCleanupStatus, PersistentMemoryStatus};
+use vtcode_ui::tui::app::InlineEvent;
 
-fn test_exec_sessions() -> ExecSessionManager {
-    ExecSessionManager::new(
-        PathBuf::from("/tmp"),
-        vtcode_core::tools::registry::PtySessionManager::new(
-            PathBuf::from("/tmp"),
-            vtcode_core::config::PtyConfig::default(),
-        ),
-    )
+fn test_exec_sessions() -> SharedExecSessions {
+    Arc::new(std::sync::OnceLock::new())
 }
 
 fn sample_memory_status() -> PersistentMemoryStatus {
@@ -43,10 +41,12 @@ fn sample_memory_status() -> PersistentMemoryStatus {
 fn session_tui_interrupt_callback_only_cancels_after_cancel_is_handled() {
     let state = Arc::new(state::CtrlCState::new());
     let notify = Arc::new(Notify::new());
+    let (settings_events, _settings_rx) = tokio::sync::mpsc::unbounded_channel();
     let callback = build_session_event_callback(
         state.clone(),
         notify,
         None,
+        settings_events,
         Arc::new(EditorOpenDispatcher::new(true)),
         PathBuf::from("/tmp"),
         test_exec_sessions(),
@@ -126,6 +126,24 @@ fn structured_resume_lines_fallback_to_reasoning_details() {
             .iter()
             .any(|line| { line.style == MessageStyle::Reasoning && line.text.contains("detail trace") })
     );
+}
+
+#[test]
+fn structured_resume_lines_omit_persisted_request_context() {
+    let few_shot = format!("{}\n### patch-edit\nexample body", vtcode_core::prompts::FEW_SHOT_SECTION_HEADER);
+    let editor = format!("{}\n- Active file: src/parser.rs", vtcode_core::EDITOR_CONTEXT_PROMPT_HEADER);
+    let history = vec![
+        uni::Message::system(editor),
+        uni::Message::user("edit the parser".to_string()),
+        uni::Message::turn_scoped_system(few_shot),
+        uni::Message::assistant("done".to_string()),
+    ];
+    let lines = build_structured_resume_lines(&history, true);
+    assert!(!lines.iter().any(|line| line.text.contains("example body")
+        || line.text.contains("src/parser.rs")
+        || line.text == "System:"));
+    assert!(lines.iter().any(|line| line.text.contains("edit the parser")));
+    assert!(lines.iter().any(|line| line.text.contains("done")));
 }
 
 #[test]
@@ -327,8 +345,16 @@ fn file_open_callback_forwards_out_of_band_without_idle_drain() {
     let (sender, mut receiver) = super::super::bounded_editor_open_requests();
     let dispatcher = Arc::new(EditorOpenDispatcher::new(true));
     dispatcher.set_sender(sender);
-    let callback =
-        build_session_event_callback(state, notify, None, dispatcher, PathBuf::from("/tmp"), test_exec_sessions());
+    let (settings_events, _settings_rx) = tokio::sync::mpsc::unbounded_channel();
+    let callback = build_session_event_callback(
+        state,
+        notify,
+        None,
+        settings_events,
+        dispatcher,
+        PathBuf::from("/tmp"),
+        test_exec_sessions(),
+    );
 
     callback(&InlineEvent::OpenFileInEditor("/tmp/demo.rs".to_string()));
 
@@ -343,10 +369,12 @@ fn file_open_callback_forwards_out_of_band_without_idle_drain() {
 fn file_open_callback_without_sender_is_noop() {
     let state = Arc::new(state::CtrlCState::new());
     let notify = Arc::new(Notify::new());
+    let (settings_events, _settings_rx) = tokio::sync::mpsc::unbounded_channel();
     let callback = build_session_event_callback(
         state,
         notify,
         None,
+        settings_events,
         Arc::new(EditorOpenDispatcher::new(true)),
         PathBuf::from("/tmp"),
         test_exec_sessions(),
@@ -362,10 +390,12 @@ fn file_open_callback_defers_terminal_editors_to_idle_drain() {
     let (sender, mut receiver) = super::super::bounded_editor_open_requests();
     let dispatcher = Arc::new(EditorOpenDispatcher::new(false));
     dispatcher.set_sender(sender.clone());
+    let (settings_events, _settings_rx) = tokio::sync::mpsc::unbounded_channel();
     let callback = build_session_event_callback(
         state,
         notify,
         None,
+        settings_events,
         dispatcher.clone(),
         PathBuf::from("/tmp"),
         test_exec_sessions(),
@@ -378,4 +408,79 @@ fn file_open_callback_defers_terminal_editors_to_idle_drain() {
     assert!(receiver.try_recv().is_err());
     dispatcher.try_forward_deferred(&sender, "/tmp/demo.rs", &PathBuf::from("/tmp"));
     assert!(receiver.try_recv().is_ok());
+}
+
+#[test]
+fn busy_model_and_effort_steer_route_to_settings_events() {
+    use vtcode_core::core::agent::steering::SteeringMessage;
+    let state = Arc::new(state::CtrlCState::new());
+    let notify = Arc::new(Notify::new());
+    let (steering_tx, mut steering_rx) = tokio::sync::mpsc::unbounded_channel::<SteeringMessage>();
+    let (settings_events, mut settings_rx) = tokio::sync::mpsc::unbounded_channel();
+    let callback = build_session_event_callback(
+        state,
+        notify,
+        Some(steering_tx),
+        settings_events,
+        Arc::new(EditorOpenDispatcher::new(true)),
+        PathBuf::from("/tmp"),
+        test_exec_sessions(),
+    );
+
+    for text in [
+        "/model",
+        "/model foo",
+        "/effort",
+        "/effort high",
+        "/effort --persist low",
+    ] {
+        callback(&InlineEvent::Steer(text.into()));
+        let forwarded = settings_rx.try_recv().expect("model/effort steer must reach settings task");
+        assert!(matches!(forwarded, InlineEvent::Steer(_)), "expected Steer for {text}");
+        assert!(steering_rx.try_recv().is_err(), "{text} must not become follow-up steering");
+    }
+}
+
+#[test]
+fn ordinary_steer_still_routes_to_steering_channel() {
+    use vtcode_core::core::agent::steering::SteeringMessage;
+    let state = Arc::new(state::CtrlCState::new());
+    let notify = Arc::new(Notify::new());
+    let (steering_tx, mut steering_rx) = tokio::sync::mpsc::unbounded_channel::<SteeringMessage>();
+    let (settings_events, mut settings_rx) = tokio::sync::mpsc::unbounded_channel();
+    let callback = build_session_event_callback(
+        state,
+        notify,
+        Some(steering_tx),
+        settings_events,
+        Arc::new(EditorOpenDispatcher::new(true)),
+        PathBuf::from("/tmp"),
+        test_exec_sessions(),
+    );
+
+    callback(&InlineEvent::Steer("keep going".into()));
+    assert!(matches!(steering_rx.try_recv(), Ok(SteeringMessage::FollowUpInput(_))));
+    assert!(settings_rx.try_recv().is_err());
+}
+
+#[test]
+fn transient_overlay_events_reach_settings_task_for_picker() {
+    let state = Arc::new(state::CtrlCState::new());
+    let notify = Arc::new(Notify::new());
+    let (settings_events, mut settings_rx) = tokio::sync::mpsc::unbounded_channel();
+    let callback = build_session_event_callback(
+        state,
+        notify,
+        None,
+        settings_events,
+        Arc::new(EditorOpenDispatcher::new(true)),
+        PathBuf::from("/tmp"),
+        test_exec_sessions(),
+    );
+
+    callback(&InlineEvent::Transient(vtcode_ui::tui::app::TransientEvent::Cancelled));
+    assert!(matches!(
+        settings_rx.try_recv(),
+        Ok(InlineEvent::Transient(vtcode_ui::tui::app::TransientEvent::Cancelled))
+    ));
 }

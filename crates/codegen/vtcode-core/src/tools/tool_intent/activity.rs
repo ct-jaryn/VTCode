@@ -168,18 +168,42 @@ pub fn default_verifier_for_workspace(workspace_root: &Path) -> Option<String> {
     None
 }
 
+/// Which shell forms of a verifier clear the anti-blind-editing gate. Shared
+/// by the recovery directive and the blocked-mutation `next_action` so the
+/// two surfaces cannot drift.
+pub const VERIFIER_SHELL_FORM_NOTE: &str = "Cap output with `max_output_tokens`. A verifier piped only into `head` or `tail` runs without \
+the truncator and counts as standalone; filtering pipes (`| grep`), `;`, and `||` make the exit status another command's, \
+so they do not clear the gate.";
+
+/// Stand-in for the verifier when no project command was detected or
+/// configured. It lists examples across ecosystems instead of naming one
+/// command, because a single concrete fallback (such as a Cargo command in a
+/// Go or Node workspace) would direct the model to a verifier that does not
+/// exist.
+pub const GENERIC_VERIFIER_DESCRIPTION: &str =
+    "your project's build/test/lint command (e.g. `cargo check --locked`, `go test ./...`, `npm test`, or `pytest -q`)";
+
+/// How harness text names the verifier to run: the resolved command in
+/// backticks, or [`GENERIC_VERIFIER_DESCRIPTION`] when none was resolved.
+/// `default_verifier` should come from [`default_verifier_for_workspace`] or
+/// the harness override resolution built on it.
+pub fn verifier_reference(default_verifier: Option<&str>) -> String {
+    match default_verifier.map(str::trim).filter(|command| !command.is_empty()) {
+        Some(command) => format!("`{command}`"),
+        None => GENERIC_VERIFIER_DESCRIPTION.to_string(),
+    }
+}
+
 /// Build the actionable verification-recovery directive with a concrete
 /// command. `default_verifier` should come from
 /// [`default_verifier_for_workspace`]; when `None`, the generic examples are
 /// kept so the directive never names a command that does not exist.
 pub fn verification_recovery_directive(default_verifier: Option<&str>, attempt: u8, max_attempts: u8) -> String {
-    let command = default_verifier.unwrap_or("cargo check --locked");
+    let verifier = verifier_reference(default_verifier);
     format!(
-        "AUTONOMOUS VERIFICATION RECOVERY ({attempt}/{max_attempts}): verification is still pending and the turn will block without it. \
-        Stop editing and run one verifier NOW with `exec_command` — `{command}` — standalone or as a pure `&&` chain of verifiers \
-        (no `|`, `;`, or `||`; cap output with `max_output_tokens` instead of piping). Pure `| head`/`| tail` truncators are elided at execution. \
-        Let it exit 0 before another mutation. \
-        A failed verifier grants bounded fix-up edits before re-verify is required; filtering pipes (`| grep`), `;`, and `||` joins never clear the gate."
+        "Verification recovery ({attempt}/{max_attempts}): pending edits have not been verified, so further mutations are blocked \
+        and the turn ends blocked unless a verifier exits 0. Run {verifier} with `exec_command`, standalone or as a pure `&&` chain of verifiers. \
+        {VERIFIER_SHELL_FORM_NOTE} A failed verifier grants a bounded number of fix-up edits before the next verification is required."
     )
 }
 
@@ -371,6 +395,33 @@ pub fn rewrite_truncation_only_verifier(args: &Value) -> Option<String> {
         return None;
     }
     Some(head.to_string())
+}
+
+/// Shell-call arguments as the execution kernel runs them.
+///
+/// The kernel applies [`rewrite_truncation_only_verifier`] to every
+/// command-run call before execution, so the process that runs (and whose
+/// exit status the outcome reports) is the standalone verifier, not the typed
+/// pipeline. Gate bookkeeping must classify that same command; classifying the
+/// typed pipeline would call a truthful `cargo check 2>&1 | tail -5` success a
+/// mutation and leave the gate pending. Arguments the kernel runs unchanged
+/// (already-normalized arguments included, since the rewrite is idempotent)
+/// are borrowed as-is.
+pub fn shell_args_as_executed<'a>(tool_name: &str, args: &'a Value) -> std::borrow::Cow<'a, Value> {
+    if !super::is_command_run_tool_call(tool_name, args) {
+        return std::borrow::Cow::Borrowed(args);
+    }
+    let Some(rewritten) = rewrite_truncation_only_verifier(args) else {
+        return std::borrow::Cow::Borrowed(args);
+    };
+    let mut executed = args.clone();
+    match executed.as_object_mut() {
+        Some(payload) => {
+            payload.insert("command".to_string(), Value::String(rewritten));
+            std::borrow::Cow::Owned(executed)
+        }
+        None => std::borrow::Cow::Borrowed(args),
+    }
 }
 
 fn is_known_inspection(words: &[String]) -> bool {
@@ -865,10 +916,25 @@ mod tests {
         assert!(directive.contains("go test ./..."));
         assert!(directive.contains("1/2"));
         assert!(directive.contains("max_output_tokens"));
-        assert!(directive.contains("elided at execution"));
+        assert!(directive.contains(VERIFIER_SHELL_FORM_NOTE));
+        assert!(directive.contains("counts as standalone"));
         let fallback = verification_recovery_directive(None, 2, 2);
-        assert!(fallback.contains("cargo check --locked"));
+        assert!(fallback.contains(GENERIC_VERIFIER_DESCRIPTION));
         assert!(fallback.contains("2/2"));
+    }
+
+    #[test]
+    fn verifier_reference_names_resolved_command_or_generic_description() {
+        assert_eq!(verifier_reference(Some("go test ./...")), "`go test ./...`");
+        assert_eq!(verifier_reference(Some("  npm test ")), "`npm test`");
+        for missing in [None, Some(""), Some("   ")] {
+            let reference = verifier_reference(missing);
+            assert_eq!(reference, GENERIC_VERIFIER_DESCRIPTION);
+            assert!(!reference.starts_with('`'), "no single command is named: {reference}");
+            for ecosystem in ["cargo check --locked", "go test ./...", "npm test", "pytest -q"] {
+                assert!(reference.contains(ecosystem), "missing {ecosystem}: {reference}");
+            }
+        }
     }
 
     #[test]
@@ -923,5 +989,49 @@ mod tests {
             "array-form commands keep today's behavior"
         );
         assert_eq!(rewrite_truncation_only_verifier(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn args_as_executed_classify_elided_truncation_verifiers_as_verification() {
+        for command in [
+            "cargo check --locked 2>&1 | tail -5",
+            "cargo nextest run 2>&1 | head -c 4000",
+        ] {
+            let typed = exec_command(command);
+            let executed = shell_args_as_executed(tools::EXEC_COMMAND, &typed);
+            assert!(matches!(executed, std::borrow::Cow::Owned(_)), "expected rewrite: {command}");
+            assert_eq!(
+                classify_shell_activity(tools::EXEC_COMMAND, &executed),
+                ShellActivity::Verification,
+                "{command}"
+            );
+            // Idempotent: the executed form runs unchanged on a second pass.
+            assert!(matches!(shell_args_as_executed(tools::EXEC_COMMAND, &executed), std::borrow::Cow::Borrowed(_)));
+        }
+
+        let unified = json!({"action": "run", "command": "cargo check 2>&1 | tail -5"});
+        assert_eq!(shell_args_as_executed(tools::UNIFIED_EXEC, &unified)["command"], "cargo check 2>&1");
+    }
+
+    #[test]
+    fn args_as_executed_keep_filtering_pipes_and_non_run_calls_as_typed() {
+        for command in [
+            "cargo check 2>&1 | grep error",
+            "cargo check; git status",
+            "cargo check || true",
+        ] {
+            let typed = exec_command(command);
+            let executed = shell_args_as_executed(tools::EXEC_COMMAND, &typed);
+            assert!(matches!(executed, std::borrow::Cow::Borrowed(_)), "must run as typed: {command}");
+            assert_ne!(
+                classify_shell_activity(tools::EXEC_COMMAND, &executed),
+                ShellActivity::Verification,
+                "{command}"
+            );
+        }
+        let poll = json!({"action": "poll", "session_id": "s1", "command": "cargo check | tail -5"});
+        assert!(matches!(shell_args_as_executed(tools::UNIFIED_EXEC, &poll), std::borrow::Cow::Borrowed(_)));
+        let read = json!({"path": "src/lib.rs"});
+        assert!(matches!(shell_args_as_executed(tools::READ_FILE, &read), std::borrow::Cow::Borrowed(_)));
     }
 }

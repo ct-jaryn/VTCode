@@ -1,7 +1,10 @@
 use vtcode_core::llm::provider as uni;
 
-pub(super) const AUTONOMOUS_CONTINUE_DIRECTIVE: &str =
-    "Do not stop with intent-only updates. Execute the next concrete action now, then report completion or blocker.";
+/// Pushed when an interim/status reply (or a recap while tracker steps remain)
+/// would otherwise end the turn. Also covers the tracker override path, so it
+/// must not claim the reply was specifically a progress update.
+pub(super) const AUTONOMOUS_CONTINUE_DIRECTIVE: &str = "The last reply did not finish the task, so the turn continues. \
+     Take the next concrete action, then report the result or what is blocking it.";
 
 /// Maximum number of consecutive relaxed continuation decisions before the turn
 /// is forced to end. This prevents infinite loops where the model keeps producing
@@ -1671,7 +1674,7 @@ mod tests {
         **VT Code** — a Rust coding agent for long-running autonomous workflows, with OS-native sandboxing, multi-provider LLM support, open protocols, and extensible Skills.\n\n\
         **Layout**\n\
         - Root crate `vtcode` (binary) + workspace of ~30 member crates under `vtcode-*` (e.g. `vtcode-core`, `vtcode-ui`, `vtcode-llm`, `vtcode-mcp`, `vtcode-safety`, `vtcode-exec-events`, `vtcode-indexer`, `vtcode-skills`, `vtcode-config`, `vtcode-a2a`, `vtcode-acp`, etc.)\n\
-        - Rust stable, MSRV 1.88, edition 2024; CI runs `RUSTFLAGS=\"-D warnings\"` with `--locked`\n\
+        - Rust stable, MSRV 1.98.1, edition 2024; CI runs `RUSTFLAGS=\"-D warnings\"` with `--locked`\n\
         - `default-members` = root, `vtcode-core`, `vtcode-ui`\n\n\
         **Capabilities**\n\
         - Agent runtime: interactive TUI, slash commands, streaming, `ask`/`exec` CLI, session resume\n\
@@ -1680,7 +1683,7 @@ mod tests {
         - Model providers: 21+ LLMs (Anthropic, OpenAI, Gemini, OpenRouter, Ollama, LM Studio, etc.)\n\
         - Safety: restricted shell sandbox, tool guardrails, subprocess isolation, full audit logging\n\
         - Protocols: Open Responses, Agent2Agent (A2A), ATIF, Anthropic Messages API\n\n\
-        **Default model**: MiMo V2.5 (Xiaomi), 1M-token context (`mimo-v2.5-pro`).\n\n\
+        **Default model**: MiMo V2.6 Pro (Xiaomi), 1M-token context (`mimo-v2.6-pro`).\n\n\
         **Other top-level dirs**: `docs/`, `plans/`, `rules/`, `examples/`, `tests/`, `evals/`, `fuzz/`, `scripts/`, `extensions/vscode-extension/`, `extensions/zed-extension/`, `crates/codegen/xtask/`, `homebrew/`.\n\n\
         Quick start:\n\
         ```shell\n\

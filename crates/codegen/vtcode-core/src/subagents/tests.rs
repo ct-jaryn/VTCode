@@ -1,3 +1,4 @@
+use super::controller_spawn_run::finalize_background_launch;
 use super::*;
 use crate::config::constants::models;
 use crate::config::constants::tools;
@@ -458,6 +459,40 @@ fn read_only_test_spec(name: &str) -> SubagentSpec {
 }
 
 #[test]
+fn background_launch_finalization_cannot_resurrect_terminal_or_replaced_record() {
+    let spec = read_only_test_spec("background-demo");
+    let started_at = Utc::now();
+    let updated_at = started_at + chrono::Duration::seconds(1);
+
+    let mut starting =
+        test_background_record(&spec, "background-demo", BackgroundSubprocessStatus::Starting, true, "exec-current");
+    starting.pid = None;
+    starting.started_at = None;
+    assert!(finalize_background_launch(&mut starting, "exec-current", Some(99), Some(started_at), updated_at,));
+    assert_eq!(starting.status, BackgroundSubprocessStatus::Running);
+    assert_eq!(starting.pid, Some(99));
+
+    let mut terminal =
+        test_background_record(&spec, "background-demo", BackgroundSubprocessStatus::Stopped, false, "exec-current");
+    terminal.summary = Some("Background subprocess completed successfully".to_string());
+    assert!(!finalize_background_launch(&mut terminal, "exec-current", Some(100), Some(started_at), updated_at,));
+    assert_eq!(terminal.status, BackgroundSubprocessStatus::Stopped);
+    assert_eq!(terminal.pid, Some(42));
+    assert_eq!(terminal.summary.as_deref(), Some("Background subprocess completed successfully"));
+
+    let mut replaced = test_background_record(
+        &spec,
+        "background-demo",
+        BackgroundSubprocessStatus::Starting,
+        true,
+        "exec-replacement",
+    );
+    assert!(!finalize_background_launch(&mut replaced, "exec-stale", Some(101), Some(started_at), updated_at,));
+    assert_eq!(replaced.exec_session_id, "exec-replacement");
+    assert_eq!(replaced.pid, Some(42));
+}
+
+#[test]
 fn filter_child_tools_keeps_public_read_tools_and_removes_mutation_tools() {
     let defs = vec![
         ToolDefinition::function(
@@ -791,6 +826,34 @@ fn subagent_instruction_composition_uses_shared_runtime_prompt_and_skill_appendi
     assert!(instructions.contains("Preloaded skill names: rust, repo."));
     assert!(instructions.contains("Memory appendix"));
     assert!(instructions.contains("Return your final response using this exact Markdown contract"));
+    // Writable children state the loop detector's real subagent limits.
+    assert!(instructions.contains(&format!(
+        "{} read-only calls in total",
+        crate::core::loop_detector::SUBAGENT_MAX_TOTAL_READONLY_CALLS
+    )));
+    assert!(instructions.contains(&format!(
+        "{} consecutive reads/searches",
+        crate::core::loop_detector::SUBAGENT_NAVIGATION_HARD_STOP_STREAK
+    )));
+    assert!(!instructions.contains("CRITICAL"));
+}
+
+#[test]
+fn final_response_contract_yields_to_agent_defined_format() {
+    // The verifier's own format ends with a `Decision:` line the harness
+    // parses; the generic contract must not compete with it.
+    let mut spec = vtcode_config::builtin_subagents()
+        .into_iter()
+        .find(|spec| spec.name == "explorer")
+        .expect("explorer");
+    spec.name = "verifier".to_string();
+    spec.prompt = "End with exactly one line, `Decision: APPROVED` or `Decision: REJECTED`.".to_string();
+
+    let instructions = compose_subagent_instructions(&spec, None);
+
+    assert!(instructions.contains(
+        "If your agent instructions or the task define their own response format, follow that format instead."
+    ));
 }
 
 #[test]
@@ -993,6 +1056,59 @@ fn sanitize_subagent_input_items_drops_empty_fields() {
     assert_eq!(items[0].text.as_deref(), Some("Workspace: /tmp/repo"));
     assert!(items[0].path.is_none());
     assert!(items[0].name.is_none());
+}
+
+#[test]
+fn subagent_input_item_reads_schema_type_field() {
+    let item: SubagentInputItem =
+        serde_json::from_value(serde_json::json!({"type": "path", "path": "src/lib.rs"})).expect("item");
+    assert_eq!(item.item_type.as_deref(), Some("path"));
+    assert_eq!(serde_json::to_value(&item).expect("serialize")["type"], serde_json::json!("path"));
+
+    let legacy: SubagentInputItem =
+        serde_json::from_value(serde_json::json!({"item_type": "text", "text": "x"})).expect("legacy item");
+    assert_eq!(legacy.item_type.as_deref(), Some("text"));
+}
+
+#[test]
+fn agent_schema_reasoning_effort_enum_matches_parser() {
+    let schema = vtcode_utility_tool_specs::agent_parameters();
+    let listed = schema["properties"]["reasoning_effort"]["enum"]
+        .as_array()
+        .expect("enum")
+        .iter()
+        .map(|value| value.as_str().expect("string enum value").to_string())
+        .collect::<Vec<_>>();
+    // Schema -> parser: every advertised value parses back to itself.
+    for value in &listed {
+        let parsed = ReasoningEffortLevel::parse(value).unwrap_or_else(|| panic!("schema value {value} must parse"));
+        assert_eq!(parsed.as_str(), value);
+    }
+    // Parser -> schema: every named level is advertised. The exhaustive match
+    // makes a new variant fail to compile here until it is listed.
+    let named = [
+        ReasoningEffortLevel::None,
+        ReasoningEffortLevel::Minimal,
+        ReasoningEffortLevel::Low,
+        ReasoningEffortLevel::Medium,
+        ReasoningEffortLevel::High,
+        ReasoningEffortLevel::XHigh,
+        ReasoningEffortLevel::Max,
+    ];
+    for level in named {
+        match level {
+            ReasoningEffortLevel::None
+            | ReasoningEffortLevel::Minimal
+            | ReasoningEffortLevel::Low
+            | ReasoningEffortLevel::Medium
+            | ReasoningEffortLevel::High
+            | ReasoningEffortLevel::XHigh
+            | ReasoningEffortLevel::Max
+            | ReasoningEffortLevel::Unknown => {}
+        }
+        assert!(listed.iter().any(|value| value == level.as_str()), "{level} missing from schema enum");
+    }
+    assert_eq!(listed.len(), named.len());
 }
 
 #[tokio::test]
@@ -1603,6 +1719,377 @@ async fn wait_for_background_is_fail_closed_for_unknown_and_empty_targets() {
             .is_none()
     );
     assert!(controller.wait_for_background(&[], Some(10)).await.expect("wait").is_none());
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn managed_background_completion_persists_before_delivery() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    let exec_session_id = "exec-managed-clean-event";
+    let mut completions = controller.subscribe_background_completions();
+
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_for_managed_background(
+            exec_session_id.to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 0.1; exit 0".to_string()],
+            temp.path().to_path_buf(),
+            Default::default(),
+        )
+        .await
+        .expect("managed session");
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Running, true, exec_session_id),
+        );
+    }
+
+    let event = tokio::time::timeout(Duration::from_secs(3), completions.recv())
+        .await
+        .expect("completion should arrive")
+        .expect("completion channel should remain open");
+    assert_eq!(event.task_id, record_id);
+    assert_eq!(event.status, BackgroundSubprocessStatus::Stopped);
+    assert_eq!(event.exit_code, Some(0));
+    let status = controller
+        .background_status_entries()
+        .await
+        .into_iter()
+        .find(|entry| entry.id == record_id)
+        .expect("terminal record remains visible without refresh");
+    assert_eq!(status.status, BackgroundSubprocessStatus::Stopped);
+
+    let persisted = load_background_state(temp.path()).await.expect("persisted state");
+    let persisted_record = persisted
+        .records
+        .iter()
+        .find(|record| record.id == record_id)
+        .expect("record persisted");
+    let persisted_json = serde_json::to_value(persisted_record).expect("persisted record serializes");
+    assert_eq!(persisted_json["status"], "stopped");
+    assert!(
+        persisted_json["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("successfully"))
+    );
+
+    controller.signal_shutdown().await;
+    controller.config.exec_sessions.close_session(exec_session_id).await.ok();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn managed_background_graceful_stop_delivers_one_terminal_completion() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    let exec_session_id = "exec-managed-graceful-stop-event";
+    let mut completions = controller.subscribe_background_completions();
+
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_for_managed_background(
+            exec_session_id.to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+            temp.path().to_path_buf(),
+            Default::default(),
+        )
+        .await
+        .expect("managed session");
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Running, true, exec_session_id),
+        );
+    }
+
+    let stopped = controller.graceful_stop_background(&record_id).await.expect("graceful stop");
+    assert_eq!(stopped.status, BackgroundSubprocessStatus::Stopped);
+    assert!(!stopped.desired_enabled);
+
+    let event = tokio::time::timeout(Duration::from_secs(3), completions.recv())
+        .await
+        .expect("stop completion should arrive")
+        .expect("completion channel should remain open");
+    assert_eq!(event.task_id, record_id);
+    assert_eq!(event.status, BackgroundSubprocessStatus::Stopped);
+    assert!(event.error.is_none());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), completions.recv())
+            .await
+            .is_err()
+    );
+
+    controller.signal_shutdown().await;
+    controller.config.exec_sessions.close_session(exec_session_id).await.ok();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn managed_background_force_cancel_delivers_one_terminal_completion() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    let exec_session_id = "exec-managed-force-cancel-event";
+    let mut completions = controller.subscribe_background_completions();
+
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_for_managed_background(
+            exec_session_id.to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+            temp.path().to_path_buf(),
+            Default::default(),
+        )
+        .await
+        .expect("managed session");
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Running, true, exec_session_id),
+        );
+    }
+
+    let stopped = controller.force_cancel_background(&record_id).await.expect("force cancel");
+    assert_eq!(stopped.status, BackgroundSubprocessStatus::Stopped);
+    assert!(!stopped.desired_enabled);
+
+    let event = tokio::time::timeout(Duration::from_secs(3), completions.recv())
+        .await
+        .expect("force-cancel completion should arrive")
+        .expect("completion channel should remain open");
+    assert_eq!(event.task_id, record_id);
+    assert_eq!(event.status, BackgroundSubprocessStatus::Stopped);
+    assert_eq!(event.exit_code, None);
+    assert!(event.error.is_none());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), completions.recv())
+            .await
+            .is_err()
+    );
+
+    controller.signal_shutdown().await;
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn parent_subscription_replays_completion_published_before_receiver() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    let exec_session_id = "exec-managed-completed-before-parent-subscribe";
+
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Running, true, exec_session_id),
+        );
+    }
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_for_managed_background(
+            exec_session_id.to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 0.1; exit 0".to_string()],
+            temp.path().to_path_buf(),
+            Default::default(),
+        )
+        .await
+        .expect("managed session");
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let stopped = controller
+                .background_status_entries()
+                .await
+                .into_iter()
+                .any(|entry| entry.id == record_id && entry.status == BackgroundSubprocessStatus::Stopped);
+            if stopped {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("monitor should persist terminal state before subscription");
+
+    let mut completions = controller.subscribe_parent_background_completions();
+    let event = tokio::time::timeout(Duration::from_secs(1), completions.recv())
+        .await
+        .expect("parent subscription should replay completion")
+        .expect("completion channel should remain open");
+    assert_eq!(event.task_id, record_id);
+    assert_eq!(event.status, BackgroundSubprocessStatus::Stopped);
+    assert_eq!(event.exit_code, Some(0));
+
+    controller.signal_shutdown().await;
+    controller.config.exec_sessions.close_session(exec_session_id).await.ok();
+}
+
+#[tokio::test]
+async fn background_completion_monitor_shutdown_cancels_and_joins_task() {
+    let temp = TempDir::new().expect("tempdir");
+    let controller =
+        SubagentController::new(test_controller_config(temp.path().to_path_buf(), VTCodeConfig::default()))
+            .await
+            .expect("controller");
+
+    assert!(controller.background_completion_monitor.lock().await.is_some());
+    controller.signal_shutdown().await;
+    assert!(controller.background_completion_shutdown.is_cancelled());
+    assert!(controller.background_completion_monitor.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn background_completion_monitor_is_cancelled_when_last_owner_drops() {
+    let temp = TempDir::new().expect("tempdir");
+    let controller =
+        SubagentController::new(test_controller_config(temp.path().to_path_buf(), VTCodeConfig::default()))
+            .await
+            .expect("controller");
+    let shutdown = controller.background_completion_shutdown.clone();
+    let monitor_slot = Arc::clone(&controller.background_completion_monitor);
+    let controller_clone = controller.clone();
+
+    drop(controller);
+    assert!(!shutdown.is_cancelled(), "a live clone must keep the monitor running");
+
+    drop(controller_clone);
+    assert!(shutdown.is_cancelled(), "dropping the final owner must cancel the monitor");
+    assert!(monitor_slot.lock().await.is_none(), "the monitor handle must be reclaimed");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn managed_background_nonzero_completion_is_delivered_as_error() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    cfg.subagents.background.auto_restore = false;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    let exec_session_id = "exec-managed-error-event";
+    let mut completions = controller.subscribe_background_completions();
+
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_for_managed_background(
+            exec_session_id.to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 0.1; exit 9".to_string()],
+            temp.path().to_path_buf(),
+            Default::default(),
+        )
+        .await
+        .expect("managed session");
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Running, true, exec_session_id),
+        );
+    }
+
+    let event = tokio::time::timeout(Duration::from_secs(3), completions.recv())
+        .await
+        .expect("completion should arrive")
+        .expect("completion channel should remain open");
+    assert_eq!(event.task_id, record_id);
+    assert_eq!(event.status, BackgroundSubprocessStatus::Error);
+    assert_eq!(event.exit_code, Some(9));
+    assert!(event.error.as_deref().is_some_and(|error| error.contains('9')));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), completions.recv())
+            .await
+            .is_err()
+    );
+
+    controller.signal_shutdown().await;
+    controller.config.exec_sessions.close_session(exec_session_id).await.ok();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn wait_for_background_races_completion_notification() {
+    let temp = TempDir::new().expect("tempdir");
+    write_test_background_subagent(temp.path());
+    let mut cfg = VTCodeConfig::default();
+    cfg.subagents.background.enabled = true;
+    cfg.subagents.background.auto_restore = false;
+    let controller = SubagentController::new(test_controller_config(temp.path().to_path_buf(), cfg))
+        .await
+        .expect("controller");
+    let spec = controller.resolve_requested_spec(Some("background-demo")).await.expect("spec");
+    let record_id = background_record_id(spec.name.as_str());
+    let exec_session_id = "exec-managed-wait-notification";
+
+    controller
+        .config
+        .exec_sessions
+        .create_pipe_session_for_managed_background(
+            exec_session_id.to_string().into(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 0.2; exit 0".to_string()],
+            temp.path().to_path_buf(),
+            Default::default(),
+        )
+        .await
+        .expect("managed session");
+    {
+        let mut state = controller.state.write().await;
+        state.background_children.insert(
+            record_id.clone(),
+            test_background_record(&spec, &record_id, BackgroundSubprocessStatus::Running, true, exec_session_id),
+        );
+    }
+
+    let started = std::time::Instant::now();
+    let entry = controller
+        .wait_for_background(std::slice::from_ref(&record_id), Some(2_000))
+        .await
+        .expect("wait");
+    assert_eq!(entry.expect("completion").status, BackgroundSubprocessStatus::Stopped);
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    controller.signal_shutdown().await;
+    controller.config.exec_sessions.close_session(exec_session_id).await.ok();
 }
 
 /// The unified `agent wait` surface must return a settled target in either
@@ -2779,4 +3266,72 @@ async fn wait_for_exec_exit(exec_sessions: &ExecSessionManager, session_id: &str
     })
     .await
     .expect("exec session should exit");
+}
+
+#[test]
+fn parse_verifier_decision_reads_explicit_decision_line() {
+    assert_eq!(parse_verifier_decision("Looks fine.\nDecision: APPROVED"), Some(true));
+    assert_eq!(parse_verifier_decision("**Decision:** REJECT\n"), Some(false));
+    assert_eq!(parse_verifier_decision("- Decision: `approve`"), Some(true));
+    assert_eq!(
+        parse_verifier_decision("Decision: APPROVED\nno unsafe code was blocked"),
+        Some(true),
+        "prose keywords must not override the decision line"
+    );
+    assert_eq!(parse_verifier_decision("approved, no issues found"), None);
+    assert_eq!(parse_verifier_decision("Decision: APPROVED."), Some(true));
+}
+
+#[test]
+fn parse_verifier_decision_fails_closed_on_unclear_or_negated_value() {
+    for summary in [
+        "Decision: NOT APPROVED",
+        "Decision: not approve",
+        "**Decision:** Not Approved",
+        "Decision: approved? no",
+        "Decision: can't approve",
+        "Decision: pending",
+        "Decision:",
+        "Decision: disapproved",
+    ] {
+        assert_eq!(parse_verifier_decision(summary), Some(false), "{summary:?}");
+    }
+    assert_eq!(
+        parse_verifier_decision("Decision: APPROVED\nDecision: NOT APPROVED"),
+        Some(false),
+        "the last decision line wins"
+    );
+}
+
+#[test]
+fn heuristic_verifier_approval_rejects_negated_approval() {
+    assert!(!heuristic_verifier_approval("The change is not approved.", &[]));
+    assert!(!heuristic_verifier_approval("I do not approve this change", &[]));
+    assert!(!heuristic_verifier_approval("Approved.", &["ISSUE: a.rs:1 bug".to_string()]));
+    assert!(!heuristic_verifier_approval("Unclear; could not inspect the files.", &[]));
+    assert!(heuristic_verifier_approval("Approved, no issues found.", &[]));
+}
+
+#[test]
+fn extract_issues_reads_only_structured_issue_lines() {
+    let summary = "- ISSUE: src/lib.rs:3 missing bounds check\n\
+                   1. issue: src/a.rs:9 wrong default\n\
+                   * **ISSUE:** src/b.rs:1 stale doc\n\
+                   ISSUE: src/c.rs:2 unhandled error\n\
+                   Reasoning: no error: all tests pass\n\
+                   error: expected `;`, found `}` (quoted compiler output)\n\
+                   - the problem: none\n\
+                   Verdict mentions REJECT: only in prose\n\
+                   - ISSUE:\n\
+                   Decision: APPROVED";
+    assert_eq!(
+        extract_issues_from_summary(summary),
+        vec![
+            "ISSUE: src/lib.rs:3 missing bounds check".to_string(),
+            "ISSUE: src/a.rs:9 wrong default".to_string(),
+            "ISSUE: src/b.rs:1 stale doc".to_string(),
+            "ISSUE: src/c.rs:2 unhandled error".to_string(),
+        ]
+    );
+    assert!(extract_issues_from_summary("Reasoning: no error: all tests pass\nDecision: APPROVED").is_empty());
 }

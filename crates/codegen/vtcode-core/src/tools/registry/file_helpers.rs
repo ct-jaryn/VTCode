@@ -193,7 +193,7 @@ fn edit_not_found_error(
     };
 
     anyhow!(
-        "Could not find text to replace in file.\n\nExpected to replace:\n{effective_old_str}\n\nFile content preview:\n{content_preview}\n\nFix: The old_str must EXACTLY match the file content including all whitespace and newlines. Use read_file first to get the exact text, then copy it precisely into old_str. Do NOT add extra newlines or change indentation.{numbering_note}"
+        "Could not find text to replace in file.\n\nExpected to replace:\n{effective_old_str}\n\nFile content preview:\n{content_preview}\n\nFix: old_str must match the file content exactly, including whitespace, newlines, and indentation. Re-read the target lines with `exec_command` to get the exact text, then copy it into old_str without adding newlines or changing indentation.{numbering_note}"
     )
 }
 
@@ -316,5 +316,21 @@ impl ToolRegistry {
         // `list_files` call can safely run alongside `code_search` in the same batch.
         let tool = self.inventory.file_ops_tool().clone();
         tool.execute(args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::edit_not_found_error;
+
+    #[test]
+    fn edit_not_found_error_points_at_a_model_facing_reread_path() {
+        let message = edit_not_found_error("fn main() {}\n", "fn mian() {}", false, false).to_string();
+
+        assert!(message.contains(
+            "Re-read the target lines with `exec_command` to get the exact text, then copy it into old_str without adding newlines or changing indentation."
+        ));
+        assert!(!message.contains("read_file"));
+        assert!(!message.contains("line-number prefixes were stripped"));
     }
 }

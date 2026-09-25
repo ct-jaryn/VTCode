@@ -29,7 +29,7 @@ pub(super) fn empty_response_recovery_mode(
 pub(super) fn empty_response_recovery_reason(mode: RecoveryMode) -> &'static str {
     match mode {
         RecoveryMode::ToolEnabledRetry => {
-            "Model returned no answer. Continue autonomously with the next concrete action now. Tools remain available if needed; do not stop with a status update."
+            "Model returned no answer. Tools remain available; continue with the next concrete action, or give the final answer if the work is done."
         }
         RecoveryMode::ToolFreeSynthesis => {
             "Model returned no answer after tool activity. Tools are disabled on the next pass; provide a direct textual response from the current context."

@@ -27,7 +27,12 @@ const NONE_REASONING_EFFORT_MODELS: &[&str] = &[openai_models::GPT, openai_model
 /// Currently the only value OpenAI accepts; sent explicitly so cache intent
 /// does not rely on the implicit default alone.
 const DEFAULT_GPT56_PROMPT_CACHE_TTL: &str = "30m";
-const MEDIUM_REASONING_EFFORT_MODELS: &[&str] = &[openai_models::GPT_5, openai_models::GPT_5_6_SOL];
+const MEDIUM_REASONING_EFFORT_MODELS: &[&str] = &[
+    openai_models::GPT_5,
+    openai_models::GPT_5_6_SOL,
+    openai_models::GPT_6_SOL,
+    openai_models::GPT_6_LUNA,
+];
 const HIGH_REASONING_EFFORT_MODELS: &[&str] = &[
     openai_models::GPT_6_ASTRA,
     openai_models::GPT_5_6_SOL,
@@ -38,6 +43,8 @@ const HIGH_REASONING_EFFORT_MODELS: &[&str] = &[
 const TEXT_VERBOSITY_MODELS: &[&str] = &[
     openai_models::GPT,
     openai_models::GPT_6_ASTRA,
+    openai_models::GPT_6_SOL,
+    openai_models::GPT_6_LUNA,
     openai_models::GPT_5_6,
     openai_models::GPT_5_6_SOL,
     openai_models::GPT_5_6_SOL,
@@ -58,6 +65,8 @@ const LOW_VERBOSITY_MODELS: &[&str] = &[
 const PHASE_REPLAY_MODELS: &[&str] = &[
     openai_models::GPT,
     openai_models::GPT_6_ASTRA,
+    openai_models::GPT_6_SOL,
+    openai_models::GPT_6_LUNA,
     openai_models::GPT_5_6_SOL,
     openai_models::GPT_5_6_SOL,
     openai_models::GPT_5_CODEX,
@@ -141,6 +150,10 @@ fn is_gpt56_model(model: &str) -> bool {
     )
 }
 
+fn is_gpt6_model(model: &str) -> bool {
+    matches!(model, openai_models::GPT_6_ASTRA | openai_models::GPT_6_SOL | openai_models::GPT_6_LUNA)
+}
+
 fn is_openai_gpt_responses_model(model: &str) -> bool {
     openai_models::RESPONSES_API_MODELS.contains(&model)
 }
@@ -154,6 +167,7 @@ fn default_replay_instructions(model: &str) -> Option<String> {
         Some(format!("You are Codex, based on GPT-5. {}", default_system_prompt()))
     } else if is_gpt55_model(model)
         || is_gpt56_model(model)
+        || is_gpt6_model(model)
         || vtcode_config::models::model_catalog_entry("openai", model)
             .is_some_and(|entry| entry.prompt_contract.is_some())
     {
@@ -168,6 +182,7 @@ fn augment_openai_instructions(model: &str, instructions: String) -> String {
         match vtcode_config::models::model_catalog_entry("openai", model).and_then(|entry| entry.prompt_contract) {
             Some("gpt6") => Some(openai_gpt6_contract_addendum()),
             Some("gpt56") => Some(openai_gpt56_contract_addendum()),
+            _ if is_gpt6_model(model) => Some(openai_gpt6_contract_addendum()),
             _ if is_gpt56_model(model) => Some(openai_gpt56_contract_addendum()),
             _ => None,
         };
@@ -504,10 +519,10 @@ pub(crate) fn build_responses_request(
 /// and the `responses_api` history tests. Remove this boundary once Rig exposes
 /// open custom include values and VTCode-compatible structured history hooks.
 fn is_explicit_cache_breakpoint_model(model: &str) -> bool {
-    // GPT-5.6+ (and GPT-6 Astra) support explicit `prompt_cache_breakpoint`
+    // GPT-5.6+ (and GPT-6 family) support explicit `prompt_cache_breakpoint`
     // markers. Older models (GPT-5.5 and earlier) reject `prompt_cache_options`
     // and `prompt_cache_breakpoint` outright, so never emit markers for them.
-    is_gpt56_model(model) || model == openai_models::GPT_6_ASTRA
+    is_gpt56_model(model) || is_gpt6_model(model)
 }
 
 fn is_eligible_cache_breakpoint_block(block: &Value) -> bool {
@@ -794,7 +809,9 @@ fn build_responses_request_from_history(
     // default GPT-5.6-family Responses requests to "30m" to document caching
     // intent explicitly instead of relying on the implicit default alone.
     let cache_ttl = cache_ttl.or_else(|| {
-        (is_gpt56_model(&request.model) && ctx.include_prompt_cache_retention && ctx.is_responses_api_model)
+        ((is_gpt56_model(&request.model) || is_gpt6_model(&request.model))
+            && ctx.include_prompt_cache_retention
+            && ctx.is_responses_api_model)
             .then_some(DEFAULT_GPT56_PROMPT_CACHE_TTL)
     });
     if let Some(ttl) = cache_ttl
@@ -1238,6 +1255,78 @@ mod tests {
 
         assert!(instructions.contains("GPT-6 Astra"));
         assert!(!instructions.contains("GPT-5.6 model"));
+    }
+
+    fn gpt6_sol_request() -> provider::LLMRequest {
+        let mut request = request();
+        request.model = models::openai::GPT_6_SOL.to_string();
+        request
+    }
+
+    fn gpt6_luna_request() -> provider::LLMRequest {
+        let mut request = request();
+        request.model = models::openai::GPT_6_LUNA.to_string();
+        request
+    }
+
+    #[test]
+    fn gpt6_sol_defaults_to_medium_reasoning_effort() {
+        let payload = build_responses_request(&gpt6_sol_request(), &base_context(None))
+            .expect("sol responses request should build");
+
+        assert_eq!(payload.pointer("/reasoning/effort").and_then(Value::as_str), Some("medium"));
+    }
+
+    #[test]
+    fn gpt6_sol_explicit_reasoning_effort_overrides_model_default() {
+        let mut request = gpt6_sol_request();
+        request.reasoning_effort = Some(vtcode_config::types::ReasoningEffortLevel::High);
+
+        let payload =
+            build_responses_request(&request, &base_context(None)).expect("sol responses request should build");
+
+        assert_eq!(payload.pointer("/reasoning/effort").and_then(Value::as_str), Some("high"));
+    }
+
+    #[test]
+    fn gpt6_luna_defaults_to_medium_reasoning_effort() {
+        let payload = build_responses_request(&gpt6_luna_request(), &base_context(None))
+            .expect("luna responses request should build");
+
+        assert_eq!(payload.pointer("/reasoning/effort").and_then(Value::as_str), Some("medium"));
+    }
+
+    #[test]
+    fn gpt6_sol_luna_omit_sampling_and_use_cache_ttl() {
+        for mut request in [gpt6_sol_request(), gpt6_luna_request()] {
+            request.temperature = Some(0.7);
+            request.top_p = Some(0.9);
+            let payload =
+                build_responses_request(&request, &base_context(None)).expect("gpt-6 responses request should build");
+            assert!(payload.get("sampling_parameters").is_none());
+            assert!(payload.get("temperature").is_none());
+        }
+
+        for request in [gpt6_sol_request(), gpt6_luna_request()] {
+            let mut ctx = base_context(None);
+            ctx.include_prompt_cache_retention = true;
+            ctx.prompt_cache_retention = Some("24h");
+            let payload = build_responses_request(&request, &ctx).expect("gpt-6 responses request should build");
+            assert_eq!(payload.pointer("/prompt_cache_options/ttl").and_then(Value::as_str), Some("30m"));
+            assert!(payload.get("prompt_cache_retention").is_none());
+        }
+    }
+
+    #[test]
+    fn gpt6_sol_luna_receive_gpt6_addendum() {
+        // Sol/Luna reuse the shared GPT-6 contract addendum (currently
+        // Astra-named). Assert the exact shared text so a future
+        // model-specific addendum split updates this test deliberately.
+        for model in [models::openai::GPT_6_SOL, models::openai::GPT_6_LUNA] {
+            let instructions = augment_openai_instructions(model, "Be helpful.".to_string());
+            assert!(instructions.contains("GPT-6 Astra"));
+            assert!(!instructions.contains("GPT-5.6 model"));
+        }
     }
 
     fn cache_ctx() -> ResponsesRequestContext<'static> {

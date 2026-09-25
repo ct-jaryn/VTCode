@@ -31,8 +31,8 @@ pub struct AgentConfig {
     pub theme: String,
 
     /// System prompt mode controlling prompt verbosity and token overhead.
-    /// Options target lean base prompts: minimal (~150-250 tokens), lightweight/default
-    /// (~250-350 tokens), specialized (~350-500 tokens) before dynamic runtime addenda.
+    /// Options target lean base prompts: minimal (~500 tokens), lightweight (~750 tokens),
+    /// default and specialized (~900 tokens) before dynamic runtime addenda.
     #[serde(default)]
     pub system_prompt_mode: SystemPromptMode,
 
@@ -52,10 +52,10 @@ pub struct AgentConfig {
     pub trim_system_prompt: bool,
 
     /// Tool documentation mode controlling token overhead for tool definitions
-    /// Options: minimal (~800 tokens), progressive (~1.2k), full (~3k current)
-    /// Progressive: signatures upfront, detailed docs on-demand (recommended)
-    /// Minimal: signatures only, pi-coding-agent style (power users)
-    /// Full: all documentation upfront (current behavior, default)
+    /// Options: minimal, progressive (default, ~1.8k tokens for the builtin catalog), full
+    /// Progressive: complete tool and parameter descriptions; only unusually long tails are trimmed at a sentence boundary (recommended)
+    /// Minimal: first sentence of each tool description and no parameter descriptions (power users)
+    /// Full: every tool and parameter description sent unmodified
     #[serde(default)]
     pub tool_documentation_mode: ToolDocumentationMode,
 
@@ -238,10 +238,10 @@ pub struct AgentConfig {
     /// Behavior:
     /// - `Some(true)`: always include structured reasoning instructions.
     /// - `Some(false)`: never include structured reasoning instructions.
-    /// - `None` (default): include only for `default` and `specialized` prompt modes.
+    /// - `None` (default): omit structured reasoning instructions in every prompt mode.
     ///
-    /// This keeps lightweight/minimal prompts smaller by default while allowing
-    /// explicit opt-in when users want tag-based reasoning guidance.
+    /// Models with native reasoning do not need visible reasoning tags, so the
+    /// block is opt-in for users who want tag-based reasoning guidance.
     #[serde(default)]
     pub include_structured_reasoning_tags: Option<bool>,
 
@@ -1114,8 +1114,7 @@ impl Default for AgentConfig {
 impl AgentConfig {
     /// Determine whether structured reasoning tag instructions should be included.
     pub fn should_include_structured_reasoning_tags(&self) -> bool {
-        self.include_structured_reasoning_tags
-            .unwrap_or(matches!(self.system_prompt_mode, SystemPromptMode::Specialized))
+        self.include_structured_reasoning_tags.unwrap_or(false)
     }
 
     /// Validate LLM generation parameters
@@ -2274,7 +2273,7 @@ budget_warning_threshold = 0.5
     }
 
     #[test]
-    fn test_structured_reasoning_defaults_follow_prompt_mode() {
+    fn test_structured_reasoning_is_opt_in_for_every_prompt_mode() {
         let default_prompt_config = AgentConfig {
             system_prompt_mode: SystemPromptMode::Default,
             ..Default::default()
@@ -2285,7 +2284,7 @@ budget_warning_threshold = 0.5
             system_prompt_mode: SystemPromptMode::Specialized,
             ..Default::default()
         };
-        assert!(specialized_mode.should_include_structured_reasoning_tags());
+        assert!(!specialized_mode.should_include_structured_reasoning_tags());
 
         let minimal_mode = AgentConfig {
             system_prompt_mode: SystemPromptMode::Minimal,

@@ -39,7 +39,7 @@ async fn test_adaptive_loop_detection_integration() -> Result<()> {
     let msg = warning3.unwrap();
     println!("Warning message: {msg}");
     assert!(
-        msg.contains("HARD STOP") || msg.to_lowercase().contains("loop"),
+        msg.contains(vtcode_core::core::loop_detector::HARD_STOP_PREFIX) || msg.to_lowercase().contains("loop"),
         "Message should mention Loop or Hard Stop"
     );
 

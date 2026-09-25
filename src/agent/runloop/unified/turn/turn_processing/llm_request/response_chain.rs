@@ -50,20 +50,6 @@ pub(super) fn prepare_responses_request_history<'a>(
     (prepared.messages, prepared.previous_response_id)
 }
 
-pub(super) fn prepend_request_context_message(
-    mut messages: Vec<uni::Message>,
-    context_message: Option<uni::Message>,
-) -> Vec<uni::Message> {
-    let Some(context_message) = context_message else {
-        return messages;
-    };
-
-    let mut request_messages = Vec::with_capacity(messages.len() + 1);
-    request_messages.push(context_message);
-    request_messages.append(&mut messages);
-    request_messages
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

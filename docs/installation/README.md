@@ -42,12 +42,6 @@ cargo install vtcode
 vtcode dependencies install search-tools
 ```
 
-### npm (Node.js)
-
-```bash
-npm install -g @vinhnx/vtcode --registry=https://npm.pkg.github.com
-```
-
 ## Installation Methods
 
 | Method               | Platforms         | Command                                                               | Notes                                 |
@@ -55,8 +49,6 @@ npm install -g @vinhnx/vtcode --registry=https://npm.pkg.github.com
 | **Native Installer** | macOS, Linux, WSL | See Quick Install above                                               | Recommended, auto-detects platform    |
 | **Homebrew**         | macOS, Linux      | `brew trust vinhnx/tap && brew install vinhnx/tap/vtcode`              | Package manager, easy updates         |
 | **Cargo**            | All               | `cargo install vtcode`                                                | Build from source, latest dev version |
-| **npm**              | All               | `npm install -g @vinhnx/vtcode --registry=https://npm.pkg.github.com` | JavaScript package manager            |
-| **npx**              | All               | `npx @vinhnx/vtcode`                                                  | No installation, run directly         |
 
 Windows release artifacts may lag behind macOS/Linux while the build pipeline is being finalized.
 
@@ -176,12 +168,6 @@ brew uninstall vinhnx/tap/vtcode
 
 ```bash
 cargo uninstall vtcode
-```
-
-### npm
-
-```bash
-npm uninstall -g @vinhnx/vtcode
 ```
 
 ### Windows (Uninstall)

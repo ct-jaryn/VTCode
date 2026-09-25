@@ -1,17 +1,27 @@
 # Anthropic Thinking in VT Code
 
-VT Code currently splits direct Anthropic Claude thinking into two runtime paths:
-
-- Adaptive by default: `claude-opus-4-8`, `claude-sonnet-4-6`
-- Manual budget only: `claude-haiku-4-5`
+Direct Anthropic thinking is driven by the per-model capability profiles in
+`crates/codegen/vtcode-llm/src/providers/anthropic/capabilities.rs`. Every
+profiled model is a Claude 5.x model and runs **adaptive** thinking; none of
+them accepts manual `budget_tokens`. Claude ids without a profile (Claude 4.x
+and older) are sent without a `thinking` field.
 
 ## Compact Runtime Matrix
 
-| Model                   | VT Code default | What VT Code emits                                                                                              |
-| ----------------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| `claude-opus-4-8`       | Adaptive        | `thinking: { type: "adaptive" }`, default `effort = xhigh`, optional `task_budget`                              |
-| `claude-sonnet-4-6`     | Adaptive        | `thinking: { type: "adaptive" }`, default `effort = high`, explicit `thinking_budget` falls back to manual mode |
-| `claude-haiku-4-5`      | Manual budget   | `thinking: { type: "enabled", budget_tokens: N }`                                                               |
+| Model              | Thinking                  | Default effort | Default display        | `task_budget` | Forced `tool_choice` |
+| ------------------ | ------------------------- | -------------- | ---------------------- | ------------- | -------------------- |
+| `claude-opus-5-5`  | Adaptive, always on       | `medium`       | `updates` (VT Code)    | Yes           | Rejected             |
+| `claude-opus-5`    | Adaptive, on by default   | `high`         | API default (omitted)  | Yes           | Allowed              |
+| `claude-fable-5-1` | Adaptive, always on       | `high`         | API default (omitted)  | Yes           | Rejected             |
+| `claude-fable-5`   | Adaptive, always on       | `high`         | API default (omitted)  | Yes           | Allowed              |
+| `claude-sonnet-5`  | Adaptive, on by default   | `high`         | API default (omitted)  | No            | Allowed              |
+
+All five models share these limits:
+- Effort levels: `low`, `medium`, `high`, `xhigh` and `max`.
+- A 64k default `max_tokens`.
+- A 1M-token context window.
+- Explicit `temperature`, `top_p` and `top_k` are rejected, so VT Code drops them.
+- Server-side refusal fallbacks are available.
 
 ## Configuration
 
@@ -19,24 +29,22 @@ Configure Anthropic thinking in `vtcode.toml`:
 
 ```toml
 [provider.anthropic]
-extended_thinking_enabled = true
-interleaved_thinking_budget_tokens = 12000
-interleaved_thinking_beta = "interleaved-thinking-2025-05-14"
-effort = "xhigh"
-thinking_display = "summarized"
+effort = "xhigh"                 # optional; omit to use the model default
+thinking_display = "summarized"  # optional: "summarized", "omitted", or "updates"
 ```
 
 ### Important defaults
 
-- `effort` now defaults to `xhigh`; models that do not support `xhigh` fall back to their supported default, typically `high`
-- `xhigh` is only valid for Claude Opus 4.8/4.7
-- `task_budget_tokens` is only sent for Claude Opus 4.8/4.7
-- `thinking_display` defaults to the Anthropic API default when unset
-- Claude Opus 4.8/4.7 default to omitted thinking at the API level
+- `effort` is unset by default, so each model uses its own default (`medium` on Claude Opus 5.5, `high` on the others). An explicit `agent.reasoning_effort` or `/effort` takes precedence. A configured level the model does not support falls back to the model default.
+- `task_budget_tokens` is only sent for Claude Fable 5/5.1, Opus 5, and Opus 5.5 (not Claude Sonnet 5).
+- `thinking_display` defaults to the model default when unset.
+  - Claude Opus 5.5 requests `updates` (beta `thinking-display-updates-2026-08-18`, sent only when used), so the text it writes between tool calls stays visible while the reasoning itself stays hidden.
+  - `updates` is accepted only by Opus 5.5 and Fable 5/5.1. On other models a configured `updates` is omitted, not sent.
+- When unset, `max_tokens` defaults to 64k for every Claude 5.x model, with thinking on or off.
 
 ## Adaptive Thinking Behavior
 
-For adaptive models, VT Code sends:
+VT Code sends:
 
 ```json
 {
@@ -45,65 +53,47 @@ For adaptive models, VT Code sends:
 }
 ```
 
-### Adaptive model notes
+`output_config.effort` is included only when an effort is configured.
 
-- Claude Opus 4.8/4.7 is adaptive-only in VT Code
-- Claude Opus 4.6 and Claude Sonnet 4.6 are adaptive by default, but still accept explicit manual budgets for backward compatibility
-- `thinking_budget` is rejected on adaptive-only models and forces manual mode only on Claude Opus 4.6 / Sonnet 4.6
-- `effort` is enabled on Claude Opus 4.8/4.7, Claude Opus 4.6, Claude Sonnet 4.6
-- Claude Opus 4.8/4.7 supports `low`, `medium`, `high`, `xhigh`, and `max`
-- Claude Opus 4.6 and Claude Sonnet 4.6 support `low`, `medium`, `high`, and `max`
+- An explicit `thinking_budget`, `MAX_THINKING_TOKENS`, or a manual-budget request override is served as adaptive thinking. The model does not receive `budget_tokens`, which every Claude 5.x model rejects with a 400.
+- `extended_thinking_enabled = false` does not turn thinking off on these models. VT Code logs a warning and keeps the model default.
+- The interleaved-thinking beta header is never sent for Claude 5.x. Adaptive thinking interleaves natively.
 
-## Budgeted Thinking Behavior
+### Manual budgets (Anthropic-compatible backends only)
 
-For budgeted-thinking models, VT Code sends:
-
-```json
-{
-    "thinking": {
-        "type": "enabled",
-        "budget_tokens": 12000
-    }
-}
-```
-
-### Budget selection order
+The budgeted `{"type": "enabled", "budget_tokens": N}` path remains for
+Anthropic-compatible backends that advertise reasoning without a Claude
+profile (for example MiniMax). The budget comes from the first of these that is set:
 
 1. Explicit `thinking_budget` on the request
 2. `MAX_THINKING_TOKENS` from the environment
 3. `reasoning_effort` mapped to a token budget
 4. `provider.anthropic.interleaved_thinking_budget_tokens`
 
-### Manual-mode notes
-
-- Claude Haiku 4.5 stays on the budgeted path
-- Claude Sonnet 4.6 only uses the interleaved-thinking beta header when it falls back to manual mode; adaptive thinking does not require it
-- Claude Opus 4.6 can still use manual budgets, but VT Code does not enable interleaved manual thinking for it
-- When interleaving is unavailable, `budget_tokens` must stay below `max_tokens`
+The budget is clamped below `max_tokens`.
 
 ## Feature Compatibility
 
-When thinking is active, VT Code enforces or normalizes the following behavior:
-
-- `tool_choice` is limited to `auto` or `none`
-- assistant prefills are incompatible with Claude Opus 4.6/4.7 and Claude Sonnet 4.6
-- `thinking_display = "summarized"` restores visible summarized thinking on models that default to omitted output
-- Claude Opus 4.8/4.7 rejects explicit `temperature`, `top_p`, and `top_k`
+- **Assistant prefill:** a trailing assistant turn returns 400 on Claude 4.6 and later, including every Claude 5.x model, so VT Code never sends one there.
+- **Forced `tool_choice`:** `any` and `tool` are downgraded to `auto` when thinking is on, or when the model rejects forced tool use (Opus 5.5, Fable 5.1). The same check applies to every server-side fallback model.
+- **Replayed thinking:** thinking blocks are replayed in their original position (`anthropic_block_order`). Opus 5.5 and Fable 5.1 bind each thinking signature to the exact prior prefix, so history stays append-only for them.
+- **Refusals:**
+  - A refusal's `stop_details` is surfaced on both the streaming and the non-streaming path.
+  - Server-side fallbacks use the `"default"` form (beta `server-side-fallback-2026-07-01`).
+  - Each fallback model gets its own sanitized thinking config.
 
 ## Disabling Thinking
 
-To disable thinking where VT Code allows it:
+The `disabled` thinking type depends on the model:
 
-```toml
-[provider.anthropic]
-extended_thinking_enabled = false
-```
+| Model                                 | `thinking: {"type": "disabled"}`                         |
+| ------------------------------------- | -------------------------------------------------------- |
+| Claude Opus 5.5, Fable 5, Fable 5.1   | Rejected; validation errors, fallbacks rewrite to adaptive |
+| Claude Opus 5                         | Allowed only at effort `high` or below                   |
+| Claude Sonnet 5                       | Allowed                                                  |
 
-Current VT Code behavior:
-
-- Disabled thinking is allowed for Claude Opus 4.8/4.7
-- Disabled thinking is allowed for Claude Opus 4.6 and Claude Sonnet 4.6
-- Budgeted models stop emitting `thinking` blocks when disabled
+The per-request disabled override omits the field on models that reject it,
+so those models keep their default thinking.
 
 ## Prompting Tips
 
@@ -132,7 +122,7 @@ Try different methods if your first approach doesn't work.
 
 Multishot prompting works well with extended thinking. When you provide examples of how to think through problems, Claude will follow similar reasoning patterns.
 
-You can include few-shot examples using XML tags like `<thinking>` or `<scratchpad>` to indicate canonical patterns of extended thinking.
+Keep examples in plain prose. Visible reasoning tags such as `<thinking>` or `<scratchpad>` are unnecessary with native adaptive thinking, and they can invite `reasoning_extraction` refusals on Claude Opus 5.5.
 
 ### Self-Verification
 
@@ -150,8 +140,8 @@ And fix any issues you find.
 
 ### Best Practices
 
-1. **Start small**: Begin with minimum budget (1024) and increase incrementally
-2. **Use batch processing**: For budgets above 32K tokens to avoid networking issues
+1. **Start with effort, not budgets**: Claude 5.x ignores token budgets; begin at the model default effort and step up only on measured headroom
+2. **Use batch processing**: For very long thinking runs to avoid networking issues
 3. **Language**: Extended thinking performs best in English (outputs can be in any supported language)
 4. **Clean responses**: Instruct Claude not to repeat its extended thinking if you want cleaner output
 5. **Don't pass back thinking**: Passing Claude's extended thinking back in user text blocks doesn't improve performance
@@ -164,6 +154,8 @@ And fix any issues you find.
 - Don't use extended thinking for simple tasks where regular prompting suffices
 
 ## Budget Recommendations by Task Type
+
+These apply only to the manual-budget path on Anthropic-compatible backends; Claude 5.x models take `effort` instead.
 
 | Task Type               | Recommended Budget | Example                                  |
 | ----------------------- | ------------------ | ---------------------------------------- |
@@ -185,12 +177,12 @@ support them; other models hide those levels instead of aliasing silently.
 | --- | --- | --- | --- |
 | OpenAI GPT-5.6 family (`gpt-5.6`, `-sol`, `-terra`, `-luna`), `gpt-6-astra` | Native | Native (5.6+ only; `minimal` dropped on 5.6+) | `reasoning: { effort, summary: "auto" }` |
 | OpenAI GPT-5 Codex / 5.2 Codex, GPT-5.1-mini, `gpt-oss-*` | Codex only | Not supported | Same Responses shape |
-| Anthropic adaptive (`claude-sonnet-5`, `-fable-5`/`-5-1`, `-mythos-5`/`-5-1`, `claude-opus-5`, Opus 4.8/4.7) | Native (4.7+; 4.6 exposes `max` without `xhigh`) | Native | `thinking: { type: "adaptive" }` + `output_config: { effort }` |
+| Anthropic Claude 5.x (`claude-sonnet-5`, `claude-fable-5`/`-5-1`, `claude-opus-5`, `claude-opus-5-5`) | Native | Native | `thinking: { type: "adaptive" }` + `output_config: { effort }` |
 | xAI `grok-4.6+` | Native | Clamped to `xhigh` (no native `max`; older models treat `xhigh` as `high`) | `reasoning_effort` |
 | Meta Muse Spark 1.1–1.3 | Native | Aliased to `xhigh` (`max` ships after additional safety testing) | `reasoning_effort` |
 | DeepSeek V4 Pro / Flash | Alias to `high` | Native (`low` also native; `medium` maps to `high`) | `thinking: { type: "enabled" }` + `reasoning_effort` |
 | Moonshot Kimi K3 | Alias to `max` | Native (default; `minimal` maps to `low`, `medium`/`high` map to `high`) | Top-level `reasoning_effort` |
-| ZAI GLM-5.3 / 5.3-Flash / 5.2 | Alias to `max` (5.2) | Native (`low`/`high`/`max`; `medium` maps to `high`) | `thinking: { type: "enabled" }` + `reasoning_effort` |
+| ZAI GLM-5.3 / 5.3-Flash / 5.3-FlashX / 5.2 | Alias to `max` (5.2) | Native (`low`/`high`/`max`; `medium` maps to `high`) | `thinking: { type: "enabled" }` + `reasoning_effort` |
 | StepFun (`step-3.7-flash`, `step-5-preview`) | Hidden (collapse to `high`) | Hidden (collapse to `high`) | `reasoning: { effort }` (native `low`/`medium`/`high`) |
 | Gemini 3.x, Ollama, LlamaCpp, Evolink, HuggingFace, Mistral | Hidden (collapse to `high`) | Hidden (collapse to `high`) | `thinking_level` / omitted |
 
@@ -220,8 +212,8 @@ reasoning_effort = "xhigh"  # or "max" where natively supported
   tasks where a wrong answer costs more than the extra inference spend; start
   at `high`, step up to `xhigh`, then `max` only on measured headroom.
 - Anthropic at `xhigh`/`max`: set `max_tokens` to at least 64k so the model
-  has room to think across subagents and tool calls; sampling parameters are
-  rejected on Opus 4.7+.
+  has room to think across subagents and tool calls (the Claude 5.x default is
+  64k); sampling parameters are rejected on every Claude 5.x model.
 - DeepSeek thinking mode ignores `temperature`, `top_p`, `presence_penalty`,
   and `frequency_penalty`; Kimi K3 fixes `temperature` to `1.0` and switching
   effort mid-conversation invalidates prefix-cache hits.

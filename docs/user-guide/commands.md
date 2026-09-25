@@ -208,6 +208,7 @@ Configure the behaviour under **Settings › Extensions › VT Code**:
 - `/agent list` shows all agent definitions with their availability (`mode: primary`, `mode: subagent`, or `mode: all`). `/agent create` scaffolds a new agent definition in `.vtcode/agents/`.
 - `/plan` starts or continues the planning workflow. It is a workflow command, not a state selector. Execution agents may also suggest it for demanding or multi-phase tasks; interactive policies confirm the suggestion, while full-auto and skip-confirmations policies accept it automatically. When the plan agent needs a material clarification, the inline interview wizard presents selectable answers and resumes planning with the chosen answer. Use `/plan off` to cancel an active planning workflow without implementing its draft.
 - `/checkup` runs configuration diagnostics and suggests reversible optimizations. Use `/checkup [--quick|--full]` (defaults to a full pass); optimizations are confirmed via the selection modal before any config is mutated.
+- `/model` and `/effort` work while a turn is running, including the model picker. The selection is shown immediately as pending the next request; the in-flight request keeps its original settings and the next model request uses the new provider, model, context budget, and reasoning effort (the same turn when it makes another request, otherwise the next turn). Header, session metadata, and persisted defaults reflect the effective selection once applied.
 - `/feedback` opens the VT Code GitHub issue form in your browser to report a bug or request a feature.
 
 ## WebMCP browser bridge
@@ -350,7 +351,7 @@ vtcode update
 2. It compares the remote version with your current version
 3. If a new version is available, it shows release notes and download information
 4. Interactive TUI sessions automatically check for updates on launch (short cached interval)
-5. Managed installs (Homebrew/cargo/npm) show package-manager-specific update guidance
+5. Managed installs (Homebrew/cargo) show package-manager-specific update guidance
 
 Standalone releases download the exact platform archive, verify a published SHA-256
 checksum when available, safely extract `vtcode`/`vtcode.exe`, and replace the running

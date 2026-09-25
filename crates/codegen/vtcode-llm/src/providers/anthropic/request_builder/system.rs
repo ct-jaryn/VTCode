@@ -1,4 +1,4 @@
-use crate::provider::{LLMRequest, MessageRole};
+use crate::provider::{LLMRequest, Message, MessageRole};
 use crate::providers::anthropic_types::CacheControl;
 use crate::providers::shared::split_dynamic_prompt_suffix;
 use serde_json::{Value, json};
@@ -7,6 +7,56 @@ pub(crate) struct SystemPromptBuildResult {
     pub system_value: Option<Value>,
     pub breakpoints_used: usize,
     pub has_uncached_runtime_context: bool,
+}
+
+/// Where history `role: system` messages are rendered on the Anthropic wire.
+///
+/// Every history system message is emitted in exactly one place: either
+/// folded into the top-level `system` prompt or kept in `messages[]`, never
+/// both. Duplicating it would bill it twice and, worse, rewrite the top-level
+/// system prompt whenever a new directive is appended, which changes the
+/// prefix ahead of every earlier message (cache miss, and invalidated thinking
+/// blocks on preserved-thinking models).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistorySystemPlacement {
+    /// The route rejects mid-conversation system messages: every history
+    /// system message (turn-scoped ones included) is folded into the system
+    /// prompt and `build_messages` drops them from `messages[]`.
+    FoldAll,
+    /// The route accepts mid-conversation system messages: they stay in
+    /// `messages[]`, appended after the history they follow, so the system
+    /// prompt stays byte-identical as directives accumulate. Only the leading
+    /// run before the first conversational message is folded, because a
+    /// system message may not be `messages[0]`.
+    FoldLeadingOnly,
+}
+
+impl HistorySystemPlacement {
+    pub(crate) fn for_route(allow_mid_conversation_system: bool) -> Self {
+        if allow_mid_conversation_system {
+            Self::FoldLeadingOnly
+        } else {
+            Self::FoldAll
+        }
+    }
+
+    /// Number of messages at the front of `messages` that are folded into
+    /// the system prompt and must therefore be skipped when building
+    /// `messages[]`. Only meaningful for [`Self::FoldLeadingOnly`]; under
+    /// [`Self::FoldAll`] `build_messages` drops system messages itself.
+    pub(crate) fn leading_folded_count(self, messages: &[Message]) -> usize {
+        match self {
+            Self::FoldAll => 0,
+            Self::FoldLeadingOnly => leading_system_message_count(messages),
+        }
+    }
+}
+
+fn leading_system_message_count(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .take_while(|message| message.role == MessageRole::System)
+        .count()
 }
 
 // Stable/dynamic cut shared with the OpenAI wire and the core stable hash;
@@ -28,13 +78,15 @@ fn has_runtime_context_section(prompt: &str) -> bool {
 fn append_history_system_directives(
     final_system_prompt: &mut String,
     request: &LLMRequest,
-    include_turn_scoped_system_directives: bool,
+    placement: HistorySystemPlacement,
 ) {
-    let directives: Vec<String> = request
-        .messages
+    let folded: &[Message] = match placement {
+        HistorySystemPlacement::FoldAll => request.messages.as_slice(),
+        HistorySystemPlacement::FoldLeadingOnly => &request.messages[..leading_system_message_count(&request.messages)],
+    };
+    let directives: Vec<String> = folded
         .iter()
         .filter(|message| message.role == MessageRole::System)
-        .filter(|message| include_turn_scoped_system_directives || message.clear_at.is_none())
         .map(|message| message.content.as_text().trim().to_string())
         .filter(|text| !text.is_empty())
         .collect();
@@ -78,7 +130,7 @@ pub(crate) fn build_system_prompt(
     request: &LLMRequest,
     cache_control: &Option<CacheControl>,
     breakpoints_remaining: usize,
-    include_turn_scoped_system_directives: bool,
+    history_system_placement: HistorySystemPlacement,
 ) -> SystemPromptBuildResult {
     let mut final_system_prompt = request
         .system_prompt
@@ -87,36 +139,7 @@ pub(crate) fn build_system_prompt(
         .unwrap_or_default()
         .to_string();
 
-    if let Some(settings) = &request.coding_agent_settings {
-        if let Some(role) = &settings.role_specialization {
-            if final_system_prompt.is_empty() {
-                final_system_prompt = format!("You are {role}.");
-            } else {
-                final_system_prompt = format!("You are {role}.\n{final_system_prompt}");
-            }
-        }
-        if settings.force_xml_tags {
-            final_system_prompt.push_str("\nPlease use XML tags to structure your response for consistency.");
-        }
-        if settings.allow_uncertainty {
-            final_system_prompt.push_str(
-                "\nIf you are unsure or the information is missing, explicitly state 'I don't know' or 'I am unsure'.",
-            );
-        }
-        if settings.strict_grounding {
-            final_system_prompt.push_str(
-                "\nOnly use information strictly from the provided documents. Do not rely on external knowledge.",
-            );
-        }
-        if settings.force_quote_grounding {
-            final_system_prompt.push_str("\nFind quotes from the provided documents that are relevant to the user request. Place these in <quotes> tags first, and then use them to justify your response.");
-        }
-        if settings.enforce_structured_thought {
-            final_system_prompt.push_str("\nBefore providing your final answer, think through the problem in <thinking> tags. Then, provide your final response in <answer> tags.");
-        }
-    }
-
-    append_history_system_directives(&mut final_system_prompt, request, include_turn_scoped_system_directives);
+    append_history_system_directives(&mut final_system_prompt, request, history_system_placement);
 
     if final_system_prompt.is_empty() {
         return SystemPromptBuildResult {

@@ -164,6 +164,40 @@
         "doc_comment": "GLM-5.3 Flash - Z.AI efficient multimodal model with hybrid sparse+linear attention via OpenRouter"
       }
     },
+    "z-ai/glm-5.3-flashx": {
+      "id": "z-ai/glm-5.3-flashx",
+      "name": "Z.AI: GLM-5.3 FlashX",
+      "description": "Z.AI high-speed Flash variant with faster inference (up to 200 tok/s), sharing the Flash multimodal stack (320B total / 18B active), 1M context and native vision for efficient coding and long-horizon agent tasks.",
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "context": 1048576,
+      "max_output_tokens": 131072,
+      "cost": {
+        "input": 3.7e-07,
+        "output": 1.25e-06,
+        "cache_read": 7.5e-08
+      },
+      "vtcode": {
+        "variant": "OpenRouterZaiGlm53Flashx",
+        "constant": "ZAI_GLM_5_3_FLASHX",
+        "vendor": "z-ai",
+        "display": "GLM-5.3 FlashX",
+        "description": "Z.AI GLM-5.3 FlashX high-speed efficient multimodal model via OpenRouter",
+        "efficient": true,
+        "top_tier": true,
+        "generation": "5.3",
+        "doc_comment": "GLM-5.3 FlashX - Z.AI high-speed Flash variant with faster inference via OpenRouter"
+      }
+    },
     "openai/gpt-oss-120b": {
       "id": "openai/gpt-oss-120b",
       "name": "OpenAI: gpt-oss-120b",
@@ -260,70 +294,114 @@
         "doc_comment": "Kimi K3 - Moonshot AI's 2.8T parameter flagship model via OpenRouter"
       }
     },
-    "xiaomi/mimo-v2.5-pro": {
-      "id": "xiaomi/mimo-v2.5-pro",
-      "name": "Xiaomi: MiMo-V2.5-Pro",
-      "description": "MiMo-V2.5-Pro is Xiaomi's flagship model, delivering strong performance in general agentic capabilities, complex software engineering, and long-horizon tasks, with top rankings on benchmarks such as ClawEval, GDPVal, and SWE-bench Pro.",
-      "reasoning": true,
-      "tool_call": true,
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "context": 1000000,
-      "cost": {
-        "input": 4.35e-07,
-        "output": 8.7e-07
-      },
-      "vtcode": {
-        "variant": "OpenRouterXiaomiMimoV25Pro",
-        "constant": "XIAOMI_MIMO_V2_5_PRO",
-        "vendor": "xiaomi",
-        "display": "MiMo-V2.5-Pro",
-        "description": "Xiaomi MiMo-V2.5-Pro flagship agentic model for complex software engineering via OpenRouter",
-        "efficient": false,
-        "top_tier": true,
-        "generation": "MiMo-V2.5",
-        "doc_comment": "MiMo-V2.5-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter"
-      }
-    },
-    "xiaomi/mimo-v2.5": {
-      "id": "xiaomi/mimo-v2.5",
-      "name": "Xiaomi: MiMo-V2.5",
-      "description": "MiMo-V2.5 is a native omnimodal model by Xiaomi. It delivers Pro-level agentic performance at roughly half the inference cost, while surpassing MiMo-V2-Omni in multimodal perception across image and video understanding tasks. Its 1M context window supports complete documents, extended conversations, and complex task contexts in a single pass.",
+    "xiaomi/mimo-v2.6-pro": {
+      "id": "xiaomi/mimo-v2.6-pro",
+      "name": "Xiaomi: MiMo-V2.6-Pro",
+      "description": "MiMo-V2.6-Pro is the flagship foundation model developed by Xiaomi. Built at a scale of over 1T parameters, it is designed to push the ceiling of capability for the most demanding workloads. The model features a 1M-token context window and native multimodal capabilities. Optimized for agentic workflows, it delivers top-tier performance across coding, visual, general, and research scenarios, excelling at complex, long-horizon tasks with robust generalization across a diverse range of agent harnesses.",
       "reasoning": true,
       "tool_call": true,
       "modalities": {
         "input": [
           "text",
-          "image"
+          "image",
+          "video",
+          "audio"
         ],
         "output": [
           "text"
         ]
       },
-      "context": 1000000,
+      "context": 1048576,
+      "max_output_tokens": 131072,
+      "cost": {
+        "input": 4.35e-07,
+        "output": 8.7e-07,
+        "cache_read": 3.6e-09
+      },
+      "vtcode": {
+        "variant": "OpenRouterXiaomiMimoV26Pro",
+        "constant": "XIAOMI_MIMO_V2_6_PRO",
+        "vendor": "xiaomi",
+        "display": "MiMo-V2.6-Pro",
+        "description": "Xiaomi MiMo-V2.6-Pro flagship agentic model for complex software engineering via OpenRouter",
+        "efficient": false,
+        "top_tier": true,
+        "generation": "MiMo-V2.6",
+        "doc_comment": "MiMo-V2.6-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter"
+      }
+    },
+    "xiaomi/mimo-v2.6-flash": {
+      "id": "xiaomi/mimo-v2.6-flash",
+      "name": "Xiaomi: MiMo-V2.6-Flash",
+      "description": "MiMo-V2.6-Flash is an open-source foundation model developed by Xiaomi. Built on a Mixture-of-Experts architecture with 309B total parameters and 15B activated per token, it employs a hybrid attention mechanism for greater computational efficiency. The model features a 1M-token context window and native multimodal capabilities. Optimized for agentic workflows, it delivers strong performance across coding, visual, general, and research scenarios, excelling at complex, long-horizon tasks with robust generalization across a diverse range of agent harnesses.",
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "context": 1048576,
       "max_output_tokens": 131072,
       "cost": {
         "input": 1.4e-07,
-        "output": 2.8e-07
+        "output": 2.8e-07,
+        "cache_read": 2.8e-09
       },
       "vtcode": {
-        "variant": "OpenRouterXiaomiMimoV25",
-        "constant": "XIAOMI_MIMO_V2_5",
+        "variant": "OpenRouterXiaomiMimoV26Flash",
+        "constant": "XIAOMI_MIMO_V2_6_FLASH",
         "vendor": "xiaomi",
-        "display": "MiMo-V2.5",
-        "description": "Xiaomi MiMo-V2.5 omnimodal agentic model for complex software engineering via OpenRouter",
+        "display": "MiMo-V2.6-Flash",
+        "description": "Xiaomi MiMo-V2.6-Flash efficient high-volume agentic model via OpenRouter",
+        "efficient": true,
+        "top_tier": true,
+        "generation": "MiMo-V2.6",
+        "doc_comment": "MiMo-V2.6-Flash - Xiaomi's efficient high-volume agentic model via OpenRouter"
+      }
+    },
+    "xiaomi/mimo-v2.6-pro-ultraspeed": {
+      "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+      "name": "Xiaomi: MiMo-V2.6-Pro-UltraSpeed",
+      "description": "MiMo-V2.6-Pro-UltraSpeed is the fast speed edition of Xiaomi's flagship foundation model, MiMo-V2.6-Pro. Built from the same 1T MiMo-V2.6-Pro checkpoint, it matches the original model in quality while delivering roughly 10x the output speed. The model features a 1M-token context window and native multimodal capabilities. Optimized for agentic workflows, it delivers top-tier performance across coding, visual, general, and research scenarios, excelling at complex, long-horizon tasks with robust generalization across a diverse range of agent harnesses.",
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "context": 1048576,
+      "max_output_tokens": 131072,
+      "cost": {
+        "input": 4.35e-06,
+        "output": 8.7e-06,
+        "cache_read": 3.6e-08
+      },
+      "vtcode": {
+        "variant": "OpenRouterXiaomiMimoV26ProUltraspeed",
+        "constant": "XIAOMI_MIMO_V2_6_PRO_ULTRASPEED",
+        "vendor": "xiaomi",
+        "display": "MiMo-V2.6-Pro-UltraSpeed",
+        "description": "Xiaomi MiMo-V2.6-Pro-UltraSpeed fastest flagship variant via OpenRouter",
         "efficient": false,
         "top_tier": true,
-        "generation": "MiMo-V2.5",
-        "doc_comment": "MiMo-V2.5 - Xiaomi's omnimodal agentic model for complex software engineering via OpenRouter"
+        "generation": "MiMo-V2.6",
+        "doc_comment": "MiMo-V2.6-Pro-UltraSpeed - Xiaomi's fastest flagship variant via OpenRouter"
       }
     }
   },
-  "default_model": "xiaomi/mimo-v2.5-pro"
+  "default_model": "xiaomi/mimo-v2.6-pro"
 }

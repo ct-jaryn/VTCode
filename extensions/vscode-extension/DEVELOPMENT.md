@@ -157,7 +157,6 @@ The CLI can be installed via:
 
 -   Cargo: `cargo install vtcode` (if available)
 -   Homebrew: `brew install vtcode` (if available)
--   npm: `npm install -g vtcode` (if available)
 -   Or by following the manual installation instructions
 
 The extension checks for the CLI availability when activated and will show appropriate warnings if it's not found. Users can update the `vtcode.commandPath` setting in VSCode to specify a custom path if the CLI is installed in a non-standard location.

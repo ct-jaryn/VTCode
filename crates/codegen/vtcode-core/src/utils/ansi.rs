@@ -1580,7 +1580,7 @@ impl InlineSink {
             let mut combined_segments = Vec::with_capacity(converted_lines.len());
             let mut combined_plain = String::with_capacity(total_plain_len);
 
-            for (mut segments, plain) in converted_lines.into_iter().zip(plain_lines.into_iter()) {
+            for (mut segments, plain) in converted_lines.into_iter().zip(plain_lines) {
                 if !combined_segments.is_empty() {
                     combined_segments.push(InlineSegment {
                         text: "\n".to_owned(),
@@ -1623,7 +1623,7 @@ impl InlineSink {
                 None
             };
             let mut tool_output_id = tool_output_id;
-            for (mut segments, mut plain) in converted_lines.into_iter().zip(plain_lines.into_iter()) {
+            for (mut segments, mut plain) in converted_lines.into_iter().zip(plain_lines) {
                 if let Some(ref style_arc) = fallback_arc_opt
                     && !plain.is_empty()
                 {

@@ -8,27 +8,24 @@
 //! - Constraints: TD-005 is active for this surface; keep this file as an orchestration root and prefer responsibility-named support modules for new helper clusters.
 //! - Verify: `cargo check -p vtcode && cargo test -p vtcode --bin vtcode inline_events::tests`
 
+mod active_settings;
 mod header_context;
 mod local_agents;
 mod persistent_memory;
 mod resume_render;
 
-use super::EditorOpenDispatcher;
 use super::hook_approval;
+use super::shell::SessionShell;
 use super::types::{BackgroundTaskGuard, SessionState, SessionUISetup};
 use crate::agent::runloop::ResumeSession;
+use crate::agent::runloop::unified::context_manager;
 use crate::agent::runloop::unified::reasoning::{model_supports_reasoning, resolve_reasoning_visibility};
 use crate::agent::runloop::unified::session_setup::ide_context::IdeContextBridge;
 use crate::agent::runloop::unified::session_setup::spawn_editor_open_coordinator;
-use crate::agent::runloop::unified::stop_requests::request_local_cancel;
 use crate::agent::runloop::unified::turn::utils::{append_additional_context, render_hook_messages};
-use crate::agent::runloop::unified::{context_manager, state};
-use anyhow::{Context, Result};
-use hashbrown::HashMap;
-use std::path::PathBuf;
+use anyhow::Result;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use tokio::sync::{Notify, mpsc::UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 use vtcode_core::config::constants::ui;
 use vtcode_core::config::loader::VTCodeConfig;
@@ -42,19 +39,11 @@ use vtcode_core::subagents::SubagentController;
 use vtcode_core::tools::exec_session::ExecSessionManager;
 use vtcode_core::tools::terminal_app::TerminalAppLauncher;
 use vtcode_core::ui::slash::visible_commands;
-use vtcode_core::ui::theme;
-use vtcode_core::ui::{
-    inline_theme_from_core_styles, is_tui_mode, set_tui_mode, to_tui_appearance, to_tui_fullscreen,
-    to_tui_keyboard_protocol, to_tui_slash_commands, to_tui_surface,
-};
+use vtcode_core::ui::{is_tui_mode, set_tui_mode, to_tui_slash_commands};
 use vtcode_core::utils::ansi::{AnsiRenderer, MessageStyle};
-use vtcode_core::utils::dot_config::{load_user_config, take_startup_user_config};
 use vtcode_core::utils::session_archive::SessionArchive;
 use vtcode_core::utils::transcript;
-use vtcode_ui::tui::app::{
-    AgentPaletteItem, FocusChangeCallback, InlineEvent, InlineEventCallback, InlineHandle, InlineListSelection,
-    PreviewCallback, SessionOptions, SlashCommandItem, spawn_session_with_options,
-};
+use vtcode_ui::tui::app::{AgentPaletteItem, InlineHandle, SlashCommandItem};
 
 pub(crate) use self::header_context::apply_ide_context_snapshot;
 use self::header_context::{HeaderContextInit, initialize_header_context, maybe_render_system_prompt_budget_warning};
@@ -74,10 +63,6 @@ use self::persistent_memory::{persistent_memory_guide_lines, persistent_memory_h
 #[cfg(test)]
 use self::resume_render::infer_legacy_line_style;
 #[cfg(test)]
-use vtcode_core::llm::provider as uni;
-#[cfg(test)]
-use vtcode_core::persistent_memory::PersistentMemoryStatus;
-#[cfg(test)]
 use vtcode_core::subagents::SubagentStatusEntry;
 #[cfg(test)]
 use vtcode_ui::tui::app::InlineHeaderContext;
@@ -89,6 +74,7 @@ pub(crate) struct SessionUiLaunchOptions {
     pub full_auto: bool,
     pub skip_confirmations: bool,
     pub steering_sender: Option<UnboundedSender<SteeringMessage>>,
+    pub settings_sender: UnboundedSender<crate::agent::runloop::unified::session_settings::SessionSettingsControl>,
 }
 
 /// Whether transcript file links may open while an agent turn is active.
@@ -100,65 +86,13 @@ pub(crate) struct SessionUiLaunchOptions {
 /// behavior). The coordinator backend re-resolves this per open; this
 /// snapshot only gates timing, so a mid-session editor reconfiguration at
 /// worst affects immediacy, never correctness.
-fn immediate_file_open_allowed(vt_cfg: Option<&VTCodeConfig>) -> bool {
+pub(super) fn immediate_file_open_allowed(vt_cfg: Option<&VTCodeConfig>) -> bool {
     let Some(editor_config) = vt_cfg.map(|cfg| cfg.tools.editor.clone()) else {
         return true;
     };
     let preferred_editor =
         (!editor_config.preferred_editor.trim().is_empty()).then(|| editor_config.preferred_editor.clone());
     !(editor_config.suspend_tui && TerminalAppLauncher::editor_command_requires_terminal(preferred_editor.as_deref()))
-}
-
-fn build_session_event_callback(
-    state: Arc<state::CtrlCState>,
-    notify: Arc<Notify>,
-    steering_sender: Option<UnboundedSender<SteeringMessage>>,
-    editor_open: Arc<EditorOpenDispatcher>,
-    editor_workspace: PathBuf,
-    exec_sessions: ExecSessionManager,
-) -> InlineEventCallback {
-    Arc::new(move |event: &InlineEvent| match event {
-        InlineEvent::OpenFileInEditor(path) => {
-            // Cmd+click file links must open immediately even while an agent
-            // turn owns `InlineSession.events`. The TUI event thread runs this
-            // callback synchronously, so the dispatcher forwards out-of-band
-            // and pairs with the deferred idle-loop drain so the click opens
-            // exactly once.
-            editor_open.try_forward_immediate(path, &editor_workspace);
-        }
-        InlineEvent::Interrupt => {
-            // Esc / Ctrl+C from the TUI must cancel the current turn without
-            // entering the emergency double-signal exit state machine used by
-            // the OS signal handler.
-            request_local_cancel(&state, &notify);
-        }
-        InlineEvent::BackgroundOperation => {
-            // Reserve the background slot synchronously on the TUI thread so
-            // the foreground wait can hand the live process off immediately.
-            // The deferred event consumes the result and preserves the
-            // existing `/subprocesses toggle` fallback when no foreground
-            // exec session exists.
-            let _ = exec_sessions.request_foreground_background();
-        }
-        InlineEvent::Pause => {
-            if let Some(sender) = steering_sender.as_ref() {
-                let _ = sender.send(SteeringMessage::Pause);
-            }
-        }
-        InlineEvent::Resume => {
-            if let Some(sender) = steering_sender.as_ref() {
-                let _ = sender.send(SteeringMessage::Resume);
-            }
-        }
-        InlineEvent::Steer(input) => {
-            if !input.has_attachments()
-                && let Some(sender) = steering_sender.as_ref()
-            {
-                let _ = sender.send(SteeringMessage::FollowUpInput(input.text.clone()));
-            }
-        }
-        _ => {}
-    })
 }
 
 pub(crate) async fn initialize_session_ui(
@@ -168,14 +102,51 @@ pub(crate) async fn initialize_session_ui(
     session_state: &mut SessionState,
     session_trigger: SessionStartTrigger,
     resume_state: Option<&ResumeSession>,
+    shell: SessionShell,
     options: SessionUiLaunchOptions,
 ) -> Result<SessionUISetup> {
     let SessionUiLaunchOptions {
         session_archive,
         full_auto,
-        skip_confirmations,
-        steering_sender,
+        skip_confirmations: _,
+        steering_sender: _,
+        settings_sender: _,
     } = options;
+    let SessionShell {
+        mut session,
+        handle,
+        ctrl_c_state,
+        ctrl_c_notify,
+        input_activity_counter,
+        pty_counter,
+        settings_event_receiver,
+        settings_sender,
+        editor_open_dispatcher,
+        exec_sessions,
+        default_placeholder,
+        skip_confirmations,
+        legacy_key_bindings,
+    } = shell;
+    session_state.session_bootstrap.legacy_key_bindings = legacy_key_bindings;
+    // Embedded callers without the CLI bootstrap snapshot: load dot-config
+    // after the shell is painted so first paint never waits on disk I/O.
+    if session_state.session_bootstrap.legacy_key_bindings.is_empty()
+        && let Some(dot) = vtcode_core::utils::dot_config::load_user_config().await.ok()
+    {
+        session_state.session_bootstrap.legacy_key_bindings = dot
+            .preferences
+            .keybindings
+            .into_iter()
+            .map(|(action, key)| (action, vec![key]))
+            .collect();
+    }
+    // Registry is late-filled (`complete_session_registry` runs after this
+    // function). Bind exec sessions / pty counter when it already exists;
+    // otherwise `apply_post_hydration_ui` re-drives after the completer.
+    if let Some(tool_registry) = session_state.tool_registry.as_ref() {
+        let _ = exec_sessions.set(tool_registry.exec_session_manager());
+        tool_registry.set_active_pty_sessions(pty_counter.clone());
+    }
 
     let lifecycle_hooks = if let Some(vt) = vt_cfg {
         let hooks = build_primary_agent_hook_config(&vt.hooks, session_state.active_primary_agent.active());
@@ -204,23 +175,12 @@ pub(crate) async fn initialize_session_ui(
     );
     context_manager.set_workspace_root(config.workspace.as_path());
 
-    let active_styles = theme::active_styles();
-    let theme_spec = inline_theme_from_core_styles(&active_styles);
-    let default_placeholder = session_state
-        .session_bootstrap
-        .placeholder
-        .clone()
-        .or_else(|| Some(ui::CHAT_INPUT_PLACEHOLDER_BOOTSTRAP.to_string()));
+    let default_placeholder = session_state.session_bootstrap.placeholder.clone().or(default_placeholder);
     let follow_up_placeholder = if session_state.session_bootstrap.placeholder.is_none() {
         Some(ui::CHAT_INPUT_PLACEHOLDER_FOLLOW_UP.to_string())
     } else {
         None
     };
-    let inline_rows = vt_cfg
-        .as_ref()
-        .map(|cfg| cfg.ui.inline_viewport_rows)
-        .unwrap_or(ui::DEFAULT_INLINE_VIEWPORT_ROWS);
-
     if let Some(vt_cfg) = vt_cfg {
         crate::startup::defer_system_prompt_size_check(vt_cfg, &config.workspace);
     }
@@ -229,115 +189,34 @@ pub(crate) async fn initialize_session_ui(
         set_tui_mode(true);
     }
 
-    let ctrl_c_state = Arc::new(state::CtrlCState::new());
-    let ctrl_c_notify = Arc::new(Notify::new());
-    let input_activity_counter = Arc::new(AtomicU64::new(0));
-    let editor_open_dispatcher = Arc::new(EditorOpenDispatcher::new(immediate_file_open_allowed(vt_cfg)));
-    let interrupt_callback = build_session_event_callback(
-        ctrl_c_state.clone(),
-        ctrl_c_notify.clone(),
-        steering_sender,
-        editor_open_dispatcher.clone(),
-        config.workspace.clone(),
-        session_state.tool_registry.exec_session_manager(),
-    );
-    let focus_callback: FocusChangeCallback = Arc::new(set_global_terminal_focused);
+    // Typeable shell is already painted (static-first). Bind the registry
+    // exec manager and continue wiring session state into the live session.
+    // Drain the palette probe after spawn so a silent terminal cannot delay
+    // the first frame. Theme/palette settle here before the first model turn.
+    crate::agent::probe::await_terminal_palette_probe().await;
 
-    let pty_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    session_state.tool_registry.set_active_pty_sessions(pty_counter.clone());
-
-    let visible_slash_commands: Vec<_> = visible_commands().into_iter().copied().collect();
-    // First paint spawns with built-in slash commands only. Prompt-template
-    // discovery (workspace filesystem scan) merges in via `SetSlashCommands`
-    // after spawn so it never blocks `spawn_session_with_options`.
-    let slash_command_items = to_tui_slash_commands(visible_slash_commands.as_slice());
-
-    // Load user keybindings from dot config (best-effort). Fast path hits the
-    // in-memory startup snapshot; only embedded callers without normal CLI
-    // bootstrap pay the file fallback here.
-    let user_dot_config = match take_startup_user_config() {
-        Some(config) => Some(config),
-        None => {
-            // Embedded callers can enter session setup without the normal CLI
-            // bootstrap, so retain the old best-effort fallback for them.
-            load_user_config().await.ok()
-        }
-    };
-    let legacy_key_bindings: HashMap<String, Vec<String>> = match user_dot_config {
-        Some(dot) => dot
-            .preferences
-            .keybindings
-            .into_iter()
-            .map(|(action, key)| (action, vec![key]))
-            .collect(),
-        None => HashMap::new(),
-    };
-    let mut user_key_bindings = legacy_key_bindings.clone();
-    if let Some(vt_config) = vt_cfg {
-        user_key_bindings.extend(vt_config.ui.keybindings.clone());
-    }
-    session_state.session_bootstrap.legacy_key_bindings = legacy_key_bindings;
-
-    // Synchronous preview callback that applies the theme preview on the TUI
-    // side before rendering, eliminating the one-frame lag between cursor
-    // movement and theme preview update. The render function picks up the
-    // preview from the global `PREVIEW` state.
-    let preview_callback: PreviewCallback = Arc::new(move |selection| match selection {
-        Some(InlineListSelection::Theme(theme_id)) => theme::set_preview_theme(theme_id),
-        // The AppSession sends `None` when the palette is cancelled. Keep the
-        // preview lifecycle explicit so a dismissed palette cannot continue
-        // overriding the committed runtime theme.
-        None => {
-            theme::clear_preview_theme();
-            Ok(())
-        }
-        Some(_) => Ok(()),
-    });
-
-    let mut session = spawn_session_with_options(
-        theme_spec.clone(),
-        SessionOptions {
-            placeholder: default_placeholder.clone(),
-            surface_preference: vt_cfg
-                .and_then(|cfg| cfg.tui.alternate_screen)
-                .map(|mode| match mode {
-                    vtcode_core::config::TuiAlternateScreen::Always => vtcode_ui::tui::app::SessionSurface::Alternate,
-                    vtcode_core::config::TuiAlternateScreen::Never
-                    | vtcode_core::config::TuiAlternateScreen::Unknown => vtcode_ui::tui::app::SessionSurface::Inline,
-                })
-                .unwrap_or_else(|| to_tui_surface(config.ui_surface)),
-            inline_rows,
-            event_callback: Some(interrupt_callback),
-            focus_callback: Some(focus_callback),
-            active_pty_sessions: Some(pty_counter.clone()),
-            input_activity_counter: Some(input_activity_counter.clone()),
-            keyboard_protocol: vt_cfg
-                .map(|cfg| to_tui_keyboard_protocol(cfg.ui.keyboard_protocol.clone()))
-                .unwrap_or_default(),
-            fullscreen: vt_cfg.map(to_tui_fullscreen).unwrap_or_default(),
-            workspace_root: Some(config.workspace.clone()),
-            slash_commands: slash_command_items,
-            appearance: vt_cfg.map(to_tui_appearance),
-            app_name: "VT Code".to_string(),
-            non_interactive_hint: Some("Use `vtcode ask \"your prompt\"` for non-interactive input.".to_string()),
-            key_bindings: user_key_bindings,
-            preview_callback: Some(preview_callback),
-        },
-    )
-    .context("failed to launch inline session")?;
     set_global_terminal_focused(true);
     if skip_confirmations {
         session.set_skip_confirmations(true);
     }
 
-    let handle = session.clone_inline_handle();
+    let settings_task_guard = BackgroundTaskGuard::new(tokio::spawn(active_settings::run(
+        settings_event_receiver,
+        settings_sender,
+        handle.clone(),
+        config.clone(),
+        vt_cfg.cloned(),
+        ctrl_c_state.clone(),
+        ctrl_c_notify.clone(),
+    )));
     // Merge prompt-template slash commands without blocking first paint.
     // The session spawns with built-ins; this one-shot task appends workspace
     // templates via `SetSlashCommands` before the user can open the palette.
     {
         let handle_for_templates = handle.clone();
         let workspace_for_templates = config.workspace.clone();
-        let builtin_items = to_tui_slash_commands(visible_slash_commands.as_slice());
+        let visible: Vec<_> = visible_commands().into_iter().copied().collect();
+        let builtin_items = to_tui_slash_commands(visible.as_slice());
         tokio::spawn(async move {
             let discovered = discover_prompt_templates(&workspace_for_templates).await;
             if discovered.is_empty() {
@@ -413,10 +292,11 @@ pub(crate) async fn initialize_session_ui(
             }
         }
     }));
-    let controller = session_state.tool_registry.subagent_controller();
-    let exec_sessions = session_state.tool_registry.exec_session_manager();
-    let background_subprocess_task_guard =
-        Some(spawn_agent_palette_and_background_refresh(&handle, controller, exec_sessions, vt_cfg));
+    let tool_registry = session_state.tool_registry.as_ref();
+    let controller = tool_registry.and_then(|r| r.subagent_controller());
+    let exec_manager = tool_registry.map(|r| r.exec_session_manager());
+    let background_subprocess_task_guard = exec_manager
+        .map(|exec_manager| spawn_agent_palette_and_background_refresh(&handle, controller, exec_manager, vt_cfg));
 
     transcript::clear();
     render_resume_state_if_present(&mut renderer, resume_state, supports_reasoning)?;
@@ -583,6 +463,7 @@ pub(crate) async fn initialize_session_ui(
         .unwrap_or(1);
 
     Ok(SessionUISetup {
+        settings_task_guard,
         renderer,
         session,
         handle,
@@ -607,6 +488,8 @@ pub(crate) async fn initialize_session_ui(
         editor_open_sender,
         editor_open_dispatcher,
         editor_open_coordinator_task_guard,
+        exec_sessions: Some(exec_sessions),
+        pty_counter: Some(pty_counter),
     })
 }
 
@@ -744,12 +627,24 @@ pub(crate) fn apply_post_hydration_ui(
     render_full_auto_allowlist_banner(&mut ui_setup.renderer, full_auto, session_state.full_auto_allowlist.as_ref())?;
     maybe_render_system_prompt_budget_warning(&mut ui_setup.renderer, vt_cfg, &session_state.session_bootstrap)?;
 
-    let background_subprocess_task_guard = Some(spawn_agent_palette_and_background_refresh(
-        &handle,
-        session_state.tool_registry.subagent_controller(),
-        session_state.tool_registry.exec_session_manager(),
-        vt_cfg,
-    ));
+    // Re-drive shell bindings that were skipped when the registry was still
+    // late-filled at `initialize_session_ui` time.
+    if let Some(tool_registry) = session_state.tool_registry.as_ref() {
+        if let Some(exec_sessions) = ui_setup.exec_sessions.as_ref() {
+            let _ = exec_sessions.set(tool_registry.exec_session_manager());
+        }
+        if let Some(pty_counter) = ui_setup.pty_counter.as_ref() {
+            tool_registry.set_active_pty_sessions(pty_counter.clone());
+        }
+    }
+    let background_subprocess_task_guard = session_state.tool_registry.as_ref().map(|tool_registry| {
+        spawn_agent_palette_and_background_refresh(
+            &handle,
+            tool_registry.subagent_controller(),
+            tool_registry.exec_session_manager(),
+            vt_cfg,
+        )
+    });
 
     Ok(background_subprocess_task_guard)
 }

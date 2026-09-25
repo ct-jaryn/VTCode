@@ -7,38 +7,6 @@ impl Session {
         self.scroll_manager.offset()
     }
 
-    /// Pill label for Jump to last change. Single source of truth for the
-    /// floating pill (`widgets/transcript.rs`) and its hit-test below.
-    pub(crate) fn jump_pill_text(&self) -> String {
-        let key_label = self.primary_binding_label(Action::JumpToLastChange).unwrap_or("Ctrl+End");
-        format!("⤓ Jump to last change [{key_label}]")
-    }
-
-    /// Bottom-right pill rect for Jump to last change, mirroring
-    /// `render_jump_to_last_change_pill` in `widgets/transcript.rs`.
-    pub(crate) fn jump_pill_rect(&self) -> Option<Rect> {
-        if !self.should_show_jump_to_last_change() {
-            return None;
-        }
-        let area = self.transcript_area()?;
-        if area.height < 2 {
-            return None;
-        }
-        let text = self.jump_pill_text();
-        let pill_width = (text.chars().count() as u16).saturating_add(2);
-        // Hide rather than truncate on narrow viewports so the label stays
-        // readable and the hit-test matches what is painted.
-        if pill_width == 0 || pill_width.saturating_add(1) > area.width {
-            return None;
-        }
-        Some(Rect::new(
-            area.right().saturating_sub(pill_width).saturating_sub(1),
-            area.bottom().saturating_sub(1),
-            pill_width,
-            1,
-        ))
-    }
-
     /// Tracks pointer edges during a transcript drag so `step_drag_auto_scroll`
     /// can keep revealing content while the mouse rests at the top/bottom edge.
     pub(crate) fn update_drag_auto_scroll(&mut self, column: u16, row: u16) {
@@ -152,7 +120,6 @@ impl Session {
         self.mouse_selection.adjust_for_scroll(offset_delta as i32);
         self.mouse_selection.update_selection(scroll.column, scroll.row);
         self.user_scrolled = true;
-        self.jump_highlight_line_idx = None;
         self.mark_dirty();
     }
 
@@ -165,9 +132,6 @@ impl Session {
         let offset_delta = self.scroll_manager.offset() as i64 - previous_offset as i64;
         self.mouse_selection.adjust_for_scroll(offset_delta as i32);
         self.user_scrolled = true;
-        if self.scroll_manager.offset() != previous_offset {
-            self.jump_highlight_line_idx = None;
-        }
         self.mark_dirty();
     }
 
@@ -180,57 +144,6 @@ impl Session {
         let offset_delta = self.scroll_manager.offset() as i64 - previous_offset as i64;
         self.mouse_selection.adjust_for_scroll(offset_delta as i32);
         self.user_scrolled = false;
-        if self.scroll_manager.offset() != previous_offset {
-            self.jump_highlight_line_idx = None;
-        }
         self.mark_dirty();
-    }
-
-    /// Whether the Jump to last change affordance should be shown.
-    ///
-    /// Visible only while scrolled up with at least two distinct tracked
-    /// changes. At the live bottom edge there is nothing to jump to.
-    pub(crate) fn should_show_jump_to_last_change(&self) -> bool {
-        self.user_scrolled && self.last_change_line_idx.is_some() && self.recent_change_line_idxs.len() >= 2
-    }
-
-    /// Scroll so the most recent change is pinned to the bottom edge.
-    ///
-    /// Returns `true` when a jump target existed and the viewport moved or
-    /// the sticky highlight was (re)armed. The highlight stays until manual
-    /// scroll, a new distinct change, or clear screen.
-    pub(crate) fn jump_to_last_change(&mut self) -> bool {
-        let Some(target_idx) = self.last_change_line_idx else {
-            return false;
-        };
-        if target_idx >= self.lines.len() || self.transcript_width == 0 {
-            return false;
-        }
-        self.ensure_scroll_metrics();
-        let width = self.transcript_width;
-        let Some((_start_row, end_row)) = self.transcript_message_row_range(width, target_idx) else {
-            return false;
-        };
-        let viewport_rows = self.viewport_height();
-        if viewport_rows == 0 {
-            return false;
-        }
-        let effective_padding = ui::effective_transcript_bottom_padding(viewport_rows);
-        let max_offset = self.scroll_manager.max_offset();
-        let desired_top = end_row.saturating_add(effective_padding).saturating_sub(viewport_rows);
-        let clamped_top = desired_top.min(max_offset);
-        let previous_offset = self.scroll_manager.offset();
-        let new_offset = max_offset.saturating_sub(clamped_top);
-        self.mark_scrolling();
-        self.scroll_manager.set_offset(new_offset);
-        let offset_delta = new_offset as i64 - previous_offset as i64;
-        if offset_delta != 0 {
-            self.mouse_selection.adjust_for_scroll(offset_delta as i32);
-        }
-        self.user_scrolled = new_offset != 0;
-        self.jump_highlight_line_idx = Some(target_idx);
-        self.invalidate_transcript_viewport();
-        self.mark_dirty();
-        true
     }
 }

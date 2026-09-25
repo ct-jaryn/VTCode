@@ -20,6 +20,75 @@ use vtcode_ui::tui::app::{
 const STARTUP_PLANNING_WORKFLOW_ENTER_ACTION: &str = "planning_active:start_enter";
 const STARTUP_PLANNING_WORKFLOW_STAY_ACTION: &str = "planning_active:start_stay";
 
+/// Boundary captured before a turn starts so a provider refusal can roll the
+/// refused turn out of model-visible history.
+///
+/// A refused request is terminal: resending it, or keeping it where the next
+/// request replays it, is refused again. Rolling back truncates history to its
+/// state before the refused user message, so the surviving prefix is exactly
+/// what the provider accepted and stays append-only. The refusal notice is
+/// shown in the transcript and the harness event stream only.
+#[derive(Debug, Clone)]
+pub(super) struct RefusedTurnRollback {
+    /// First index removed by the rollback: the turn's prompt message, or the
+    /// pre-turn history length when the turn has no prompt message.
+    index: usize,
+    /// The prompt message at `index`, used to locate the boundary again if an
+    /// in-turn rewrite (for example compaction) shifted it.
+    prompt: Option<vtcode_core::llm::provider::Message>,
+}
+
+impl RefusedTurnRollback {
+    /// Capture the boundary before any per-turn notes are appended.
+    ///
+    /// `prompt_message_index` is the index the interaction loop (or the
+    /// approved-plan handoff) pushed the prompt at. Queued follow-ups report
+    /// no index but append the prompt as the last user message.
+    pub(super) fn capture(
+        history: &[vtcode_core::llm::provider::Message],
+        prompt_message_index: Option<usize>,
+        prompt_text: &str,
+    ) -> Self {
+        let index = prompt_message_index.filter(|index| *index < history.len()).or_else(|| {
+            history
+                .last()
+                .filter(|message| {
+                    message.role == MessageRole::User && message.content.as_text().trim() == prompt_text.trim()
+                })
+                .map(|_| history.len() - 1)
+        });
+        match index {
+            Some(index) => Self { index, prompt: history.get(index).cloned() },
+            None => Self { index: history.len(), prompt: None },
+        }
+    }
+
+    /// Truncate `history` to its state before the refused turn. Returns
+    /// whether the boundary was found; when it was not, history is left
+    /// untouched rather than truncated at a guessed position.
+    pub(super) fn apply(&self, history: &mut Vec<vtcode_core::llm::provider::Message>) -> bool {
+        let boundary = match &self.prompt {
+            Some(prompt) if history.get(self.index) == Some(prompt) => Some(self.index),
+            Some(prompt) => history.iter().rposition(|message| message == prompt),
+            None => (self.index <= history.len()).then_some(self.index),
+        };
+        match boundary {
+            Some(boundary) => {
+                history.truncate(boundary);
+                true
+            }
+            None => {
+                tracing::warn!(
+                    index = self.index,
+                    history_len = history.len(),
+                    "Refused turn boundary not found; history left unchanged"
+                );
+                false
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone)]
 pub(super) struct TurnHistoryCheckpoint {
@@ -97,6 +166,39 @@ pub(super) fn build_tracked_file_freshness_note(
     ))
 }
 
+/// Upper bound on paths listed in [`build_withdrawn_turn_changes_note`].
+const MAX_WITHDRAWN_TURN_PATHS: usize = 20;
+
+/// Model-visible note for file changes made by a refused turn.
+///
+/// Rolling back a refused turn removes its tool calls and results from
+/// history, but the edits those calls made stay on disk. Without this note the
+/// next turn reasons from file contents that no longer match. The note names
+/// only paths, never content from the refused turn.
+pub(super) fn build_withdrawn_turn_changes_note(
+    workspace: &std::path::Path,
+    modified_paths: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> Option<String> {
+    if modified_paths.is_empty() {
+        return None;
+    }
+
+    let mut display_paths = modified_paths
+        .iter()
+        .take(MAX_WITHDRAWN_TURN_PATHS)
+        .map(|path| format!("- {}", workspace_relative_display(workspace, path)))
+        .collect::<Vec<_>>();
+    let omitted = modified_paths.len().saturating_sub(MAX_WITHDRAWN_TURN_PATHS);
+    if omitted > 0 {
+        display_paths.push(format!("- and {omitted} more"));
+    }
+
+    Some(format!(
+        "The previous request was declined and removed from this conversation, but before that it modified these files:\n{}\nTheir contents may differ from what earlier messages show; read them again before relying on or editing them.",
+        display_paths.join("\n")
+    ))
+}
+
 pub(super) fn format_workspace_relative_paths<I>(workspace: &std::path::Path, paths: I) -> String
 where
     I: IntoIterator,
@@ -147,8 +249,9 @@ pub(super) async fn append_transient_turn_notes(
     workspace: &std::path::Path,
     tool_registry: &ToolRegistry,
     unrelated_dirty_note: Option<String>,
+    background_completion_note: Option<String>,
 ) -> Vec<String> {
-    let mut transient_system_notes = Vec::with_capacity(3);
+    let mut transient_system_notes = Vec::with_capacity(4);
 
     if let Some(note) = {
         let stale_paths = tool_registry.edited_file_monitor_ref().stale_tracked_paths();
@@ -168,6 +271,11 @@ pub(super) async fn append_transient_turn_notes(
     // pre-filled wait call so it needs zero reconstruction. This also covers
     // session restore — both paths flow through the same turn loop.
     if let Some(note) = build_exec_session_resume_note(tool_registry).await {
+        transient_system_notes.push(note.clone());
+        history.push(vtcode_core::llm::provider::Message::system(note));
+    }
+
+    if let Some(note) = background_completion_note {
         transient_system_notes.push(note.clone());
         history.push(vtcode_core::llm::provider::Message::system(note));
     }
@@ -282,7 +390,7 @@ pub(super) fn classify_execution_summary(
 ) -> ExecutionSummaryStatus {
     match result {
         TurnLoopResult::Completed { .. } => {
-            if final_response_was_fallback || !changed_files {
+            if final_response_was_fallback {
                 return ExecutionSummaryStatus::Blocked;
             }
             let Some(checklist) = checklist else {
@@ -299,15 +407,61 @@ pub(super) fn classify_execution_summary(
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or_default();
             let blocked = checklist.get("blocked").and_then(serde_json::Value::as_u64).unwrap_or_default();
-            if total > 0 && completed >= total && pending == 0 && in_progress == 0 && blocked == 0 {
-                ExecutionSummaryStatus::Completed
-            } else {
-                ExecutionSummaryStatus::Blocked
+            if total == 0 || completed < total || pending != 0 || in_progress != 0 || blocked != 0 {
+                return ExecutionSummaryStatus::Blocked;
             }
+            // Read-only review plans complete without file mutations:
+            // session-20260923 was marked Blocked despite a fully completed
+            // review checklist because no files changed. Implementation plans
+            // still require evidence of mutation.
+            if !changed_files && !checklist_is_review_only(checklist) {
+                return ExecutionSummaryStatus::Blocked;
+            }
+            ExecutionSummaryStatus::Completed
         }
         TurnLoopResult::Blocked { .. } => ExecutionSummaryStatus::Blocked,
         TurnLoopResult::Aborted | TurnLoopResult::Cancelled | TurnLoopResult::Exit => ExecutionSummaryStatus::Failed,
     }
+}
+
+/// Whether an approved-plan checklist describes read-only review work with no
+/// file mutations expected. All item descriptions must match review verbs and
+/// none may match mutation verbs; empty or malformed checklists fail closed
+/// as implementation work so the file-change requirement is preserved.
+fn checklist_is_review_only(checklist: &serde_json::Value) -> bool {
+    let Some(items) = checklist.get("items").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    if items.is_empty() {
+        return false;
+    }
+    items.iter().all(|item| {
+        let description = item
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if description.trim().is_empty() {
+            return false;
+        }
+        let is_review = description.contains("review")
+            || description.contains("inspect")
+            || description.contains("assess")
+            || description.contains("audit")
+            || description.contains("investigat")
+            || description.contains("analy");
+        if !is_review {
+            return false;
+        }
+        !(description.contains("implement")
+            || description.contains("fix")
+            || description.contains("edit")
+            || description.contains("create")
+            || description.contains("update")
+            || description.contains("delete")
+            || description.contains("refactor")
+            || description.contains("migrat"))
+    })
 }
 
 fn pending_checklist_items(checklist: &serde_json::Value) -> Vec<String> {
@@ -332,7 +486,10 @@ fn execution_summary_blocker(
     if final_response_was_fallback {
         return Some("recovery ended with a deterministic fallback and did not confirm the requested work".to_string());
     }
-    if !changed_files && matches!(result, TurnLoopResult::Completed { .. }) {
+    if !changed_files
+        && matches!(result, TurnLoopResult::Completed { .. })
+        && !checklist.is_some_and(checklist_is_review_only)
+    {
         return Some(
             "the approved-plan turn produced no file changes, so implementation completion was not confirmed"
                 .to_string(),
@@ -548,7 +705,7 @@ pub(super) async fn prompt_startup_planning_workflow(
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionSummaryStatus, classify_execution_summary};
+    use super::{ExecutionSummaryStatus, RefusedTurnRollback, classify_execution_summary};
     use crate::agent::runloop::unified::turn::context::TurnLoopResult;
     use serde_json::json;
 
@@ -659,7 +816,7 @@ mod tests {
         let registry = vtcode_core::tools::registry::ToolRegistry::new(temp.path().to_path_buf()).await;
         let mut history: Vec<vtcode_core::llm::provider::Message> = Vec::new();
 
-        let transient = super::append_transient_turn_notes(&mut history, temp.path(), &registry, None).await;
+        let transient = super::append_transient_turn_notes(&mut history, temp.path(), &registry, None, None).await;
         assert!(!transient.iter().any(|note| note.starts_with("Exec session resume:")));
         assert!(history.is_empty(), "no hint must leave history untouched");
     }
@@ -679,7 +836,7 @@ mod tests {
         let session_id = run["session_id"].as_str().expect("session id present").to_string();
 
         let mut history: Vec<vtcode_core::llm::provider::Message> = Vec::new();
-        let transient = super::append_transient_turn_notes(&mut history, temp.path(), &registry, None).await;
+        let transient = super::append_transient_turn_notes(&mut history, temp.path(), &registry, None, None).await;
 
         let hint = transient
             .iter()
@@ -716,7 +873,7 @@ mod tests {
         let session_id = run["session_id"].as_str().expect("session id present").to_string();
 
         let mut history: Vec<vtcode_core::llm::provider::Message> = Vec::new();
-        let transient = super::append_transient_turn_notes(&mut history, temp.path(), &registry, None).await;
+        let transient = super::append_transient_turn_notes(&mut history, temp.path(), &registry, None, None).await;
 
         assert!(!transient.iter().any(|note| note.starts_with("Exec session resume:")));
         assert!(history.is_empty(), "retained background work must not force a resume wait");
@@ -775,7 +932,8 @@ mod tests {
             "completed": 1,
             "pending": 0,
             "in_progress": 0,
-            "blocked": 0
+            "blocked": 0,
+            "items": [{"description": "Implement feature", "status": "completed"}]
         });
         let result = TurnLoopResult::Completed { plan_approved_execution_pending: false };
 
@@ -783,5 +941,161 @@ mod tests {
             classify_execution_summary(&result, false, Some(&checklist), false),
             ExecutionSummaryStatus::Blocked
         );
+    }
+
+    #[test]
+    fn completed_review_only_plan_without_file_changes_is_completed() {
+        let checklist = json!({
+            "total": 3,
+            "completed": 3,
+            "pending": 0,
+            "in_progress": 0,
+            "blocked": 0,
+            "items": [
+                {"description": "Review background completion monitoring", "status": "completed"},
+                {"description": "Review bounded completion-event handling", "status": "completed"},
+                {"description": "Inspect additional runtime diffs", "status": "completed"}
+            ]
+        });
+        let result = TurnLoopResult::Completed { plan_approved_execution_pending: false };
+
+        assert_eq!(
+            classify_execution_summary(&result, false, Some(&checklist), false),
+            ExecutionSummaryStatus::Completed
+        );
+        assert!(super::checklist_is_review_only(&checklist));
+    }
+
+    #[test]
+    fn review_only_checklist_rejects_mutation_descriptions() {
+        let mixed = json!({
+            "items": [
+                {"description": "Review background completion", "status": "completed"},
+                {"description": "Implement fix", "status": "completed"}
+            ]
+        });
+        assert!(!super::checklist_is_review_only(&mixed));
+
+        let empty_items = json!({"items": []});
+        assert!(!super::checklist_is_review_only(&empty_items));
+
+        let missing_items = json!({"total": 1});
+        assert!(!super::checklist_is_review_only(&missing_items));
+
+        // Asymmetric boundary: colon/suffix forms still count as mutation,
+        // and `prefix` fail-closes toward implementation (safe direction:
+        // preserves the file-change requirement rather than waiving it).
+        let fix_colon = json!({"items": [{"description": "Review then Fix: race", "status": "completed"}]});
+        assert!(!super::checklist_is_review_only(&fix_colon));
+
+        let prefix_mention = json!({"items": [{"description": "Review prefix handling", "status": "completed"}]});
+        assert!(!super::checklist_is_review_only(&prefix_mention));
+    }
+
+    fn pre_turn_history() -> Vec<vtcode_core::llm::provider::Message> {
+        use vtcode_core::llm::provider::Message;
+        vec![
+            Message::system("system prompt".to_string()),
+            Message::user("first request".to_string()),
+            Message::assistant("first answer".to_string()),
+        ]
+    }
+
+    fn run_refused_turn(history: &mut Vec<vtcode_core::llm::provider::Message>) {
+        use vtcode_core::llm::provider::Message;
+        // Transient note, tool round-trip, and a partial assistant response
+        // accumulated before the provider refused.
+        history.push(Message::system("Freshness note: transient".to_string()));
+        history.push(Message::assistant("partial answer".to_string()));
+        history.push(Message::system("recovery directive".to_string()));
+    }
+
+    #[test]
+    fn refused_turn_rollback_restores_history_before_the_turn() {
+        use vtcode_core::llm::provider::Message;
+        let before = pre_turn_history();
+        let mut history = before.clone();
+        let prompt_index = history.len();
+        history.push(Message::user("refused request".to_string()));
+
+        let rollback = RefusedTurnRollback::capture(&history, Some(prompt_index), "refused request");
+        run_refused_turn(&mut history);
+
+        assert!(rollback.apply(&mut history));
+        assert_eq!(history, before);
+    }
+
+    #[test]
+    fn refused_turn_rollback_finds_queued_follow_up_prompt_without_index() {
+        use vtcode_core::llm::provider::Message;
+        let before = pre_turn_history();
+        let mut history = before.clone();
+        history.push(Message::user("queued follow-up".to_string()));
+
+        let rollback = RefusedTurnRollback::capture(&history, None, "queued follow-up");
+        run_refused_turn(&mut history);
+
+        assert!(rollback.apply(&mut history));
+        assert_eq!(history, before);
+    }
+
+    #[test]
+    fn refused_turn_rollback_relocates_shifted_prompt() {
+        use vtcode_core::llm::provider::Message;
+        let mut history = pre_turn_history();
+        let prompt_index = history.len();
+        history.push(Message::user("refused request".to_string()));
+        let rollback = RefusedTurnRollback::capture(&history, Some(prompt_index), "refused request");
+
+        // An in-turn rewrite removed an earlier message, shifting the prompt.
+        history.remove(0);
+        let rewritten_prefix = history[..prompt_index - 1].to_vec();
+        run_refused_turn(&mut history);
+
+        assert!(rollback.apply(&mut history));
+        assert_eq!(history, rewritten_prefix);
+    }
+
+    #[test]
+    fn refused_turn_rollback_leaves_history_when_boundary_is_lost() {
+        use vtcode_core::llm::provider::Message;
+        let mut history = pre_turn_history();
+        let prompt_index = history.len();
+        history.push(Message::user("refused request".to_string()));
+        let rollback = RefusedTurnRollback::capture(&history, Some(prompt_index), "refused request");
+
+        history.pop();
+        history.push(Message::user("summarized request".to_string()));
+        let unchanged = history.clone();
+
+        assert!(!rollback.apply(&mut history));
+        assert_eq!(history, unchanged);
+    }
+
+    #[test]
+    fn withdrawn_turn_changes_note_lists_bounded_relative_paths() {
+        let workspace = std::path::Path::new("/workspace");
+        assert!(super::build_withdrawn_turn_changes_note(workspace, &Default::default()).is_none());
+
+        let paths: std::collections::BTreeSet<std::path::PathBuf> = (0..super::MAX_WITHDRAWN_TURN_PATHS + 3)
+            .map(|i| workspace.join(format!("src/f{i:02}.rs")))
+            .collect();
+        let note = super::build_withdrawn_turn_changes_note(workspace, &paths).expect("note");
+        assert!(note.contains("- src/f00.rs\n"), "{note}");
+        assert!(!note.contains("/workspace/"), "paths must be workspace-relative: {note}");
+        assert_eq!(note.matches("\n- src/").count(), super::MAX_WITHDRAWN_TURN_PATHS);
+        assert!(note.contains("- and 3 more\n"), "{note}");
+        assert!(note.contains("read them again"), "{note}");
+    }
+
+    #[test]
+    fn refused_turn_rollback_without_prompt_restores_pre_turn_length() {
+        let before = pre_turn_history();
+        let mut history = before.clone();
+        let rollback = RefusedTurnRollback::capture(&history, None, "prompt that was never appended");
+        run_refused_turn(&mut history);
+
+        assert!(rollback.apply(&mut history));
+        assert_eq!(history, before);
     }
 }

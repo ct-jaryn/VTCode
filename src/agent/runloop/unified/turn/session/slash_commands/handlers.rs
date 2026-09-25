@@ -16,6 +16,7 @@ mod control;
 mod diagnostics;
 #[path = "effort.rs"]
 mod effort;
+pub(crate) use effort::{effort_description, persist_effort_preference};
 #[path = "interactive.rs"]
 mod interactive;
 #[path = "local_server.rs"]
@@ -77,7 +78,9 @@ pub(super) use oauth::{
 };
 pub(super) use planning::handle_toggle_planning_workflow;
 pub(super) use plugins::handle_manage_plugins;
-pub(super) use rewind::{handle_open_rewind_picker, handle_rewind_latest, handle_rewind_to_turn};
+pub(super) use rewind::{
+    handle_open_rewind_picker, handle_redo, handle_rewind_latest, handle_rewind_recover, handle_rewind_to_turn,
+};
 pub(super) use share_log::handle_share_log;
 pub(super) use skills::handle_manage_skills;
 pub(super) use ui::{

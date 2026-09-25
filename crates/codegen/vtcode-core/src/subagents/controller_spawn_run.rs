@@ -579,7 +579,7 @@ impl SubagentController {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| {
                 format!(
-                    "You are the VT Code background subagent `{}`. Summarize readiness briefly, inspect the workspace at a high level, then remain idle until the process is terminated.",
+                    "You are the VT Code background subagent `{}`, started without a specific task. Inspect the workspace at a high level, reply with a short readiness summary (what the project is and what you are set up to do), then end your turn; the process keeps running until it is stopped.",
                     spec.name
                 )
             });
@@ -691,14 +691,13 @@ impl SubagentController {
                 .background_children
                 .get_mut(&record_id)
                 .ok_or_else(|| anyhow!("Unknown background subprocess {record_id}"))?;
-            record.exec_session_id = exec_session_id;
-            record.pid = metadata.child_pid;
-            record.started_at = metadata.started_at;
-            record.status = BackgroundSubprocessStatus::Running;
-            record.updated_at = Utc::now();
-            record.ended_at = None;
-            record.error = None;
-            record.summary = Some("Background subagent is running".to_string());
+            finalize_background_launch(
+                record,
+                exec_session_id.as_str(),
+                metadata.child_pid,
+                metadata.started_at,
+                Utc::now(),
+            );
         }
 
         self.save_background_state().await?;
@@ -748,6 +747,7 @@ impl SubagentController {
     /// are aborted so subagent tasks do not outlive the parent session.
     pub async fn signal_shutdown(&self) {
         self.shutdown_requested.store(true, Ordering::Relaxed);
+        self.stop_background_completion_monitor().await;
         let nested = {
             let mut state = self.state.write().await;
             let mut nested = Vec::new();
@@ -770,6 +770,7 @@ impl SubagentController {
         for (controller, _) in &nested {
             controller.shutdown_requested.store(true, Ordering::Relaxed);
             controller.begin_close().await;
+            controller.stop_background_completion_monitor().await;
         }
         // Cascade shutdown to child-scoped controllers so grandchildren tasks
         // are aborted too; otherwise their tokio tasks keep running detached.
@@ -1073,4 +1074,26 @@ impl SubagentController {
         }
         self.launch_child(target).await
     }
+}
+
+pub(super) fn finalize_background_launch(
+    record: &mut BackgroundRecord,
+    expected_exec_session_id: &str,
+    child_pid: Option<u32>,
+    started_at: Option<chrono::DateTime<Utc>>,
+    updated_at: chrono::DateTime<Utc>,
+) -> bool {
+    if record.exec_session_id != expected_exec_session_id
+        || !matches!(record.status, BackgroundSubprocessStatus::Starting)
+    {
+        return false;
+    }
+    record.pid = child_pid;
+    record.started_at = started_at;
+    record.status = BackgroundSubprocessStatus::Running;
+    record.updated_at = updated_at;
+    record.ended_at = None;
+    record.error = None;
+    record.summary = Some("Background subagent is running".to_string());
+    true
 }

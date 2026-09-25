@@ -262,7 +262,8 @@ impl ToolInventory {
 
             if tools.contains_key(&name_lower) {
                 name_lower.clone()
-            } else if let Some(aliased) = state.aliases.get(&name_lower).cloned() {
+            } else {
+                let aliased = state.aliases.get(&name_lower).cloned()?;
                 let mut metrics = self.alias_metrics.lock();
                 if let Some((canonical, count)) = metrics.usage.get_mut(&name_lower) {
                     *count += 1;
@@ -277,8 +278,6 @@ impl ToolInventory {
                     );
                 }
                 aliased
-            } else {
-                return None;
             }
         };
 

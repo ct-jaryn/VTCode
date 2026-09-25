@@ -34,9 +34,7 @@ pub(super) fn build_entries(palette: &mut FilePalette, files: Vec<String>, detec
         })
         .collect();
 
-    palette
-        .all_files
-        .sort_by(|a, b| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()));
+    palette.all_files.sort_by_key(|a| a.relative_path.to_lowercase());
 }
 
 pub(super) fn build_dir_index(palette: &mut FilePalette) {

@@ -8,19 +8,19 @@ VT Code has two distinct prompt sources:
 | Project instruction map | User/workspace `AGENTS.md`, `CLAUDE.md`, and `.vtcode/rules/` | Project conventions, local architecture, and maintainer workflows | User-controlled context, never a security boundary |
 
 The compiled section is deterministic, cached with the static profile, and
-kept below its approximate 320-token cap. It must not read, embed, or generate
+kept below its approximate 420-token cap. It must not read, embed, or generate
 content from repository instruction files. Profile-specific operating details
 remain in the prompt builder; correctness-critical behavior belongs in runtime
 policy, schemas, tests, or lints.
 
 ## User-facing progress contract
 
-For non-trivial or tool-using work, the compiled guidance allows concise
-model-authored progress updates when they materially help. The model can post
-one or two sentences when the phase or next action changes, then close with a
-standalone recap of what it found, changed, and verified, plus what comes next.
-Structured tool-call events remain the authoritative status signal. These are
-user-facing updates, not a transcript of every call or hidden chain-of-thought.
+The compiled guidance tells the model that its text between tool calls is
+what the user reads. It says in one sentence what it will do before starting,
+updates only on findings, direction changes, or blockers, and finishes with the
+outcome first, then what changed, what it checked, and anything the user must
+do. Structured tool-call events remain the authoritative status signal. These
+are user-facing updates, not a transcript of every call.
 
 Compact transcript mode may collapse successful command bodies while retaining
 complete output in Transcript Review. The model must not rerun commands merely
@@ -103,16 +103,35 @@ while runtime shutdown closes all process groups and descendants. The runtime
 continues to emit the existing `ThreadEvent` item lifecycle events rather than
 introducing a parallel background-process event contract.
 
+Managed background subprocesses publish a terminal completion notification after
+their `BackgroundRecord` has been persisted as `Stopped` or `Error`; user-launched
+background exec sessions publish the same terminal signal directly from the
+shared exec-session watcher. Before publishing, the watcher makes a bounded
+attempt to drain and retain final output, and pruning retains an exited
+background session until that delivery finishes; the run loop then refreshes
+Local Agents immediately. The local agent state and transcript can therefore show
+terminal results without a `/subprocesses refresh` or explicit
+`write_stdin` poll. Clean exits are `Stopped`, spontaneous non-zero exits are
+`Error`, and user-requested managed or raw exec-session stops remain `Stopped`.
+When the main interaction loop is idle, it appends one
+bounded authoritative completion note and schedules at most one follow-up
+reasoning turn. A completion that arrives during an active model/tool turn is
+deferred to the next safe boundary, and newer user input always takes priority;
+direct user commands do not fabricate an unrelated autonomous turn. The
+explicit `wait` action remains available when a caller needs a synchronous
+observation. The canonical completion record is emitted as
+`background_subprocess_completed` in event schema 0.16.0.
+
 Cross-turn resume hint body is transient, not universal guidance: when a turn ends with a
 live foreground session, the next turn start injects a bounded `Exec session resume:` hint
 via `append_transient_turn_notes` (same path for normal next-turn and session
 restore/resume). The hint carries at most 4 session lines (160 bytes per
 command, <1 KiB single-session) plus a pre-filled `write_stdin` wait, and the
-runtime never auto-executes the wait. Turn-end `turn.completed` (schema 0.15.0)
+runtime never auto-executes the wait. Turn-end `turn.completed` (schema 0.16.0)
 and `SnapshotTurnDiagnostics` both record `in_progress_exec_sessions` (bounded
 to 4) for ATIF correlation, including retained background sessions that remain
 live for asynchronous work. This hint body stays out of `runtime_guidance.rs` so the
-320-token universal section is not taxed on turns with no live session; per-tool
+universal section is not taxed on turns with no live session; per-tool
 `guidelines.rs` `write_stdin` guidance carries only a one-line pointer that the
 hint may appear.
 

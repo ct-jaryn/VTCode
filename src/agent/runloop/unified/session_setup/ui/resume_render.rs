@@ -70,10 +70,15 @@ pub(crate) fn build_structured_resume_lines(
     let mut lines = Vec::new();
     let mut tool_name_by_call_id: HashMap<String, String> = HashMap::new();
 
-    for (index, message) in history.iter().enumerate() {
-        if index > 0 {
+    let mut rendered_any_message = false;
+    for message in history {
+        if is_persisted_request_context(message) {
+            continue;
+        }
+        if rendered_any_message {
             push_resume_spacing(&mut lines);
         }
+        rendered_any_message = true;
         match message.role {
             uni::MessageRole::User => {
                 push_content_lines(&mut lines, MessageStyle::User, &message.content);
@@ -167,6 +172,18 @@ pub(crate) fn build_structured_resume_lines(
     }
 
     lines
+}
+
+/// Runtime-injected request context (few-shot examples, editor snapshots) is
+/// persisted in history for prompt-prefix stability, but it is not part of
+/// the conversation the user had, so the resume transcript omits it.
+fn is_persisted_request_context(message: &uni::Message) -> bool {
+    if message.role != uni::MessageRole::System {
+        return false;
+    }
+    let text = message.content.as_text();
+    text.starts_with(vtcode_core::prompts::FEW_SHOT_SECTION_HEADER)
+        || text.starts_with(vtcode_core::EDITOR_CONTEXT_PROMPT_HEADER)
 }
 
 fn format_resume_tool_header(tool_name: &str, tool_call_id: Option<&str>) -> String {

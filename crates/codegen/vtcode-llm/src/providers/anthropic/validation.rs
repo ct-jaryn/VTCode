@@ -15,9 +15,9 @@ use vtcode_config::types::ReasoningEffortLevel;
 
 use super::capabilities::{
     adaptive_thinking_always_on, allowed_efforts_for_model, claude_thinking_profile, default_effort_for_model,
-    effort_allowed_for_model, effort_is_at_most_high, matches_model, rejects_sampling, resolve_model_name,
-    supports_assistant_prefill, supports_effort, supports_manual_interleaved_beta, supports_manual_thinking_budget,
-    supports_structured_output, supports_task_budget,
+    default_max_tokens_for_model, effort_allowed_for_model, effort_is_at_most_high, matches_model, rejects_sampling,
+    resolve_model_name, structured_output_models, supports_effort, supports_manual_interleaved_beta,
+    supports_manual_thinking_budget, supports_structured_output, supports_task_budget,
 };
 
 pub fn validate_request(
@@ -39,8 +39,9 @@ pub fn validate_request(
         let formatted_error = error_display::format_llm_error(
             provider_name,
             &format!(
-                "Structured output is not supported for model '{}'. Structured outputs are only available for Claude Sonnet 4.5/4.6, Claude Opus 4.5/4.7/4.8, and Claude Haiku 4.5 models.",
-                request.model
+                "Structured output is not supported for model '{}'. Models that support it: {}.",
+                request.model,
+                structured_output_models().join(", ")
             ),
         );
         return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
@@ -59,7 +60,7 @@ pub fn validate_request(
     let resolved_model = resolve_model_name(&request.model, default_model);
     let effective_thinking_mode = resolve_effective_thinking_mode(request, default_model, anthropic_config);
 
-    // Models with adaptive thinking always on (Fable 5, Mythos 5) reject disabled thinking.
+    // Models with adaptive thinking always on (Opus 5.5, Fable 5/5.1) reject disabled thinking.
     // Sonnet 5 has default thinking on but allows disabling via `thinking: {type: "disabled"}`.
     // Opus 5 allows disabling thinking only at effort ≤ high.
     if adaptive_thinking_always_on(resolved_model, default_model)
@@ -74,7 +75,10 @@ pub fn validate_request(
         return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
     }
 
-    if matches_model(resolved_model, vtcode_config::constants::models::anthropic::CLAUDE_OPUS_5)
+    if matches_model(resolved_model, vtcode_config::constants::models::anthropic::CLAUDE_OPUS_5_5) {
+        // Opus 5.5 is adaptive-only, so a disabled-thinking request is already
+        // rejected above; never apply the Opus 5 effort-gated allowance here.
+    } else if matches_model(resolved_model, vtcode_config::constants::models::anthropic::CLAUDE_OPUS_5)
         && matches!(effective_thinking_mode, EffectiveThinkingMode::Disabled)
     {
         if !effort_is_at_most_high(request, anthropic_config) {
@@ -91,7 +95,7 @@ pub fn validate_request(
     {
         let formatted_error = error_display::format_llm_error(
             provider_name,
-            "Claude Opus 5, Sonnet 5, Fable 5, Mythos 5, and Opus 4.8 reject explicit temperature, top_p, and top_k values; omit sampling parameters entirely.",
+            "Claude Sonnet 5, Fable 5/5.1, Opus 5, and Opus 5.5 reject explicit temperature, top_p, and top_k values; omit sampling parameters entirely.",
         );
         return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
     }
@@ -137,26 +141,6 @@ pub fn validate_request(
         validate_reasoning_constraints(request, default_model, anthropic_config)?;
     }
 
-    // Prefill constraints only apply to models that support prefill.
-    // For models that don't support prefill, the request builder silently omits it.
-    if supports_assistant_prefill(resolved_model, default_model) {
-        if request_uses_assistant_prefill(request) && thinking_active {
-            let formatted_error = error_display::format_llm_error(
-                provider_name,
-                "Assistant-message prefills are not supported when thinking is enabled. Use system instructions instead.",
-            );
-            return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
-        }
-
-        if request_uses_assistant_prefill(request) && request.output_format.is_some() {
-            let formatted_error = error_display::format_llm_error(
-                provider_name,
-                "Assistant-message prefills are not supported when structured outputs are enabled.",
-            );
-            return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
-        }
-    }
-
     if let Some(task_budget) = effective_task_budget_tokens(request, anthropic_config)
         && supports_task_budget(&request.model, default_model)
         && task_budget < 20_000
@@ -164,7 +148,7 @@ pub fn validate_request(
         let formatted_error = error_display::format_llm_error(
             provider_name,
             &format!(
-                "task_budget_tokens ({task_budget}) must be at least 20000 for Claude Opus 4.7/4.8, Fable 5, and Mythos 5."
+                "task_budget_tokens ({task_budget}) must be at least 20000 for Claude Fable 5/5.1, Opus 5, and Opus 5.5."
             ),
         );
         return Err(LLMError::InvalidRequest { message: formatted_error, metadata: None });
@@ -253,15 +237,6 @@ fn resolve_effective_thinking_mode(
             }
         }
     }
-}
-
-pub(crate) fn request_uses_assistant_prefill(request: &LLMRequest) -> bool {
-    request.prefill.is_some()
-        || request
-            .coding_agent_settings
-            .as_ref()
-            .is_some_and(|settings| settings.prefill_thought)
-        || (request.character_reinforcement && request.character_name.is_some())
 }
 
 fn effective_manual_thinking_budget_override(request: &LLMRequest) -> Option<u32> {
@@ -427,7 +402,10 @@ fn validate_reasoning_constraints(
     if let EffectiveThinkingMode::ManualBudget(budget) =
         resolve_effective_thinking_mode(request, default_model, anthropic_config)
     {
-        let max_tokens = request.max_tokens.unwrap_or(4096);
+        // Manual budgets imply thinking, so this matches what the builder sends.
+        let max_tokens = request
+            .max_tokens
+            .unwrap_or_else(|| default_max_tokens_for_model(&request.model, default_model, true));
         if supports_manual_thinking_budget(&request.model, default_model)
             && budget >= max_tokens
             && !supports_manual_interleaved_beta(&request.model, default_model)

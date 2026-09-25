@@ -1,6 +1,4 @@
-use super::{
-    Action, PLACEHOLDER_COLOR, Session, measure_text_width, ratatui_color_from_ansi, ratatui_style_from_inline,
-};
+use super::{PLACEHOLDER_COLOR, Session, measure_text_width, ratatui_color_from_ansi, ratatui_style_from_inline};
 use crate::tui::config::constants::ui;
 use crate::tui::ui::tui::types::InlineTextStyle;
 use anstyle::{Color as AnsiColorEnum, Effects};
@@ -229,7 +227,6 @@ impl Session {
     pub(crate) fn render_input(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.height == 0 {
             self.set_input_area(None);
-            self.set_input_status_area(None);
             return;
         }
 
@@ -288,14 +285,11 @@ impl Session {
         }
 
         if let Some(status_area) = status_area {
-            self.set_input_status_area(Some(status_area));
             let status_line = self.render_input_status_line(status_area.width).unwrap_or_default();
             let status = Paragraph::new(status_line)
                 .style(self.styles.default_style())
                 .wrap(Wrap { trim: false });
             frame.render_widget(status, status_area);
-        } else {
-            self.set_input_status_area(None);
         }
     }
 
@@ -1050,8 +1044,6 @@ impl Session {
     /// - While scrolled: `↑ {visible_top}/{total}` shows the top row position.
     /// - When new lines arrived while scrolled: `↓ {N} new` highlights the
     ///   pending content until the user returns to the bottom.
-    /// - When scrolled up with multiple tracked changes: appends
-    ///   `⤓ Jump to last change [key]` affordance.
     fn build_scroll_indicator(&self) -> Option<String> {
         if !self.user_scrolled {
             return None;
@@ -1061,67 +1053,12 @@ impl Session {
         let total = self.transcript_rows.max(1) as usize;
         let top = self.scroll_manager.offset().saturating_add(1).min(total);
 
-        let mut label = if pending > 0 {
+        let label = if pending > 0 {
             format!("↓ {} new", pending)
         } else {
             format!("↑ {}/{}", top, total)
         };
-        if self.should_show_jump_to_last_change() {
-            let key_label = self.primary_binding_label(Action::JumpToLastChange).unwrap_or("Ctrl+End");
-            label.push_str(&format!(" · ⤓ Jump to last change [{key_label}]"));
-        }
         Some(label)
-    }
-
-    /// Clickable footer affordance for Jump to last change.
-    ///
-    /// Mirrors `render_input_status_line` so the hit-test matches what is
-    /// painted. Returns the sub-rect of the `⤓ Jump to last change [key]`
-    /// suffix inside the stored status area, or `None` when the gate hides
-    /// the affordance, the status row was never rendered, or the label was
-    /// truncated away.
-    pub(crate) fn footer_jump_rect(&self) -> Option<Rect> {
-        if !self.should_show_jump_to_last_change() {
-            return None;
-        }
-        let area = self.input_status_area()?;
-        if area.height == 0 || area.width == 0 {
-            return None;
-        }
-        let line = self.render_input_status_line(area.width)?;
-        let full: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-        let needle = "⤓ Jump to last change";
-        let byte_idx = full.find(needle)?;
-        let prefix = &full[..byte_idx];
-        let prefix_width = measure_text_width(prefix);
-        let suffix_from_needle = &full[byte_idx..];
-        let jump_text = match suffix_from_needle.find(']') {
-            Some(close) => &suffix_from_needle[..close + 1],
-            None => needle,
-        };
-        let jump_width = measure_text_width(jump_text);
-        if jump_width == 0 {
-            return None;
-        }
-        let x = area.x.saturating_add(prefix_width);
-        if x >= area.right() {
-            return None;
-        }
-        let max_width = area.right().saturating_sub(x);
-        let width = jump_width.min(max_width);
-        if width == 0 {
-            return None;
-        }
-        Some(Rect::new(x, area.y, width, 1))
-    }
-
-    pub(crate) fn footer_jump_contains(&self, column: u16, row: u16) -> bool {
-        self.footer_jump_rect().is_some_and(|rect| {
-            row >= rect.y
-                && row < rect.y.saturating_add(rect.height)
-                && column >= rect.x
-                && column < rect.x.saturating_add(rect.width)
-        })
     }
 
     fn create_git_status_spans(&self, text: &str, default_style: Style) -> Vec<Span<'static>> {

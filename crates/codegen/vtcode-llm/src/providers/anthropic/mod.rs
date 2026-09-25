@@ -11,11 +11,14 @@
 //! - `headers`: API headers, beta features, and version management
 //! - `capabilities`: Model capability detection (vision, reasoning, structured output)
 //! - `validation`: Request validation and schema checking
+//! - `fallback_retry`: Bounded credit-token retry when a server-side fallback could not run
 
 #[cfg(feature = "anthropic-api")]
 pub mod api;
+mod block_order;
 pub mod capabilities;
 pub mod compat;
+mod fallback_retry;
 mod headers;
 mod prompt_cache;
 mod provider;

@@ -8,7 +8,7 @@ use hashbrown::HashMap;
 use parking_lot::Mutex as ParkingMutex;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
 use tokio::task::JoinHandle;
 #[cfg(windows)]
 use vtcode_bash_runner::GracefulTerminationResult;
@@ -29,6 +29,9 @@ const PIPE_OUTPUT_HEAD_BYTES: usize = 8 * 1024;
 const PIPE_OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 const EXEC_SESSION_PREVIEW_HEAD_BYTES: usize = 8 * 1024;
 const EXEC_SESSION_PREVIEW_TAIL_BYTES: usize = 8 * 1024;
+const EXEC_SESSION_COMPLETION_COMMAND_MAX_BYTES: usize = 512;
+const EXEC_SESSION_COMPLETION_DRAIN_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+const EXEC_SESSION_COMPLETION_DRAIN_POLL: tokio::time::Duration = tokio::time::Duration::from_millis(15);
 
 /// Maximum number of live background command sessions owned by one runtime.
 pub const MAX_BACKGROUND_PROCESSES: usize = 3;
@@ -621,11 +624,48 @@ impl ExecSessionLaunchMode {
     }
 }
 
+fn bounded_completion_command(command: &str) -> String {
+    let without_controls: String = command
+        .chars()
+        .map(|character| if character.is_control() { ' ' } else { character })
+        .collect();
+    let collapsed = vtcode_commons::formatting::collapse_whitespace(&without_controls);
+    let redacted = vtcode_commons::sanitizer::redact_secrets(collapsed);
+    if redacted.len() <= EXEC_SESSION_COMPLETION_COMMAND_MAX_BYTES {
+        return redacted;
+    }
+    vtcode_commons::formatting::truncate_byte_budget(
+        &redacted,
+        EXEC_SESSION_COMPLETION_COMMAND_MAX_BYTES.saturating_sub(3),
+        "...",
+    )
+}
+
 /// Bounded data used by the Local Agents drawer for one raw command session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecSessionUiSnapshot {
     pub metadata: VTCodeExecSession,
     pub preview: String,
+}
+
+/// Notification emitted after a background process has been confirmed exited.
+///
+/// The watcher owns the terminal transition, so a record emits at most one
+/// notification even if multiple lifecycle checks observe the same exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecSessionCompletionEvent {
+    /// Stable exec-session identity.
+    pub session_id: ExecSessionId,
+    /// Shell command associated with the session.
+    pub command: String,
+    /// Whether the session belongs to the managed subagent background flow.
+    /// User-launched background exec sessions are delivered directly to the
+    /// parent run loop; managed sessions are forwarded by their controller.
+    pub managed_background: bool,
+    /// Whether the runtime intentionally terminated the session.
+    pub termination_requested: bool,
+    /// Confirmed process exit status.
+    pub exit_code: i32,
 }
 
 struct ExecSessionRecord {
@@ -637,6 +677,8 @@ struct ExecSessionRecord {
     background_promoted_from_foreground: AtomicBool,
     show_in_background_drawer: AtomicBool,
     background_slot_reserved: AtomicBool,
+    background_completion_published: AtomicBool,
+    termination_requested: AtomicBool,
     preview: ParkingMutex<SessionPreviewState>,
     output_read_lock: Mutex<()>,
     background_watch: ParkingMutex<Option<JoinHandle<()>>>,
@@ -660,6 +702,8 @@ impl ExecSessionRecord {
             background_promoted_from_foreground: AtomicBool::new(false),
             show_in_background_drawer: AtomicBool::new(launch_mode.shows_in_background_drawer()),
             background_slot_reserved: AtomicBool::new(background_slot_reserved),
+            background_completion_published: AtomicBool::new(false),
+            termination_requested: AtomicBool::new(false),
             preview: ParkingMutex::new(SessionPreviewState::default()),
             output_read_lock: Mutex::new(()),
             background_watch: ParkingMutex::new(None),
@@ -709,11 +753,14 @@ pub struct ExecSessionManager {
     focused_session: Arc<ParkingMutex<Option<ExecSessionId>>>,
     background_request: Arc<ParkingMutex<Option<ExecSessionId>>>,
     background_shortcut_result: Arc<ParkingMutex<Option<BackgroundShortcutResult>>>,
+    completion_tx: broadcast::Sender<ExecSessionCompletionEvent>,
+    completion_notify: Arc<Notify>,
 }
 
 impl ExecSessionManager {
     #[must_use]
     pub fn new(workspace_root: PathBuf, pty_sessions: PtySessionManager) -> Self {
+        let (completion_tx, _) = broadcast::channel(64);
         Self {
             pipe_sessions: PipeSessionManager::new(workspace_root),
             pty_sessions,
@@ -725,7 +772,20 @@ impl ExecSessionManager {
             focused_session: Arc::new(ParkingMutex::new(None)),
             background_request: Arc::new(ParkingMutex::new(None)),
             background_shortcut_result: Arc::new(ParkingMutex::new(None)),
+            completion_tx,
+            completion_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Subscribe to confirmed terminal transitions for background exec sessions.
+    pub fn subscribe_completion(&self) -> broadcast::Receiver<ExecSessionCompletionEvent> {
+        self.completion_tx.subscribe()
+    }
+
+    /// Wake an idle interaction loop when a background exec session completes.
+    #[must_use]
+    pub fn completion_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.completion_notify)
     }
 
     pub(crate) fn set_foreground_pty_counter(&self, counter: Arc<AtomicUsize>) {
@@ -825,7 +885,7 @@ impl ExecSessionManager {
                 return Err(error);
             }
         };
-        if launch_mode.reserves_background_slot() {
+        if launch_mode.is_background() {
             self.start_background_watcher(record, session_id.to_string());
         } else if launch_mode.sets_foreground_session() {
             self.set_foreground_session(metadata.id.clone());
@@ -983,7 +1043,7 @@ impl ExecSessionManager {
                 return Err(error);
             }
         };
-        if launch_mode.reserves_background_slot() {
+        if launch_mode.is_background() {
             self.start_background_watcher(record, session_id.to_string());
         } else if launch_mode.sets_foreground_session() {
             self.set_foreground_session(exec_metadata.id.clone());
@@ -1203,19 +1263,29 @@ impl ExecSessionManager {
     pub async fn terminate_session(&self, session_id: &str) -> Result<()> {
         let record = self.session_record(session_id).await?;
         self.clear_focused_session_if_matches(session_id);
-        match record.backend {
+        record.termination_requested.store(true, Ordering::Release);
+        let result = match record.backend {
             ExecSessionBackend::Pipe => self.pipe_sessions.terminate_session(session_id).await,
             ExecSessionBackend::Pty => self.pty_sessions.manager().terminate_session(session_id),
+        };
+        if result.is_err() {
+            record.termination_requested.store(false, Ordering::Release);
         }
+        result
     }
 
     pub async fn force_terminate_session(&self, session_id: &str) -> Result<()> {
         let record = self.session_record(session_id).await?;
         self.clear_focused_session_if_matches(session_id);
-        match record.backend {
+        record.termination_requested.store(true, Ordering::Release);
+        let result = match record.backend {
             ExecSessionBackend::Pipe => self.pipe_sessions.force_terminate_session(session_id).await,
             ExecSessionBackend::Pty => self.pty_sessions.manager().force_terminate_session(session_id),
+        };
+        if result.is_err() {
+            record.termination_requested.store(false, Ordering::Release);
         }
+        result
     }
 
     pub async fn close_session(&self, session_id: &str) -> Result<VTCodeExecSession> {
@@ -1323,7 +1393,22 @@ impl ExecSessionManager {
     }
 
     pub(crate) async fn prune_exited_session(&self, session_id: &str) -> Result<Option<VTCodeExecSession>> {
+        let record = self.session_record(session_id).await?;
         if self.is_session_completed(session_id).await?.is_some() {
+            // Background completion owns the final output capture and parent
+            // notification. A synchronous wait/stop can observe process exit
+            // first; pruning here would abort that watcher and lose the
+            // terminal event. Retain the session until the watcher has
+            // finished, after which a later prune may close it safely.
+            let completion_pending = record.background.load(Ordering::Acquire)
+                && record
+                    .background_watch
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|watch| !watch.is_finished());
+            if completion_pending {
+                return Ok(None);
+            }
             return self.close_session(session_id).await.map(Some);
         }
         Ok(None)
@@ -1563,7 +1648,27 @@ impl ExecSessionManager {
         let task = tokio::spawn(async move {
             loop {
                 match manager.is_session_completed(session_id.as_str()).await {
-                    Ok(Some(_)) => {
+                    Ok(Some(exit_code)) => {
+                        manager.capture_background_completion_output(session_id.as_str()).await;
+                        if record_for_task
+                            .background_completion_published
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            let command = bounded_completion_command(&record_for_task.metadata.command_label());
+                            let _ = manager.completion_tx.send(ExecSessionCompletionEvent {
+                                session_id: ExecSessionId::new(session_id.clone()),
+                                command,
+                                managed_background: !record_for_task.show_in_background_drawer.load(Ordering::Acquire),
+                                termination_requested: record_for_task.termination_requested.load(Ordering::Acquire),
+                                exit_code,
+                            });
+                            // Keep one wake permit when the idle loop has not
+                            // entered its wait yet; the broadcast receiver
+                            // drains every completion that accumulated behind
+                            // the single permit.
+                            manager.completion_notify.notify_one();
+                        }
                         manager.release_background_slot(&record_for_task);
                         break;
                     }
@@ -1586,6 +1691,19 @@ impl ExecSessionManager {
         }
     }
 
+    async fn capture_background_completion_output(&self, session_id: &str) {
+        let deadline = tokio::time::Instant::now() + EXEC_SESSION_COMPLETION_DRAIN_TIMEOUT;
+        loop {
+            let _ = self.read_session_output(session_id, false).await;
+            if self.is_output_drained(session_id).await.unwrap_or(false) || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(EXEC_SESSION_COMPLETION_DRAIN_POLL).await;
+        }
+        // Capture bytes that raced with the final drain-state observation.
+        let _ = self.read_session_output(session_id, false).await;
+    }
+
     fn start_foreground_watcher(&self, record: Arc<ExecSessionRecord>, session_id: String) {
         let manager = self.clone();
         let record_for_task = Arc::clone(&record);
@@ -1598,7 +1716,11 @@ impl ExecSessionManager {
                     break;
                 }
                 match manager.is_session_completed(session_id.as_str()).await {
-                    Ok(Some(_)) => break,
+                    Ok(Some(_)) => {
+                        manager.release_foreground_pty_count(&record_for_task);
+                        manager.release_pending_background_request(session_id.as_str());
+                        break;
+                    }
                     Ok(None) => tokio::time::sleep(tokio::time::Duration::from_millis(50)).await,
                     Err(_) => {
                         if manager.session_record(session_id.as_str()).await.is_err() {
@@ -1689,13 +1811,34 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::{
-        BackgroundShortcutResult, EXEC_SESSION_PREVIEW_HEAD_BYTES, EXEC_SESSION_PREVIEW_TAIL_BYTES, ExecSessionManager,
-        MAX_BACKGROUND_PROCESSES, RetainedSessionPreview,
+        BackgroundShortcutResult, EXEC_SESSION_COMPLETION_COMMAND_MAX_BYTES, EXEC_SESSION_PREVIEW_HEAD_BYTES,
+        EXEC_SESSION_PREVIEW_TAIL_BYTES, ExecSessionManager, MAX_BACKGROUND_PROCESSES, RetainedSessionPreview,
+        bounded_completion_command,
     };
     use crate::config::PtyConfig;
     use crate::tools::pty::PtySize;
     use crate::tools::registry::PtySessionManager;
     use crate::utils::path::canonicalize_workspace;
+
+    #[test]
+    fn completion_command_is_single_line_redacted_and_bounded() {
+        let secret = concat!("password=", "supersecretvalue");
+        let command = format!("cargo\ncheck\u{1b} {secret} {}", "x".repeat(1_024));
+
+        let bounded = bounded_completion_command(&command);
+
+        assert!(bounded.starts_with("cargo check "));
+        assert!(!bounded.chars().any(char::is_control));
+        assert!(!bounded.contains("supersecretvalue"));
+        assert!(bounded.contains("[REDACTED_SECRET]"));
+        assert!(bounded.len() <= EXEC_SESSION_COMPLETION_COMMAND_MAX_BYTES);
+        assert!(bounded.ends_with("..."));
+    }
+
+    #[test]
+    fn completion_command_preserves_short_safe_labels() {
+        assert_eq!(bounded_completion_command("cargo check --locked"), "cargo check --locked");
+    }
 
     #[tokio::test]
     #[cfg(all(unix, feature = "tui"))]
@@ -1971,6 +2114,189 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
+    async fn managed_background_completion_is_published_once_after_confirmed_clean_exit() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let mut completions = manager.subscribe_completion();
+
+        manager
+            .create_pipe_session_for_managed_background(
+                "managed-completion-clean".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "exit 0".to_string()],
+                workspace_root,
+                HashMap::new(),
+            )
+            .await?;
+
+        let completion = timeout(Duration::from_secs(2), completions.recv()).await??;
+        assert_eq!(completion.session_id.as_str(), "managed-completion-clean");
+        assert!(completion.managed_background);
+        assert!(completion.command.contains("exit 0"));
+        assert_eq!(completion.exit_code, 0);
+        assert!(timeout(Duration::from_millis(100), completions.recv()).await.is_err());
+
+        manager.close_session("managed-completion-clean").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn background_completion_waits_for_final_output_capture() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let mut completions = manager.subscribe_completion();
+
+        manager
+            .create_pipe_session_with_sandbox_and_background(
+                "background-final-output".to_string().into(),
+                vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "i=0; while [ \"$i\" -lt 4096 ]; do printf 'padding-%04d\\n' \"$i\"; i=$((i + 1)); done; printf 'final-output-sentinel\\n'"
+                        .to_string(),
+                ],
+                workspace_root,
+                HashMap::new(),
+                false,
+                true,
+            )
+            .await?;
+
+        let completion = timeout(Duration::from_secs(3), completions.recv()).await??;
+        assert_eq!(completion.exit_code, 0);
+        let snapshot = manager.background_session_snapshot("background-final-output").await?;
+        assert!(
+            snapshot.preview.contains("final-output-sentinel"),
+            "completion must not outrun final output capture: {}",
+            snapshot.preview
+        );
+
+        manager.close_session("background-final-output").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pruning_exited_background_session_does_not_abort_pending_completion() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let mut completions = manager.subscribe_completion();
+
+        manager
+            .create_pipe_session_with_sandbox_and_background(
+                "background-prune-race".to_string().into(),
+                vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "(sleep 0.3; printf 'late-output-sentinel\\n') & exit 0".to_string(),
+                ],
+                workspace_root,
+                HashMap::new(),
+                false,
+                true,
+            )
+            .await?;
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.is_session_completed("background-prune-race").await?.is_some() {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+
+        assert!(
+            manager.prune_exited_session("background-prune-race").await?.is_none(),
+            "pruning must not abort a watcher that still owns completion delivery"
+        );
+        let completion = timeout(Duration::from_secs(2), completions.recv()).await??;
+        assert_eq!(completion.session_id.as_str(), "background-prune-race");
+        assert_eq!(completion.exit_code, 0);
+        let snapshot = manager.background_session_snapshot("background-prune-race").await?;
+        assert!(snapshot.preview.contains("late-output-sentinel"));
+
+        manager.close_session("background-prune-race").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn managed_background_completion_reports_nonzero_exit_and_running_sessions_are_silent() -> anyhow::Result<()>
+    {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let mut completions = manager.subscribe_completion();
+
+        manager
+            .create_pipe_session_for_managed_background(
+                "managed-completion-failing".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "exit 7".to_string()],
+                workspace_root.clone(),
+                HashMap::new(),
+            )
+            .await?;
+
+        let completion = timeout(Duration::from_secs(2), completions.recv()).await??;
+        assert_eq!(completion.session_id.as_str(), "managed-completion-failing");
+        assert!(completion.managed_background);
+        assert_eq!(completion.exit_code, 7);
+        assert!(timeout(Duration::from_millis(100), completions.recv()).await.is_err());
+        manager.close_session("managed-completion-failing").await?;
+
+        manager
+            .create_pipe_session_for_managed_background(
+                "managed-completion-running".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
+                workspace_root,
+                HashMap::new(),
+            )
+            .await?;
+        assert!(timeout(Duration::from_millis(100), completions.recv()).await.is_err());
+        manager.close_session("managed-completion-running").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn user_background_completion_is_published_for_the_parent_run_loop() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let mut completions = manager.subscribe_completion();
+
+        manager
+            .create_pipe_session_with_sandbox_and_background(
+                "user-background-completion".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "exit 0".to_string()],
+                workspace_root,
+                HashMap::new(),
+                false,
+                true,
+            )
+            .await?;
+
+        let completion = timeout(Duration::from_secs(2), completions.recv()).await??;
+        assert_eq!(completion.session_id.as_str(), "user-background-completion");
+        assert!(!completion.managed_background);
+        assert!(completion.command.contains("exit 0"));
+        assert_eq!(completion.exit_code, 0);
+        manager.close_session("user-background-completion").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
     async fn background_ui_snapshot_retains_drained_output_and_hides_foreground_sessions() -> anyhow::Result<()> {
         let temp_dir = tempdir()?;
         let workspace_root = canonicalize_workspace(temp_dir.path());
@@ -2041,11 +2367,16 @@ mod tests {
         let workspace_root = canonicalize_workspace(temp_dir.path());
         let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
         let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let mut completions = manager.subscribe_completion();
 
         manager
             .create_pipe_session_with_sandbox_and_background(
                 "background-force".to_string().into(),
-                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+                vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "printf 'before-termination\\n'; sleep 5".to_string(),
+                ],
                 workspace_root,
                 HashMap::new(),
                 false,
@@ -2053,10 +2384,10 @@ mod tests {
             )
             .await?;
 
-        assert!(!manager.force_terminate_or_close("background-force").await?);
         timeout(Duration::from_secs(2), async {
             loop {
-                if manager.is_session_completed("background-force").await?.is_some() {
+                let snapshot = manager.background_session_snapshot("background-force").await?;
+                if snapshot.preview.contains("before-termination") {
                     break Ok::<(), anyhow::Error>(());
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2064,8 +2395,16 @@ mod tests {
         })
         .await??;
 
+        assert!(!manager.force_terminate_or_close("background-force").await?);
+        let completion = timeout(Duration::from_secs(3), completions.recv()).await??;
+        assert_eq!(completion.session_id.as_str(), "background-force");
+        assert!(!completion.managed_background);
+        assert!(completion.termination_requested);
+        assert_ne!(completion.exit_code, 0);
+
         let snapshot = manager.background_session_snapshot("background-force").await?;
         assert!(snapshot.metadata.exit_code.is_some());
+        assert!(snapshot.preview.contains("before-termination"));
         timeout(Duration::from_secs(2), async {
             loop {
                 if manager.active_background_processes() == 0 {
@@ -2142,11 +2481,13 @@ mod tests {
         let workspace_root = canonicalize_workspace(temp_dir.path());
         let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
         let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let foreground_count = Arc::new(AtomicUsize::new(0));
+        manager.set_foreground_pty_counter(Arc::clone(&foreground_count));
 
         manager
             .create_pipe_session(
                 "foreground-complete".to_string().into(),
-                vec!["/bin/sh".to_string(), "-c".to_string(), "true".to_string()],
+                vec!["/bin/sh".to_string(), "-c".to_string(), "exit 7".to_string()],
                 workspace_root,
                 HashMap::new(),
             )
@@ -2154,7 +2495,7 @@ mod tests {
 
         timeout(Duration::from_secs(2), async {
             loop {
-                if manager.foreground_session.lock().is_none() {
+                if manager.foreground_session.lock().is_none() && foreground_count.load(Ordering::Acquire) == 0 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2163,8 +2504,12 @@ mod tests {
         .await
         .expect("completed foreground session should be cleared without a wait poll");
 
+        assert_eq!(foreground_count.load(Ordering::Acquire), 0);
         assert_eq!(manager.request_foreground_background(), None);
+        let retained = manager.snapshot_session("foreground-complete").await?;
+        assert_eq!(retained.exit_code, Some(7));
         manager.close_session("foreground-complete").await?;
+        assert_eq!(foreground_count.load(Ordering::Acquire), 0);
         Ok(())
     }
 

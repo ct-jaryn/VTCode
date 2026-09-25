@@ -25,7 +25,9 @@ pub mod temporal;
 pub use cache_aware::sort_tool_definitions;
 pub use config::SystemPromptConfig;
 pub use context::PromptContext;
-pub use few_shot::{DEFAULT_FEW_SHOT_BUDGET_TOKENS, FewShotExample, FewShotStore, render_few_shot_section};
+pub use few_shot::{
+    DEFAULT_FEW_SHOT_BUDGET_TOKENS, FEW_SHOT_SECTION_HEADER, FewShotExample, FewShotStore, render_few_shot_section,
+};
 pub use guidelines::{
     append_deferred_tools_prompt_section, append_runtime_tool_prompt_sections,
     append_runtime_tool_prompt_sections_for_model, append_runtime_tool_prompt_sections_for_profile,

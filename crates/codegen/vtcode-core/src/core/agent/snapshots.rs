@@ -1,3 +1,5 @@
+mod native;
+pub use native::{PromptCheckpointLease, declare_prompt_edit};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -25,7 +27,7 @@ use crate::core::SECONDS_PER_DAY;
 pub const DEFAULT_CHECKPOINTS_ENABLED: bool = true;
 pub const DEFAULT_MAX_SNAPSHOTS: usize = 50;
 pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
-const SNAPSHOT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::V2;
+const SNAPSHOT_SCHEMA_VERSION: SchemaVersion = SchemaVersion(3);
 
 fn normalized_prompt_text(text: &str) -> Option<&str> {
     let trimmed = text.trim();
@@ -161,6 +163,9 @@ pub struct SnapshotTurnContext {
 pub enum FileEncoding {
     Utf8,
     Base64,
+    /// A filesnap turn reference, not inline file contents. Old readers reject
+    /// this variant rather than treating an absent payload as an empty file.
+    Filesnap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,7 +200,8 @@ impl VersionedState for StoredSnapshot {
                 // Future versions add per-message metadata here.
                 Ok(Self { schema_version: Some(SchemaVersion::V1), ..self })
             }
-            (SchemaVersion::V1, SchemaVersion::V2) => Ok(Self {
+            (SchemaVersion::V1, SchemaVersion::V2) => Ok(Self { schema_version: Some(SchemaVersion::V2), ..self }),
+            (SchemaVersion::V2, SNAPSHOT_SCHEMA_VERSION) => Ok(Self {
                 schema_version: Some(SNAPSHOT_SCHEMA_VERSION),
                 ..self
             }),
@@ -207,7 +213,8 @@ impl VersionedState for StoredSnapshot {
         match current {
             SchemaVersion::V0 => Some(SchemaVersion::V1),
             SchemaVersion::V1 => Some(SchemaVersion::V2),
-            SchemaVersion::V2 => None,
+            SchemaVersion::V2 => Some(SNAPSHOT_SCHEMA_VERSION),
+            SNAPSHOT_SCHEMA_VERSION => None,
             _ => None,
         }
     }
@@ -352,6 +359,26 @@ impl SnapshotManager {
         }
     }
 
+    fn checked_file_path(workspace: &Path, storage: &Path, relative: &Path) -> Result<PathBuf> {
+        let relative = sanitize_relative_path(relative).context("Checkpoint path escapes the workspace")?;
+        anyhow::ensure!(!relative.as_os_str().is_empty(), "Checkpoint path must name a file");
+        let absolute = workspace.join(&relative);
+        let storage = canonicalize(storage).unwrap_or_else(|_| storage.to_path_buf());
+        anyhow::ensure!(!absolute.starts_with(&storage), "Checkpoint cannot restore its own storage");
+        let mut current = workspace.to_path_buf();
+        for part in relative.components() {
+            current.push(part);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    anyhow::ensure!(!metadata.file_type().is_symlink(), "Checkpoint path crosses a symlink")
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(absolute)
+    }
+
     fn read_snapshot_files(&self) -> Result<Vec<(usize, PathBuf)>> {
         let mut entries = Vec::with_capacity(64); // Typical directory has ~20-50 snapshot files
         if !self.storage_dir.exists() {
@@ -381,17 +408,11 @@ impl SnapshotManager {
         Ok(entries)
     }
 
-    fn encode_file(bytes: &[u8]) -> (FileEncoding, String) {
-        match std::str::from_utf8(bytes) {
-            Ok(text) => (FileEncoding::Utf8, text.to_string()),
-            Err(_) => (FileEncoding::Base64, BASE64.encode(bytes)),
-        }
-    }
-
     fn decode_file(encoding: FileEncoding, data: &str) -> Result<Vec<u8>> {
         match encoding {
             FileEncoding::Utf8 => Ok(data.as_bytes().to_vec()),
             FileEncoding::Base64 => BASE64.decode(data).context("failed to decode base64 file contents"),
+            FileEncoding::Filesnap => anyhow::bail!("filesnap references require the snapshot store"),
         }
     }
 
@@ -474,34 +495,42 @@ impl SnapshotManager {
         }
 
         let timestamp = Self::current_timestamp()?;
-        let mut files = Vec::with_capacity(modified_files.len()); // Pre-allocate for all modified files
-
+        let mut paths = Vec::with_capacity(modified_files.len());
         for path in modified_files {
-            let relative = match self.normalize_path(path) {
-                Some(value) => value,
-                None => continue,
-            };
-            let absolute = self.workspace.join(&relative);
-            if tokio::fs::try_exists(&absolute).await.unwrap_or(false) {
-                let bytes = tokio::fs::read(&absolute)
-                    .await
-                    .with_context(|| format!("failed to read file for checkpoint: {}", absolute.display()))?;
-                let (encoding, data) = Self::encode_file(&bytes);
-                files.push(FileSnapshot {
-                    path: relative.to_string_lossy().replace('\\', "/"),
-                    deleted: false,
-                    encoding: Some(encoding),
-                    data: Some(data),
-                });
-            } else {
-                files.push(FileSnapshot {
-                    path: relative.to_string_lossy().replace('\\', "/"),
-                    deleted: true,
-                    encoding: None,
-                    data: None,
-                });
+            if let Some(relative) = self.normalize_path(path) {
+                paths.push(relative);
             }
         }
+        let workspace = self.canonical_workspace.clone();
+        let storage = self.storage_dir.clone();
+        let files = tokio::task::spawn_blocking(move || -> Result<Vec<FileSnapshot>> {
+            // Conversation-only checkpoints need no unreferenced engine session.
+            if paths.is_empty() {
+                return Ok(Vec::new());
+            }
+            let mut absolute_paths = Vec::with_capacity(paths.len());
+            for relative in &paths {
+                absolute_paths.push(Self::checked_file_path(&workspace, &storage, relative)?);
+            }
+            let store = filesnap::WorkspaceStore::open(&storage, &workspace)?;
+            let turn = format!("vt-{}", uuid::Uuid::new_v4());
+            let checkpoint = store.checkpoint(&turn, &turn, absolute_paths.iter().cloned())?;
+            anyhow::ensure!(checkpoint.stats.dropped == 0, "Checkpoint could not capture every selected file");
+            Ok(paths
+                .into_iter()
+                .zip(absolute_paths)
+                .map(|(relative, absolute)| {
+                    let key = filesnap::canonical_key(&absolute).to_string_lossy().into_owned();
+                    FileSnapshot {
+                        path: relative.to_string_lossy().replace('\\', "/"),
+                        deleted: checkpoint.manifest.absent.contains(&key),
+                        encoding: Some(FileEncoding::Filesnap),
+                        data: Some(turn.clone()),
+                    }
+                })
+                .collect())
+        })
+        .await??;
 
         let (prompt_text, prompt_message_index) =
             Self::resolve_prompt_metadata(prompt_text, prompt_message_index, conversation);
@@ -537,6 +566,14 @@ impl SnapshotManager {
                 .with_context(|| format!("failed to ensure checkpoint directory: {}", parent.display()))?;
         }
 
+        // Preserve an overwritten turn as a cleanup journal until the new JSON
+        // is published. It is invisible to checkpoint enumeration.
+        let retired = path.with_extension(format!("retired-{}", uuid::Uuid::new_v4()));
+        match tokio::fs::copy(&path, &retired).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("failed to journal replaced checkpoint"),
+        }
         write_json_file(&path, &stored)
             .await
             .with_context(|| format!("failed to write checkpoint: {}", path.display()))?;
@@ -562,7 +599,7 @@ impl SnapshotManager {
             Self::hydrate_prompt_metadata(&mut stored);
             snapshots.push(stored.metadata);
         }
-        snapshots.sort_by(|a, b| b.turn_number.cmp(&a.turn_number));
+        snapshots.sort_by_key(|a| std::cmp::Reverse(a.turn_number));
         Ok(snapshots)
     }
 
@@ -592,7 +629,76 @@ impl SnapshotManager {
             return Ok(None);
         };
 
+        self.restore_stored_snapshot(stored, scope).await.map(Some)
+    }
+
+    async fn restore_stored_snapshot(&self, stored: StoredSnapshot, scope: RevertScope) -> Result<CheckpointRestore> {
+        self.restore_stored_snapshot_with_ignore(stored, scope, &filesnap::Gitignore::empty())
+            .await
+    }
+
+    async fn restore_stored_snapshot_with_ignore(
+        &self,
+        stored: StoredSnapshot,
+        scope: RevertScope,
+        ignore: &filesnap::Gitignore,
+    ) -> Result<CheckpointRestore> {
         if scope.includes_code() {
+            let workspace = self.canonical_workspace.clone();
+            let storage = self.storage_dir.clone();
+            let files = stored.files.clone();
+            // Validate the complete path set before any write, including legacy records.
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                for file in &files {
+                    Self::checked_file_path(&workspace, &storage, Path::new(&file.path))?;
+                }
+                Ok(())
+            })
+            .await??;
+        }
+        let engine_backed = stored.files.iter().any(|file| file.encoding == Some(FileEncoding::Filesnap));
+        if scope.includes_code() && engine_backed {
+            let ignore = ignore.clone();
+            let workspace = self.canonical_workspace.clone();
+            let storage = self.storage_dir.clone();
+            let files = stored.files.clone();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let turn = files
+                    .first()
+                    .and_then(|file| file.data.as_deref())
+                    .context("Missing filesnap reference")?;
+                anyhow::ensure!(files.iter().all(|file| file.encoding == Some(FileEncoding::Filesnap)
+                    && file.data.as_deref() == Some(turn)), "Mixed or inconsistent checkpoint references");
+                let store = filesnap::WorkspaceStore::open(&storage, &workspace)?;
+                let target = store.target_for_turn(turn)?.context("Missing filesnap checkpoint")?;
+                let manifest = store.manifest(target.manifest_id())?;
+                let expected: BTreeSet<String> = files
+                    .iter()
+                    .map(|file| {
+                        filesnap::canonical_key(&workspace.join(&file.path))
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect();
+                let recorded: BTreeSet<String> =
+                    manifest.entries.keys().chain(manifest.absent.iter()).cloned().collect();
+                anyhow::ensure!(expected == recorded, "Checkpoint contains unexpected file paths");
+                let outcome = store.restore_to(
+                    turn,
+                    &target,
+                    filesnap::RestoreKind::Rewind { undo_for: Some(turn) },
+                    expected.iter().map(PathBuf::from),
+                    &ignore,
+                )?;
+                anyhow::ensure!(
+                    outcome.stats.failed.is_empty(),
+                    "Checkpoint restore failed: {:?}",
+                    outcome.stats.failed
+                );
+                Ok(())
+            })
+            .await??;
+        } else if scope.includes_code() {
             for snapshot in &stored.files {
                 let relative = Path::new(&snapshot.path);
                 let Some(sanitized) = sanitize_relative_path(relative) else {
@@ -629,7 +735,7 @@ impl SnapshotManager {
             Vec::new()
         };
 
-        Ok(Some(CheckpointRestore { metadata: stored.metadata, conversation }))
+        Ok(CheckpointRestore { metadata: stored.metadata, conversation })
     }
 
     pub async fn cleanup_old_snapshots(&self) -> Result<()> {
@@ -665,7 +771,7 @@ impl SnapshotManager {
                     }
                 };
                 if stored.metadata.created_at <= cutoff
-                    && let Err(err) = tokio::fs::remove_file(&path).await
+                    && let Err(err) = self.retire_snapshot(&path).await
                 {
                     tracing::warn!(
                         path = %path.display(),
@@ -678,12 +784,13 @@ impl SnapshotManager {
         }
 
         if self.max_snapshots == 0 || entries.len() <= self.max_snapshots {
+            self.cleanup_retired_snapshots().await;
             return Ok(());
         }
 
         let excess = entries.len() - self.max_snapshots;
         for (_, path) in entries.into_iter().take(excess) {
-            if let Err(err) = tokio::fs::remove_file(&path).await {
+            if let Err(err) = self.retire_snapshot(&path).await {
                 tracing::warn!(
                     path = %path.display(),
                     error = %err,
@@ -691,7 +798,76 @@ impl SnapshotManager {
                 );
             }
         }
+        self.cleanup_retired_snapshots().await;
         Ok(())
+    }
+
+    async fn retire_snapshot(&self, path: &Path) -> Result<()> {
+        let retired = path.with_extension(format!("retired-{}", uuid::Uuid::new_v4()));
+        tokio::fs::rename(path, retired).await?;
+        Ok(())
+    }
+
+    async fn cleanup_retired_snapshots(&self) {
+        let storage = self.storage_dir.clone();
+        let workspace = self.canonical_workspace.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<()> {
+            // A replaced record can still be live if publication failed. Read
+            // every live record before deleting anything; corrupt metadata defers
+            // cleanup rather than guessing which content can be discarded.
+            let mut live = BTreeSet::new();
+            let mut retired = Vec::new();
+            for entry in fs::read_dir(&storage)? {
+                let path = entry?.path();
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !name.starts_with("turn_") {
+                    continue;
+                }
+                if name.ends_with(".json") {
+                    let stored: StoredSnapshot = serde_json::from_slice(&fs::read(&path)?)?;
+                    for file in &stored.files {
+                        if file.encoding == Some(FileEncoding::Filesnap) {
+                            live.insert(file.data.clone().context("Missing checkpoint reference")?);
+                        }
+                    }
+                } else if path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.starts_with("retired-"))
+                {
+                    retired.push(path);
+                }
+            }
+            let store = filesnap::WorkspaceStore::open(&storage, &workspace)?;
+            for path in retired {
+                let stored: StoredSnapshot = serde_json::from_slice(&fs::read(&path)?)?;
+                let mut sessions = BTreeSet::new();
+                for file in &stored.files {
+                    if file.encoding == Some(FileEncoding::Filesnap) {
+                        let session = file.data.as_deref().context("Missing retired checkpoint reference")?;
+                        let id = session.strip_prefix("vt-").context("Invalid retired checkpoint reference")?;
+                        uuid::Uuid::parse_str(id)?;
+                        if !live.contains(session) {
+                            sessions.insert(session.to_owned());
+                        }
+                    }
+                }
+                let outcome = store.delete_sessions(&sessions.into_iter().collect::<Vec<_>>());
+                anyhow::ensure!(
+                    outcome.refused.is_empty() && outcome.incomplete.is_empty(),
+                    "Checkpoint cleanup is incomplete: {outcome:?}"
+                );
+                fs::remove_file(path)?;
+            }
+            filesnap::collect_garbage(&storage)?;
+            Ok(())
+        })
+        .await;
+        if !matches!(&result, Ok(Ok(()))) {
+            tracing::warn!(?result, "Checkpoint content cleanup deferred; retired records remain retryable");
+        }
     }
 
     fn retention_cutoff_secs(&self) -> Result<Option<u64>> {
@@ -1047,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_snapshot_versions_migrate_to_v2_without_inventing_diagnostics() -> Result<()> {
+    fn legacy_snapshot_versions_migrate_without_inventing_diagnostics() -> Result<()> {
         let legacy = StoredSnapshot {
             metadata: SnapshotMetadata {
                 id: "turn_1".to_string(),
@@ -1070,12 +1246,12 @@ mod tests {
         };
 
         let migrated_v0 = legacy.clone().migrate(SNAPSHOT_SCHEMA_VERSION)?;
-        assert_eq!(migrated_v0.schema_version, Some(SchemaVersion::V2));
+        assert_eq!(migrated_v0.schema_version, Some(SNAPSHOT_SCHEMA_VERSION));
         assert!(migrated_v0.metadata.turn_diagnostics.is_none());
 
         let migrated_v1 =
             StoredSnapshot { schema_version: Some(SchemaVersion::V1), ..legacy }.migrate(SNAPSHOT_SCHEMA_VERSION)?;
-        assert_eq!(migrated_v1.schema_version, Some(SchemaVersion::V2));
+        assert_eq!(migrated_v1.schema_version, Some(SNAPSHOT_SCHEMA_VERSION));
         assert!(migrated_v1.metadata.turn_diagnostics.is_none());
         Ok(())
     }
@@ -1122,7 +1298,7 @@ mod tests {
             .expect("metadata");
 
         let stored = manager.load_snapshot(1).await?.expect("stored snapshot");
-        assert_eq!(stored.schema_version, Some(SchemaVersion::V2));
+        assert_eq!(stored.schema_version, Some(SNAPSHOT_SCHEMA_VERSION));
         assert_eq!(stored.metadata.session_id.as_deref(), Some("session-911"));
         assert_eq!(stored.metadata.runtime_turn_id.as_deref(), Some("turn-runtime-911"));
         assert_eq!(stored.metadata.session_turn_number, Some(911));
@@ -1137,5 +1313,105 @@ mod tests {
         assert_eq!(SnapshotManager::parse_revert_scope("code"), Some(RevertScope::Code));
         assert_eq!(SnapshotManager::parse_revert_scope("full"), Some(RevertScope::Both));
         assert_eq!(SnapshotManager::parse_revert_scope("unknown"), None);
+    }
+    #[tokio::test]
+    async fn binary_checkpoint_reuses_content_and_does_not_delete_untracked_neighbors() -> Result<()> {
+        let (_dir, manager) = setup_manager();
+        let file = manager.workspace.join("asset.bin");
+        fs::write(&file, [0, 255, 4])?;
+        let files = BTreeSet::from([PathBuf::from("asset.bin"), PathBuf::from("created.bin")]);
+        manager.create_snapshot(1, "binary", &[], &files, None, None, None).await?;
+        manager.create_snapshot(2, "same", &[], &files, None, None, None).await?;
+        let store = filesnap::WorkspaceStore::open(&manager.storage_dir, &manager.workspace)?;
+        let first = manager.load_snapshot(1).await?.expect("first");
+        let second = manager.load_snapshot(2).await?.expect("second");
+        let first_target = store
+            .target_for_turn(first.files[0].data.as_deref().expect("ref"))?
+            .expect("target");
+        let second_target = store
+            .target_for_turn(second.files[0].data.as_deref().expect("ref"))?
+            .expect("target");
+        let first_manifest = store.manifest(first_target.manifest_id())?;
+        let second_manifest = store.manifest(second_target.manifest_id())?;
+        let first_hash = &first_manifest.entries.values().next().expect("file").hash;
+        let second_hash = &second_manifest.entries.values().next().expect("file").hash;
+        assert_eq!(first_hash, second_hash);
+        fs::write(&file, b"changed")?;
+        fs::write(manager.workspace.join("created.bin"), b"created")?;
+        fs::write(manager.workspace.join("neighbor"), b"keep")?;
+        manager.restore_snapshot(1, RevertScope::Code).await?;
+        assert_eq!(fs::read(file)?, [0, 255, 4]);
+        assert!(!manager.workspace.join("created.bin").exists());
+        assert_eq!(fs::read(manager.workspace.join("neighbor"))?, b"keep");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refuses_symlink_escape_before_restoring_any_file() -> Result<()> {
+        let (dir, manager) = setup_manager();
+        fs::write(manager.workspace.join("a.txt"), "before")?;
+        fs::create_dir(manager.workspace.join("nested"))?;
+        fs::write(manager.workspace.join("nested/b.txt"), "before")?;
+        let files = BTreeSet::from([PathBuf::from("a.txt"), PathBuf::from("nested/b.txt")]);
+        manager.create_snapshot(1, "paths", &[], &files, None, None, None).await?;
+        fs::write(manager.workspace.join("a.txt"), "after")?;
+        fs::remove_dir_all(manager.workspace.join("nested"))?;
+        let outside = dir.path().join("outside");
+        fs::create_dir(&outside)?;
+        fs::write(outside.join("b.txt"), "outside")?;
+        std::os::unix::fs::symlink(&outside, manager.workspace.join("nested"))?;
+        assert!(manager.restore_snapshot(1, RevertScope::Code).await.is_err());
+        assert_eq!(fs::read_to_string(manager.workspace.join("a.txt"))?, "after");
+        assert_eq!(fs::read_to_string(outside.join("b.txt"))?, "outside");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_inline_contents_still_restore() -> Result<()> {
+        let (_dir, manager) = setup_manager();
+        fs::write(manager.workspace.join("old.txt"), "original")?;
+        let files = BTreeSet::from([PathBuf::from("old.txt")]);
+        manager.create_snapshot(1, "legacy", &[], &files, None, None, None).await?;
+        let mut stored = manager.load_snapshot(1).await?.expect("snapshot");
+        stored.schema_version = Some(SchemaVersion::V2);
+        stored.files[0].encoding = Some(FileEncoding::Utf8);
+        stored.files[0].data = Some("legacy".into());
+        fs::write(manager.snapshot_path(1), serde_json::to_vec(&stored)?)?;
+        manager.restore_snapshot(1, RevertScope::Code).await?;
+        assert_eq!(fs::read_to_string(manager.workspace.join("old.txt"))?, "legacy");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retention_releases_engine_sessions_but_preserves_live_content() -> Result<()> {
+        let (_dir, manager) = setup_manager();
+        let path = manager.workspace.join("retained.txt");
+        fs::write(&path, "shared")?;
+        let files = BTreeSet::from([PathBuf::from("retained.txt")]);
+        manager.create_snapshot(1, "first", &[], &files, None, None, None).await?;
+        let first = manager.load_snapshot(1).await?.expect("first").files[0]
+            .data
+            .clone()
+            .expect("reference");
+        manager.create_snapshot(2, "second", &[], &files, None, None, None).await?;
+        let second = manager.load_snapshot(2).await?.expect("second").files[0]
+            .data
+            .clone()
+            .expect("reference");
+        let mut config = SnapshotConfig::new(manager.workspace.clone());
+        config.max_snapshots = 1;
+        let janitor = SnapshotManager::new(config)?;
+        janitor.cleanup_old_snapshots().await?;
+        let store = filesnap::WorkspaceStore::open(&manager.storage_dir, &manager.workspace)?;
+        assert_eq!(store.sessions()?, vec![second.clone()]);
+        assert!(store.target_for_turn(&first)?.is_none());
+        fs::write(&path, "changed")?;
+        janitor.restore_snapshot(2, RevertScope::Code).await?;
+        assert_eq!(fs::read_to_string(&path)?, "shared");
+        janitor.create_snapshot(2, "replacement", &[], &files, None, None, None).await?;
+        assert!(store.target_for_turn(&second)?.is_none());
+        assert_eq!(store.sessions()?.len(), 1);
+        Ok(())
     }
 }

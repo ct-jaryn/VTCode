@@ -523,7 +523,7 @@ async fn handle_tasks_cancel(state: &A2aServerState, params: Option<Value>, _id:
 
 /// A2A error response for Axum
 pub struct A2aErrorResponse {
-    response: JsonRpcResponse,
+    response: Box<JsonRpcResponse>,
     status_code: StatusCode,
 }
 
@@ -531,7 +531,7 @@ impl A2aErrorResponse {
     /// Create a new error response
     fn new(error: JsonRpcError, id: Value, status_code: StatusCode) -> Self {
         Self {
-            response: JsonRpcResponse::error(error, id),
+            response: Box::new(JsonRpcResponse::error(error, id)),
             status_code,
         }
     }
@@ -570,7 +570,7 @@ impl A2aErrorResponse {
 
 impl IntoResponse for A2aErrorResponse {
     fn into_response(self) -> Response {
-        (self.status_code, Json(self.response)).into_response()
+        (self.status_code, Json(*self.response)).into_response()
     }
 }
 

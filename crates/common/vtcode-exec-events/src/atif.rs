@@ -621,8 +621,30 @@ impl AtifTrajectoryBuilder {
                 let msg = format!("harness: {:?}", h.event);
                 let mut step = Step::system(self.next_step_id, msg);
                 step.timestamp = Some(ts.to_string());
+                let mut extra = serde_json::Map::new();
                 if let Some(m) = &h.message {
-                    step.extra = Some(serde_json::json!({ "harness_message": m }));
+                    let _ = extra.insert("harness_message".to_string(), Value::String(m.clone()));
+                }
+                if h.event == crate::HarnessEventKind::BackgroundSubprocessCompleted {
+                    for (key, value) in [
+                        ("task_id", h.task_id.as_ref()),
+                        ("session_id", h.session_id.as_ref()),
+                        ("exec_session_id", h.exec_session_id.as_ref()),
+                        ("status", h.status.as_ref()),
+                        ("transcript_path", h.transcript_path.as_ref()),
+                        ("archive_path", h.archive_path.as_ref()),
+                        ("error_category", h.error_category.as_ref()),
+                    ] {
+                        if let Some(value) = value {
+                            let _ = extra.insert(key.to_string(), Value::String(value.clone()));
+                        }
+                    }
+                    if let Some(exit_code) = h.exit_code {
+                        let _ = extra.insert("exit_code".to_string(), Value::from(exit_code));
+                    }
+                }
+                if !extra.is_empty() {
+                    step.extra = Some(Value::Object(extra));
                 }
                 self.push_step(step);
             }
@@ -684,9 +706,9 @@ impl crate::EventEmitter for AtifTrajectoryBuilder {
 mod tests {
     use super::*;
     use crate::{
-        AgentMessageItem, CompactionMode, CompactionTrigger, ItemCompletedEvent, ThreadCompactBoundaryEvent,
-        ThreadItem, ThreadStartedEvent, ToolInvocationItem, ToolOutputItem, TurnCompletedEvent, TurnStartedEvent,
-        Usage,
+        AgentMessageItem, CompactionMode, CompactionTrigger, HarnessEventItem, HarnessEventKind, ItemCompletedEvent,
+        ThreadCompactBoundaryEvent, ThreadItem, ThreadStartedEvent, ToolInvocationItem, ToolOutputItem,
+        TurnCompletedEvent, TurnStartedEvent, Usage,
     };
 
     fn fixed_ts() -> DateTime<Utc> {
@@ -738,6 +760,47 @@ mod tests {
         assert_eq!(step.step_id, 1);
         assert_eq!(step.source, StepSource::Agent);
         assert_eq!(step.message.as_deref(), Some("Hello, world!"));
+    }
+
+    #[test]
+    fn background_completion_preserves_identity_in_atif_extra() {
+        let mut builder = AtifTrajectoryBuilder::new(AtifAgent::vtcode());
+        let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "background-completion:task-1:exec-1".to_string(),
+                details: ThreadItemDetails::Harness(Box::new(HarnessEventItem {
+                    event: HarnessEventKind::BackgroundSubprocessCompleted,
+                    message: Some("completed successfully".to_string()),
+                    command: None,
+                    path: None,
+                    exit_code: Some(0),
+                    attempt: None,
+                    error_category: Some("background_subprocess".to_string()),
+                    duration_ms: None,
+                    task_id: Some("task-1".to_string()),
+                    session_id: Some("session-1".to_string()),
+                    exec_session_id: Some("exec-1".to_string()),
+                    status: Some("stopped".to_string()),
+                    transcript_path: Some("/tmp/transcript.jsonl".to_string()),
+                    archive_path: Some("/tmp/archive.json".to_string()),
+                })),
+            },
+        });
+
+        builder.process_event_at(&event, fixed_ts());
+        let trajectory = builder.finish(None);
+        let step = trajectory.steps.first().expect("background completion step");
+        let extra = step.extra.as_ref().expect("background completion metadata");
+        assert_eq!(step.message.as_deref(), Some("harness: BackgroundSubprocessCompleted"));
+        assert_eq!(extra["harness_message"], "completed successfully");
+        assert_eq!(extra["task_id"], "task-1");
+        assert_eq!(extra["session_id"], "session-1");
+        assert_eq!(extra["exec_session_id"], "exec-1");
+        assert_eq!(extra["status"], "stopped");
+        assert_eq!(extra["exit_code"], 0);
+        assert_eq!(extra["transcript_path"], "/tmp/transcript.jsonl");
+        assert_eq!(extra["archive_path"], "/tmp/archive.json");
+        assert_eq!(extra["error_category"], "background_subprocess");
     }
 
     #[test]

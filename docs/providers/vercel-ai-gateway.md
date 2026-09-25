@@ -65,6 +65,7 @@ curl https://ai-gateway.vercel.sh/v1/chat/completions \
 | --- | --- | ---: | ---: | ---: | --- |
 | `anthropic/claude-sonnet-5` | Claude Sonnet 5 | 1,000,000 | $2 | $10 | Default |
 | `anthropic/claude-opus-5` | Claude Opus 5 | 1,000,000 | $5 | $25 | |
+| `anthropic/claude-opus-5-5` | Claude Opus 5.5 | 1,000,000 | $4 | $20 | Adaptive thinking always on, default effort medium |
 | `anthropic/claude-haiku-4.5` | Claude Haiku 4.5 | 200,000 | $1 | $5 | |
 | `openai/gpt-5.6-sol` | GPT-5.6 Sol | 1,050,000 | $2 | $10 | |
 | `openai/gpt-6-astra` | GPT-6 Astra | 1,050,000 | $10 | $50 | |

@@ -46,6 +46,7 @@
 //! [`install_config_defaults_provider`] when you need to override search paths
 //! or syntax highlighting defaults exposed by the loader.
 
+mod accessibility;
 pub mod acp;
 pub mod api_keys;
 pub mod auth;

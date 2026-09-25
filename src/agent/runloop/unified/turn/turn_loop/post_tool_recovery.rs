@@ -366,7 +366,7 @@ fn build_recovery_fallback(working_history: &[uni::Message], lead_in: &str) -> S
         lead_in.to_string()
     } else {
         format!(
-            "{lead_in}\n\nFiles already read this turn (do NOT re-read):\n{}",
+            "{lead_in}\n\nFiles already read this turn (their content is in the history above):\n{}",
             files_read.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n")
         )
     }

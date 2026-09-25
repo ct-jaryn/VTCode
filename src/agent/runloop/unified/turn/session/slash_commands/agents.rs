@@ -22,9 +22,10 @@ use runtime::{
     visible_subagent_entries,
 };
 use runtime::{
-    apply_background_subprocess_action, close_subagent_entry, handle_list_subprocesses_text, handle_list_threads_text,
-    render_active_agent_status_text, render_background_setup_guidance, render_background_subprocess_status_text,
-    render_subprocess_status, show_active_agent_inspector, show_background_subprocess_inspector, show_threads_modal,
+    apply_background_subprocess_action, background_completion_control, close_subagent_entry,
+    handle_list_subprocesses_text, handle_list_threads_text, render_active_agent_status_text,
+    render_background_setup_guidance, render_background_subprocess_status_text, render_subprocess_status,
+    show_active_agent_inspector, show_background_subprocess_inspector, show_threads_modal,
 };
 
 const AGENT_ACTION_PREFIX: &str = "agents:";
@@ -177,12 +178,12 @@ pub(crate) async fn handle_manage_subprocesses(
         SubprocessManagerAction::Stop { id } => {
             let entry = apply_background_subprocess_action(&mut ctx, &controller, &id, false).await?;
             render_subprocess_status(&mut ctx, &entry)?;
-            Ok(SlashCommandControl::Continue)
+            Ok(background_completion_control(&entry))
         }
         SubprocessManagerAction::Cancel { id } => {
             let entry = apply_background_subprocess_action(&mut ctx, &controller, &id, true).await?;
             render_subprocess_status(&mut ctx, &entry)?;
-            Ok(SlashCommandControl::Continue)
+            Ok(background_completion_control(&entry))
         }
     }
 }

@@ -40,6 +40,12 @@ fn model_picker_lists_new_anthropic_models() {
 fn model_picker_lists_new_zai_models() {
     let options = MODEL_OPTIONS.as_slice();
     assert!(has_model(options, ModelId::ZaiGlm53));
+    assert!(has_model(options, ModelId::ZaiGlm53Flash));
+    assert!(has_model(options, ModelId::ZaiGlm53Flashx));
+    assert!(has_model(options, ModelId::MergeGatewayZaiGlm53Flash));
+    assert!(has_model(options, ModelId::MergeGatewayZaiGlm53Flashx));
+    assert!(has_model(options, ModelId::OpenRouterZaiGlm53Flash));
+    assert!(has_model(options, ModelId::OpenRouterZaiGlm53Flashx));
 }
 
 #[test]

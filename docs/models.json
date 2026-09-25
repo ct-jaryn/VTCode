@@ -421,6 +421,88 @@
           "xhigh",
           "max"
         ]
+      },
+      "gpt-6-sol": {
+        "id": "gpt-6-sol",
+        "name": "GPT-6 Sol",
+        "description": "Cost-efficient high-end model in the GPT-6 series for demanding professional work, positioned below GPT-6 Astra and above GPT-6 Luna.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1050000,
+        "output_tokens": 128000,
+        "capabilities": {
+          "caching": true,
+          "structured_output": true,
+          "thinking": true
+        },
+        "supports_sampling": false,
+        "supports_logprobs": false,
+        "prompt_cache_ttl": "30m",
+        "prompt_contract": "gpt6",
+        "cost": {
+          "input": 2e-06,
+          "output": 1e-05,
+          "cache_read": 2e-07,
+          "cache_write": 2.5e-06
+        },
+        "is_pro": true,
+        "lightweight_model": "gpt-6-luna",
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-6-luna": {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "description": "Fast cost-efficient model in the GPT-6 series for high-volume latency-sensitive workloads such as chat, classification, and lightweight agentic tasks.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1050000,
+        "output_tokens": 128000,
+        "capabilities": {
+          "caching": true,
+          "structured_output": true,
+          "thinking": true
+        },
+        "supports_sampling": false,
+        "supports_logprobs": false,
+        "prompt_cache_ttl": "30m",
+        "prompt_contract": "gpt6",
+        "cost": {
+          "input": 1e-07,
+          "output": 5e-07,
+          "cache_read": 1e-08,
+          "cache_write": 1.25e-07
+        },
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       }
     },
     "default_model": "gpt"
@@ -1056,7 +1138,7 @@
     "api": "https://api.anthropic.com/v1",
     "name": "Anthropic",
     "doc": "https://docs.anthropic.com/claude/docs/models-overview",
-    "default_model": "claude-opus-5",
+    "default_model": "claude-opus-5-5",
     "models": {
       "claude-sonnet-5": {
         "id": "claude-sonnet-5",
@@ -1246,6 +1328,42 @@
           "xhigh",
           "max"
         ]
+      },
+      "claude-opus-5-5": {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5",
+        "description": "Opus-tier successor for long-running agentic coding and knowledge work, adaptive thinking always on, 1M context, 128K output, default effort medium",
+        "reasoning": true,
+        "effort": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1000000,
+        "output_tokens": 128000,
+        "status": "current",
+        "version": "5.5",
+        "cost": {
+          "input": 4e-06,
+          "output": 2e-05,
+          "cache_read": 2e-07,
+          "cache_write": 5e-06
+        },
+        "is_pro": true,
+        "lightweight_model": "claude-sonnet-5",
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       }
     }
   },
@@ -1320,6 +1438,50 @@
     "name": "Z.AI",
     "doc": "https://docs.z.ai/guides/llm/glm-5",
     "models": {
+      "glm-5.3-flashx": {
+        "id": "glm-5.3-flashx",
+        "name": "GLM-5.3 FlashX",
+        "description": "Z.ai high-speed Flash variant with faster inference (up to 200 tok/s), sharing the Flash multimodal stack (320B total / 18B active, hybrid sparse+linear attention), 1M context and native vision for coding and visual workflows.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "file"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1000000,
+        "max_output_tokens": 128000,
+        "capabilities": {
+          "thinking": true,
+          "streaming": true,
+          "function_calling": true,
+          "context_caching": true,
+          "structured_output": true,
+          "tool_streaming": true,
+          "vision": true
+        },
+        "vtcode": {
+          "variant": "ZaiGlm53Flashx",
+          "constant": "Z_AI_GLM_5_3_FLASHX",
+          "display": "GLM-5.3 FlashX",
+          "description": "Z.ai high-speed Flash variant with faster inference, 1M context and native vision.",
+          "efficient": true,
+          "top_tier": true,
+          "generation": "5.3",
+          "doc_comment": "GLM-5.3 FlashX - Z.ai high-speed Flash variant with faster inference, 320B total / 18B active, 1M context, native vision"
+        },
+        "reasoning_efforts": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
       "glm-5.3-flash": {
         "id": "glm-5.3-flash",
         "name": "GLM-5.3 Flash",
@@ -1448,40 +1610,6 @@
           "structured_output": true
         },
         "is_pro": true
-      },
-      "mimo-v2.5": {
-        "id": "mimo-v2.5",
-        "name": "MiMo-V2.5 (OpenCode Go)",
-        "description": "MiMo-V2.5 \u2014 Xiaomi's omnimodal high-volume model included with the OpenCode Go subscription.",
-        "reasoning": true,
-        "tool_call": true,
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "context": 1048576
-      },
-      "mimo-v2.5-pro": {
-        "id": "mimo-v2.5-pro",
-        "name": "MiMo-V2.5-Pro (OpenCode Go)",
-        "description": "MiMo-V2.5-Pro \u2014 Xiaomi's flagship reasoning model included with the OpenCode Go subscription.",
-        "reasoning": true,
-        "tool_call": true,
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "context": 1048576,
-        "is_pro": true,
-        "lightweight_model": "mimo-v2.5"
       },
       "minimax-m3": {
         "id": "minimax-m3",
@@ -2081,70 +2209,6 @@
           "doc_comment": "Grok 4.7 - xAI's flagship reasoning model with reasoning_effort support via OpenRouter"
         }
       },
-      "xiaomi/mimo-v2.5-pro": {
-        "id": "xiaomi/mimo-v2.5-pro",
-        "name": "Xiaomi: MiMo-V2.5-Pro",
-        "description": "MiMo-V2.5-Pro is Xiaomi's flagship model, delivering strong performance in general agentic capabilities, complex software engineering, and long-horizon tasks, with top rankings on benchmarks such as ClawEval, GDPVal, and SWE-bench Pro.",
-        "reasoning": true,
-        "tool_call": true,
-        "modalities": {
-          "input": [
-            "text"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "context": 1000000,
-        "cost": {
-          "input": 4.35e-07,
-          "output": 8.7e-07
-        },
-        "vtcode": {
-          "variant": "OpenRouterXiaomiMimoV25Pro",
-          "constant": "XIAOMI_MIMO_V2_5_PRO",
-          "vendor": "xiaomi",
-          "display": "MiMo-V2.5-Pro",
-          "description": "Xiaomi MiMo-V2.5-Pro flagship agentic model for complex software engineering via OpenRouter",
-          "efficient": false,
-          "top_tier": true,
-          "generation": "MiMo-V2.5",
-          "doc_comment": "MiMo-V2.5-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter"
-        }
-      },
-      "xiaomi/mimo-v2.5": {
-        "id": "xiaomi/mimo-v2.5",
-        "name": "Xiaomi: MiMo-V2.5",
-        "description": "MiMo-V2.5 is a native omnimodal model by Xiaomi. It delivers Pro-level agentic performance at roughly half the inference cost, while surpassing MiMo-V2-Omni in multimodal perception across image and video understanding tasks. Its 1M context window supports complete documents, extended conversations, and complex task contexts in a single pass.",
-        "reasoning": true,
-        "tool_call": true,
-        "modalities": {
-          "input": [
-            "text",
-            "image"
-          ],
-          "output": [
-            "text"
-          ]
-        },
-        "context": 1000000,
-        "max_output_tokens": 131072,
-        "cost": {
-          "input": 1.4e-07,
-          "output": 2.8e-07
-        },
-        "vtcode": {
-          "variant": "OpenRouterXiaomiMimoV25",
-          "constant": "XIAOMI_MIMO_V2_5",
-          "vendor": "xiaomi",
-          "display": "MiMo-V2.5",
-          "description": "Xiaomi MiMo-V2.5 omnimodal agentic model for complex software engineering via OpenRouter",
-          "efficient": false,
-          "top_tier": true,
-          "generation": "MiMo-V2.5",
-          "doc_comment": "MiMo-V2.5 - Xiaomi's omnimodal agentic model for complex software engineering via OpenRouter"
-        }
-      },
       "z-ai/glm-5.3-flash": {
         "id": "z-ai/glm-5.3-flash",
         "name": "Z.AI: GLM-5.3 Flash",
@@ -2177,6 +2241,40 @@
           "top_tier": true,
           "generation": "5.3",
           "doc_comment": "GLM-5.3 Flash - Z.AI efficient multimodal model with hybrid sparse+linear attention via OpenRouter"
+        }
+      },
+      "z-ai/glm-5.3-flashx": {
+        "id": "z-ai/glm-5.3-flashx",
+        "name": "Z.AI: GLM-5.3 FlashX",
+        "description": "Z.AI high-speed Flash variant with faster inference (up to 200 tok/s), sharing the Flash multimodal stack (320B total / 18B active), 1M context and native vision for efficient coding and long-horizon agent tasks.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1048576,
+        "max_output_tokens": 131072,
+        "cost": {
+          "input": 3.7e-07,
+          "output": 1.25e-06,
+          "cache_read": 7.5e-08
+        },
+        "vtcode": {
+          "variant": "OpenRouterZaiGlm53Flashx",
+          "constant": "ZAI_GLM_5_3_FLASHX",
+          "vendor": "z-ai",
+          "display": "GLM-5.3 FlashX",
+          "description": "Z.AI GLM-5.3 FlashX high-speed efficient multimodal model via OpenRouter",
+          "efficient": true,
+          "top_tier": true,
+          "generation": "5.3",
+          "doc_comment": "GLM-5.3 FlashX - Z.AI high-speed Flash variant with faster inference via OpenRouter"
         }
       },
       "meta/muse-spark-1.3": {
@@ -2249,9 +2347,186 @@
           "doc_comment": "GPT-6 Astra - OpenAI's flagship model for demanding end-to-end work via OpenRouter"
         },
         "is_pro": true
+      },
+      "xiaomi/mimo-v2.6-pro": {
+        "id": "xiaomi/mimo-v2.6-pro",
+        "name": "Xiaomi: MiMo-V2.6-Pro",
+        "description": "MiMo-V2.6-Pro is the flagship foundation model developed by Xiaomi. Built at a scale of over 1T parameters, it is designed to push the ceiling of capability for the most demanding workloads. The model features a 1M-token context window and native multimodal capabilities. Optimized for agentic workflows, it delivers top-tier performance across coding, visual, general, and research scenarios, excelling at complex, long-horizon tasks with robust generalization across a diverse range of agent harnesses.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1048576,
+        "max_output_tokens": 131072,
+        "cost": {
+          "input": 4.35e-07,
+          "output": 8.7e-07,
+          "cache_read": 3.6e-09
+        },
+        "vtcode": {
+          "variant": "OpenRouterXiaomiMimoV26Pro",
+          "constant": "XIAOMI_MIMO_V2_6_PRO",
+          "vendor": "xiaomi",
+          "display": "MiMo-V2.6-Pro",
+          "description": "Xiaomi MiMo-V2.6-Pro flagship agentic model for complex software engineering via OpenRouter",
+          "efficient": false,
+          "top_tier": true,
+          "generation": "MiMo-V2.6",
+          "doc_comment": "MiMo-V2.6-Pro - Xiaomi's flagship agentic model for complex software engineering via OpenRouter"
+        }
+      },
+      "xiaomi/mimo-v2.6-flash": {
+        "id": "xiaomi/mimo-v2.6-flash",
+        "name": "Xiaomi: MiMo-V2.6-Flash",
+        "description": "MiMo-V2.6-Flash is an open-source foundation model developed by Xiaomi. Built on a Mixture-of-Experts architecture with 309B total parameters and 15B activated per token, it employs a hybrid attention mechanism for greater computational efficiency. The model features a 1M-token context window and native multimodal capabilities. Optimized for agentic workflows, it delivers strong performance across coding, visual, general, and research scenarios, excelling at complex, long-horizon tasks with robust generalization across a diverse range of agent harnesses.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1048576,
+        "max_output_tokens": 131072,
+        "cost": {
+          "input": 1.4e-07,
+          "output": 2.8e-07,
+          "cache_read": 2.8e-09
+        },
+        "vtcode": {
+          "variant": "OpenRouterXiaomiMimoV26Flash",
+          "constant": "XIAOMI_MIMO_V2_6_FLASH",
+          "vendor": "xiaomi",
+          "display": "MiMo-V2.6-Flash",
+          "description": "Xiaomi MiMo-V2.6-Flash efficient high-volume agentic model via OpenRouter",
+          "efficient": true,
+          "top_tier": true,
+          "generation": "MiMo-V2.6",
+          "doc_comment": "MiMo-V2.6-Flash - Xiaomi's efficient high-volume agentic model via OpenRouter"
+        }
+      },
+      "xiaomi/mimo-v2.6-pro-ultraspeed": {
+        "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+        "name": "Xiaomi: MiMo-V2.6-Pro-UltraSpeed",
+        "description": "MiMo-V2.6-Pro-UltraSpeed is the fast speed edition of Xiaomi's flagship foundation model, MiMo-V2.6-Pro. Built from the same 1T MiMo-V2.6-Pro checkpoint, it matches the original model in quality while delivering roughly 10x the output speed. The model features a 1M-token context window and native multimodal capabilities. Optimized for agentic workflows, it delivers top-tier performance across coding, visual, general, and research scenarios, excelling at complex, long-horizon tasks with robust generalization across a diverse range of agent harnesses.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1048576,
+        "max_output_tokens": 131072,
+        "cost": {
+          "input": 4.35e-06,
+          "output": 8.7e-06,
+          "cache_read": 3.6e-08
+        },
+        "vtcode": {
+          "variant": "OpenRouterXiaomiMimoV26ProUltraspeed",
+          "constant": "XIAOMI_MIMO_V2_6_PRO_ULTRASPEED",
+          "vendor": "xiaomi",
+          "display": "MiMo-V2.6-Pro-UltraSpeed",
+          "description": "Xiaomi MiMo-V2.6-Pro-UltraSpeed fastest flagship variant via OpenRouter",
+          "efficient": false,
+          "top_tier": true,
+          "generation": "MiMo-V2.6",
+          "doc_comment": "MiMo-V2.6-Pro-UltraSpeed - Xiaomi's fastest flagship variant via OpenRouter"
+        }
+      },
+      "openai/gpt-6-sol": {
+        "id": "openai/gpt-6-sol",
+        "name": "OpenAI: GPT-6 Sol",
+        "description": "GPT-6 Sol is the cost-efficient high-end model in OpenAI's GPT-6 series, positioned below the flagship GPT-6 Astra and above the fast GPT-6 Luna tier. It is suited for demanding professional work via OpenRouter.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1050000,
+        "max_output_tokens": 128000,
+        "cost": {
+          "input": 2e-06,
+          "output": 1e-05,
+          "cache_read": 2e-07
+        },
+        "vtcode": {
+          "variant": "OpenRouterOpenAIGpt6Sol",
+          "constant": "OPENAI_GPT_6_SOL",
+          "vendor": "openai",
+          "display": "GPT-6 Sol (OpenRouter)",
+          "description": "Cost-efficient high-end GPT-6 model for demanding professional work via OpenRouter",
+          "efficient": false,
+          "top_tier": true,
+          "generation": "6",
+          "doc_comment": "GPT-6 Sol - Cost-efficient high-end model in the GPT-6 series via OpenRouter"
+        },
+        "is_pro": true
+      },
+      "openai/gpt-6-luna": {
+        "id": "openai/gpt-6-luna",
+        "name": "OpenAI: GPT-6 Luna",
+        "description": "GPT-6 Luna is the fast, cost-efficient model in OpenAI's GPT-6 series, positioned below GPT-6 Sol. It is suited for high-volume and latency-sensitive workloads such as chat, classification, and lightweight agentic tasks via OpenRouter.",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1050000,
+        "max_output_tokens": 128000,
+        "cost": {
+          "input": 1e-07,
+          "output": 5e-07,
+          "cache_read": 1e-08
+        },
+        "vtcode": {
+          "variant": "OpenRouterOpenAIGpt6Luna",
+          "constant": "OPENAI_GPT_6_LUNA",
+          "vendor": "openai",
+          "display": "GPT-6 Luna (OpenRouter)",
+          "description": "Fast cost-efficient GPT-6 model for high-volume workloads via OpenRouter",
+          "efficient": true,
+          "top_tier": false,
+          "generation": "6",
+          "doc_comment": "GPT-6 Luna - Fast cost-efficient model in the GPT-6 series via OpenRouter"
+        }
       }
     },
-    "default_model": "xiaomi/mimo-v2.5-pro"
+    "default_model": "xiaomi/mimo-v2.6-pro"
   },
   "nvidia": {
     "id": "nvidia",
@@ -2773,17 +3048,20 @@
     "api": "https://api.xiaomimimo.com/v1",
     "name": "Xiaomi MiMo",
     "doc": "https://platform.xiaomimimo.com",
-    "default_model": "mimo-v2.5-pro",
+    "default_model": "mimo-v2.6-pro",
     "models": {
-      "mimo-v2.5-pro": {
-        "id": "mimo-v2.5-pro",
-        "name": "MiMo V2.5 Pro",
-        "description": "Xiaomi MiMo flagship Pro model with 1M context window and deep thinking",
+      "mimo-v2.6-pro": {
+        "id": "mimo-v2.6-pro",
+        "name": "MiMo V2.6 Pro",
+        "description": "Xiaomi MiMo V2.6 Pro flagship model with 1M context window, full-modal understanding and deep thinking",
         "reasoning": true,
         "tool_call": true,
         "modalities": {
           "input": [
-            "text"
+            "text",
+            "image",
+            "audio",
+            "video"
           ],
           "output": [
             "text"
@@ -2798,10 +3076,36 @@
           "structured_output": true
         }
       },
-      "mimo-v2.5": {
-        "id": "mimo-v2.5",
-        "name": "MiMo V2.5",
-        "description": "Xiaomi MiMo omni-modal model with full-modal understanding and 1M context",
+      "mimo-v2.6-flash": {
+        "id": "mimo-v2.6-flash",
+        "name": "MiMo V2.6 Flash",
+        "description": "Xiaomi MiMo V2.6 Flash efficient model for high-volume professional tasks with 1M context",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1048576,
+        "max_output_tokens": 131072,
+        "capabilities": {
+          "thinking": true,
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": true
+        }
+      },
+      "mimo-v2.6-pro-ultraspeed": {
+        "id": "mimo-v2.6-pro-ultraspeed",
+        "name": "MiMo V2.6 Pro UltraSpeed",
+        "description": "Xiaomi MiMo V2.6 Pro UltraSpeed fast edition with 1M context for real-time production scenarios",
         "reasoning": true,
         "tool_call": true,
         "modalities": {
@@ -3010,6 +3314,29 @@
           "structured_output": true
         }
       },
+      "claude-opus-5-5": {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5 (Evolink)",
+        "description": "Claude Opus 5.5 served through Evolink via Anthropic Messages API.",
+        "reasoning": false,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 200000,
+        "capabilities": {
+          "thinking": false,
+          "streaming": false,
+          "function_calling": true,
+          "structured_output": true
+        }
+      },
       "claude-sonnet-5": {
         "id": "claude-sonnet-5",
         "name": "Claude Haiku 4.5 (Evolink)",
@@ -3100,8 +3427,8 @@
           "structured_output": true
         },
         "cost": {
-          "input": 0.000001,
-          "output": 0.0000027,
+          "input": 1e-06,
+          "output": 2.7e-06,
           "cache_read": 5e-08
         },
         "is_pro": true,
@@ -3213,6 +3540,37 @@
         "id": "anthropic/claude-opus-5",
         "name": "Claude Opus 5 (Merge Gateway)",
         "description": "Anthropic Claude Opus 5 served through Merge Gateway's native Responses API.",
+        "reasoning": true,
+        "reasoning_efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1000000,
+        "output_tokens": 128000,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": false
+        }
+      },
+      "anthropic/claude-opus-5-5": {
+        "id": "anthropic/claude-opus-5-5",
+        "name": "Claude Opus 5.5 (Merge Gateway)",
+        "description": "Anthropic Claude Opus 5.5 served through Merge Gateway's native Responses API.",
         "reasoning": true,
         "reasoning_efforts": [
           "minimal",
@@ -3562,6 +3920,34 @@
           "structured_output": true
         }
       },
+      "zai/glm-5.3-flashx": {
+        "id": "zai/glm-5.3-flashx",
+        "name": "GLM-5.3 FlashX (Merge Gateway)",
+        "description": "Z.AI GLM-5.3 FlashX high-speed efficient multimodal model via Merge Gateway (320B total / 18B active, hybrid attention, native vision, up to 200 tok/s).",
+        "reasoning": true,
+        "reasoning_efforts": [
+          "low",
+          "high",
+          "max"
+        ],
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1048576,
+        "max_output_tokens": 131072,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": true
+        }
+      },
       "openai/gpt-5.6-luna": {
         "id": "openai/gpt-5.6-luna",
         "name": "GPT-5.6 Luna (Merge Gateway)",
@@ -3779,6 +4165,68 @@
           "structured_output": false
         },
         "is_pro": true
+      },
+      "openai/gpt-6-sol": {
+        "id": "openai/gpt-6-sol",
+        "name": "GPT-6 Sol (Merge Gateway)",
+        "description": "OpenAI GPT-6 Sol served through Merge Gateway's native Responses API.",
+        "reasoning": true,
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1050000,
+        "output_tokens": 128000,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": false
+        },
+        "is_pro": true,
+        "lightweight_model": "openai/gpt-6-luna"
+      },
+      "openai/gpt-6-luna": {
+        "id": "openai/gpt-6-luna",
+        "name": "GPT-6 Luna (Merge Gateway)",
+        "description": "OpenAI GPT-6 Luna served through Merge Gateway's native Responses API.",
+        "reasoning": true,
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1050000,
+        "output_tokens": 128000,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": false
+        }
       }
     }
   },
@@ -3928,6 +4376,38 @@
         "cost": {
           "input": 5e-06,
           "output": 2.5e-05
+        }
+      },
+      "anthropic/claude-opus-5-5": {
+        "id": "anthropic/claude-opus-5-5",
+        "name": "Claude Opus 5.5 (Vercel AI Gateway)",
+        "description": "Anthropic Claude Opus 5.5 flagship model served through the Vercel AI Gateway",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1000000,
+        "capabilities": {
+          "thinking": true,
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": true,
+          "input": [
+            "text",
+            "image",
+            "file"
+          ]
+        },
+        "max_output_tokens": 64000,
+        "cost": {
+          "input": 4e-06,
+          "output": 2e-05
         }
       },
       "anthropic/claude-haiku-4.5": {

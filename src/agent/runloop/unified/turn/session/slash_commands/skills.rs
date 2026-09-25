@@ -195,6 +195,9 @@ async fn apply_skill_command_outcome(
                     .await?;
             match control {
                 SlashCommandControl::Continue => Ok(SlashCommandControl::Continue),
+                SlashCommandControl::BackgroundCompletionHandled { completion_identity } => {
+                    Ok(SlashCommandControl::BackgroundCompletionHandled { completion_identity })
+                }
                 SlashCommandControl::SubmitPrompt(prompt) => Ok(SlashCommandControl::SubmitPrompt(prompt)),
                 SlashCommandControl::ReplaceInput(content) => Ok(SlashCommandControl::ReplaceInput(content)),
                 SlashCommandControl::BreakWithReason(reason) => {

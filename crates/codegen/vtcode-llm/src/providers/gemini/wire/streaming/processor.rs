@@ -257,14 +257,7 @@ impl StreamingProcessor {
             let line = &buffer[processed_chars..line_end];
             processed_chars = line_end + 1;
 
-            match self.handle_line(line, accumulated_response, on_chunk) {
-                Ok(valid) => {
-                    if valid {
-                        _has_valid_content = true;
-                    }
-                }
-                Err(e) => return Err(e),
-            }
+            _has_valid_content |= self.handle_line(line, accumulated_response, on_chunk)?;
         }
 
         // Optimize: Use drain to avoid allocation when removing processed content
@@ -290,27 +283,13 @@ impl StreamingProcessor {
         if !buffer.is_empty() {
             let remaining_line = buffer.trim_end_matches('\r');
             if !remaining_line.trim().is_empty() {
-                match self.handle_line(remaining_line, accumulated_response, on_chunk) {
-                    Ok(valid) => {
-                        if valid {
-                            _has_valid_content = true;
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
+                _has_valid_content |= self.handle_line(remaining_line, accumulated_response, on_chunk)?;
             }
         }
 
         buffer.clear();
 
-        match self.finalize_current_event(accumulated_response, on_chunk) {
-            Ok(valid) => {
-                if valid {
-                    _has_valid_content = true;
-                }
-            }
-            Err(e) => return Err(e),
-        }
+        _has_valid_content |= self.finalize_current_event(accumulated_response, on_chunk)?;
 
         Ok(_has_valid_content)
     }
@@ -329,14 +308,7 @@ impl StreamingProcessor {
         let line = raw_line.trim_end_matches('\r');
 
         if line.is_empty() {
-            match self.finalize_current_event(accumulated_response, on_chunk) {
-                Ok(valid) => {
-                    if valid {
-                        _has_valid_content = true;
-                    }
-                }
-                Err(e) => return Err(e),
-            }
+            _has_valid_content |= self.finalize_current_event(accumulated_response, on_chunk)?;
             return Ok(_has_valid_content);
         }
 
@@ -357,14 +329,7 @@ impl StreamingProcessor {
         if let Some(data_segment) = trimmed.strip_prefix("data:") {
             let data_segment = data_segment.trim_start();
             if data_segment == "[DONE]" {
-                match self.finalize_current_event(accumulated_response, on_chunk) {
-                    Ok(valid) => {
-                        if valid {
-                            _has_valid_content = true;
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
+                _has_valid_content |= self.finalize_current_event(accumulated_response, on_chunk)?;
                 return Ok(_has_valid_content);
             }
 
@@ -374,14 +339,7 @@ impl StreamingProcessor {
                 }
                 self.current_event_data.push_str(data_segment);
 
-                match self.try_flush_current_event(accumulated_response, on_chunk) {
-                    Ok(valid) => {
-                        if valid {
-                            _has_valid_content = true;
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
+                _has_valid_content |= self.try_flush_current_event(accumulated_response, on_chunk)?;
             }
             return Ok(_has_valid_content);
         }

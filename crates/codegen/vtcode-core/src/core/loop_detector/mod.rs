@@ -37,7 +37,7 @@ const SLIDING_WINDOW_MAX_REPEATS: usize = 3;
 
 /// Global hard limit on total read-only tool calls across ALL read-only tools.
 /// Prevents the agent from alternating between different read-only tools to
-/// evade per-tool limits. Fires a HARD STOP when exhausted.
+/// evade per-tool limits. Fires a hard stop when exhausted.
 ///
 /// Also referenced by `prompts::harness_limits` to advertise the budget in the
 /// system prompt -- keep both in sync.
@@ -45,14 +45,25 @@ pub(crate) const MAX_TOTAL_READONLY_CALLS: usize = 30;
 
 /// Subagent-specific read-only budget. Subagents should do focused work and
 /// need less exploration headroom than the main agent.
-const SUBAGENT_MAX_TOTAL_READONLY_CALLS: usize = 20;
+///
+/// Also referenced by `subagents::config` to state the budget in writable
+/// child instructions -- keep both in sync.
+pub(crate) const SUBAGENT_MAX_TOTAL_READONLY_CALLS: usize = 20;
 
 /// Navigation streak thresholds -- warning and hard stop.
 /// Subagents get tighter limits to force earlier synthesis.
 const NAVIGATION_WARNING_STREAK: usize = 4;
 const NAVIGATION_HARD_STOP_STREAK: usize = 7;
 const SUBAGENT_NAVIGATION_WARNING_STREAK: usize = 3;
-const SUBAGENT_NAVIGATION_HARD_STOP_STREAK: usize = 5;
+pub(crate) const SUBAGENT_NAVIGATION_HARD_STOP_STREAK: usize = 5;
+
+/// Prefix of every message returned by [`LoopDetector::record_call`] when the
+/// call reached a hard limit (the caller then sees
+/// [`LoopDetector::is_hard_limit_exceeded`] for that tool). Callers end the run
+/// or force a tool-free synthesis pass, so each message states what is blocked
+/// and what to do with the results already gathered.
+pub const HARD_STOP_PREFIX: &str = "Loop limit reached:";
+
 const LEGACY_GREP_FILE: &str = tools::GREP_FILE;
 const LEGACY_LIST_FILES: &str = tools::LIST_FILES;
 const LEGACY_SEARCH_TOOLS: &str = "search_tools";
@@ -205,7 +216,8 @@ impl LoopDetector {
                     self.tool_counts.insert(tool_name.to_string(), hard_limit);
 
                     return Some(format!(
-                        "HARD STOP: Identical tool call repeated {limit} times: {tool_name} with same arguments. This indicates a loop."
+                        "{HARD_STOP_PREFIX} {tool_name} was called {limit} times in a row with identical arguments, \
+                         so further calls to it are blocked. Use the result already in the conversation, or change the approach."
                     ));
                 }
             }
@@ -264,15 +276,16 @@ impl LoopDetector {
         // --- Global read-only budget ---
         // Prevents the agent from alternating between different read-only tools
         // (e.g., code_search and file_operation) to evade per-tool limits.
+        // The total only resets with the detector (each turn), so once it is
+        // exhausted every later call this turn hits this stop, whatever its kind.
         let readonly_budget = self.effective_readonly_budget();
         if self.total_readonly_calls >= readonly_budget {
             let hard_limit = self.get_limit_for_tool(tool_name) * HARD_LIMIT_MULTIPLIER;
             self.tool_counts.insert(tool_name.to_string(), hard_limit);
             return Some(format!(
-                "HARD STOP: Global read-only budget exhausted ({} total read-only calls, limit: {}). \
-                 You have collected far more information than needed. \
-                 Synthesize a final answer NOW using the data already in your conversation history. \
-                 Do NOT call any more read-only tools.",
+                "{HARD_STOP_PREFIX} the global read-only budget is exhausted ({} total read-only calls, limit: {}), \
+                 so every further tool call this turn is blocked, including edits and commands. Write the final \
+                 answer from the results already in the conversation.",
                 self.total_readonly_calls, readonly_budget
             ));
         }
@@ -283,21 +296,19 @@ impl LoopDetector {
                 let hard_limit = self.get_limit_for_tool(tool_name) * HARD_LIMIT_MULTIPLIER;
                 self.tool_counts.insert(tool_name.to_string(), hard_limit);
                 return Some(format!(
-                    "HARD STOP: {} consecutive exploration calls without taking action. \
-                     Execution halted. You have enough information from previous tool outputs. \
-                     Synthesize a final answer now using the data already in your conversation history. \
-                     Do NOT call any more tools.",
+                    "{HARD_STOP_PREFIX} {} consecutive read-only calls without an edit or command, \
+                     so further read-only calls are blocked. Write the final answer from the results already in \
+                     the conversation.",
                     self.readonly_streak
                 ));
             }
 
             let msg = format!(
-                "Navigation Loop Detected: {} consecutive exploration calls without action.\n\n\
-                 **Synthesis Required**: You have collected sufficient information from previous tool outputs. \
-                 Review your conversation history and produce a concrete answer or implementation. \
-                 Do NOT re-read files or re-run searches you have already performed. \
-                 If a tool output was truncated, use the exact continuation range, \
-                 or use `exec_command.cmd` with `cat` for full content.",
+                "Navigation loop detected: {} consecutive read-only calls without an edit or command. \
+                 At {hard_stop_streak} in a row, further read-only calls are blocked. If the results already in the \
+                 conversation are enough, produce the answer or implementation now; re-reading files or \
+                 re-running searches already performed returns nothing new. If a tool output was truncated, \
+                 use the exact continuation range, or use `exec_command.cmd` with `cat` for full content.",
                 self.readonly_streak
             );
             let now = Instant::now();
@@ -373,8 +384,8 @@ impl LoopDetector {
         let hard_limit = max_calls * HARD_LIMIT_MULTIPLIER;
         if count >= hard_limit {
             return Some(format!(
-                "CRITICAL: Tool '{tool_name}' called {count} times (hard limit: {hard_limit}). Execution halted to prevent infinite loop.\n\
-                 Agent must reformulate task or request user guidance."
+                "{HARD_STOP_PREFIX} '{tool_name}' was called {count} times (hard limit: {hard_limit}), \
+                 so further calls to it are blocked. Change the approach, or ask the user for guidance."
             ));
         }
 
@@ -456,11 +467,10 @@ impl LoopDetector {
             let hard_limit = self.get_limit_for_tool(tool_name) * HARD_LIMIT_MULTIPLIER;
             self.tool_counts.insert(tool_name.to_string(), hard_limit);
             return Some(format!(
-                "HARD STOP: Repeated '{}' calls for '{}' with minimal argument variation ({}-call streak, {} variants). \
-                 You are stuck in a read loop. Review the tool outputs already in your conversation history — \
-                 you likely have the information needed. If a read was truncated, use `exec_command.cmd` with \
-                 `cat {}` for full content, or use the exact continuation range. \
-                 Do NOT re-read the same file with the same parameters.",
+                "{HARD_STOP_PREFIX} repeated '{}' calls for '{}' with minimal argument variation \
+                 ({}-call streak, {} variants), so further calls to it are blocked. The earlier reads of this \
+                 file are already in the conversation and likely hold what you need. If a read was truncated, \
+                 use `exec_command.cmd` with `cat {}` for full content, or use the exact continuation range.",
                 tool_name,
                 current_target,
                 same_target_streak,
@@ -532,7 +542,7 @@ impl LoopDetector {
                     .to_string(),
             ),
             _ => Some(
-                "Shift focus to ROOT CAUSE analysis rather than patching symptoms. Re-evaluate planning assumptions specifically regarding environmental constraints. Consider:\n\
+                "Shift focus to root cause analysis rather than patching symptoms. Re-evaluate planning assumptions specifically regarding environmental constraints. Consider:\n\
                  • Verifying environment state (`env`, `ls -la`, `which <cmd>`) before more code edits\n\
                  • Breaking down the problem into smaller, verifiable sub-tasks\n\
                  • Checking if a recent change introduced a regression (run existing tests)\n\
@@ -660,7 +670,7 @@ impl LoopDetector {
                  • Use the dedicated MCP or deferred discovery affordance when available\n\
                  • Check if you need a different approach to the task"
                 .to_string(),
-            _ => "Shift focus to ROOT CAUSE analysis rather than patching symptoms. Re-evaluate planning assumptions specifically regarding environmental constraints. Consider:\n\
+            _ => "Shift focus to root cause analysis rather than patching symptoms. Re-evaluate planning assumptions specifically regarding environmental constraints. Consider:\n\
                  • Verifying environment state (`env`, `ls -la`, `which <cmd>`) before more code edits\n\
                  • Breaking down the problem into smaller, verifiable sub-tasks\n\
                  • Checking if a recent change introduced a regression (run existing tests)\n\
@@ -739,7 +749,7 @@ mod tests {
         // Third identical call - hard stop
         let warning = detector.record_call(LEGACY_GREP_FILE, &args);
         assert!(warning.is_some());
-        assert!(warning.unwrap().contains("HARD STOP"));
+        assert!(warning.unwrap().contains(HARD_STOP_PREFIX));
     }
 
     #[test]
@@ -961,7 +971,7 @@ mod tests {
 
         assert!(suggestion.is_some());
         let msg = suggestion.unwrap();
-        assert!(msg.contains("ROOT CAUSE analysis"));
+        assert!(msg.contains("root cause analysis"));
     }
 
     #[test]
@@ -1030,7 +1040,7 @@ mod tests {
             let args =
                 json!({"path": "crates/codegen/vtcode-core/src/a2a/server.rs", "offset_lines": offset, "limit": 20});
             if let Some(warning) = detector.record_call(&tool_key, &args)
-                && warning.contains("HARD STOP")
+                && warning.contains(HARD_STOP_PREFIX)
             {
                 saw_hard_stop = true;
             }
@@ -1048,7 +1058,7 @@ mod tests {
         for offset in 1..=MAX_SIMILAR_READ_TARGET_CALLS {
             let args = json!({"path": "crates/codegen/vtcode-core/src/a2a/server.rs", "offset_lines": offset * 40, "limit": 40});
             if let Some(warning) = detector.record_call(&tool_key, &args) {
-                assert!(!warning.contains("HARD STOP"));
+                assert!(!warning.contains(HARD_STOP_PREFIX));
             }
         }
 
@@ -1125,7 +1135,7 @@ mod tests {
 
         let warning = detector.record_call(tools::READ_FILE, &call3);
         assert!(warning.is_some(), "Third aliased call should be detected");
-        assert!(warning.unwrap().contains("HARD STOP"));
+        assert!(warning.unwrap().contains(HARD_STOP_PREFIX));
     }
 
     #[test]
@@ -1185,7 +1195,7 @@ mod tests {
         // 4th call (any read-only) should trigger navigation loop warning (streak hits 4)
         let warning = detector.record_call(LEGACY_GREP_FILE, &grep_args);
         assert!(warning.is_some(), "4th call should have triggered a navigation loop warning");
-        assert!(warning.unwrap().contains("Navigation Loop Detected"));
+        assert!(warning.unwrap().contains("Navigation loop detected"));
 
         // A mutating call should reset the streak
         let write_args = serde_json::json!({"path": "src/new.rs", "content": "test"});
@@ -1308,7 +1318,7 @@ mod tests {
         let r = detector.record_call(LEGACY_GREP_FILE, &json!({"pattern": "aws-lc", "path": "Cargo.lock"}));
         assert!(r.is_some(), "Navigation loop warning should fire at streak 4");
         let msg = r.unwrap();
-        assert!(msg.contains("Navigation Loop Detected"));
+        assert!(msg.contains("Navigation loop detected"));
 
         // Call 5: read Cargo.lock with start_line (streak=5)
         // Cooldown suppresses the navigation warning; no repetitive-read warning yet.
@@ -1320,7 +1330,7 @@ mod tests {
         let r = detector.record_call(&read_tool, &json!({"path": "Cargo.lock", "start_line": 4400, "end_line": 4420}));
         assert!(r.is_some(), "HARD STOP should fire at call 6");
         let msg = r.unwrap();
-        assert!(msg.contains("HARD STOP"), "Expected HARD STOP, got: {msg}");
+        assert!(msg.contains(HARD_STOP_PREFIX), "Expected hard stop, got: {msg}");
         assert!(msg.contains("Cargo.lock"));
         assert!(msg.contains("exact continuation range"));
         assert!(detector.is_hard_limit_exceeded(&read_tool));
@@ -1366,7 +1376,7 @@ mod tests {
             } else {
                 assert!(result.is_some(), "call {i} should trigger HARD STOP");
                 let msg = result.unwrap();
-                assert!(msg.contains("HARD STOP"), "Expected HARD STOP: {msg}");
+                assert!(msg.contains(HARD_STOP_PREFIX), "Expected hard stop: {msg}");
                 assert!(msg.contains("src/lib.rs"));
             }
         }
@@ -1383,7 +1393,7 @@ mod tests {
         for i in 0..MAX_TOTAL_READONLY_CALLS {
             let args = json!({"query": format!("pattern_{i}"), "path": "src/"});
             if let Some(msg) = detector.record_call(tools::CODE_SEARCH, &args)
-                && msg.contains("Global read-only budget")
+                && msg.contains("global read-only budget")
             {
                 saw_hard_stop = true;
                 break;
@@ -1404,14 +1414,14 @@ mod tests {
             if i % 2 == 0 {
                 let args = json!({"query": format!("p_{i}"), "path": "src/"});
                 if let Some(msg) = detector.record_call(tools::CODE_SEARCH, &args)
-                    && msg.contains("Global read-only budget")
+                    && msg.contains("global read-only budget")
                 {
                     hard_stop_count += 1;
                 }
             } else {
                 let args = json!({"action": "read", "path": format!("src/file_{i}.rs")});
                 if let Some(msg) = detector.record_call(tools::UNIFIED_FILE, &args)
-                    && msg.contains("Global read-only budget")
+                    && msg.contains("global read-only budget")
                 {
                     hard_stop_count += 1;
                 }
@@ -1420,6 +1430,26 @@ mod tests {
 
         assert!(hard_stop_count > 0, "Global budget should fire when alternating tools");
         assert_eq!(detector.total_readonly_calls(), MAX_TOTAL_READONLY_CALLS + 5);
+    }
+
+    #[test]
+    fn exhausted_global_readonly_budget_blocks_every_tool_and_says_so() {
+        let mut detector = LoopDetector::with_max_repeated_calls(100);
+        for i in 0..MAX_TOTAL_READONLY_CALLS {
+            let args = json!({"query": format!("p_{i}"), "path": "src/"});
+            detector.record_call(tools::CODE_SEARCH, &args);
+        }
+
+        let edit = json!({"path": "src/new.rs", "content": "fn main() {}"});
+        let msg = detector
+            .record_call(tools::WRITE_FILE, &edit)
+            .expect("an edit after the budget is exhausted is also stopped");
+        assert!(msg.starts_with(HARD_STOP_PREFIX), "{msg}");
+        assert!(
+            msg.contains("so every further tool call this turn is blocked, including edits and commands."),
+            "{msg}"
+        );
+        assert!(!msg.contains("further read-only calls are blocked"), "{msg}");
     }
 
     #[test]
@@ -1464,7 +1494,7 @@ mod tests {
         let args = json!({"query": "p_4", "path": "src/"});
         let warning = detector.record_call(tools::CODE_SEARCH, &args);
         assert!(warning.is_some(), "Navigation loop warning should fire at streak 4");
-        assert!(warning.unwrap().contains("Navigation Loop Detected"));
+        assert!(warning.unwrap().contains("Navigation loop detected"));
     }
 
     #[test]
@@ -1482,7 +1512,7 @@ mod tests {
         let warning = detector.record_call(tools::CODE_SEARCH, &args);
         assert!(warning.is_some(), "Navigation hard stop should fire at streak 7");
         let msg = warning.unwrap();
-        assert!(msg.contains("HARD STOP"), "Expected HARD STOP: {msg}");
+        assert!(msg.contains(HARD_STOP_PREFIX), "Expected hard stop: {msg}");
         assert!(detector.is_hard_limit_exceeded(tools::CODE_SEARCH));
     }
 
@@ -1502,7 +1532,7 @@ mod tests {
         let warning = detector.record_call(tools::CODE_SEARCH, &args);
         assert!(warning.is_some(), "Subagent navigation hard stop should fire at streak 5");
         let msg = warning.unwrap();
-        assert!(msg.contains("HARD STOP"), "Expected HARD STOP: {msg}");
+        assert!(msg.contains(HARD_STOP_PREFIX), "Expected hard stop: {msg}");
     }
 
     #[test]
@@ -1521,7 +1551,7 @@ mod tests {
         let warning = detector.record_call(tools::CODE_SEARCH, &args);
         assert!(warning.is_some(), "Subagent global read-only budget should fire at 20");
         let msg = warning.unwrap();
-        assert!(msg.contains("Global read-only budget exhausted"), "Expected budget exhaustion: {msg}");
+        assert!(msg.contains("global read-only budget is exhausted"), "Expected budget exhaustion: {msg}");
         assert!(msg.contains("limit: 20"), "Expected limit 20 in message: {msg}");
     }
 

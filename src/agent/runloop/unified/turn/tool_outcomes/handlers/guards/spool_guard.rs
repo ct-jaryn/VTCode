@@ -157,11 +157,11 @@ async fn build_spool_chunk_guard_error_content(workspace: &Path, path: &str, max
         obj.insert(
             "next_action".to_string(),
             Value::String(
-                "STOP requesting this spool. Use the `inline_content` below \
-                 and the existing conversation history to synthesise your final \
-                 answer. If additional inspection is still required, use \
-                 `exec_command` for targeted shell inspection, `write_stdin` \
-                 for session continuation, or `apply_patch` for edits."
+                "Further chunk reads of this spool are blocked for this turn. \
+                 Continue from the `inline_content` below and the conversation \
+                 history. For more inspection, use `exec_command` for targeted \
+                 shell inspection, `write_stdin` for session continuation, or \
+                 `apply_patch` for edits."
                     .to_string(),
             ),
         );
@@ -170,8 +170,8 @@ async fn build_spool_chunk_guard_error_content(workspace: &Path, path: &str, max
             obj.insert(
                 "inline_content_note".to_string(),
                 Value::String(
-                    "Full spool content embedded inline. Do NOT re-read this \
-                     spool file — the per-turn cap will continue to block you."
+                    "Full spool content embedded inline; the per-turn cap \
+                     blocks further reads of this spool file."
                         .to_string(),
                 ),
             );
@@ -199,7 +199,7 @@ fn build_previous_turn_error_spool_content(spool_path: &str, head: &str) -> Stri
         "loop_detected": true,
         "is_recoverable": true,
         "error_class": "previous_turn_error_spool",
-        "next_action": "STOP re-reading this spool file. The original error payload is already in your conversation history from the previous turn. Choose a different tool or approach.",
+        "next_action": "This spool holds an error payload from a previous turn that is already in the conversation history; re-reading it returns the same error. Choose a different tool or approach.",
         "hint": "This spool contains an error response from an earlier turn; you do not need to re-read it. Use the error message already in your history and try a different approach.",
         "inline_content": preview,
     })

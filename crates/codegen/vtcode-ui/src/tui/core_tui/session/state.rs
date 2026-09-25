@@ -176,105 +176,8 @@ impl Session {
             Some(current) => Some(current.min(index)),
             None => Some(index),
         };
-        self.record_transcript_change(index);
         self.render_state.request_redraw();
         self.invalidate_transcript_viewport();
-    }
-
-    /// Record a transcript modification for Jump to last change.
-    ///
-    /// `line_idx` is the post-reflow logical line index. Consecutive repeats
-    /// for the same index collapse so streaming chunks count once. History is
-    /// bounded by `MAX_TRACKED_TRANSCRIPT_CHANGES`. Any new distinct change
-    /// clears the sticky jump highlight so the highlight always marks the
-    /// current jump target.
-    pub(crate) fn record_transcript_change(&mut self, line_idx: usize) {
-        if self.lines.is_empty() {
-            return;
-        }
-        let clamped_idx = line_idx.min(self.lines.len().saturating_sub(1));
-        let is_new_target = self.last_change_line_idx != Some(clamped_idx);
-        self.last_change_line_idx = Some(clamped_idx);
-        if self.recent_change_line_idxs.back().copied() != Some(clamped_idx) {
-            self.recent_change_line_idxs.push_back(clamped_idx);
-            while self.recent_change_line_idxs.len() > super::MAX_TRACKED_TRANSCRIPT_CHANGES {
-                self.recent_change_line_idxs.pop_front();
-            }
-        }
-        if is_new_target {
-            self.jump_highlight_line_idx = None;
-        }
-    }
-
-    /// Shift tracked change indices after front-eviction. Drops entries that
-    /// pointed into the evicted prefix.
-    pub(crate) fn shift_tracked_changes_after_eviction(&mut self, remove_count: usize) {
-        if remove_count == 0 {
-            return;
-        }
-        if let Some(idx) = self.last_change_line_idx {
-            self.last_change_line_idx = idx.checked_sub(remove_count);
-        }
-        if let Some(idx) = self.jump_highlight_line_idx {
-            self.jump_highlight_line_idx = idx.checked_sub(remove_count);
-        }
-        self.recent_change_line_idxs.retain(|idx| *idx >= remove_count);
-        for idx in &mut self.recent_change_line_idxs {
-            *idx -= remove_count;
-        }
-    }
-
-    /// Drop tracked change indices that no longer point at a live line.
-    /// Used after back-truncation (`replace_last`) trims the tail.
-    pub(crate) fn prune_tracked_changes_to_len(&mut self) {
-        let len = self.lines.len();
-        if let Some(idx) = self.last_change_line_idx
-            && idx >= len
-        {
-            self.last_change_line_idx = len.checked_sub(1);
-        }
-        if let Some(idx) = self.jump_highlight_line_idx
-            && idx >= len
-        {
-            self.jump_highlight_line_idx = None;
-        }
-        self.recent_change_line_idxs.retain(|idx| *idx < len);
-    }
-
-    /// Shift tracked change indices down after a middle removal at
-    /// `removed_idx`. Entries pointing at the removed line are kept at the
-    /// removal point so the subsequent `mark_line_dirty` can collapse them.
-    pub(crate) fn shift_tracked_changes_after_removal(&mut self, removed_idx: usize) {
-        if self.lines.is_empty() {
-            self.last_change_line_idx = None;
-            self.recent_change_line_idxs.clear();
-            self.jump_highlight_line_idx = None;
-            return;
-        }
-        let len = self.lines.len();
-        let shift_idx = |idx: usize| {
-            if idx > removed_idx {
-                idx.saturating_sub(1)
-            } else {
-                idx.min(len.saturating_sub(1))
-            }
-        };
-        self.last_change_line_idx = self.last_change_line_idx.map(shift_idx);
-        self.jump_highlight_line_idx = self.jump_highlight_line_idx.map(shift_idx);
-        for idx in &mut self.recent_change_line_idxs {
-            *idx = shift_idx(*idx);
-        }
-        // Middle removal can collapse two distinct entries onto the same
-        // index (e.g. [2,3] removing 2 -> [2,2]); dedupe consecutive repeats
-        // so the >=2 gate counts distinct changes.
-        let mut deduped = std::collections::VecDeque::with_capacity(self.recent_change_line_idxs.len());
-        for idx in self.recent_change_line_idxs.drain(..) {
-            if deduped.back().copied() != Some(idx) {
-                deduped.push_back(idx);
-            }
-        }
-        self.recent_change_line_idxs = deduped;
-        self.prune_tracked_changes_to_len();
     }
 
     /// Invalidate only the header cache (e.g. when provider/model changes)
@@ -325,14 +228,6 @@ impl Session {
 
     pub(crate) fn input_area(&self) -> Option<Rect> {
         self.areas.input()
-    }
-
-    pub(crate) fn set_input_status_area(&mut self, area: Option<Rect>) {
-        self.areas.set_input_status(area);
-    }
-
-    pub(crate) fn input_status_area(&self) -> Option<Rect> {
-        self.areas.input_status()
     }
 
     pub(crate) fn set_bottom_panel_area(&mut self, area: Option<Rect>) {
@@ -428,10 +323,10 @@ impl Session {
 
     /// Advance animation state on tick and request redraw when a frame changes.
     pub(crate) fn handle_tick(&mut self) {
-        let motion_reduced = self.appearance.motion_reduced();
+        let animate_progress = self.appearance.should_animate_progress_status();
         self.step_drag_auto_scroll();
         let mut animation_updated = false;
-        if !motion_reduced && self.thinking_spinner.is_active && self.thinking_spinner.update() {
+        if animate_progress && self.thinking_spinner.is_active && self.thinking_spinner.update() {
             animation_updated = true;
             // Refresh collapsed thinking summaries so the live spinner frame and
             // line count stay current during streaming instead of freezing until
@@ -440,11 +335,7 @@ impl Session {
             // requested below via `animation_updated`.
             self.mark_thinking_run_starts_dirty();
         }
-        let shimmer_active = if self.appearance.should_animate_progress_status() {
-            self.is_shimmer_active() || self.background_status_shimmer_active()
-        } else {
-            false
-        };
+        let shimmer_active = animate_progress && (self.is_shimmer_active() || self.background_status_shimmer_active());
         if shimmer_active && self.shimmer_state.update() {
             animation_updated = true;
         }
@@ -585,10 +476,10 @@ impl Session {
         if matches!(self.activity_state, ActivityState::Blocked) {
             return false;
         }
-        let running_status =
-            self.appearance.should_animate_progress_status() && status_requires_shimmer(self.animation_status_text());
-        let active_pty = self.active_pty_session_count() > 0;
-        running_status || active_pty
+        let status = self.animation_status_text();
+        self.appearance.should_animate_progress_status()
+            && status != ACTIVE_PTY_STATUS_TEXT
+            && status_requires_shimmer(status)
     }
 
     pub(crate) fn active_pty_session_count(&self) -> usize {
@@ -699,7 +590,6 @@ impl Session {
             Some(current) => Some(current.min(index)),
             None => Some(index),
         };
-        self.record_transcript_change(index);
         self.mark_dirty();
     }
 
@@ -744,9 +634,6 @@ impl Session {
         self.collapsed_pastes.clear();
         self.thinking_runs.clear();
         self.user_scrolled = false;
-        self.last_change_line_idx = None;
-        self.recent_change_line_idxs.clear();
-        self.jump_highlight_line_idx = None;
         self.scroll_manager.set_offset(0);
         self.invalidate_transcript_cache();
         self.invalidate_scroll_metrics();
@@ -962,7 +849,6 @@ impl Session {
         if self.scroll_manager.offset() != previous_offset {
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
-            self.jump_highlight_line_idx = None;
             // Content moves down on screen; shift selection to match.
             self.mouse_selection.adjust_for_scroll(1);
         }
@@ -976,7 +862,6 @@ impl Session {
         if self.scroll_manager.offset() != previous_offset {
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
-            self.jump_highlight_line_idx = None;
             // Content moves up on screen; shift selection to match.
             self.mouse_selection.adjust_for_scroll(-1);
         }
@@ -992,7 +877,6 @@ impl Session {
             let actual_delta = self.scroll_manager.offset() - previous_offset;
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
-            self.jump_highlight_line_idx = None;
             self.mouse_selection.adjust_for_scroll(actual_delta as i32);
         }
     }
@@ -1007,7 +891,6 @@ impl Session {
             let actual_delta = previous_offset - self.scroll_manager.offset();
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
-            self.jump_highlight_line_idx = None;
             self.mouse_selection.adjust_for_scroll(-(actual_delta as i32));
         }
     }
@@ -1046,7 +929,6 @@ impl Session {
         // Invalidate visible lines cache if offset actually changed
         if self.scroll_manager.offset() != previous_offset {
             self.invalidate_transcript_viewport();
-            self.jump_highlight_line_idx = None;
             // Compute actual row delta for selection adjustment.
             // Inverted model: increasing offset → content moves down → positive row delta.
             let offset_delta = self.scroll_manager.offset() as i64 - previous_offset as i64;

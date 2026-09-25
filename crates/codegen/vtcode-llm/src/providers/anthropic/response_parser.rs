@@ -11,7 +11,10 @@
 use crate::error_display;
 use crate::provider::{FinishReason, LLMError, LLMResponse, ToolCall, Usage};
 use crate::providers::extract_reasoning_trace;
+use hashbrown::HashSet;
 use serde_json::{Value, json};
+
+use super::block_order::{BlockOrderRecorder, BlockSlot};
 
 pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse, LLMError> {
     let content = response_json.get("content").and_then(|c| c.as_array()).ok_or_else(|| {
@@ -29,11 +32,19 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
     // Raw advisor server_tool_use + advisor_tool_result blocks, preserved verbatim
     // for faithful round-trip on subsequent turns (transport: reasoning_details).
     let mut advisor_blocks: Vec<Value> = Vec::new();
+    // Interleaved blocks (thinking between text and tool use) must be
+    // replayed in this order; see `block_order`.
+    let mut block_order = BlockOrderRecorder::default();
+    let declined = declined_partial_positions(content);
 
-    for block in content {
+    for (position, block) in content.iter().enumerate() {
+        if declined[position] {
+            continue;
+        }
         match block.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    block_order.push(BlockSlot::Text { len: text.len() });
                     text_parts.push(text.to_string());
                 }
             }
@@ -44,7 +55,12 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
                         "type": "thinking",
                         "thinking": thinking,
                     });
-                    if let Some(signature) = block.get("signature").and_then(|value| value.as_str())
+                    let signature = block.get("signature").and_then(|value| value.as_str());
+                    // Replay skips thinking blocks without text or signature.
+                    if !thinking.is_empty() || signature.is_some_and(|value| !value.trim().is_empty()) {
+                        block_order.push(BlockSlot::Reasoning);
+                    }
+                    if let Some(signature) = signature
                         && let Some(obj) = detail.as_object_mut()
                     {
                         obj.insert("signature".to_string(), Value::String(signature.to_string()));
@@ -54,6 +70,7 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
                 }
             }
             Some("redacted_thinking") => {
+                block_order.push(BlockSlot::Reasoning);
                 reasoning_details_vec.push(
                     json!({
                         "type": "redacted_thinking",
@@ -72,11 +89,13 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
                 if name == "structured_output" {
                     let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                     let output_text = serde_json::to_string(&input).unwrap_or_else(|_| "{{}}".to_string());
+                    block_order.push(BlockSlot::Text { len: output_text.len() });
                     text_parts.push(output_text);
                 } else {
                     let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                     let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{{}}".to_string());
                     if !id.is_empty() && !name.is_empty() {
+                        block_order.push(BlockSlot::ToolUse { id: id.clone() });
                         tool_calls.push(ToolCall::function(id, name, arguments));
                     }
                 }
@@ -85,12 +104,14 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
                 // The advisor tool is the only supported server-side tool. Preserve
                 // the block verbatim so it can be round-tripped on the next turn.
                 if block.get("name").and_then(|n| n.as_str()).is_some_and(|name| name == "advisor") {
+                    block_order.push(BlockSlot::Advisor);
                     advisor_blocks.push(block.clone());
                 }
             }
             Some("advisor_tool_result") => {
                 // Preserve the advisor result verbatim (advisor_result,
                 // advisor_redacted_result, or advisor_tool_result_error).
+                block_order.push(BlockSlot::Advisor);
                 advisor_blocks.push(block.clone());
             }
             Some("tool_search_tool_result") => {
@@ -111,6 +132,7 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
                 // signatures, cache controls, and provider extensions belong
                 // in reasoning_details so the next request can send them back.
                 compaction = block.get("content").and_then(|t| t.as_str()).map(str::to_owned);
+                block_order.push(BlockSlot::Compaction);
                 reasoning_details_vec.push(block.to_string());
             }
             Some("fallback") => {
@@ -148,26 +170,8 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
         .unwrap_or("end_turn");
     let finish_reason = parse_finish_reason(stop_reason);
 
-    // Parse stop_details for refusal/fallback credit information
-    if let Some(sd) = response_json.get("stop_details") {
-        let category = sd.get("category").and_then(|c| c.as_str()).unwrap_or("");
-        let explanation = sd.get("explanation").and_then(|e| e.as_str()).unwrap_or("");
-        let credit_token = sd.get("fallback_credit_token").and_then(|t| t.as_str()).unwrap_or("");
-        let has_prefill = sd.get("fallback_has_prefill_claim").and_then(|v| v.as_bool());
-        let mut detail = json!({
-            "type": "stop_details",
-            "category": category,
-        });
-        if !explanation.is_empty() {
-            detail["explanation"] = Value::String(explanation.to_string());
-        }
-        if !credit_token.is_empty() {
-            detail["fallback_credit_token"] = Value::String(credit_token.to_string());
-        }
-        if let Some(prefill) = has_prefill {
-            detail["fallback_has_prefill_claim"] = Value::Bool(prefill);
-        }
-        reasoning_details_vec.push(detail.to_string());
+    if let Some(detail) = response_json.get("stop_details").and_then(stop_details_reasoning_detail) {
+        reasoning_details_vec.push(detail);
     }
 
     let usage = response_json.get("usage").map(parse_usage);
@@ -178,6 +182,10 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
             "blocks": advisor_blocks,
         });
         reasoning_details_vec.push(detail.to_string());
+    }
+
+    if let Some(detail) = block_order.into_detail() {
+        reasoning_details_vec.push(detail);
     }
 
     Ok(LLMResponse {
@@ -201,6 +209,73 @@ pub fn parse_response(response_json: Value, model: String) -> Result<LLMResponse
         organization_id: None,
         compaction,
     })
+}
+
+/// Marks the blocks a refused model produced before the final `fallback`
+/// block of a mid-output server-side fallback. Echoing them back is invalid:
+/// thinking, redacted thinking, tool use, a `server_tool_use` without its
+/// result, and unrecognized model-internal blocks are dropped, while text,
+/// compaction, paired server-tool blocks, and everything after the boundary
+/// are kept. The API already omits the declined partial from non-streaming
+/// responses, so this only enforces the echo rule if one ever appears.
+fn declined_partial_positions(content: &[Value]) -> Vec<bool> {
+    fn block_type(block: &Value) -> Option<&str> {
+        block.get("type").and_then(Value::as_str)
+    }
+    let mut declined = vec![false; content.len()];
+    let Some(boundary) = content.iter().rposition(|block| block_type(block) == Some("fallback")) else {
+        return declined;
+    };
+    let paired_tool_use_ids: HashSet<&str> = content
+        .iter()
+        .filter(|block| block_type(block).is_some_and(|kind| kind.ends_with("_tool_result")))
+        .filter_map(|block| block.get("tool_use_id").and_then(Value::as_str))
+        .collect();
+    for (flag, block) in declined.iter_mut().zip(&content[..boundary]) {
+        *flag = match block_type(block) {
+            Some("text" | "compaction" | "fallback") => false,
+            Some("server_tool_use") => !block
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| paired_tool_use_ids.contains(id)),
+            Some(kind) => !kind.ends_with("_tool_result"),
+            None => true,
+        };
+    }
+    declined
+}
+
+/// Serializes a response's `stop_details` (refusal category, explanation,
+/// fallback-credit fields and `recommended_model`) into a `reasoning_details`
+/// entry. Shared by the
+/// non-streaming parser and the stream decoder, which receives the same object
+/// on `message_delta`. Returns `None` for an absent or `null` value.
+pub(crate) fn stop_details_reasoning_detail(stop_details: &Value) -> Option<String> {
+    let sd = stop_details.as_object()?;
+    let category = sd.get("category").and_then(Value::as_str).unwrap_or("");
+    let explanation = sd.get("explanation").and_then(Value::as_str).unwrap_or("");
+    let credit_token = sd.get("fallback_credit_token").and_then(Value::as_str).unwrap_or("");
+    let has_prefill = sd.get("fallback_has_prefill_claim").and_then(Value::as_bool);
+    // Present only when a server-side fallback attempt could not run (rate
+    // limited or overloaded); a direct retry on that model may succeed.
+    let recommended_model = sd.get("recommended_model").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let mut detail = json!({
+        "type": "stop_details",
+        "category": category,
+    });
+    if !explanation.is_empty() {
+        detail["explanation"] = Value::String(explanation.to_string());
+    }
+    if !credit_token.is_empty() {
+        detail["fallback_credit_token"] = Value::String(credit_token.to_string());
+    }
+    if let Some(prefill) = has_prefill {
+        detail["fallback_has_prefill_claim"] = Value::Bool(prefill);
+    }
+    if !recommended_model.is_empty() {
+        detail["recommended_model"] = Value::String(recommended_model.to_string());
+    }
+    Some(detail.to_string())
 }
 
 pub fn parse_finish_reason(stop_reason: &str) -> FinishReason {

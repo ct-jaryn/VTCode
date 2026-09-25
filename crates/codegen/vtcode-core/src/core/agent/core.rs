@@ -263,11 +263,9 @@ impl Agent {
             println!(
                 "  {} successful ({}% success rate)",
                 style(report.successful_decisions).green(),
-                if report.total_decisions > 0 {
-                    (report.successful_decisions * 100) / report.total_decisions
-                } else {
-                    0
-                }
+                (report.successful_decisions * 100)
+                    .checked_div(report.total_decisions)
+                    .unwrap_or(0)
             );
             println!("  {} failed decisions", style(report.failed_decisions).red());
             println!("  {} tool calls executed", style(report.tool_calls).cyan());
@@ -282,11 +280,9 @@ impl Agent {
             println!(
                 "  {} errors resolved ({}% recovery rate)",
                 style(error_stats.resolved_errors).green(),
-                if error_stats.total_errors > 0 {
-                    (error_stats.resolved_errors * 100) / error_stats.total_errors
-                } else {
-                    0
-                }
+                (error_stats.resolved_errors * 100)
+                    .checked_div(error_stats.total_errors)
+                    .unwrap_or(0)
             );
             println!("  {:.1} average recovery attempts per error", style(error_stats.avg_recovery_attempts).cyan());
         } else {
@@ -297,11 +293,9 @@ impl Agent {
                     "  ↳ Session complete: {} decisions, {} successful ({}% success rate), {} errors",
                     report.total_decisions,
                     report.successful_decisions,
-                    if report.total_decisions > 0 {
-                        (report.successful_decisions * 100) / report.total_decisions
-                    } else {
-                        0
-                    },
+                    (report.successful_decisions * 100)
+                        .checked_div(report.total_decisions)
+                        .unwrap_or(0),
                     error_stats.total_errors
                 ))
                 .dim()

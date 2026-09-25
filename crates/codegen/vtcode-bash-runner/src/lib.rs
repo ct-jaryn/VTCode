@@ -10,13 +10,6 @@
     clippy::indexing_slicing,
     reason = "Process wrappers intentionally detach best-effort tasks, use OS process IDs, and configure commands through bounded builder APIs."
 )]
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::cast_possible_wrap,
-        reason = "Process wrappers intentionally detach best-effort tasks, use OS process IDs, and configure commands through bounded builder APIs."
-    )
-)]
 //! Cross-platform command runner modeled after VT Code's original bash
 //! wrapper. The crate exposes a trait-based executor so downstream
 //! applications can swap the underlying process strategy (system shell,

@@ -261,7 +261,8 @@ pub use core::threads::{
     build_thread_archive_metadata, loaded_skills_from_session_listing, messages_from_session_listing,
 };
 pub use ide_context::{
-    EditorContextSnapshot, EditorFileContext, EditorLineRange, EditorSelectionContext, EditorSelectionRange,
+    EDITOR_CONTEXT_PROMPT_HEADER, EditorContextSnapshot, EditorFileContext, EditorLineRange, EditorSelectionContext,
+    EditorSelectionRange,
 };
 pub use primary_agent::{
     ActivePrimaryAgent, ActivePrimaryAgentSpecIdentity, ActivePrimaryAgentState, PrimaryAgentResolutionError,

@@ -55,6 +55,7 @@ vtcode --provider merge-gateway --model anthropic/claude-opus-5
 | `default_routing` | 128k baseline | No | Merge chooses the route |
 | `openai/gpt-5.5` | 1.1M | No | OpenAI route |
 | `anthropic/claude-opus-5` | 1M | Yes | Anthropic route |
+| `anthropic/claude-opus-5-5` | 1M | Yes | Anthropic route |
 | `anthropic/claude-sonnet-5` | 1M | Yes | Anthropic route |
 | `google/gemini-3.6-flash` | 1M | Yes | Google route |
 | `google/gemini-3.7-flash` | 1M | Yes | Google route |
@@ -67,9 +68,13 @@ vtcode --provider merge-gateway --model anthropic/claude-opus-5
 | `thinkingmachines/inkling` | 1M | No | Thinking Machines route |
 | `meta/muse-spark-1.1` | 1M | Yes | Meta route |
 | `zai/glm-5.3-flash` | 1.31M | Yes | Z.AI route (320B/18B hybrid attention, native vision) |
+| `zai/glm-5.3-flashx` | 1M | Yes | Z.AI high-speed route (Flash stack, up to 200 tok/s, native vision) |
 | `openai/gpt-5.6-luna` | 1.1M | Yes | OpenAI route |
 | `openai/gpt-5.6-sol` | 1.1M | Yes | OpenAI route |
 | `openai/gpt-5.6-terra` | 1.1M | Yes | OpenAI route |
+| `openai/gpt-6-astra` | 1.05M | Yes | OpenAI route |
+| `openai/gpt-6-sol` | 1.05M | Yes | OpenAI route |
+| `openai/gpt-6-luna` | 1.05M | Yes | OpenAI route |
 
 These are the models shown in VT Code's picker. Merge model IDs are not a
 closed local allowlist: any valid explicit `provider/model` route can be used

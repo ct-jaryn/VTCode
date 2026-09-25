@@ -18,7 +18,7 @@ VT Code represents a modern approach to AI-powered software development, featuri
 
 ### System Requirements
 
--   **Rust**: 1.88+ (stable recommended)
+-   **Rust**: 1.98.1+ (stable recommended)
     -   Install from [rustup.rs](https://rustup.rs/)
     -   Includes Cargo package manager
 -   **Git**: For version control and cloning the repository
@@ -53,7 +53,7 @@ Choose one of the supported LLM providers:
 
 -   **Z.AI**: `export ZAI_API_KEY=your_key_here`
     -   Get from [Z.AI Platform](https://z.ai/docs)
-    -   Models: GLM-5.3, GLM-5.3 Flash (320B/18B, hybrid attention, native vision, 1M context), GLM-5.2
+    -   Models: GLM-5.3, GLM-5.3 Flash (320B/18B, hybrid attention, native vision, 1M context), GLM-5.3 FlashX (high-speed Flash variant, up to 200 tok/s), GLM-5.2
     -   Default model: `glm-5.3`; Flash is `glm-5.3-flash` (recommended `reasoning_effort: max` / `xhigh`); see the [Z.AI provider guide](../providers/zai.md) and [GLM-5.3 Flash guide](https://docs.z.ai/guides/vlm/glm-5.3-flash)
 
 -   **Moonshot (Kimi)**: `export MOONSHOT_API_KEY=your_key_here`

@@ -12,8 +12,9 @@ pub use actions::{
     file_operation_action, file_operation_action_in, file_operation_action_is, mcp_action, mcp_action_is,
 };
 pub use activity::{
-    ShellActivity, classify_shell_activity, default_verifier_for_workspace, rewrite_truncation_only_verifier,
-    shell_command_is_admitted_verification_attempt, verification_recovery_directive,
+    GENERIC_VERIFIER_DESCRIPTION, ShellActivity, VERIFIER_SHELL_FORM_NOTE, classify_shell_activity,
+    default_verifier_for_workspace, rewrite_truncation_only_verifier, shell_args_as_executed,
+    shell_command_is_admitted_verification_attempt, verification_recovery_directive, verifier_reference,
 };
 pub use classify::{
     builtin_tool_behavior, canonical_command_session_tool_name, classify_tool_intent, is_command_run_tool,

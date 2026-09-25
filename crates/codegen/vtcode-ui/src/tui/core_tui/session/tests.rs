@@ -8,7 +8,6 @@ mod helpers;
 mod history;
 mod image_paste;
 mod input_navigation;
-mod jump_to_last_change;
 mod local_agents;
 mod misc;
 mod overlay_list;

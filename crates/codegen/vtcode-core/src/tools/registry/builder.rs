@@ -228,6 +228,7 @@ impl ToolRegistry {
             tool_call_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pty_poll_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             turn_preview_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            turn_tiny_preview_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             canonical_plans_dir: Arc::new(std::sync::OnceLock::new()),
             metrics,
             shell_policy: Arc::new(RwLock::new(ShellPolicyChecker::new())),

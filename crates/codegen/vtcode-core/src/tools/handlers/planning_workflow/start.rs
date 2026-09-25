@@ -262,7 +262,7 @@ impl Tool for StartPlanningTool {
     }
 
     fn description(&self) -> &str {
-        "Use this to suggest Planning workflow for demanding, ambiguous, or multi-phase tasks. The user must confirm entry; after confirmation, use exec_command for read-only inspection and search while mutating tools such as apply_patch remain blocked, then emit one compact <proposed_plan> for review. Do NOT call this for straightforward changes or when the implementation is already clear."
+        "Request entry into the read-only Planning workflow for demanding, ambiguous, or multi-phase tasks. Entry requires user confirmation unless the session runs in full-auto or skip-confirmations mode. While the workflow is active, exec_command accepts only read-only commands, mutating tools such as apply_patch are blocked, and the plan is kept in a file under .vtcode/plans/ (or plan_path). It is not needed for straightforward changes or when the implementation approach is already clear."
     }
 
     fn parameter_schema(&self) -> Option<Value> {

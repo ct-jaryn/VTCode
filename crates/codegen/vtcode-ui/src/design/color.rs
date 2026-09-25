@@ -80,7 +80,7 @@ pub(crate) fn hex_to_ratatui_color(hex: &str) -> Option<Color> {
     if hex.len() != 6 {
         return None;
     }
-    let mut components = hex.as_bytes().chunks_exact(2);
+    let mut components = hex.as_bytes().as_chunks::<2>().0.iter();
     let r = u8::from_str_radix(std::str::from_utf8(components.next()?).ok()?, 16).ok()?;
     let g = u8::from_str_radix(std::str::from_utf8(components.next()?).ok()?, 16).ok()?;
     let b = u8::from_str_radix(std::str::from_utf8(components.next()?).ok()?, 16).ok()?;

@@ -20,7 +20,7 @@ pub const CANONICAL_STEP_FORMAT: &str = "1. Action -> files: [path/to/file.rs] -
 /// Shared valid `verify:` examples for planning synthesis/repair prompts.
 /// `repair_feedback()` embeds this list; binary runloop constants stay
 /// compile-time literals but must keep these examples via presence tests.
-pub const PLANNING_VERIFY_VALID_EXAMPLES: &str = "`verify: [cargo nextest run -p vtcode]`, `verify: [cargo check --locked]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, `verify: [grep -n 'symbol' src/file.rs]`";
+pub const PLANNING_VERIFY_VALID_EXAMPLES: &str = "`verify: [cargo nextest run -p vtcode]`, `verify: [cargo check --locked]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, `verify: [grep -n 'symbol' src/file.rs]`, `verify: [git show --stat HEAD]`";
 
 /// Shared invalid `verify:` examples. Kept adjacent to
 /// [`PLANNING_VERIFY_VALID_EXAMPLES`] so every prompt surface pairs them.
@@ -159,7 +159,7 @@ impl PlanValidationReport {
         result.push_str("\n\nRewrite every implementation step in this canonical one-line form:\n");
         result.push_str(CANONICAL_STEP_FORMAT);
         result.push_str(&format!(
-            "\nEach step MUST name a concrete file path or symbol (not prose) and one concrete verify command or observable check. \
+            "\nEach step must name a concrete file path or symbol (not prose) and one concrete verify command or observable check. \
              Comma-separated verify entries must each be a command or an observable check; commas inside single or double quotes stay inside one item. \
              Valid examples: {PLANNING_VERIFY_VALID_EXAMPLES}. \
              Invalid examples: {PLANNING_VERIFY_INVALID_EXAMPLES}; vague prose and generic VCS-only checks do not satisfy this validator. \
@@ -773,6 +773,12 @@ fn is_invocation_cue(word: &str) -> bool {
         || word.eq_ignore_ascii_case("rerun")
 }
 
+fn is_verification_wrapper(word: &str) -> bool {
+    ["command", "execute", "invoke", "run", "use"]
+        .iter()
+        .any(|wrapper| word.eq_ignore_ascii_case(wrapper))
+}
+
 fn is_actual_command_token(raw_word: &str) -> bool {
     let word = raw_word.trim_matches(|character: char| matches!(character, '`' | '"' | '\''));
     let bare_word = word.trim_matches(|character: char| character.is_ascii_punctuation());
@@ -1015,6 +1021,103 @@ fn contains_actual_command_invocation(value: &str) -> bool {
         .any(|span| contains_actual_command_invocation(span.trim()))
 }
 
+/// History inspection can verify a review step when it selects actual evidence.
+/// Keep this narrower than the shell read-only policy: a bare Git command or
+/// whitespace check alone does not establish the step's outcome.
+fn is_git_command_token(raw_word: &str) -> bool {
+    let word = raw_word.trim_matches(|character: char| matches!(character, '`' | '"' | '\''));
+    word.rsplit([';', '&', '|'])
+        .next()
+        .unwrap_or(word)
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name| matches!(name, "git" | "git.exe"))
+}
+
+fn contains_shell_metacharacter(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| matches!(character, ';' | '&' | '|' | '$' | '`' | '<' | '>' | '\\'))
+}
+
+fn git_verification_command_start(words: &[&str]) -> Option<usize> {
+    let mut assignment_prefix_end = 0;
+    while words
+        .get(assignment_prefix_end)
+        .is_some_and(|word| is_shell_assignment_token(word))
+    {
+        assignment_prefix_end += 1;
+    }
+
+    if words.get(assignment_prefix_end).is_some_and(|word| is_git_command_token(word)) {
+        return Some(assignment_prefix_end);
+    }
+    if is_verification_wrapper(words.get(assignment_prefix_end)?)
+        && words
+            .get(assignment_prefix_end + 1)
+            .is_some_and(|word| is_git_command_token(word))
+    {
+        return Some(assignment_prefix_end + 1);
+    }
+
+    words.iter().enumerate().find_map(|(index, word)| {
+        (is_git_command_token(word)
+            && (contains_shell_metacharacter(word)
+                || words[..index].iter().any(|previous| contains_shell_metacharacter(previous))
+                || words[..index]
+                    .iter()
+                    .rev()
+                    .take(3)
+                    .any(|previous| is_invocation_cue(previous) || is_verification_wrapper(previous))))
+        .then_some(index)
+    })
+}
+
+fn is_concrete_git_verification(value: &str) -> bool {
+    if value.contains(['\n', '\r']) {
+        return false;
+    }
+    let words = verification_words(value);
+    let Some(command_start) = git_verification_command_start(&words) else {
+        return false;
+    };
+    if words[..command_start].iter().any(|prefix| contains_shell_metacharacter(prefix)) {
+        return false;
+    }
+    let Some((command, words)) = words[command_start..].split_first() else {
+        return false;
+    };
+    if !is_git_command_token(command) || contains_shell_metacharacter(command) {
+        return false;
+    }
+    let Some((subcommand, args)) = words.split_first() else {
+        return false;
+    };
+    if !matches!(*subcommand, "log" | "show" | "diff" | "blame")
+        || args.is_empty()
+        || args.iter().any(|arg| {
+            ["--check", "--output", "--ext-diff", "--exec", "--format=%x"]
+                .iter()
+                .any(|unsafe_arg| arg.contains(unsafe_arg))
+                || contains_shell_metacharacter(arg)
+        })
+    {
+        return false;
+    }
+    args.iter().enumerate().any(|(index, arg)| {
+        let arg = arg.trim_matches(|ch| matches!(ch, '\'' | '"'));
+        (arg == "--" && args.get(index + 1).is_some())
+            || (arg.starts_with('-')
+                && (["--since=", "--until=", "--author=", "--grep=", "--max-count="]
+                    .iter()
+                    .any(|prefix| arg.strip_prefix(prefix).is_some_and(|value| !value.is_empty()))
+                    || arg
+                        .strip_prefix('-')
+                        .is_some_and(|count| !count.is_empty() && count.chars().all(|ch| ch.is_ascii_digit()))))
+            || (!arg.starts_with('-') && (index == 0 || args[index - 1] != "--"))
+    })
+}
+
 /// Luu agentic-testing: fresh-context independent re-derivation counts as verification.
 /// Accepts `independent-rederive <target> (fresh context, no helper reuse)`
 /// so high-risk steps can require an oracle independent of production helpers.
@@ -1200,13 +1303,14 @@ fn validate_concrete_verification(value: &str) -> Result<(), VerificationValidat
     }
 
     let words = verification_words(value);
-    let leading_wrapper = words.first().is_some_and(|word| {
-        word.eq_ignore_ascii_case("command")
-            || word.eq_ignore_ascii_case("execute")
-            || word.eq_ignore_ascii_case("invoke")
-            || word.eq_ignore_ascii_case("run")
-            || word.eq_ignore_ascii_case("use")
-    });
+    if git_verification_command_start(&words).is_some()
+        || (value.contains(['\n', '\r']) && words.iter().any(|word| is_git_command_token(word)))
+    {
+        return is_concrete_git_verification(value)
+            .then_some(())
+            .ok_or(VerificationValidationError::NotConcrete);
+    }
+    let leading_wrapper = words.first().is_some_and(|word| is_verification_wrapper(word));
     if (words.first().is_some_and(|word| is_actual_command_token(word))
         && (words.len() > 1 || words.first().is_some_and(|word| is_pathlike_command_token(word)))
         && command_head_has_invocation_shape(words.as_slice()))
@@ -1590,7 +1694,48 @@ pub fn generate_tracker_markdown_from_plan(plan_markdown: &str) -> Option<String
 
 #[cfg(test)]
 mod agentic_testing_tests {
-    use super::{is_independent_rederivation, parse_bracket_list, split_bracket_items, validate_concrete_verification};
+    use super::{
+        is_independent_rederivation, parse_bracket_list, split_bracket_items, validate_concrete_verification,
+        validate_plan_content,
+    };
+
+    #[test]
+    fn targeted_git_history_verifies_review_plan() {
+        let plan = "## Summary\nReview the completed background-task work.\n\n## Implementation Steps\n1. Review completion changes -> files: [src/agent/runloop/unified/turn/session_loop_runner/background_completion.rs] -> verify: [git log -5 --oneline]\n2. Inspect the shipped commit -> files: [src/agent/runloop/unified/turn/session_loop_runner/support.rs] -> verify: [git show --stat HEAD]\n3. Compare the prior version -> files: [src/agent/runloop/unified/turn/session_loop_runner/support.rs] -> verify: [git diff HEAD~1 -- src/agent/runloop/unified/turn/session_loop_runner/support.rs]\n4. Trace ownership -> files: [src/agent/runloop/unified/turn/session_loop_runner/support.rs] -> verify: [git blame src/agent/runloop/unified/turn/session_loop_runner/support.rs]\n\n## Test Cases and Validation\nInspect selected history.\n\n## Assumptions and Defaults\nNo file edits are expected.";
+        let report = validate_plan_content(plan);
+        assert!(report.is_ready(), "targeted history checks should validate: {report:?}");
+        assert!(validate_concrete_verification("run git show --stat HEAD").is_ok());
+    }
+
+    #[test]
+    fn git_verification_rejects_mutation_and_unfocused_checks() {
+        for verify in [
+            "git log",
+            "git show --stat",
+            "git diff",
+            "git diff --check",
+            "git diff --check HEAD",
+            "git log --grep=",
+            "git reset --hard HEAD",
+            "git checkout main",
+            "git show HEAD; git reset --hard HEAD",
+            "please run git reset --hard HEAD",
+            "/usr/bin/git reset --hard HEAD",
+            "command /usr/bin/git reset --hard HEAD",
+            "git show HEAD\ngit reset --hard HEAD",
+            "cargo check && git reset --hard HEAD",
+            "cargo check; git reset --hard HEAD",
+            "cargo check;git reset --hard HEAD",
+            "cargo check\ngit reset --hard HEAD",
+            "review history",
+        ] {
+            assert!(validate_concrete_verification(verify).is_err(), "must reject {verify}");
+        }
+
+        for verify in ["run git show --stat HEAD", "/usr/bin/git show --stat HEAD"] {
+            assert!(validate_concrete_verification(verify).is_ok(), "must accept {verify}");
+        }
+    }
 
     #[test]
     fn independent_rederivation_counts_as_concrete_verification() {

@@ -154,7 +154,7 @@ fn defuddle_fetch_error_response(url: &str, max_bytes: usize, timeout_secs: u64,
     } else if let Some(status) = extract_http_status(&message) {
         let action = match status {
             403 | 429 => {
-                "defuddle.md rate-limited or rejected the request. Do NOT retry; the session cap is also exhausted. Use web_fetch on a known URL as a fallback."
+                "defuddle.md rate-limited or rejected the request, so a retry will hit the same limit; the session cap is also exhausted. Use web_fetch on a known URL as a fallback."
             }
             404 => {
                 "defuddle.md returned 404. The upstream service path may have changed; use web_fetch directly instead."

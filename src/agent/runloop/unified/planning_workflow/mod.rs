@@ -205,7 +205,8 @@ use crate::agent::runloop::unified::planning_workflow_state::PlanningWorkflowSes
 // core tool-handler path directly.
 pub(crate) use vtcode_core::tools::handlers::planning_workflow::{
     CANONICAL_STEP_FORMAT, PLANNING_VERIFY_INVALID_EXAMPLES, PLANNING_VERIFY_VALID_EXAMPLES, PlanValidationReport,
-    PlanningWorkflowState, merge_plan_content, persist_plan_draft, tracker_file_for_plan_file, validate_plan_content,
+    PlanningWorkflowState, allocate_plan_file_if_missing, merge_plan_content, persist_plan_draft,
+    tracker_file_for_plan_file, validate_plan_content,
 };
 
 pub(crate) async fn persisted_plan_is_ready(state: &PlanningWorkflowState) -> bool {

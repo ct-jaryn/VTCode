@@ -48,12 +48,38 @@ pub struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) context_management: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) fallbacks: Option<Vec<AnthropicFallbackParam>>,
+    pub(crate) fallbacks: Option<AnthropicFallbacksParam>,
     /// Opaque credit token returned by a refused request's `stop_details.fallback_credit_token`.
     /// Echoed on the retry to avoid paying the prompt-cache cost twice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) fallback_credit_token: Option<String>,
     pub(crate) stream: bool,
+}
+
+/// The `fallbacks` request parameter: the `"default"` keyword (Anthropic picks
+/// the fallback by refusal category) or an explicit list of entries. Each form
+/// needs its own beta header; see `headers::ServerSideFallbackForm`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum AnthropicFallbacksParam {
+    Mode(AnthropicFallbacksKeyword),
+    Models(Vec<AnthropicFallbackParam>),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AnthropicFallbacksKeyword {
+    Default,
+}
+
+impl AnthropicFallbacksParam {
+    /// Explicit entries, or an empty slice for the `"default"` form.
+    pub(crate) fn models(&self) -> &[AnthropicFallbackParam] {
+        match self {
+            Self::Mode(_) => &[],
+            Self::Models(models) => models,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -93,6 +119,11 @@ pub enum ThinkingDisplay {
     /// still carries encrypted full thinking for multi-turn continuity
     /// (default on Claude Opus 4.7).
     Omitted,
+    /// Progress-update thinking blocks (the short notes written between tool
+    /// calls) carry their text; reasoning blocks stay empty. Requires the
+    /// `thinking-display-updates-2026-08-18` beta; supported on Claude Opus
+    /// 5.5 and Claude Fable 5.x.
+    Updates,
     /// Catch-all for unknown display modes added by the Anthropic API.
     #[serde(other)]
     Unknown,
@@ -467,6 +498,10 @@ pub enum AnthropicStreamDelta {
 pub struct AnthropicMessageDelta {
     pub(crate) stop_reason: Option<String>,
     stop_sequence: Option<String>,
+    /// Refusal category, explanation and fallback-credit fields. Streaming
+    /// responses deliver `stop_details` here rather than on `message_start`.
+    #[serde(default)]
+    pub(crate) stop_details: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

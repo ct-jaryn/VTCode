@@ -6,6 +6,7 @@ use vtcode_core::exec_policy::AskForApproval;
 use vtcode_core::primary_agent::primary_agent_allows_tool;
 use vtcode_core::tools::registry::ToolExecutionError;
 use vtcode_core::tools::registry::labels::tool_action_label;
+use vtcode_core::tools::tool_intent::VERIFIER_SHELL_FORM_NOTE;
 use vtcode_core::utils::ansi::MessageStyle;
 
 use super::error_handling::tool_denial_diagnostic;
@@ -242,7 +243,20 @@ pub(crate) fn flush_preflight_circuit_recovery(ctx: &mut TurnProcessingContext<'
 /// This is flushed after all responses from the current assistant batch so a
 /// recovery directive is never interleaved with tool responses.
 pub(crate) fn flush_blocked_tool_recovery(ctx: &mut TurnProcessingContext<'_>) {
+    let preview_gate_retried = ctx.harness_state.finish_preview_gate_batch();
     if !ctx.harness_state.take_blocked_tool_recovery() {
+        if preview_gate_retried {
+            let directive = if ctx.is_planning_active() {
+                PLANNING_TOOL_FREE_RECOVERY_DIRECTIVE
+            } else {
+                "Recovery: two assistant batches attempted inspection after the tool preview budget was exhausted without an admitted tool between them. Tools are disabled for this pass. Report the evidence already visible and what remains unverified. Do not claim that all tool access was revoked; spool paging, edits, and verification were still available."
+            };
+            ctx.push_system_message(directive);
+            if ctx.harness_state.recovery_reason.is_none() {
+                ctx.harness_state.recovery_reason = Some("repeated inspection after preview exhaustion".to_string());
+            }
+            ctx.harness_state.switch_to_tool_free_recovery();
+        }
         return;
     }
 
@@ -378,17 +392,17 @@ pub(super) fn apply_reused_read_only_loop_metadata(obj: &mut serde_json::Map<Str
     let (note, next_action) = if has_meaningful_content {
         (
             "Loop detected: same result returned. The content is in the result above \u{2014} use it directly.",
-            "The tool result content is already in this response. Synthesize your answer from the available data.",
+            "The tool result content is already in this response. Continue from the available data.",
         )
     } else if has_spool_path {
         (
-            "Loop detected: same result returned. The full output was previously spooled to disk. Read the spool_path file if you need the content, or use data from your conversation history. Do NOT retry the same tool call.",
-            "Read the spool_path file for the full output, or use data from conversation history. Do not make more tool calls.",
+            "Loop detected: same result returned. The full output was previously spooled to disk; repeating the call returns it again.",
+            "Read the spool_path file for the full output, or use data already in the conversation history.",
         )
     } else {
         (
-            "Loop detected: same result returned. The previous execution produced no output. Use the data already in your conversation. Do NOT retry.",
-            "Use data from conversation history. Do not make more tool calls.",
+            "Loop detected: same result returned. The previous execution produced no output, and repeating it will not change that.",
+            "Use data already in the conversation history, or change the approach.",
         )
     };
 
@@ -427,6 +441,11 @@ pub(super) fn finalize_validation_result(
         ValidationResult::Outcome(outcome) => ValidationTransition::Return(Some(outcome)),
         ValidationResult::Handled => {
             ctx.reset_blocked_tool_call_streak();
+            ctx.harness_state.reset_preview_gate_batches();
+            ValidationTransition::Return(None)
+        }
+        ValidationResult::PreviewExhausted => {
+            ctx.harness_state.record_preview_gate_rejection();
             ValidationTransition::Return(None)
         }
         ValidationResult::Blocked => {
@@ -442,6 +461,7 @@ pub(super) fn finalize_validation_result(
         }
         ValidationResult::Proceed(prepared) => {
             ctx.reset_blocked_tool_call_streak();
+            ctx.harness_state.reset_preview_gate_batches();
             ValidationTransition::Proceed(prepared)
         }
     }
@@ -652,6 +672,35 @@ async fn handle_tool_call_inner<'a, 'b, 'tool>(
     Ok(None)
 }
 
+/// Model-facing rejection for a mutation attempted while the
+/// anti-blind-editing gate is pending. Shared by the guard-response and the
+/// direct-rejection paths so both carry the same gate description.
+fn verification_required_payload(
+    tool_name: &str,
+    pending_mutations: Option<usize>,
+    fix_edits_remaining: u8,
+    message: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "success": false,
+        "blocked": true,
+        "tool_name": tool_name,
+        "failure_kind": "anti_blind_editing_verification_required",
+        "verification_required": true,
+        "pending_mutations": pending_mutations,
+        "pending_mutation_count_known": pending_mutations.is_some(),
+        "fix_edits_remaining": fix_edits_remaining,
+        "error": message,
+        "next_action": format!(
+            "Workspace mutations are blocked until a verifier exits 0. Run your project's build/test/lint command \
+             (e.g. `cargo check --locked`, `go test ./...`, `npm test`, or `pytest -q`) with `exec_command`, standalone or as a \
+             pure `&&` chain of verifiers. {VERIFIER_SHELL_FORM_NOTE} A failed check grants \
+             {FAILED_VERIFICATION_FIX_ALLOWANCE} fix-up edits plus one diagnostic explanation before the next verification is required."
+        ),
+        "retryable": true,
+    })
+}
+
 pub(crate) fn block_mutation_until_verification(
     ctx: &mut TurnProcessingContext<'_>,
     repeated_tool_attempts: &mut super::helpers::LoopTracker,
@@ -676,7 +725,7 @@ pub(crate) fn block_mutation_until_verification(
     let message = pending_mutations.map_or_else(
         || {
             format!(
-                "Mutation blocked until verification: a mutation batch from an earlier turn is still awaiting a verifier. Run one with `exec_command` — your project's build/test/lint tool — standalone or as a pure `&&` chain; no `|`, `;`, or `||`.{fix_hint}"
+                "Mutation blocked until verification: a mutation batch from an earlier turn is still awaiting a verifier. Run one with `exec_command` — your project's build/test/lint tool — standalone or as a pure `&&` chain. {VERIFIER_SHELL_FORM_NOTE}{fix_hint}"
             )
         },
         |count| {
@@ -685,13 +734,14 @@ pub(crate) fn block_mutation_until_verification(
             // number of files touched — say so instead of claiming "file
             // changes" (session-vtcode-20260912T083718Z: counted 4 with one
             // file edited). The clearing recipe belongs in `error` itself:
-            // piped or `;`-joined verifiers never clear the gate, and the
-            // model reading the rejection must not have to guess. Examples
+            // filtering-piped or `;`-joined verifiers never clear the gate
+            // (pure `head`/`tail` pipes run standalone), and the model
+            // reading the rejection must not have to guess. Examples
             // span ecosystems because `is_verification_invocation` admits
             // cargo/go/npm/bun/deno/make/ruff/tsc/eslint/pytest/gradle/scripts/check.sh,
             // not just cargo. Docs-only prose edits stay allowed while pending.
             format!(
-                "Mutation blocked until verification: {count} mutating command(s) since the last successful verification are awaiting a verifier. Run one with `exec_command` — your project's build/test/lint tool, e.g. `cargo check`, `go test`, or `pytest` — standalone or as a pure `&&` chain; no `|`, `;`, or `||`. Docs-only edits stay allowed.{fix_hint}"
+                "Mutation blocked until verification: {count} mutating command(s) since the last successful verification are awaiting a verifier. Run one with `exec_command` — your project's build/test/lint tool, e.g. `cargo check`, `go test`, or `pytest` — standalone or as a pure `&&` chain. {VERIFIER_SHELL_FORM_NOTE} Docs-only edits stay allowed.{fix_hint}"
             )
         },
     );
@@ -718,19 +768,12 @@ pub(crate) fn block_mutation_until_verification(
                 tool_call_id,
                 Some(tool_name),
                 Some(args_val),
-                serde_json::json!({
-            "success": false,
-            "blocked": true,
-            "tool_name": tool_name,
-            "failure_kind": "anti_blind_editing_verification_required",
-            "verification_required": true,
-            "pending_mutations": pending_mutations,
-            "pending_mutation_count_known": pending_mutations.is_some(),
-            "fix_edits_remaining": repeated_tool_attempts.fix_edits_remaining,
-            "error": message,
-            "next_action": format!("Run one verification command with exec_command to exit 0 before another workspace mutation: your project's build/test/lint tool (e.g. `cargo check --locked`, `go test`, `npm test`, or `pytest`). A pure `&&` chain of verifiers also clears the gate. Do not pipe verifiers through `| head` and do not join with `;`/`||`/`|`; use `max_output_tokens` instead of pipes. Failed or piped checks do not clear the gate; a failed check grants {FAILED_VERIFICATION_FIX_ALLOWANCE} fix-up edits plus one diagnostic explanation, then requires re-verify."),
-            "retryable": true,
-                })
+                verification_required_payload(
+                    tool_name,
+                    pending_mutations,
+                    repeated_tool_attempts.fix_edits_remaining,
+                    &message,
+                )
                 .to_string(),
             );
         }
@@ -741,19 +784,12 @@ pub(crate) fn block_mutation_until_verification(
         tool_call_id,
         Some(tool_name),
         Some(args_val),
-        serde_json::json!({
-            "success": false,
-            "blocked": true,
-            "tool_name": tool_name,
-            "failure_kind": "anti_blind_editing_verification_required",
-            "verification_required": true,
-            "pending_mutations": pending_mutations,
-            "pending_mutation_count_known": pending_mutations.is_some(),
-            "fix_edits_remaining": repeated_tool_attempts.fix_edits_remaining,
-            "error": message,
-            "next_action": format!("Run one verification command with exec_command to exit 0 before another workspace mutation: your project's build/test/lint tool (e.g. `cargo check --locked`, `go test`, `npm test`, or `pytest`). A pure `&&` chain of verifiers also clears the gate. Do not pipe verifiers through `| head` and do not join with `;`/`||`/`|`; use `max_output_tokens` instead of pipes. Failed or piped checks do not clear the gate; a failed check grants {FAILED_VERIFICATION_FIX_ALLOWANCE} fix-up edits plus one diagnostic explanation, then requires re-verify."),
-            "retryable": true,
-        })
+        verification_required_payload(
+            tool_name,
+            pending_mutations,
+            repeated_tool_attempts.fix_edits_remaining,
+            &message,
+        )
         .to_string(),
     );
     Ok(MutationVerificationResult::Blocked)
