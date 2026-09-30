@@ -215,8 +215,13 @@ impl<'a> TurnProcessingContext<'a> {
         self.harness_state.is_recovery_active()
     }
 
+    #[cfg(test)]
     pub(crate) fn recovery_reason(&self) -> Option<&str> {
         self.harness_state.recovery_reason()
+    }
+
+    pub(crate) fn recovery_prompt_reason(&self) -> Option<&str> {
+        self.harness_state.recovery_prompt_reason()
     }
 
     pub(crate) fn recovery_pass_used(&self) -> bool {

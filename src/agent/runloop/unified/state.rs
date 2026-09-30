@@ -146,6 +146,8 @@ pub(crate) struct SessionStats {
     last_prompt_cache_model: Option<String>,
     last_stable_prefix_hash: Option<u64>,
     last_tool_catalog_hash: Option<u64>,
+    last_wire_tool_count: Option<usize>,
+    last_recovery_prompt_reason: Option<String>,
     last_prompt_cache_change_reason: Option<String>,
     prompt_cache_observations: usize,
     prompt_cache_model_changes: usize,
@@ -569,6 +571,8 @@ impl SessionStats {
         self.last_prompt_cache_model = None;
         self.last_stable_prefix_hash = None;
         self.last_tool_catalog_hash = None;
+        self.last_wire_tool_count = None;
+        self.last_recovery_prompt_reason = None;
         self.last_prompt_cache_change_reason = None;
         self.prompt_cache_observations = 0;
         self.prompt_cache_model_changes = 0;
@@ -854,14 +858,39 @@ impl SessionStats {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn record_prompt_cache_fingerprint(
         &mut self,
         model: &str,
         stable_prefix_hash: u64,
         tool_catalog_hash: Option<u64>,
     ) -> &'static str {
+        self.record_prompt_cache_fingerprint_with_context(model, stable_prefix_hash, tool_catalog_hash, None, None)
+    }
+
+    /// Fingerprint with recovery/wire context so cache misses can be
+    /// attributed to tool-catalog omission or `[Recovery Mode]` reason churn
+    /// instead of a generic stable-prefix change.
+    pub(crate) fn record_prompt_cache_fingerprint_with_context(
+        &mut self,
+        model: &str,
+        stable_prefix_hash: u64,
+        tool_catalog_hash: Option<u64>,
+        wire_tool_count: Option<usize>,
+        recovery_prompt_reason: Option<&str>,
+    ) -> &'static str {
         let reason = if self.last_prompt_cache_model.as_deref() != Some(model) {
             "model"
+        } else if matches!(
+            (self.last_wire_tool_count, wire_tool_count),
+            (Some(prev), Some(curr)) if prev > 0 && curr == 0
+        ) {
+            "tools_omitted"
+        } else if self.last_recovery_prompt_reason.as_deref() != recovery_prompt_reason
+            && recovery_prompt_reason.is_some()
+            && self.last_recovery_prompt_reason.is_some()
+        {
+            "recovery_reason"
         } else {
             match (
                 self.last_stable_prefix_hash == Some(stable_prefix_hash),
@@ -880,6 +909,8 @@ impl SessionStats {
         self.last_prompt_cache_model = Some(model.to_string());
         self.last_stable_prefix_hash = Some(stable_prefix_hash);
         self.last_tool_catalog_hash = tool_catalog_hash;
+        self.last_wire_tool_count = wire_tool_count;
+        self.last_recovery_prompt_reason = recovery_prompt_reason.map(str::to_string);
         self.last_prompt_cache_change_reason = Some(reason.to_string());
 
         reason
@@ -933,6 +964,9 @@ impl SessionStats {
             "stable_prefix" => &mut self.prompt_cache_stable_prefix_changes,
             "tool_catalog" => &mut self.prompt_cache_tool_catalog_changes,
             "stable_prefix+tool_catalog" => &mut self.prompt_cache_combined_changes,
+            // Attributed miss causes: tool definitions dropped from the wire,
+            // or the frozen `[Recovery Mode]` reason rotated mid-activation.
+            "tools_omitted" | "recovery_reason" => &mut self.prompt_cache_stable_prefix_changes,
             _ => &mut self.prompt_cache_unchanged,
         }
     }
@@ -1921,6 +1955,37 @@ mod tests {
                 last_stable_prefix_hash: Some(55),
                 last_tool_catalog_hash: Some(66),
             }
+        );
+    }
+
+    #[test]
+    fn prompt_cache_fingerprint_attributes_tools_omitted_and_recovery_reason() {
+        let mut stats = SessionStats::default();
+
+        assert_eq!(stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(10), None), "model");
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(10), None),
+            "unchanged"
+        );
+        // Dropping every tool from the wire is its own miss cause.
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(0), None),
+            "tools_omitted"
+        );
+        // Restoring tools then rotating the frozen recovery reason is next.
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(10), Some("loop detector")),
+            "unchanged"
+        );
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context(
+                "gpt-6",
+                1,
+                Some(2),
+                Some(10),
+                Some("blocked tool-call fuse tripped")
+            ),
+            "recovery_reason"
         );
     }
 

@@ -479,24 +479,21 @@ impl OllamaProvider {
             None
         };
 
-        let tools = match request.tool_choice {
-            Some(ToolChoice::None) => None,
-            _ => request.tools.as_ref().map(|tools| {
-                tools
-                    .iter()
-                    .filter_map(|tool| {
-                        // Normalize all tools to function type for Ollama compatibility
-                        tool.function.as_ref().map(|func| {
-                            ToolDefinition::function(
-                                func.name.clone(),
-                                func.description.clone(),
-                                func.parameters.clone(),
-                            )
-                        })
+        // Keep tool definitions on the wire even when tools are disabled so the
+        // rendered prefix stays cache-stable across recovery turns (OpenAI
+        // guidance: disable tool use with `tool_choice: "none"` rather than
+        // removing definitions).
+        let tools = request.tools.as_ref().map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| {
+                    // Normalize all tools to function type for Ollama compatibility
+                    tool.function.as_ref().map(|func| {
+                        ToolDefinition::function(func.name.clone(), func.description.clone(), func.parameters.clone())
                     })
-                    .collect()
-            }),
-        };
+                })
+                .collect()
+        });
 
         Ok(OllamaChatRequest {
             model: request.model.clone(),
@@ -1253,6 +1250,28 @@ mod tests {
         let message = &payload.messages[0];
         assert_eq!(message.content.as_deref(), Some("no images"));
         assert!(message.images.is_none());
+    }
+
+    #[test]
+    fn build_payload_keeps_tools_for_tool_choice_none() {
+        let provider = test_provider();
+        let request = LLMRequest {
+            model: "test-model".to_string(),
+            messages: vec![Message::user("hello".to_string())].into(),
+            tools: Some(std::sync::Arc::new(vec![ToolDefinition::function(
+                "get_weather".to_string(),
+                "Get the weather".to_string(),
+                json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}),
+            )])),
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+
+        let payload = provider.build_payload(&request, false).unwrap();
+        assert!(
+            payload.tools.as_ref().is_some_and(|tools| !tools.is_empty()),
+            "tool definitions stay on the wire for prompt-cache stability"
+        );
     }
 
     #[test]

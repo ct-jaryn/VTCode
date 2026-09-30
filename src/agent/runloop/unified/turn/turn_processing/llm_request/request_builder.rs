@@ -157,14 +157,13 @@ pub(super) async fn build_turn_request(
     let mut prompt_output = assemble_prompt(ctx, PromptAssemblyInput { turn: turn_snapshot }).await?;
 
     let sampling_overrides = ctx.provider_client.sampling_overrides(request_model);
-    let reasoning_effort = if !turn_snapshot.tool_free_recovery {
-        sampling_overrides
-            .reasoning_effort
-            .or(turn_snapshot.active_primary_agent.reasoning_effort)
-            .or_else(|| ctx.vt_cfg.map(|cfg| cfg.agent.reasoning_effort))
-    } else {
-        None
-    };
+    // Keep the same reasoning effort during tool-free recovery. OpenAI docs:
+    // changing `reasoning.effort` rewrites model-side instructions and busts
+    // the cached prefix even when tools and history are unchanged.
+    let reasoning_effort = sampling_overrides
+        .reasoning_effort
+        .or(turn_snapshot.active_primary_agent.reasoning_effort)
+        .or_else(|| ctx.vt_cfg.map(|cfg| cfg.agent.reasoning_effort));
     let reasoning_effort = reasoning_effort
         .and_then(|requested| {
             vtcode_core::llm::reasoning_effort::ReasoningEffortMapper::resolve_or_omit(
@@ -247,7 +246,13 @@ pub(super) async fn build_turn_request(
         &turn_snapshot.openai_prompt_cache_key_mode,
         ctx.session_stats.prompt_cache_lineage_id(),
     );
-    let selected_tools = if use_out_of_band_copilot_tools || turn_snapshot.tool_free_recovery {
+    // Keep tool definitions on the wire during tool-free recovery so the
+    // rendered prefix stays cache-stable. OpenAI guidance: disable tool use
+    // with `tool_choice: "none"` rather than removing definitions. Merge
+    // Gateway omits only the choice field (Bedrock rejects `tool_choice=none`).
+    // Client-local deferral still filters the wire set so recovery and
+    // tool-enabled turns share the same ordered catalog.
+    let selected_tools = if use_out_of_band_copilot_tools {
         None
     } else if turn_snapshot.client_local_tool_deferral {
         client_local_wire_tools(prompt_output.tool_snapshot.snapshot.clone())
@@ -299,9 +304,13 @@ pub(super) async fn build_turn_request(
     );
     let stable_prefix_hash = request_envelope.prefix_hash();
     let tool_catalog_hash = request_envelope.catalog_hash();
-    let prefix_change_reason =
-        ctx.session_stats
-            .record_prompt_cache_fingerprint(request_model, stable_prefix_hash, tool_catalog_hash);
+    let prefix_change_reason = ctx.session_stats.record_prompt_cache_fingerprint_with_context(
+        request_model,
+        stable_prefix_hash,
+        tool_catalog_hash,
+        Some(ordered_wire_tools.len()),
+        turn_snapshot.recovery_reason.as_deref(),
+    );
     // Model-change advisory: prompt caches are unique per model, so a
     // mid-session switch rebuilds the cache at full input cost even when the
     // rest of the prefix is unchanged.
@@ -591,7 +600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_request_omits_tools_and_disables_tool_choice() {
+    async fn recovery_request_keeps_tools_for_cache_and_disables_tool_choice() {
         let mut backing = TestTurnProcessingBacking::new(4).await;
         backing.select_primary_agent_from_specs(&[vtcode_config::builtin_primary_build_agent()], "build");
         backing
@@ -645,9 +654,18 @@ mod tests {
             .expect("recovery request should build");
 
         assert_eq!(normal_built.request.reasoning_effort, Some(ReasoningEffortLevel::High));
-        assert!(built.request.reasoning_effort.is_none());
-        assert!(!built.has_tools);
-        assert!(built.request.tools.is_none());
+        // Recovery keeps the same reasoning effort so the provider prefix
+        // stays cache-stable (OpenAI: changing effort rewrites instructions).
+        assert_eq!(built.request.reasoning_effort, Some(ReasoningEffortLevel::High));
+        // Tool definitions stay on the wire so the provider prefix matches
+        // tool-enabled turns; only the choice is disabled.
+        assert!(built.has_tools);
+        assert!(built.request.tools.as_ref().is_some_and(|tools| !tools.is_empty()));
+        assert_eq!(
+            request_tool_names(&built.request),
+            request_tool_names(&normal_built.request),
+            "recovery must keep the same ordered tool catalog as the prior turn"
+        );
         assert!(matches!(built.request.tool_choice, Some(uni::ToolChoice::None)));
         assert_eq!(built.request.max_tokens, Some(320));
 
@@ -656,6 +674,38 @@ mod tests {
         assert!(system_prompt.contains("do_not_request_more_tools: true"));
         assert!(system_prompt.contains("recovery_reason: loop detector"));
         assert!(!system_prompt.contains("<budget:token_budget>"));
+    }
+
+    #[tokio::test]
+    async fn recovery_prompt_reason_is_frozen_across_reason_updates() {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        backing.select_primary_agent_from_specs(&[vtcode_config::builtin_primary_build_agent()], "build");
+        backing
+            .add_tool_definition(ToolDefinition::function(
+                "code_search".to_string(),
+                "Search project files".to_string(),
+                json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+            ))
+            .await;
+
+        let mut ctx = backing.turn_processing_context();
+        ctx.activate_recovery("loop detector");
+
+        let first = capture_turn_request_snapshot(&mut ctx, "noop-model", true);
+        // A later telemetry reason must not rewrite the frozen prompt block.
+        ctx.harness_state.recovery_reason = Some("blocked tool-call fuse tripped".to_string());
+        let second = capture_turn_request_snapshot(&mut ctx, "noop-model", true);
+
+        assert_eq!(
+            first.recovery_reason.as_deref(),
+            Some("loop detector"),
+            "prompt reason must reflect the activation"
+        );
+        assert_eq!(
+            second.recovery_reason.as_deref(),
+            Some("loop detector"),
+            "prompt reason must stay frozen while the activation is live"
+        );
     }
 
     #[tokio::test]
