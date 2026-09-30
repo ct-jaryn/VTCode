@@ -36,9 +36,10 @@
 - [Documentation](#documentation)
 - [Development](#development)
 - [Contributing and community](#contributing-and-community)
+  - [Contribute](#contribute)
   - [Contributors](#contributors)
-  - [Resources](#resources)
   - [Contact](#contact)
+  - [Resources](#resources)
   - [Share VT Code](#share-vt-code)
   - [Sponsorship](#sponsorship)
 - [License](#license)
@@ -49,14 +50,14 @@
 
 VT Code is an open-source terminal coding agent built in Rust. Explore a
 codebase, plan changes, run tools, and review edits in the interactive TUI, or
-use `vtcode exec` for headless tasks. You choose the model and permissions: the
-model proposes actions, the runtime manages context, tools, and execution
-policy, and you review changes and test results before committing.
+run `vtcode exec` headless. You pick the model and permissions; the runtime
+manages context, tools, and execution policy, and you review every change
+before it lands.
 
 - **Plan and review:** read-only planning mode, then inspect edits in turn diffs.
-- **Manage long sessions:** project instructions, context compaction, session resumption, execution logs.
-- **Control tool execution:** command policy and sandboxing at the execution boundary.
-- **Choose your setup:** hosted or local models, extended with MCP servers, Agent Skills, and Plugins.
+- **Sustain long sessions:** project instructions, context compaction, resumption, execution logs.
+- **Control execution:** command policy and sandboxing at the boundary.
+- **Choose your stack:** hosted or local models, plus MCP servers, Agent Skills, and Plugins.
 
 <div align="center">
 
@@ -150,18 +151,17 @@ vtcode exec "refactor main.rs"    # headless task with the full tool loop
 vtcode review                     # agent review of uncommitted changes
 ```
 
-Before using `exec`, enable autonomous execution in `[automation.full_auto]`
-and grant the workspace `full_auto` trust. In a terminal, an untrusted workspace
-prompts for trust; in CI or another non-TTY environment, grant trust beforehand
-or set `VTCODE_TRUST_WORKSPACE=full-auto` (persistent trust, not a substitute
-for full-auto configuration) — without trust, non-TTY runs fail rather than
+`exec` needs autonomous execution enabled in `[automation.full_auto]` plus
+`full_auto` workspace trust. In a terminal, an untrusted workspace prompts for
+trust; in CI or another non-TTY environment, grant trust beforehand or set
+`VTCODE_TRUST_WORKSPACE=full-auto`; otherwise non-TTY runs fail rather than
 prompt. Full-auto's tool allow-list, explicit denies, and execution policy still
 apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust and output
 options and [full automation](./docs/guides/full-automation.md) for
 configuration.
 
-For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md),
-which run durable prompt jobs through the same exec runtime:
+For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md):
+durable prompt jobs on the same exec runtime:
 
 ```bash
 # Weekly dependency audit (Mondays 09:00)
@@ -171,7 +171,7 @@ vtcode schedule create --name "weekly-dep-audit" \
 ```
 
 For repeatable, environment-checked results, use the
-[eval framework](./docs/guides/eval.md); a completion message alone is not
+[eval framework](./docs/guides/eval.md): a completion message alone is not
 verification.
 
 ### Session management
@@ -193,31 +193,34 @@ for all commands and flags.
 
 ### Optional integrations
 
-Enable these only when you need them; they are not required for the quick start.
+Enable these only when you need them; none are required for the quick start.
 
-- **Tools and extensions:** connect [MCP servers](./docs/guides/mcp-integration.md),
-  load [Agent Skills](./docs/skills/SKILLS_GUIDE.md), or install
+- **Tools and extensions:** [MCP servers](./docs/guides/mcp-integration.md),
+  [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
   [Plugins](./docs/guides/agent-plugins.md).
-- **Editors:** use [ACP with Zed](./docs/guides/zed-acp.md).
-- **Cross-thread memory:** opt into [Memcode MCP](./docs/guides/memcode-mcp.md)
-  to carry context between tasks, choosing what is saved and when it is used.
-  See the [Memcode write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
-- **Browser editing:** opt into WebMCP to pair the TUI with an authenticated
-  browser editor:
+- **Editors:** [ACP with Zed](./docs/guides/zed-acp.md).
+- **Cross-thread memory:** [Memcode MCP](./docs/guides/memcode-mcp.md) carries
+  context between tasks; see the
+  [write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
+- **Browser editing:** [WebMCP](./docs/user-guide/webmcp.md) pairs the TUI with
+  an authenticated browser editor:
 
 ```bash
 /webmcp pair <origin>    # inside the TUI
 ```
 
 The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
-([mirror](https://vinhnx.github.io/VTCode/)) pairs with this authenticated,
-workspace-scoped bridge — not unrestricted filesystem access. Hosts and
+([mirror](https://vinhnx.github.io/VTCode/)) pairs over this authenticated,
+workspace-scoped bridge, not unrestricted filesystem access. Hosts and
 deployment: [WebMCP user guide](./docs/user-guide/webmcp.md) ·
 [deployment reference](./docs/reference/webmcp.md).
 
 ## Documentation
 
-Guides by task:
+Guides by task; the full catalog lives in the
+[documentation index](./docs/INDEX.md), the
+[docs overview](./docs/README.md), and the
+[Wiki](https://github.com/vinhnx/VTCode/wiki):
 
 | Goal | Guides |
 | --- | --- |
@@ -226,9 +229,6 @@ Guides by task:
 | Automate tasks | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md) |
 | Extend VT Code | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md) |
 | Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) |
-
-Full catalog: [documentation index](./docs/INDEX.md) ·
-[docs overview](./docs/README.md) · [Wiki](https://github.com/vinhnx/VTCode/wiki).
 
 ## Development
 
@@ -245,7 +245,7 @@ graph LR
 ```
 
 Full 23-crate workspace map: [Architecture guide](./docs/ARCHITECTURE.md).
-Requires Rust 1.98.1 or later (edition 2024) and `cargo-nextest` for tests:
+Requires Rust 1.98.1+ (edition 2024) and `cargo-nextest` for tests:
 
 ```bash
 git clone https://github.com/vinhnx/VTCode.git
@@ -255,8 +255,8 @@ cd VTCode
 cargo nextest run          # tests (requires cargo-nextest)
 ```
 
-CI uses `RUSTFLAGS="-D warnings"` and `--locked`; match locally with
-`RUSTFLAGS="-D warnings" cargo check --locked`. Setup and checks:
+CI sets `RUSTFLAGS="-D warnings"` and builds with `--locked`; match locally
+with `RUSTFLAGS="-D warnings" cargo check --locked`. Setup and checks:
 [development overview](./docs/development/README.md) ·
 [testing guide](./docs/development/testing.md).
 
@@ -264,11 +264,13 @@ Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/r
 
 ## Contributing and community
 
+### Contribute
+
 Contributions are welcome:
 
 - **Code**: pick or propose an issue; keep changes surgical and tested.
 - **Docs**: every user-facing feature lands with its documentation.
-- **Evals**: new suites and regression cases are high-leverage —
+- **Evals**: new suites and regression cases are high-leverage; see the
   [eval guide](./docs/guides/eval.md).
 - **Bug reports**: include `vtcode trajectory` output when possible.
 
@@ -279,7 +281,7 @@ focused diff.
 ### Contributors
 
 VT Code is what it is because of the people who build, test, and improve it
-alongside me. Thank you, all of you.
+alongside me; thank you, all of you.
 
 <!-- CONTRIBUTORS:START -->
 
@@ -334,23 +336,23 @@ reports, and feedback are all welcome.
 
 ### Contact
 
-Partnership and collaboration: `vinhnguyen2308 [at] gmail [dot] com`.
-Bugs and feature requests: [GitHub Issues](https://github.com/vinhnx/VTCode/issues).
+Partnerships and collaboration: `vinhnguyen2308 [at] gmail [dot] com`. Bugs and
+feature requests: [GitHub Issues](https://github.com/vinhnx/VTCode/issues).
 Security vulnerabilities: report privately via
 [GitHub private vulnerability reporting](https://github.com/vinhnx/VTCode/security/advisories/new);
 never open a public issue. Details: [security policy](./docs/SECURITY.md).
 
 ### Resources
 
-- [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in)
-  — harness design, evals, security, and lessons learned.
+- [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in):
+  harness design, evals, security, lessons learned.
 - [Podcast](https://www.youtube.com/watch?v=XLoswcd5rH0) ·
   [Video](https://www.youtube.com/watch?v=PvL_kPjgU6o)
 
 ### Share VT Code
 
 If VT Code helped you ship something, telling other developers is the easiest
-way to support the project:
+way to support it:
 
 [Share on X](https://twitter.com/intent/tweet?text=VT%20Code%20is%20an%20open-source%20coding%20agent%20for%20your%20terminal&url=https%3A%2F%2Fgithub.com%2Fvinhnx%2Fvtcode) ·
 [Share on Hacker News](https://news.ycombinator.com/submitlink?u=https%3A%2F%2Fgithub.com%2Fvinhnx%2Fvtcode&t=VT%20Code%20%E2%80%93%20Open-source%20coding%20agent%20for%20your%20terminal) ·
@@ -361,7 +363,7 @@ way to support the project:
 ### Sponsorship
 
 VT Code is maintained in spare time; a
-[sponsorship](https://github.com/sponsors/vinhnx) keeps the project independent.
+[sponsorship](https://github.com/sponsors/vinhnx) keeps it independent.
 
 <a href="https://github.com/dnhn"><img src="https://avatars.githubusercontent.com/u/2561973" width="80" height="80" alt="@dnhn" style="border-radius: 50%" /></a>
 <a href="https://github.com/codemod"><img src="https://avatars.githubusercontent.com/u/78830094" width="80" height="80" alt="@codemod" style="border-radius: 50%" /></a>
