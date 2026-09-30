@@ -578,6 +578,8 @@ pub(crate) struct HarnessTurnState {
     /// Catches paginated reads of the same file that the slice-aware family
     /// key lets through. Reset every turn.
     file_read_path_counts: HashMap<String, usize>,
+    /// Batch validation reserves the one path-cap exception before execution.
+    claimed_patch_recovery_paths: HashSet<std::path::PathBuf>,
     pub(crate) seen_successful_readonly_signatures: HashSet<String>,
     streamed_tool_call_item_ids: HashMap<String, StreamedToolCallItem>,
     /// Turn-local memo of failure diagnoses. Fix-verify loops re-hit the
@@ -742,6 +744,7 @@ impl HarnessTurnState {
             consecutive_same_file_read_family_calls: 0,
             last_file_read_family_signature: None,
             file_read_path_counts: HashMap::new(),
+            claimed_patch_recovery_paths: HashSet::new(),
             seen_successful_readonly_signatures: HashSet::new(),
             streamed_tool_call_item_ids: HashMap::new(),
             failure_diagnosis_memo: HashMap::new(),
@@ -1614,6 +1617,11 @@ impl HarnessTurnState {
     pub(crate) fn reset_file_read_family_streak(&mut self) {
         self.last_file_read_family_signature = None;
         self.consecutive_same_file_read_family_calls = 0;
+    }
+
+    /// Reserve the one path-cap exception before a batch starts executing.
+    pub(crate) fn claim_patch_recovery_path(&mut self, path: std::path::PathBuf) -> bool {
+        self.claimed_patch_recovery_paths.insert(path)
     }
 
     /// Record a read of `path` and return the total count of reads for that

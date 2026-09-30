@@ -446,7 +446,11 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
     // query-aware family cap above, not pagination.
     if let Some(path) = repeated_read_path(canonical_tool_name, effective_args) {
         let path_count = ctx.harness_state.record_file_read_path_call(path.clone());
-        if path_count > path_cap {
+        let recovery_allowed = ctx
+            .tool_registry
+            .pending_patch_recovery_read_path(canonical_tool_name, effective_args)
+            .is_some_and(|path| ctx.harness_state.claim_patch_recovery_path(path));
+        if path_count > path_cap && !recovery_allowed {
             let block_reason = format!(
                 "Repeated reads of '{path}' hit the per-file-path cap ({path_cap}), so further reads of this path are blocked for the rest of this turn. Reads of other paths, edits, and other useful actions remain available; continue from the evidence already gathered."
             );
@@ -460,6 +464,13 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
             push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
             return Some(ValidationResult::Blocked);
         }
+    }
+
+    // Recovery still advances family/path counters and retains their limits.
+    // The registry consumes the allowance only on execution, bypassing both
+    // replay reuse here and its own caches without discarding loop history.
+    if ctx.tool_registry.has_patch_recovery_read(canonical_tool_name, effective_args) {
+        return None;
     }
 
     // Cap-first: exact duplicates, cross-turn TTL matches, and history

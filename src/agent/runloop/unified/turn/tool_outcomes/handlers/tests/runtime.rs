@@ -2169,3 +2169,281 @@ async fn failed_apply_patch_does_not_arm_read_after_write_guard() {
         "reads must stay available after a failed mutation"
     );
 }
+
+#[tokio::test]
+async fn patch_context_mismatch_gets_one_fresh_read_after_path_cap_then_corrected_edit() {
+    let mut backing = TestContextBacking::new(30).await;
+    backing.select_build_primary_agent();
+    let sample_file = backing.sample_file.clone();
+    std::fs::write(&sample_file, "old evidence\nsecond line\nthird line\n").expect("fixture");
+    let sample_path = sample_file.to_string_lossy().to_string();
+    let read_args = json!({"path":sample_path, "offset":1, "limit":2});
+    cache_tool_permission(&mut backing, tool_names::READ_FILE, &read_args, PermissionGrant::Permanent).await;
+    let bad_patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-vtcode.toml provider credentials\n+edited\n*** End Patch\n"});
+    cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &bad_patch, PermissionGrant::Permanent).await;
+    let mut repeated_tool_attempts = LoopTracker::new();
+    let mut turn_modified_files = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut repeated_tool_attempts,
+        turn_modified_files: &mut turn_modified_files,
+    };
+    handle_single_tool_call(&mut outcome_ctx, "initial_read", tool_names::READ_FILE, read_args.clone())
+        .await
+        .expect("seed cache");
+    assert!(
+        outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .any(|message| message.content.as_text().contains("old evidence"))
+    );
+    // Fill the path counter without tripping the independent identical-slice guard.
+    for _ in 1..6 {
+        outcome_ctx.ctx.harness_state.record_file_read_path_call(sample_path.clone());
+    }
+    // Simulate external file changes; a replay would return the previous text.
+    std::fs::write(&sample_file, "fresh evidence\nsecond line\nthird line\n").expect("external update");
+    handle_single_tool_call(&mut outcome_ctx, "mismatched_patch", tool_names::APPLY_PATCH, bad_patch.clone())
+        .await
+        .expect("typed patch mismatch");
+    assert_eq!(std::fs::read_to_string(&sample_file).unwrap(), "fresh evidence\nsecond line\nthird line\n");
+    assert!(
+        outcome_ctx
+            .ctx
+            .tool_registry
+            .has_patch_recovery_read(tool_names::READ_FILE, &read_args)
+    );
+    let history_start = outcome_ctx.ctx.working_history.len();
+    handle_single_tool_call(&mut outcome_ctx, "fresh_recovery_read", tool_names::READ_FILE, read_args.clone())
+        .await
+        .expect("one read beyond cap");
+    let outputs = outcome_ctx.ctx.working_history[history_start..]
+        .iter()
+        .map(|message| message.content.as_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(outputs.contains("fresh evidence"), "{outputs}");
+    assert!(!outputs.contains("old evidence"), "cached evidence must not be reused: {outputs}");
+    assert!(!outputs.contains("reused_recent_result"), "{outputs}");
+    assert!(
+        !outcome_ctx
+            .ctx
+            .tool_registry
+            .has_patch_recovery_read(tool_names::READ_FILE, &read_args)
+    );
+    // Another failure on the same path must not replenish the allowance.
+    handle_single_tool_call(&mut outcome_ctx, "repeated_mismatch", tool_names::APPLY_PATCH, bad_patch)
+        .await
+        .expect("second mismatch");
+    assert!(
+        !outcome_ctx
+            .ctx
+            .tool_registry
+            .has_patch_recovery_read(tool_names::READ_FILE, &read_args)
+    );
+    let before_block = outcome_ctx.ctx.tool_registry.execution_history_len();
+    handle_single_tool_call(&mut outcome_ctx, "second_recovery_read", tool_names::READ_FILE, read_args)
+        .await
+        .expect("read cap rejection");
+    assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), before_block);
+    assert!(
+        outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .any(|message| message.content.as_text().contains("repeated_read_path"))
+    );
+    let corrected = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-fresh evidence\n+edited evidence\n*** End Patch\n"});
+    handle_single_tool_call(&mut outcome_ctx, "corrected_patch", tool_names::APPLY_PATCH, corrected)
+        .await
+        .expect("corrected edit");
+    assert_eq!(std::fs::read_to_string(&sample_file).unwrap(), "edited evidence\nsecond line\nthird line\n");
+    assert!(!outcome_ctx.turn_modified_files.is_empty(), "successful mutation must be reported");
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+}
+
+#[test]
+fn patch_preflight_correction_names_canonical_json_input() {
+    for (name, error) in [
+        (tool_names::APPLY_PATCH, "Missing required argument: input"),
+        (tool_names::EXEC_COMMAND, "apply_patch is a tool, not a shell executable"),
+    ] {
+        let correction = preflight_schema_correction(name, error);
+        assert!(correction.contains(r#"{"input":"*** Begin Patch\n"#));
+        assert!(correction.contains("retry once"));
+        assert!(correction.contains("do not run apply_patch in a shell"));
+    }
+}
+
+#[tokio::test]
+async fn patch_context_mismatch_allows_one_uncached_shell_range_after_six_reads() {
+    let mut backing = TestContextBacking::new(30).await;
+    backing.select_build_primary_agent();
+    let sample_file = backing.sample_file.clone();
+    std::fs::write(&sample_file, "old shell evidence\nsecond\nthird\nfourth\nfifth\nsixth\n").unwrap();
+    let sample_path = sample_file.to_string_lossy().to_string();
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-vtcode.toml credentials\n+edited\n*** End Patch\n"});
+    cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &patch, PermissionGrant::Permanent).await;
+    let mut repeated_tool_attempts = LoopTracker::new();
+    let mut turn_modified_files = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut repeated_tool_attempts,
+        turn_modified_files: &mut turn_modified_files,
+    };
+    for index in 1..=6 {
+        handle_single_tool_call(
+            &mut outcome_ctx,
+            &format!("shell_page_{index}"),
+            tool_names::EXEC_COMMAND,
+            json!({"cmd":format!("sed -n '{index},{index}p' {sample_path}")}),
+        )
+        .await
+        .unwrap();
+    }
+    std::fs::write(&sample_file, "fresh shell evidence\nsecond\nthird\nfourth\nfifth\nsixth\n").unwrap();
+    handle_single_tool_call(&mut outcome_ctx, "shell_patch_mismatch", tool_names::APPLY_PATCH, patch)
+        .await
+        .unwrap();
+    let args = json!({"cmd":format!("sed -n '1,1p' {sample_path}")});
+    assert!(
+        outcome_ctx
+            .ctx
+            .tool_registry
+            .has_patch_recovery_read(tool_names::EXEC_COMMAND, &args)
+    );
+    let start = outcome_ctx.ctx.working_history.len();
+    handle_single_tool_call(&mut outcome_ctx, "fresh_shell_range", tool_names::EXEC_COMMAND, args.clone())
+        .await
+        .unwrap();
+    let outputs = outcome_ctx.ctx.working_history[start..]
+        .iter()
+        .map(|message| message.content.as_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(outputs.contains("fresh shell evidence"), "{outputs}");
+    assert!(!outputs.contains("old shell evidence"), "{outputs}");
+    assert!(!outputs.contains("repeated_read_path"), "{outputs}");
+    assert!(
+        !outcome_ctx
+            .ctx
+            .tool_registry
+            .has_patch_recovery_read(tool_names::EXEC_COMMAND, &args)
+    );
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-fresh shell evidence\n+edited shell evidence\n*** End Patch\n"});
+    handle_single_tool_call(&mut outcome_ctx, "fixed_shell_patch", tool_names::APPLY_PATCH, patch)
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&sample_file)
+            .unwrap()
+            .starts_with("edited shell evidence\n")
+    );
+}
+
+#[tokio::test]
+async fn patch_recovery_path_cap_exception_is_reserved_before_batch_execution() {
+    for prior_reads in [5, 6] {
+        let mut backing = TestContextBacking::new(30).await;
+        backing.select_build_primary_agent();
+        let sample_path = backing.sample_file.to_string_lossy().to_string();
+        let bad_patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-missing context\n+edited\n*** End Patch\n"});
+        cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &bad_patch, PermissionGrant::Permanent).await;
+        let read_args = json!({"path":sample_path, "offset":1, "limit":2});
+        cache_tool_permission(&mut backing, tool_names::READ_FILE, &read_args, PermissionGrant::Permanent).await;
+        let mut repeated_tool_attempts = LoopTracker::new();
+        let mut turn_modified_files = BTreeSet::new();
+        let mut ctx = backing.turn_processing_context();
+        let mut outcome_ctx = ToolOutcomeContext {
+            ctx: &mut ctx,
+            repeated_tool_attempts: &mut repeated_tool_attempts,
+            turn_modified_files: &mut turn_modified_files,
+        };
+        handle_single_tool_call(&mut outcome_ctx, "mismatch", tool_names::APPLY_PATCH, bad_patch)
+            .await
+            .expect("typed mismatch");
+        for _ in 0..prior_reads {
+            outcome_ctx.ctx.harness_state.record_file_read_path_call(sample_path.clone());
+        }
+        let history_len = outcome_ctx.ctx.tool_registry.execution_history_len();
+        let first = validate_tool_call(outcome_ctx.ctx, "first_batch_read", tool_names::READ_FILE, &read_args)
+            .await
+            .expect("first batch admission");
+        assert!(matches!(first, ValidationResult::Proceed(_)), "prior reads: {prior_reads}");
+        let second = validate_tool_call(
+            outcome_ctx.ctx,
+            "second_batch_read",
+            tool_names::READ_FILE,
+            &json!({"path":sample_path, "offset":3, "limit":2}),
+        )
+        .await
+        .expect("second batch admission");
+        assert!(matches!(second, ValidationResult::Blocked), "prior reads: {prior_reads}");
+        assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), history_len);
+        assert!(
+            outcome_ctx
+                .ctx
+                .tool_registry
+                .has_patch_recovery_read(tool_names::READ_FILE, &read_args)
+        );
+    }
+}
+
+#[tokio::test]
+async fn patch_recovery_rejects_ignored_limit_alias_at_the_path_cap() {
+    let mut backing = TestContextBacking::new(30).await;
+    backing.select_build_primary_agent();
+    let path = backing.sample_file.to_string_lossy().to_string();
+    std::fs::write(&backing.sample_file, (1..=400).map(|line| format!("fixture-{line}\n")).collect::<String>())
+        .unwrap();
+    let bad_patch =
+        json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-missing\n+edited\n*** End Patch\n"});
+    cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &bad_patch, PermissionGrant::Permanent).await;
+    let bounded = json!({"path":path, "limit":1, "condense":false});
+    cache_tool_permission(&mut backing, tool_names::READ_FILE, &bounded, PermissionGrant::Permanent).await;
+    let mut repeated_tool_attempts = LoopTracker::new();
+    let mut turn_modified_files = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut repeated_tool_attempts,
+        turn_modified_files: &mut turn_modified_files,
+    };
+    handle_single_tool_call(&mut outcome_ctx, "mismatch", tool_names::APPLY_PATCH, bad_patch)
+        .await
+        .unwrap();
+    for _ in 0..6 {
+        outcome_ctx.ctx.harness_state.record_file_read_path_call(path.clone());
+    }
+    let history_len = outcome_ctx.ctx.tool_registry.execution_history_len();
+    handle_single_tool_call(
+        &mut outcome_ctx,
+        "ignored_limit",
+        tool_names::READ_FILE,
+        json!({"path":path, "limit_lines":1, "condense":false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), history_len);
+    assert!(
+        outcome_ctx
+            .ctx
+            .tool_registry
+            .has_patch_recovery_read(tool_names::READ_FILE, &bounded)
+    );
+    let history_start = outcome_ctx.ctx.working_history.len();
+    handle_single_tool_call(&mut outcome_ctx, "bounded_read", tool_names::READ_FILE, bounded)
+        .await
+        .unwrap();
+    let output = outcome_ctx.ctx.working_history[history_start..]
+        .iter()
+        .map(|message| message.content.as_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(output.contains("fixture-1"), "{output}");
+    assert!(!output.contains("fixture-201"), "{output}");
+    assert!(!output.contains("fixture-400"), "{output}");
+}

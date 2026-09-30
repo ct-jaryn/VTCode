@@ -217,3 +217,11 @@ What do you want to find?
   section.
 - System prompt: agent instructions for grep usage
 - ripgrep docs: https://github.com/BurntSushi/ripgrep
+
+## Edit after inspection
+
+| Situation | Tool call |
+| --- | --- |
+| Authorized edit | Call `apply_patch` directly with `{"input":"*** Begin Patch\n...\n*** End Patch\n"}`; `patch` is an alias. Never run it through the shell. |
+| Context mismatch | One fresh range per affected path per turn, such as `exec_command` with `{"cmd":"sed -n '1,100p' src/example.rs"}`; copy exact current context. |
+| Path read cap reached | A typed patch context mismatch permits that one bounded fresh read; repeated failures cannot replenish it. Other limits and permission checks still apply. |

@@ -75,6 +75,17 @@ pub struct ReadFileArgs {
     pub page_size_bytes: Option<usize>,
 }
 
+impl ReadFileArgs {
+    /// Effective line request before the absolute cap is applied.
+    pub(crate) fn effective_line_limit(&self) -> usize {
+        if matches!(self.mode, ReadMode::Slice) && self.max_tokens.is_none() {
+            self.limit.max(MIN_BATCH_LIMIT)
+        } else {
+            self.limit
+        }
+    }
+}
+
 /// A range specification for reading.
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ReadRange {
@@ -235,13 +246,14 @@ impl ReadFileHandler {
     }
 
     pub(crate) async fn handle_detailed(&self, args: ReadFileArgs) -> Result<ReadFileOutcome> {
+        let effective_limit = args.effective_line_limit();
         let ReadFileArgs {
             file_path,
             offset,
             limit,
             mode,
             indentation,
-            max_tokens,
+            max_tokens: _,
             condense,
             offset_bytes,
             page_size_bytes,
@@ -262,12 +274,6 @@ impl ReadFileHandler {
         anyhow::ensure!(limit > 0, "limit must be greater than zero");
 
         let absolute_max = crate::tools::read_limits::absolute_line_cap();
-
-        let effective_limit = if matches!(mode, ReadMode::Slice) && max_tokens.is_none() && limit < MIN_BATCH_LIMIT {
-            MIN_BATCH_LIMIT
-        } else {
-            limit
-        };
 
         // Absolute hard cap: no single line-based read may return more than
         // `absolute_max` lines, even when the caller requests a larger `limit`.

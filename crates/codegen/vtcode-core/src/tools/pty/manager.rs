@@ -433,15 +433,24 @@ impl PtyManager {
         Ok(result)
     }
 
-    pub async fn resolve_working_dir(&self, requested: Option<&str>) -> Result<PathBuf> {
+    /// Lexical cwd shared by launch validation and recovery target lookup.
+    pub(crate) fn working_dir_candidate(&self, requested: Option<&str>) -> Result<PathBuf> {
         let requested = match requested {
             Some(dir) if !dir.trim().is_empty() => dir.trim(),
             _ => return Ok(self.workspace_root.clone()),
         };
 
         let candidate = self.workspace_root.join(requested);
-        let normalized = ensure_path_within_workspace(&candidate, &self.workspace_root)
-            .map_err(|e| anyhow!("Working directory '{}' escapes the workspace root: {e}", candidate.display()))?;
+        ensure_path_within_workspace(&candidate, &self.workspace_root)
+            .map_err(|e| anyhow!("Working directory '{}' escapes the workspace root: {e}", candidate.display()))
+    }
+
+    pub async fn resolve_working_dir(&self, requested: Option<&str>) -> Result<PathBuf> {
+        let normalized = self.working_dir_candidate(requested)?;
+        if requested.is_none_or(|dir| dir.trim().is_empty()) {
+            return Ok(normalized);
+        }
+        let candidate = &normalized;
         // Symlink-aware containment: a symlinked directory inside the
         // workspace must not move the command cwd outside it.
         vtcode_commons::paths::ensure_path_within_workspace_resolved(&normalized, &self.workspace_root)

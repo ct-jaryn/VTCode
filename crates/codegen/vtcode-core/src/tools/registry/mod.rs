@@ -39,6 +39,7 @@ mod optimization_facade;
 mod output_processing;
 mod pack;
 mod pack_impls;
+mod patch_recovery;
 mod planning_workflow_checks;
 mod planning_workflow_facade;
 mod policy;
@@ -154,6 +155,7 @@ pub struct ToolRegistry {
     mcp_reverse_index: Arc<tokio::sync::RwLock<FxHashMap<String, String>>>,
     timeout_policy: Arc<parking_lot::RwLock<ToolTimeoutPolicy>>,
     execution_history: ToolExecutionHistory,
+    patch_recovery_reads: Arc<Mutex<patch_recovery::PatchRecoveryReads>>,
     harness_context: HarnessContext,
 
     // Mutable runtime state wrapped for concurrent access

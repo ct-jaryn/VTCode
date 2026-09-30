@@ -86,3 +86,16 @@ pub enum PatchError {
         original: Box<PatchError>,
     },
 }
+
+impl PatchError {
+    /// Only exact text/context failures qualify for a fresh recovery read.
+    pub fn context_mismatch(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::ContextNotFound { path, context } => Some((path, context)),
+            Self::SegmentNotFound { path, snippet } => Some((path, snippet)),
+            Self::RolledBack { original } => original.context_mismatch(),
+            // A failed rollback requires resolving partial state first.
+            _ => None,
+        }
+    }
+}

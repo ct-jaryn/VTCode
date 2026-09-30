@@ -220,7 +220,7 @@ impl ToolRegistry {
                     path,
                 )
                 .await
-                .map_err(|err| anyhow!("Failed to plan patch output for {}: {err}", canonical_path.display()))?;
+                .with_context(|| format!("Failed to plan patch output for {}", canonical_path.display()))?;
 
                 let mut writes = Vec::new();
                 if let Some(destination) = new_path.as_ref().filter(|candidate| candidate.as_str() != path.as_str()) {

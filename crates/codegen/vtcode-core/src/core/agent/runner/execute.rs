@@ -508,6 +508,7 @@ impl AgentRunner {
 
     /// Execute a task with this agent
     pub async fn execute_task(&mut self, task: &Task, contexts: &[ContextItem]) -> Result<TaskResults> {
+        self.tool_registry.begin_patch_recovery_turn();
         // Phase 1: Setup — harness alignment, conversation building, session init,
         // orchestration planning. Extracted to `prepare_task_execution` for testability.
         let setup = self.prepare_task_execution(task, contexts).await?;

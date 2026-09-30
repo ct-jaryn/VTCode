@@ -45,7 +45,7 @@ pub const DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION: &str = "Patch in VT Code format
 /// and states the unified-diff rejection and path rules as plain facts
 /// instead of shouted warnings. Registration sites append
 /// [`SEMANTIC_ANCHOR_GUIDANCE`] via [`with_semantic_anchor_guidance`].
-pub const APPLY_PATCH_TOOL_DESCRIPTION: &str = "Apply a patch in VT Code format (*** Begin Patch / *** Update File: path / @@ hunks with -/+ lines / *** End Patch); standard unified diffs (---/+++ format) are rejected. *** Add File: path, *** Delete File: path, and *** Move to: path (after *** Update File) are also supported. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected. Changes are applied after permission checks.";
+pub const APPLY_PATCH_TOOL_DESCRIPTION: &str = "Apply a patch in VT Code format (*** Begin Patch / *** Update File: path / @@ hunks with -/+ lines / *** End Patch); standard unified diffs (---/+++ format) are rejected. *** Add File: path, *** Delete File: path, and *** Move to: path (after *** Update File) are also supported. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected. Changes are applied after permission checks. Call this tool directly instead of through a shell; JSON calls use input (patch is an alias). Context/deletion lines match exactly. A typed context mismatch permits one fresh bounded file read range per affected path per turn; other limits remain authoritative.";
 
 /// Default model-visible preview budget for function-tool results.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
@@ -432,6 +432,9 @@ mod tests {
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("unified diffs"));
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("workspace-relative"));
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("permission checks"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("JSON calls use input (patch is an alias)"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("Context/deletion lines match exactly"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("one fresh bounded file read range"));
         for description in [
             APPLY_PATCH_TOOL_DESCRIPTION,
             APPLY_PATCH_ALIAS_DESCRIPTION,

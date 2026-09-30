@@ -868,7 +868,7 @@ fn is_core_tool_entry(entry: &ToolCatalogEntry, config: &SessionToolsConfig) -> 
     //
     // Always-eager set is the Codex baseline plus structured search
     // (HarnessTax lean defaults, revised 2026-09-28): `exec_command`,
-    // `write_stdin`, `search_tools`, `apply_patch` when supported, and
+    // `write_stdin`, `search_tools`, `apply_patch` in its supported representation, and
     // `code_search`/`grep_file`. Session data showed deferred structured
     // search is worse for cost than the extra schema tokens — models shell
     // out via `rg`/`git` and feed huge outputs into the prompt.
@@ -884,7 +884,7 @@ fn is_core_tool_entry(entry: &ToolCatalogEntry, config: &SessionToolsConfig) -> 
         }
         tools::MEMORY => config.anthropic_native_memory_enabled,
         tools::REQUEST_USER_INPUT => config.request_user_input_enabled,
-        tools::APPLY_PATCH => config.model_capabilities.supports_apply_patch_tool,
+        tools::APPLY_PATCH => true,
         _ => false,
     }
 }
@@ -1539,6 +1539,43 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_stays_eager_for_json_and_native_models_under_deferral() {
+        let patch = registration(tools::APPLY_PATCH)
+            .with_llm_visibility(false)
+            .with_description("Apply patch")
+            .with_parameter_schema(apply_patch_parameters())
+            .with_behavior(ToolBehavior::apply_patch(ToolMutationModel::Mutating, false, true));
+        let catalog = SessionToolCatalog::rebuild_from_registrations(vec![patch]);
+        for native in [false, true] {
+            for policy in [
+                DeferredToolPolicy::client_local(Vec::new()),
+                DeferredToolPolicy::anthropic(ToolSearchAlgorithm::Regex, Vec::new()),
+            ] {
+                let config = SessionToolsConfig::full_public(
+                    SessionSurface::AgentRunner,
+                    CapabilityLevel::CodeSearch,
+                    ToolDocumentationMode::Full,
+                    ToolModelCapabilities { supports_apply_patch_tool: native },
+                )
+                .with_deferred_tool_policy(policy);
+                let definitions = catalog.model_tools(config.clone());
+                let patch = definitions
+                    .iter()
+                    .find(|tool| tool.function_name() == tools::APPLY_PATCH)
+                    .expect("patch stays available");
+                assert_eq!(patch.defer_loading, None);
+                assert_eq!(patch.tool_type, if native { "apply_patch" } else { "function" });
+                assert!(
+                    !catalog
+                        .model_tools(config.with_planning_active(true))
+                        .iter()
+                        .any(|tool| tool.function_name() == tools::APPLY_PATCH)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn agent_runner_default_hides_legacy_browse_tools() {
         let read_file = registration(tools::READ_FILE)
             .with_llm_visibility(false)
@@ -1925,7 +1962,7 @@ mod tests {
             .iter()
             .find(|tool| tool.function_name() == tools::APPLY_PATCH)
             .expect("apply_patch fallback should be present");
-        assert_eq!(apply_patch.defer_loading, Some(true));
+        assert_eq!(apply_patch.defer_loading, None);
 
         let mcp_tool = definitions
             .iter()

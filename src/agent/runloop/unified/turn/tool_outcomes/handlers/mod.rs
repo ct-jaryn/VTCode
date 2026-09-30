@@ -197,6 +197,9 @@ pub(crate) fn handle_preflight_failure(
 }
 
 fn preflight_schema_correction(tool_name: &str, error: &str) -> String {
+    if tool_name == tool_names::APPLY_PATCH || error.contains("apply_patch is a tool") {
+        return vtcode_core::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION.to_string();
+    }
     if matches!(tool_name, tool_names::EXEC_COMMAND | tool_names::UNIFIED_EXEC | "command_session")
         && error.contains("dynamic shell expansion in find commands")
     {

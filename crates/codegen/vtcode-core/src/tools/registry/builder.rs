@@ -229,6 +229,7 @@ impl ToolRegistry {
             mcp_reverse_index: Arc::new(tokio::sync::RwLock::new(mcp_reverse_index)),
             timeout_policy: Arc::new(parking_lot::RwLock::new(ToolTimeoutPolicy::default())),
             execution_history: ToolExecutionHistory::with_workspace_root(100, workspace_root.clone()),
+            patch_recovery_reads: Arc::new(Mutex::new(super::patch_recovery::PatchRecoveryReads::default())),
             harness_context: HarnessContext::default(),
             resiliency: Arc::new(Mutex::new(ResiliencyContext::default())),
             mcp_circuit_breaker: Arc::new(circuit_breaker::McpCircuitBreaker::with_metrics(metrics.clone())),

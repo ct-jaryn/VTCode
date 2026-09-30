@@ -84,7 +84,7 @@ fn required_args_for_tool(tool_name: &str) -> &'static [&'static str] {
         tool_names::WRITE_FILE => &["path", "content"],
         tool_names::EDIT_FILE => &["path", "old_str", "new_str"],
         tool_names::RUN_PTY_CMD | tool_names::CREATE_PTY_SESSION => &["command"],
-        tool_names::APPLY_PATCH => &["patch"],
+        tool_names::APPLY_PATCH => &["input"],
         _ => &[],
     }
 }
@@ -101,7 +101,7 @@ fn is_missing_apply_patch_payload(args: &Value) -> bool {
         return false;
     }
 
-    let has_object_payload = |key: &str| args.get(key).is_some_and(|value| !value.is_null());
+    let has_object_payload = |key: &str| args.get(key).is_some_and(Value::is_string);
     !(has_object_payload("patch") || has_object_payload("input"))
 }
 
@@ -116,7 +116,7 @@ fn is_missing_required_arg(tool_name: &str, args: &Value, key: &str) -> bool {
             _ => is_missing_arg_value(args, key),
         };
     }
-    if tool_name == tool_names::APPLY_PATCH && key == "patch" {
+    if tool_name == tool_names::APPLY_PATCH && key == "input" {
         return is_missing_apply_patch_payload(args);
     }
     is_missing_arg_value(args, key)
@@ -668,7 +668,11 @@ pub(super) fn preflight_validate_resolved_call(
     let mut failures = Vec::with_capacity(required.len());
     for key in required {
         if is_missing_required_arg(&validation_tool_name, validation_args.as_ref(), key) {
-            failures.push(missing_required_arg_failure(key));
+            failures.push(if validation_tool_name == tool_names::APPLY_PATCH {
+                crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION.to_string()
+            } else {
+                missing_required_arg_failure(key)
+            });
         }
     }
     if validation_tool_name == tool_names::UNIFIED_EXEC {
@@ -696,6 +700,17 @@ pub(super) fn preflight_validate_resolved_call(
         let command_value = crate::tools::command_args::normalized_command_value(validation_args.as_ref())
             .ok()
             .flatten();
+        let collision_command = match &command_value {
+            Some(Value::String(command)) => Some(command.as_str()),
+            Some(Value::Array(command)) => command.first().and_then(Value::as_str),
+            _ => None,
+        };
+        if collision_command.is_some_and(crate::tools::names::is_apply_patch_shell_collision_command) {
+            failures.push(format!(
+                "apply_patch is a tool, not a shell executable. {}",
+                crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION
+            ));
+        }
         let validation_result = match command_value {
             Some(Value::Array(_)) => crate::tools::command_args::command_words(validation_args.as_ref())
                 .ok()
@@ -740,7 +755,12 @@ pub(super) fn preflight_validate_resolved_call(
             let hint_msg = condensed_schema_hint(schema)
                 .map(|hint| format!("\nExpected schema (required fields and types): {hint}"))
                 .unwrap_or_default();
-            return Err(anyhow!("Invalid arguments for tool '{routed_tool_name}': {error_msg}{hint_msg}"));
+            let patch_hint = if validation_tool_name == tool_names::APPLY_PATCH {
+                crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION
+            } else {
+                ""
+            };
+            return Err(anyhow!("Invalid arguments for tool '{routed_tool_name}': {error_msg}{hint_msg} {patch_hint}"));
         }
     }
     if validation_tool_name == tool_names::CODE_SEARCH {
@@ -1096,12 +1116,12 @@ mod tests {
 
     #[test]
     fn apply_patch_required_arg_accepts_input_alias() {
-        assert!(!is_missing_required_arg(tool_names::APPLY_PATCH, &json!({"input": ""}), "patch"));
+        assert!(!is_missing_required_arg(tool_names::APPLY_PATCH, &json!({"input": ""}), "input"));
     }
 
     #[test]
     fn apply_patch_required_arg_accepts_raw_string_payload() {
-        assert!(!is_missing_required_arg(tool_names::APPLY_PATCH, &json!(""), "patch"));
+        assert!(!is_missing_required_arg(tool_names::APPLY_PATCH, &json!(""), "input"));
     }
 
     #[test]

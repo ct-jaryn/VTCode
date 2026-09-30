@@ -1525,6 +1525,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     } else {
                         effective_max_tool_calls_for_turn(harness_config.max_tool_calls_per_turn, planning_active)
                     };
+                    tool_registry.begin_patch_recovery_turn();
                     let mut harness_state = HarnessTurnState::new(
                         TurnRunId(turn_run_id.0.clone()),
                         TurnId(turn_id.clone()),

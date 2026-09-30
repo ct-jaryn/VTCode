@@ -209,7 +209,7 @@ async fn execute_with_cache_and_streaming_inner(
     safety_prevalidated: bool,
     show_live_pty_preview: bool,
 ) -> RuntimeToolExecution {
-    let is_cacheable_tool = is_tool_cacheable(name, args_val);
+    let is_cacheable_tool = is_tool_cacheable(name, args_val) && !registry.has_patch_recovery_read(name, args_val);
     let cache_target = cache_target_path(name, args_val);
 
     if is_cacheable_tool
@@ -359,7 +359,7 @@ pub(crate) async fn execute_prevalidated_read_only_with_cache(
     exec_settlement_mode: ExecSettlementMode,
     safety_prevalidated: bool,
 ) -> ToolExecutionStatus {
-    let is_cacheable_tool = is_tool_cacheable(name, args_val);
+    let is_cacheable_tool = is_tool_cacheable(name, args_val) && !registry.has_patch_recovery_read(name, args_val);
     let cache_target = cache_target_path(name, args_val);
     if is_cacheable_tool
         && let Some(cached_status) =

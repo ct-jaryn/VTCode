@@ -112,6 +112,13 @@ pub(crate) fn deterministic_error_diagnosis(error: &ToolExecutionError, failure_
         error.category.user_label(),
         error_message
     );
+    if error.patch_context_mismatch_path().is_some() {
+        return ToolFailureDiagnosis::new(
+            observed,
+            "The patch context or deletion lines do not match the current file exactly.",
+            "Use one fresh file read (1-200 lines) or single sed -n range of the affected path, then retry apply_patch with exact current context.",
+        );
+    }
     let likely_cause = match error.category {
         ErrorCategory::Authentication => "The provider rejected the configured credentials or authentication state.",
         ErrorCategory::PermissionDenied | ErrorCategory::PolicyViolation | ErrorCategory::PlanningPolicyViolation => {
@@ -179,7 +186,8 @@ pub(super) fn is_policy_sensitive(category: ErrorCategory) -> bool {
 }
 
 pub(super) fn is_deterministic_only_error(error: &ToolExecutionError) -> bool {
-    is_safeguard_failure(error)
+    error.patch_failure.is_some()
+        || is_safeguard_failure(error)
         || matches!(error.category, ErrorCategory::InvalidParameters | ErrorCategory::ToolNotFound)
 }
 
