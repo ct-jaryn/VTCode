@@ -5,7 +5,6 @@
 //! is independently testable (see `super::tests`). I/O and tool wiring live in
 //! `persistence.rs` / `start.rs` / `finish.rs`.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +25,8 @@ pub const PLANNING_VERIFY_VALID_EXAMPLES: &str = "`verify: [cargo nextest run -p
 /// [`PLANNING_VERIFY_VALID_EXAMPLES`] so every prompt surface pairs them.
 pub const PLANNING_VERIFY_INVALID_EXAMPLES: &str =
     "`verify: [run checks]`, `verify: [check later]`, `verify: [git diff --check]`";
+
+const PLAN_TARGET_LABELS: &[&str] = &["files/symbols", "files", "symbols", "target", "behavior", "behaviour"];
 
 const PLACEHOLDER_TOKENS: [&str; 21] = [
     "[step]",
@@ -160,7 +161,7 @@ impl PlanValidationReport {
         result.push_str(CANONICAL_STEP_FORMAT);
         result.push_str(&format!(
             "\nEach step must name a concrete file path or symbol (not prose) and one concrete verify command or observable check. \
-             Comma-separated verify entries must each be a command or an observable check; commas inside single or double quotes stay inside one item. \
+             List separate verification commands as comma-separated entries, not a semicolon chain; each must be a command or an observable check. Commas inside single or double quotes stay inside one item. \
              Valid examples: {PLANNING_VERIFY_VALID_EXAMPLES}. \
              Invalid examples: {PLANNING_VERIFY_INVALID_EXAMPLES}; vague prose and generic VCS-only checks do not satisfy this validator. \
              Command heads that are common English words (`file`, `sort`, `find`, `ls`, `wc`, …) also need a flag or path-like argument.",
@@ -504,9 +505,7 @@ fn is_concrete_target(value: &str) -> bool {
         return false;
     }
 
-    let target = marker_value(value, &["files/symbols", "files", "symbols", "target", "behavior", "behaviour"])
-        .unwrap_or(value)
-        .trim();
+    let target = marker_value(value, PLAN_TARGET_LABELS).unwrap_or(value).trim();
     if !is_concrete_value(target) {
         return false;
     }
@@ -812,6 +811,7 @@ fn is_actual_command_token(raw_word: &str) -> bool {
         "ninja",
         "nextest",
         "npm",
+        "npx",
         "pnpm",
         "python",
         "python3",
@@ -1283,6 +1283,33 @@ enum VerificationValidationError {
     InvalidItem { ordinal: usize },
 }
 
+fn is_optional_markdown_verification(value: &str) -> bool {
+    let value = value.trim();
+    if value.starts_with('[') && value.ends_with(']') {
+        let items = parse_bracket_list(value);
+        return !items.is_empty() && items.iter().all(|item| is_optional_markdown_verification(item));
+    }
+    value.eq_ignore_ascii_case("skip Markdown lint if unavailable")
+        || value.eq_ignore_ascii_case("skip Markdown validation if unavailable")
+}
+
+fn is_markdown_target(value: &str) -> bool {
+    let value = marker_value(value, PLAN_TARGET_LABELS).unwrap_or(value).trim();
+    if value.starts_with('[') && value.ends_with(']') {
+        let items = parse_bracket_list(value);
+        return !items.is_empty() && items.iter().all(|item| is_markdown_target(item));
+    }
+    let path = value.trim_matches(['`', '\'', '"']);
+    let path = path.split('#').next().unwrap_or(path);
+    let path = path
+        .rsplit_once(':')
+        .filter(|(prefix, _)| Path::new(prefix).extension().is_some())
+        .map_or(path, |(prefix, _)| prefix);
+    let extension = Path::new(path).extension().and_then(|extension| extension.to_str());
+    extension
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown"))
+}
+
 fn validate_concrete_verification(value: &str) -> Result<(), VerificationValidationError> {
     let value = value.trim();
     if !is_concrete_value(value) {
@@ -1299,6 +1326,12 @@ fn validate_concrete_verification(value: &str) -> Result<(), VerificationValidat
                 return Err(VerificationValidationError::InvalidItem { ordinal: index + 1 });
             }
         }
+        return Ok(());
+    }
+
+    // Optional Markdown tooling must not block a documentation plan. Keep
+    // the conditional exception explicit; ordinary checks remain required.
+    if is_optional_markdown_verification(value) {
         return Ok(());
     }
 
@@ -1334,30 +1367,98 @@ fn validate_concrete_verification(value: &str) -> Result<(), VerificationValidat
     }
 }
 
-/// Normalize a step action line for `->` segmentation, tolerating the
-/// Unicode `→` arrow models occasionally emit. Validation and tracker
-/// generation share this so the two paths can never disagree about which
-/// arrows delimit a step's action/targets/verification. Returns
-/// `Cow::Borrowed` (zero allocation) when no Unicode arrow is present — the
-/// same normalize-or-borrow pattern as `summarizers`/`untrusted_data`.
-fn normalize_step_action(action: &str) -> Cow<'_, str> {
-    if action.contains('→') {
-        Cow::Owned(action.replace('→', "->"))
-    } else {
-        Cow::Borrowed(action)
-    }
-}
-
-/// Split a step action line into `->`-separated segments, tolerating the
-/// Unicode `→` arrow. Owns its segments (`String`) so callers never juggle
-/// the normalized temporary's lifetime; step lines are short, so the
-/// per-segment allocation is immaterial.
+/// Explicit metadata markers delimit canonical steps; arrows in prose or
+/// verification commands remain content. Retain bare-arrow legacy steps
+/// when no target marker is present. Validation and tracker generation share
+/// these boundaries so a valid plan cannot lose its action when persisted.
 fn step_action_segments(action: &str) -> Vec<String> {
-    normalize_step_action(action)
-        .split("->")
-        .map(str::trim)
-        .map(str::to_string)
-        .collect()
+    struct ArrowBoundary {
+        start_byte: usize,
+        end_byte: usize,
+    }
+    let mut boundaries = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut bracket_depth = 0usize;
+    let mut previous = None;
+    let mut previous_non_whitespace = None;
+    for (index, character) in action.char_indices() {
+        let preceding = previous;
+        let preceding_syntax = previous_non_whitespace;
+        previous = Some(character);
+        if !character.is_whitespace() {
+            previous_non_whitespace = Some(character);
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        let lifetime_apostrophe = character == '\''
+            && (preceding_syntax.is_some_and(|character| matches!(character, '&' | '<'))
+                || (preceding_syntax.is_some_and(|character| matches!(character, ':' | '+'))
+                    && action[index + 1..].find('\'').is_none_or(|offset| {
+                        action[index + offset + 2..]
+                            .chars()
+                            .next()
+                            .is_some_and(|character| character.is_alphanumeric() || character == '_')
+                    }))
+                || (preceding_syntax == Some(',')
+                    && action[index + 1..]
+                        .trim_start_matches(|character: char| character.is_alphanumeric() || character == '_')
+                        .trim_start()
+                        .starts_with([',', '>', ':', '+'])));
+        if matches!(character, '\'' | '"' | '`')
+            && !lifetime_apostrophe
+            && !(character == '\'' && preceding.is_some_and(char::is_alphanumeric))
+        {
+            quote = Some(character);
+            continue;
+        }
+        match character {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+        if bracket_depth != 0 {
+            continue;
+        }
+        let width = if character == '→' {
+            character.len_utf8()
+        } else if action[index..].starts_with("->") {
+            2
+        } else {
+            continue;
+        };
+        boundaries.push(ArrowBoundary { start_byte: index, end_byte: index + width });
+    }
+    let has_target_marker = boundaries
+        .iter()
+        .any(|boundary| marker_value(action[boundary.end_byte..].trim_start(), PLAN_TARGET_LABELS).is_some());
+    let mut segments = Vec::new();
+    let mut start = 0;
+    for boundary in boundaries {
+        let remainder = action[boundary.end_byte..].trim_start();
+        if has_target_marker
+            && marker_value(remainder, PLAN_TARGET_LABELS).is_none()
+            && marker_value(remainder, &["verify", "verification", "outcome"]).is_none()
+        {
+            continue;
+        }
+        segments.push(action[start..boundary.start_byte].trim().to_string());
+        start = boundary.end_byte;
+    }
+    segments.push(action[start..].trim().to_string());
+    segments
 }
 
 fn implementation_step_shape_error(step: &ImplementationStepBlock) -> Option<String> {
@@ -1373,6 +1474,7 @@ fn implementation_step_shape_error(step: &ImplementationStepBlock) -> Option<Str
         .position(|segment| marker_value(segment, &["verify", "verification"]).is_some());
     let mut has_target = false;
     let mut invalid_target = false;
+    let mut markdown_targets_only = true;
 
     if let Some(index) = verify_index {
         if index < 2 {
@@ -1384,6 +1486,7 @@ fn implementation_step_shape_error(step: &ImplementationStepBlock) -> Option<Str
             }
             has_target = true;
             invalid_target |= !is_concrete_target(target);
+            markdown_targets_only &= is_markdown_target(target);
         }
     } else if segments.len() > 1 {
         for target in segments.iter().skip(1) {
@@ -1392,20 +1495,27 @@ fn implementation_step_shape_error(step: &ImplementationStepBlock) -> Option<Str
             }
             has_target = true;
             invalid_target |= !is_concrete_target(target);
+            markdown_targets_only &= is_markdown_target(target);
         }
     }
 
     let mut has_verification = verify_index.is_some();
+    let mut has_regular_verification = verify_index
+        .and_then(|index| marker_value(&segments[index], &["verify", "verification"]))
+        .is_some_and(|verify| !is_optional_markdown_verification(verify));
     let mut verification_error = verify_index
         .and_then(|index| marker_value(&segments[index], &["verify", "verification"]))
         .and_then(|verify| validate_concrete_verification(verify).err());
-    for continuation in step.lines.iter().skip(1) {
-        if let Some(target) = marker_value(continuation, &["files/symbols", "files", "symbols", "target"]) {
+    let trailing_inline_fields = segments.iter().skip(verify_index.map_or(segments.len(), |index| index + 1));
+    for continuation in trailing_inline_fields.chain(step.lines.iter().skip(1)) {
+        if let Some(target) = marker_value(continuation, PLAN_TARGET_LABELS) {
             has_target = true;
             invalid_target |= !is_concrete_target(target);
+            markdown_targets_only &= is_markdown_target(target);
         }
         if let Some(verify) = marker_value(continuation, &["verify", "verification"]) {
             has_verification = true;
+            has_regular_verification |= !is_optional_markdown_verification(verify);
             if verification_error.is_none() {
                 verification_error = validate_concrete_verification(verify).err();
             }
@@ -1427,6 +1537,12 @@ fn implementation_step_shape_error(step: &ImplementationStepBlock) -> Option<Str
                 format!("verification item {ordinal} must be a concrete command or check")
             }
         });
+    }
+    if !markdown_targets_only && !has_regular_verification {
+        return Some(
+            "non-Markdown targets require a concrete command or observable check beyond skipped Markdown lint"
+                .to_string(),
+        );
     }
     None
 }
@@ -1637,8 +1753,8 @@ pub fn generate_tracker_markdown_from_plan(plan_markdown: &str) -> Option<String
         let Some((_, description)) = numbered_line_parts(line) else {
             continue;
         };
-        // Share arrow normalization with validation so an accepted `→`-style
-        // step produces the same tracker segments the validator saw.
+        // Share marker boundaries with validation so prose arrows remain
+        // part of the action and verification text in the tracker.
         let segments = step_action_segments(description);
         let main = segments.first().map(String::as_str).unwrap_or_default();
         if main.is_empty() {
@@ -1698,6 +1814,115 @@ mod agentic_testing_tests {
         is_independent_rederivation, parse_bracket_list, split_bracket_items, validate_concrete_verification,
         validate_plan_content,
     };
+
+    #[test]
+    fn rust_lifetime_prose_keeps_metadata_boundaries() {
+        for action in [
+            "Change return type to &'static str",
+            "Use Foo<'a, 'b>",
+            "Use Foo< 'a >",
+            "Use Foo< 'a, 'b >",
+            "Add T: 'static bound",
+            "Use T: 'a + 'b bounds",
+            "Explain example: 'input -> files: []'",
+            "Explain example + 'input -> files: []'",
+        ] {
+            let plan = format!(
+                "## Summary\nUpdate return type.\n\n## Implementation Steps\n1. {action} -> files: [src/lib.rs] -> verify: [cargo check]\n\n## Test Cases and Validation\nRun cargo check.\n\n## Assumptions and Defaults\nPreserve callers."
+            );
+            assert!(validate_plan_content(&plan).is_ready(), "must accept {action}");
+            let tracker = super::generate_tracker_markdown_from_plan(&plan).expect("tracker");
+            assert!(tracker.contains(&format!("- [ ] {action}\n")));
+            assert!(tracker.ends_with("  verify: cargo check"));
+        }
+    }
+
+    #[test]
+    fn skipped_markdown_lint_does_not_replace_code_verification() {
+        let plan = "## Summary\nUpdate implementation and documentation.\n\n## Implementation Steps\n1. Update targets -> files: [src/lib.rs, README.md] -> verify: [skip Markdown lint if unavailable]\n\n## Test Cases and Validation\nReview links.\n\n## Assumptions and Defaults\nPreserve behavior.";
+        assert_eq!(validate_plan_content(plan).invalid_implementation_steps.len(), 1);
+        let with_check =
+            plan.replace("[skip Markdown lint if unavailable]", "[cargo check, skip Markdown lint if unavailable]");
+        assert!(validate_plan_content(&with_check).is_ready());
+        for targets in [
+            "README.md",
+            "docs/guide.markdown",
+            "README.md:42",
+            "C:\\docs\\README.md",
+        ] {
+            let documentation = plan.replace("src/lib.rs, README.md", targets);
+            assert!(validate_plan_content(&documentation).is_ready(), "must accept {targets}");
+        }
+        let code_only = plan.replace("src/lib.rs, README.md", "src/lib.rs");
+        assert_eq!(validate_plan_content(&code_only).invalid_implementation_steps.len(), 1);
+        let trailing_code = plan
+            .replace("src/lib.rs, README.md", "README.md")
+            .replace("if unavailable]", "if unavailable] -> files: [src/lib.rs]");
+        assert_eq!(validate_plan_content(&trailing_code).invalid_implementation_steps.len(), 1);
+        let trailing_bad_check = with_check.replace("if unavailable]", "if unavailable] -> verify: [check later]");
+        assert_eq!(validate_plan_content(&trailing_bad_check).invalid_implementation_steps.len(), 1);
+    }
+
+    #[test]
+    fn step_metadata_preserves_quoted_arrows_and_trailing_outcome() {
+        let plan = "## Summary\nDocument arrow syntax.\n\n## Implementation Steps\n1. Explain `input -> files: []` and don't truncate the user's example -> files: [README.md] -> verify: [rg -n 'input -> outcome: [example]' README.md] -> outcome: [examples remain visible]\n\n## Test Cases and Validation\nReview examples.\n\n## Assumptions and Defaults\nDocumentation only.";
+        assert!(validate_plan_content(plan).is_ready());
+        let tracker = super::generate_tracker_markdown_from_plan(plan).expect("tracker");
+        assert!(tracker.contains("- [ ] Explain `input -> files: []` and don't truncate the user's example\n"));
+        assert!(tracker.contains("  files: README.md\n"));
+        assert!(tracker.contains("  verify: rg -n 'input -> outcome: [example]' README.md\n"));
+        assert!(tracker.ends_with("\n  outcome: examples remain visible"));
+    }
+
+    #[test]
+    fn readme_plan_preserves_prose_arrows_and_quoted_verification() {
+        let plan = "## Summary\nRefine README wording.\n\n## Implementation Steps\n1. Arrange Overview → Quick start → Workflows; update contents -> files: [README.md] -> verify: [rg -n '^## |^### ' README.md]\n2. Retain install → configure → launch -> files: [README.md] -> verify: [git diff --word-diff=plain -- README.md]\n3. Explain input -> output -> files: [README.md] -> verify: [rg -n 'input -> output → files: example' README.md]\n\n## Test Cases and Validation\nContents links match headings.\n\n## Assumptions and Defaults\nPreserve user edits.";
+        let report = validate_plan_content(plan);
+        assert!(report.is_ready(), "session-shaped plan must validate: {report:?}");
+        let tracker = super::generate_tracker_markdown_from_plan(plan).expect("tracker");
+        assert!(tracker.contains("- [ ] Arrange Overview → Quick start → Workflows; update contents\n"));
+        assert!(tracker.contains("- [ ] Retain install → configure → launch\n"));
+        assert!(tracker.contains("- [ ] Explain input -> output\n"));
+        assert_eq!(tracker.matches("  files: README.md\n").count(), 3);
+        assert!(tracker.contains("  verify: rg -n 'input -> output → files: example' README.md"));
+
+        let invalid = plan.replace("files: [README.md]", "files: []");
+        assert_eq!(validate_plan_content(&invalid).invalid_implementation_steps.len(), 3);
+    }
+
+    #[test]
+    fn optional_markdown_check_requires_unavailable_condition() {
+        for verify in [
+            "skip Markdown lint if unavailable",
+            "skip Markdown validation if unavailable",
+        ] {
+            assert!(validate_concrete_verification(verify).is_ok());
+            let plan = format!(
+                "## Summary\nRefine documentation.\n\n## Implementation Steps\n1. Review README.md -> files: [README.md] -> verify: [{verify}]\n\n## Test Cases and Validation\nReview local links with available tools.\n\n## Assumptions and Defaults\nDo not install optional lint tooling."
+            );
+            assert!(validate_plan_content(&plan).is_ready());
+        }
+        for verify in ["skip validation", "skip Markdown lint", "skip tests if unavailable"] {
+            assert!(validate_concrete_verification(verify).is_err(), "must reject {verify}");
+        }
+    }
+
+    #[test]
+    fn readme_markdown_verification_list_accepts_npx() {
+        let checks =
+            "[npx markdownlint-cli2 README.md, python3 scripts/check_markdown_location.py, git diff -- README.md]";
+        assert!(validate_concrete_verification(checks).is_ok());
+        assert!(validate_concrete_verification("npx").is_err());
+        let plan = format!(
+            "## Summary\nRefine README structure and wording.\n\n## Implementation Steps\n1. Update heading anchors and validate Markdown -> files: [README.md] -> verify: {checks}\n\n## Test Cases and Validation\nContents links resolve to their headings.\n\n## Assumptions and Defaults\nChange README.md only."
+        );
+        assert!(validate_plan_content(&plan).is_ready());
+        let tracker = super::generate_tracker_markdown_from_plan(&plan).expect("tracker");
+        assert!(tracker.contains("verify: npx markdownlint-cli2 README.md"));
+        assert!(tracker.contains("verify: python3 scripts/check_markdown_location.py"));
+        assert!(tracker.contains("verify: git diff -- README.md"));
+        assert!(validate_concrete_verification("[npx markdownlint-cli2 README.md, check later]").is_err());
+    }
 
     #[test]
     fn targeted_git_history_verifies_review_plan() {

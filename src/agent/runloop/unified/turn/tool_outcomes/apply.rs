@@ -76,6 +76,9 @@ pub(crate) async fn apply_turn_outcome(outcome: TurnLoopOutcome, ctx: TurnOutcom
             Ok(())
         }
         TurnLoopResult::Completed { .. } => {
+            // Planning mode can remain selected while waiting for a new
+            // request, but its completed turn must stop advertising live work.
+            ctx.handle.set_activity_state(vtcode_commons::ui_protocol::ActivityState::Idle);
             if let Some(manager) = ctx.checkpoint_manager {
                 let conversation_snapshot: Vec<SessionMessage> =
                     ctx.conversation_history.iter().map(SessionMessage::from).collect();
@@ -229,8 +232,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_turn_emits_worked_for_divider() {
+    async fn completed_planning_turn_clears_activity_and_emits_worked_for_divider() {
         let (handle, mut renderer, mut receiver) = renderer_with_channel();
+        handle.set_activity_state(vtcode_commons::ui_protocol::ActivityState::Planning);
         let ctrl_c_state = Arc::new(CtrlCState::new());
         let default_placeholder = None;
         let mut session_end_reason = vtcode_core::hooks::SessionEndReason::Completed;
@@ -272,7 +276,24 @@ mod tests {
         .await
         .expect("apply completed outcome");
 
-        let lines = drain_appended_lines(&mut receiver);
+        let mut activities = Vec::new();
+        let mut lines = Vec::new();
+        while let Ok(command) = receiver.try_recv() {
+            match command {
+                InlineCommand::SetActivityState(state) => activities.push(state),
+                InlineCommand::AppendLine { segments, .. } => {
+                    lines.push(segments.into_iter().map(|segment| segment.text).collect::<String>());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            activities,
+            vec![
+                vtcode_commons::ui_protocol::ActivityState::Planning,
+                vtcode_commons::ui_protocol::ActivityState::Idle,
+            ]
+        );
         assert!(lines.iter().any(|line| line == "Worked for 1m 30s"));
     }
 

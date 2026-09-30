@@ -19,6 +19,8 @@ const TOOL_REQUEST_USER_INPUT: &str = tools::REQUEST_USER_INPUT;
 const TOOL_TASK_TRACKER: &str = tools::TASK_TRACKER;
 const TOOL_START_PLANNING: &str = tools::START_PLANNING;
 
+const OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE: &str = "- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.";
+
 /// Shared cross-turn resume pointer (invariant #22). The hint body itself stays
 /// transient via `append_transient_turn_notes`; tool guidance only advertises
 /// that a turn-start `Exec session resume:` note carries the live ids so a
@@ -87,6 +89,7 @@ pub fn generate_tool_guidelines_with_capabilities(
             }
             let has = |name: &str| available_tools.iter().any(|tool| tool == name);
             let mut lines = vec!["\n\n## Active Tools".to_owned()];
+            lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_owned());
             if let Some(mode) = capability_mode_line(capability_level, has(TOOL_EXEC_COMMAND), has(TOOL_APPLY_PATCH)) {
                 lines.push(mode.to_owned());
             }
@@ -161,6 +164,7 @@ pub fn generate_tool_guidelines_for_profile(
     let has_start_planning = available_tools.iter().any(|tool| tool == TOOL_START_PLANNING);
 
     let mut lines = Vec::new();
+    lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_string());
     if let Some(mode_line) = capability_mode_line(capability_level, has_exec, has_apply_patch) {
         lines.push(mode_line.to_string());
     }
@@ -448,6 +452,7 @@ fn generate_runtime_tool_guidelines_for_profile(
     let has_task_tracker = available_tools.iter().any(|tool| matches!(tool.as_str(), TOOL_TASK_TRACKER));
 
     let mut lines = vec!["- Planning workflow active: stay within the read-safe tool list.".to_string()];
+    lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_string());
     lines.push("- Monitor the available planning tool-loop budget; stop research when the plan is specified or the limit is near, then synthesize one compact decision-ready plan from existing evidence.".to_string());
     lines.push("- Every implementation step in the final plan must name a concrete repository target and include a concrete verification command or observable check.".to_string());
     lines.push("- When the plan is ready, emit only one `<proposed_plan>` block; do not repeat planning policy text or add surrounding prose.".to_string());
@@ -748,7 +753,7 @@ mod tests {
         );
         assert_eq!(
             minimal,
-            "\n\n## Active Tools\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files."
+            "\n\n## Active Tools\n- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files."
         );
         let default = generate_tool_guidelines_with_capabilities(
             &tools,
@@ -759,7 +764,7 @@ mod tests {
         );
         assert_eq!(
             default,
-            "\n\n## Active Tools\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files.\n- Batch independent read-only calls; use bounded `read_file` ranges, order dependencies, serialize mutations; narrow the range on `line_truncated`."
+            "\n\n## Active Tools\n- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files.\n- Batch independent read-only calls; use bounded `read_file` ranges, order dependencies, serialize mutations; narrow the range on `line_truncated`."
         );
     }
 
@@ -1213,6 +1218,19 @@ mod tests {
             ResolvedShellPromptProfile::UnixLike,
         );
         assert!(!without.contains("start_planning"));
+    }
+
+    #[test]
+    fn markdown_validation_is_optional_in_planning_and_execution() {
+        let tools = vec![TOOL_EXEC_COMMAND.to_string(), TOOL_READ_FILE.to_string()];
+        for planning in [false, true] {
+            let guidance =
+                generate_runtime_tool_guidelines_for_profile(&tools, planning, ResolvedShellPromptProfile::UnixLike);
+            assert_eq!(guidance.matches(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE).count(), 1);
+            assert!(guidance.contains("report skipped"));
+            assert!(guidance.contains("without installing tools"));
+            assert!(guidance.contains("Lint errors remain failures"));
+        }
     }
 
     #[test]
