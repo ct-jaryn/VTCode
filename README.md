@@ -31,12 +31,14 @@
 - [Workflows](#workflows)
   - [Interactive work](#interactive-work)
   - [Headless automation](#headless-automation)
+  - [Scheduled tasks](#scheduled-tasks)
   - [Session management](#session-management)
   - [Optional integrations](#optional-integrations)
 - [Documentation](#documentation)
 - [Development](#development)
-- [Contributing and community](#contributing-and-community)
+- [Contributing](#contributing)
   - [Contribute](#contribute)
+- [Community](#community)
   - [Contributors](#contributors)
   - [Contact](#contact)
   - [Resources](#resources)
@@ -51,7 +53,7 @@
 VT Code is an open-source terminal coding agent built in Rust. Explore a
 codebase, plan changes, run tools, and review edits in the interactive TUI, or
 run `vtcode exec` headless. You pick the model and permissions; the runtime
-manages context, tools, and execution policy, and you review every change
+handles context, tools, and execution policy, and you review every change
 before it lands.
 
 - **Plan and review:** read-only planning mode, then inspect edits in turn diffs.
@@ -107,17 +109,16 @@ vtcode init                # scaffolds config + AGENTS.md; review before committ
 vtcode secret add openai   # stores an OpenAI API key in your OS keyring
 ```
 
-Replace `openai` with your supported provider. You can also use environment
-variables or a workspace `.env`; `vtcode login` handles supported login flows.
-See [Getting started](./docs/user-guide/getting-started.md) for credential
-options and [Provider guides](./docs/providers/PROVIDER_GUIDES.md) for model
-configuration.
+Replace `openai` with your supported provider. Credentials can also come from
+environment variables or a workspace `.env`; `vtcode login` handles supported
+login flows. See [Getting started](./docs/user-guide/getting-started.md) and
+[Provider guides](./docs/providers/PROVIDER_GUIDES.md).
 
 > [!NOTE]
-> ChatGPT OAuth uses an unofficial compatibility flow that reuses the Codex
-> CLI's public client identity; use your own OpenAI API key to avoid relying
-> on it. GitHub Copilot authentication uses the official `copilot` CLI.
-> See [OAuth authentication](./docs/guides/oauth-authentication.md).
+> ChatGPT OAuth reuses the Codex CLI's public client identity through an
+> unofficial compatibility flow; prefer your own OpenAI API key. GitHub
+> Copilot uses the official `copilot` CLI. See
+> [OAuth authentication](./docs/guides/oauth-authentication.md).
 
 > [!CAUTION]
 > Never commit API keys or put them in `vtcode.toml`.
@@ -160,6 +161,12 @@ apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust and output
 options and [full automation](./docs/guides/full-automation.md) for
 configuration.
 
+For repeatable, environment-checked results, use the
+[eval framework](./docs/guides/eval.md): a completion message alone is not
+verification.
+
+### Scheduled tasks
+
 For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md):
 durable prompt jobs on the same exec runtime:
 
@@ -169,10 +176,6 @@ vtcode schedule create --name "weekly-dep-audit" \
   --cron "0 9 * * 1" \
   --prompt "Check for outdated dependencies and report known vulnerabilities"
 ```
-
-For repeatable, environment-checked results, use the
-[eval framework](./docs/guides/eval.md): a completion message alone is not
-verification.
 
 ### Session management
 
@@ -210,9 +213,9 @@ Enable these only when you need them; none are required for the quick start.
 ```
 
 The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
-([mirror](https://vinhnx.github.io/VTCode/)) pairs over this authenticated,
-workspace-scoped bridge, not unrestricted filesystem access. Hosts and
-deployment: [WebMCP user guide](./docs/user-guide/webmcp.md) ·
+([mirror](https://vinhnx.github.io/VTCode/)) uses this authenticated,
+workspace-scoped bridge. Setup and deployment:
+[WebMCP user guide](./docs/user-guide/webmcp.md) ·
 [deployment reference](./docs/reference/webmcp.md).
 
 ## Documentation
@@ -262,7 +265,7 @@ with `RUSTFLAGS="-D warnings" cargo check --locked`. Setup and checks:
 
 Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/releases).
 
-## Contributing and community
+## Contributing
 
 ### Contribute
 
@@ -278,10 +281,15 @@ Before a PR: [Conventional Commits](https://www.conventionalcommits.org)
 (`type(scope): subject`), `./scripts/check-dev.sh` + `cargo nextest run`, and a
 focused diff.
 
+## Community
+
 ### Contributors
 
 VT Code is what it is because of the people who build, test, and improve it
 alongside me; thank you, all of you.
+
+<details>
+<summary>View all contributors</summary>
 
 <!-- CONTRIBUTORS:START -->
 
@@ -324,6 +332,8 @@ alongside me; thank you, all of you.
   <a href="https://github.com/diegosouzapw"><img src="https://avatars.githubusercontent.com/u/8016841?v=4&s=60" width="40" height="40" alt="@diegosouzapw" title="@diegosouzapw Contributor (1 commit)" style="border-radius: 50%; border: 2px solid #B19CD9;" /></a>&nbsp;
 
 <!-- CONTRIBUTORS:END -->
+
+</details>
 
 **Want to see your avatar here?** Every bit counts: one-line fixes, bug
 reports, and feedback are all welcome.
