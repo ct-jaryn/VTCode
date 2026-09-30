@@ -1466,7 +1466,7 @@ static IMAGE_PATH_INLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
               | [A-Za-z]:[\\/](?:[^\n\\\/]+[\\/])+
             )
             [^\n]+?
-            \.(?:png|jpe?g|gif|bmp|webp|tiff?|svg)
+            \.(?:png|jpe?g|gif|webp)
         )"#,
     )
     .expect("Failed to compile inline image path regex")
