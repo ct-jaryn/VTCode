@@ -136,7 +136,7 @@ use crate::event::{
     read::InternalEventReader,
     timeout::PollTimeout,
 };
-use crate::{csi, Command};
+use crate::{Command, csi};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use std::fmt::{self, Display};
 use std::time::Duration;
@@ -149,17 +149,12 @@ use std::hash::{Hash, Hasher};
 static INTERNAL_EVENT_READER: Mutex<Option<InternalEventReader>> = parking_lot::const_mutex(None);
 
 pub(crate) fn lock_internal_event_reader() -> MappedMutexGuard<'static, InternalEventReader> {
-    MutexGuard::map(INTERNAL_EVENT_READER.lock(), |reader| {
-        reader.get_or_insert_with(InternalEventReader::default)
-    })
+    MutexGuard::map(INTERNAL_EVENT_READER.lock(), |reader| reader.get_or_insert_with(InternalEventReader::default))
 }
-fn try_lock_internal_event_reader_for(
-    duration: Duration,
-) -> Option<MappedMutexGuard<'static, InternalEventReader>> {
-    Some(MutexGuard::map(
-        INTERNAL_EVENT_READER.try_lock_for(duration)?,
-        |reader| reader.get_or_insert_with(InternalEventReader::default),
-    ))
+fn try_lock_internal_event_reader_for(duration: Duration) -> Option<MappedMutexGuard<'static, InternalEventReader>> {
+    Some(MutexGuard::map(INTERNAL_EVENT_READER.try_lock_for(duration)?, |reader| {
+        reader.get_or_insert_with(InternalEventReader::default)
+    }))
 }
 
 /// Checks if there is an [`Event`](enum.Event.html) available.
@@ -594,37 +589,19 @@ impl Event {
     /// ```
     #[inline]
     pub fn is_key_press(&self) -> bool {
-        matches!(
-            self,
-            Event::Key(KeyEvent {
-                kind: KeyEventKind::Press,
-                ..
-            })
-        )
+        matches!(self, Event::Key(KeyEvent { kind: KeyEventKind::Press, .. }))
     }
 
     /// Returns `true` if the event is a key release event.
     #[inline]
     pub fn is_key_release(&self) -> bool {
-        matches!(
-            self,
-            Event::Key(KeyEvent {
-                kind: KeyEventKind::Release,
-                ..
-            })
-        )
+        matches!(self, Event::Key(KeyEvent { kind: KeyEventKind::Release, .. }))
     }
 
     /// Returns `true` if the event is a key repeat event.
     #[inline]
     pub fn is_key_repeat(&self) -> bool {
-        matches!(
-            self,
-            Event::Key(KeyEvent {
-                kind: KeyEventKind::Repeat,
-                ..
-            })
-        )
+        matches!(self, Event::Key(KeyEvent { kind: KeyEventKind::Repeat, .. }))
     }
 
     /// Returns the key event if the event is a key event, otherwise `None`.
@@ -970,11 +947,7 @@ impl KeyEvent {
         }
     }
 
-    pub const fn new_with_kind(
-        code: KeyCode,
-        modifiers: KeyModifiers,
-        kind: KeyEventKind,
-    ) -> KeyEvent {
+    pub const fn new_with_kind(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
         KeyEvent {
             code,
             modifiers,
@@ -989,12 +962,7 @@ impl KeyEvent {
         kind: KeyEventKind,
         state: KeyEventState,
     ) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers,
-            kind,
-            state,
-        }
+        KeyEvent { code, modifiers, kind, state }
     }
 
     // modifies the KeyEvent,
@@ -1055,10 +1023,7 @@ impl PartialEq for KeyEvent {
             kind: rhs_kind,
             state: rhs_state,
         } = other.normalize_case();
-        (lhs_code == rhs_code)
-            && (lhs_modifiers == rhs_modifiers)
-            && (lhs_kind == rhs_kind)
-            && (lhs_state == rhs_state)
+        (lhs_code == rhs_code) && (lhs_modifiers == rhs_modifiers) && (lhs_kind == rhs_kind) && (lhs_state == rhs_state)
     }
 }
 
@@ -1066,12 +1031,7 @@ impl Eq for KeyEvent {}
 
 impl Hash for KeyEvent {
     fn hash<H: Hasher>(&self, hash_state: &mut H) {
-        let KeyEvent {
-            code,
-            modifiers,
-            kind,
-            state,
-        } = self.normalize_case();
+        let KeyEvent { code, modifiers, kind, state } = self.normalize_case();
         code.hash(hash_state);
         modifiers.hash(hash_state);
         kind.hash(hash_state);
@@ -1492,6 +1452,15 @@ pub(crate) enum InternalEvent {
     /// Attributes and architectural class of the terminal.
     #[cfg(unix)]
     PrimaryDeviceAttributes,
+    /// An OSC response (e.g. `ESC]10;...BEL` color query reply).
+    ///
+    /// Terminal palette probes query `OSC 10/11/4` concurrently with TUI
+    /// startup; late replies must never surface as keystrokes. This variant
+    /// is intentionally *not* matched by `EventFilter`, so the public
+    /// `read`/`poll`/`EventStream` paths skip it while retaining it in the
+    /// internal queue.
+    #[cfg(unix)]
+    OscResponse,
 }
 
 #[cfg(test)]
@@ -1648,12 +1617,9 @@ mod tests {
         assert_eq!(modifiers.to_string(), "Shift+Control+Alt");
     }
 
-    const ESC_PRESSED: KeyEvent =
-        KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Press);
-    const ESC_RELEASED: KeyEvent =
-        KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Release);
-    const ESC_REPEAT: KeyEvent =
-        KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Repeat);
+    const ESC_PRESSED: KeyEvent = KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Press);
+    const ESC_RELEASED: KeyEvent = KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Release);
+    const ESC_REPEAT: KeyEvent = KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Repeat);
     const MOUSE_CLICK: MouseEvent = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 1,

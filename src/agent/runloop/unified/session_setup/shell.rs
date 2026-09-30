@@ -147,9 +147,15 @@ pub(crate) async fn initialize_session_shell(
         Some(_) => Ok(()),
     });
 
-    // Never await the palette probe here: a silent terminal must not delay
-    // the typeable shell. `note_crossterm_raw_mode` makes a late RawModeGuard
-    // restore a no-op once crossterm owns the TTY.
+    // Await the palette probe before the TUI owns the TTY. The probe is
+    // bounded (~50 ms read + 40 ms settle + 100 ms drain on failure), and it
+    // already overlapped with startup-context resolution, so this usually
+    // returns immediately. Spawning the event loop concurrently lets late
+    // `OSC 10/11/4` replies win the `/dev/tty` read race and leak as
+    // `10;rgb:...` keystrokes; the vendored `parse_osc` backstop swallows
+    // stragglers from slow terminals. `note_crossterm_raw_mode` stays as a
+    // guard so a late `RawModeGuard` restore cannot undo crossterm raw mode.
+    crate::agent::probe::await_terminal_palette_probe().await;
     vtcode_core::utils::terminal_color_probe::note_crossterm_raw_mode();
 
     let mut session = spawn_session_with_options(

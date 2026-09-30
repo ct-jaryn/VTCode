@@ -314,12 +314,15 @@ early startup work is observable without adding work to normal launches.
   `run_harness_retention`, spawned only after `initialize_session_ui` returns
   (first paint is available), never inside `initialize_harness`. iTerm2 icon
   ensure is `spawn_blocking`.
-- **Palette probe must not block first paint.** The OSC probe (50 ms timeout)
-  is started in bootstrap. `initialize_session_ui` only calls
-  `note_crossterm_raw_mode()` before `spawn_session_with_options` so a late
-  `RawModeGuard` restore cannot undo crossterm raw mode; it does **not** await
-  the probe before spawn. `await_terminal_palette_probe()` runs after spawn to
-  drain TTY replies and settle theme before the first model turn.
+- **Palette probe is awaited before TUI spawn (bounded, usually instant).** The
+  OSC probe (50 ms timeout) is started in bootstrap and overlaps
+  startup-context resolution. `initialize_session_shell` awaits it before
+  `spawn_session_with_options` so late `OSC 10/11/4` replies cannot race the
+  TUI event loop for `/dev/tty` bytes and leak as `10;rgb:...` input;
+  `note_crossterm_raw_mode()` is still called before spawn so a late
+  `RawModeGuard` restore cannot undo crossterm raw mode. `await_terminal_palette_probe()`
+  after spawn settles theme before the first model turn. Stragglers from slow
+  terminals are swallowed by the vendored crossterm `parse_osc` backstop.
 - **Reuse the loaded session config.** `ToolRegistry::new_with_loaded_config`
   reuses the merged `VTCodeConfig` snapshot instead of a second
   `ConfigManager::load_from_workspace` parse; `ToolRegistry::new` remains for

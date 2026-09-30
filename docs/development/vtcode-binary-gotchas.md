@@ -122,14 +122,22 @@ Registry-light critical path: `initialize_session_critical` must not construct
 
 Static-first typeable shell: `initialize_session_shell` spawns a typeable TUI
 before ToolRegistry/discovery/provider construction. Do not move heavy init
-back before `spawn_session_with_options` (see shell ratchet test).
+back before `spawn_session_with_options` (see shell ratchet test). The one
+await allowed there is the bounded palette probe
+(`await_terminal_palette_probe`, ~50 ms read + 40 ms settle + 100 ms drain
+worst case, usually instant after overlapping startup resolution): awaiting
+before crossterm owns the TTY keeps late `OSC 10/11/4` replies from winning
+the `/dev/tty` read race and leaking as `10;rgb:...` keystrokes. Slow-terminal
+stragglers are swallowed by the vendored crossterm `parse_osc` backstop
+(`InternalEvent::OscResponse`, never matched by `EventFilter`).
 
 Maintenance never sits on first paint: interactive legacy path migration is
 fire-and-forget `spawn_blocking` before dispatch, harness session-store
 retention runs in `run_harness_retention` spawned after `initialize_session_ui`,
-and the palette probe is *not* awaited before TUI spawn — `note_crossterm_raw_mode`
-makes a late `RawModeGuard` restore a no-op, and `await_terminal_palette_probe`
-drains after spawn (probe timeout 50 ms).
+and the palette probe overlaps bootstrap so its pre-spawn await rarely waits —
+`note_crossterm_raw_mode` still guards the `RawModeGuard` restore, and
+`await_terminal_palette_probe` after spawn settles theme before the first
+model turn (probe timeout 50 ms).
 
 Trace phases: `session_setup_critical`, `session_setup_ui`,
 `session_setup_hydrate`, `session_setup`, `first_ui_render`.
