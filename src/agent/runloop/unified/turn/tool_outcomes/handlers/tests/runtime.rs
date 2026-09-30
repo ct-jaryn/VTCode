@@ -1758,418 +1758,74 @@ async fn repeated_read_only_guard_dedups_plan_file_in_planning_mode() {
     }));
 }
 
-fn exhaust_preview_budget_for_test(ctx: &mut TurnProcessingContext<'_>) {
-    let budget =
-        vtcode_config::constants::output_limits::turn_preview_budget_bytes(ctx.tool_registry.is_planning_active());
-    ctx.push_tool_response("call-exhaust-budget", Some(tool_names::EXEC_COMMAND), "x".repeat(budget + 1));
-    assert!(ctx.harness_state.model_visible_preview_budget_exhausted());
-}
-
 #[tokio::test]
-async fn registry_exhaustion_latches_runloop_and_blocks_the_next_inspection() {
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::ValidationResult;
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
-
-    let mut backing = TestContextBacking::new(32).await;
-    backing.select_build_primary_agent();
-    let workspace = backing.sample_file.parent().expect("sample parent").to_path_buf();
-    let sample_file = backing.sample_file.clone();
-    let paths = (0..8)
-        .map(|index| {
-            let path = workspace.join(format!("preview-{index}.txt"));
-            std::fs::write(&path, format!("line-{index}-{}\n", "x".repeat(120)).repeat(2_000))
-                .expect("write preview fixture");
-            path
-        })
-        .collect::<Vec<_>>();
-
-    let mut repeated_tool_attempts = LoopTracker::new();
-    let mut turn_modified_files = BTreeSet::new();
-    let mut ctx = backing.turn_processing_context();
-    let mut outcome_ctx = ToolOutcomeContext {
-        ctx: &mut ctx,
-        repeated_tool_attempts: &mut repeated_tool_attempts,
-        turn_modified_files: &mut turn_modified_files,
-    };
-
-    for (index, path) in paths.iter().enumerate() {
-        outcome_ctx.ctx.harness_state.record_requested_tool_calls(1);
-        handle_single_tool_call(
-            &mut outcome_ctx,
-            &format!("registry-read-{index}"),
-            tool_names::READ_FILE,
-            json!({
-                "path": path,
-                "limit": 2_000,
-                "condense": false
-            }),
-        )
-        .await
-        .expect("registry read should be handled");
-        if outcome_ctx.ctx.harness_state.model_visible_preview_budget_exhausted() {
-            break;
+async fn repeated_registry_results_keep_new_inspections_visible() {
+    for planning in [false, true] {
+        let mut backing = TestContextBacking::new(120).await;
+        backing.select_build_primary_agent();
+        if planning {
+            backing.tool_registry.enable_planning();
         }
-    }
-
-    let diagnostics = outcome_ctx.ctx.harness_state.snapshot_turn_diagnostics(Default::default(), 0);
-    let tool_payloads = outcome_ctx
-        .ctx
-        .working_history
-        .iter()
-        .filter(|message| message.role == uni::MessageRole::Tool)
-        .map(|message| {
-            let content = message.content.as_text();
-            (content.len(), content.chars().take(160).collect::<String>())
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        diagnostics.model_visible_tool_preview_budget_exhausted,
-        "registry should emit enough provider-visible body to exhaust the upstream budget; diagnostics={diagnostics:?}, tool_payloads={tool_payloads:?}"
-    );
-    assert!(
-        outcome_ctx.ctx.working_history.iter().any(|message| {
-            message.role == uni::MessageRole::Tool
-                && serde_json::from_str::<serde_json::Value>(&message.content.as_text())
-                    .ok()
-                    .and_then(|value| value.get("preview_budget_exhausted").and_then(serde_json::Value::as_bool))
-                    == Some(true)
-        }),
-        "the real registry path must publish its authoritative exhaustion marker; tool_payloads={tool_payloads:?}"
-    );
-    assert!(diagnostics.suppressed_tool_previews > 0);
-    assert!(diagnostics.requested_tool_calls < 32, "exhaustion must converge before the tool-call ceiling");
-
-    // Registry markers remain authoritative when an in-progress response is
-    // replaced by its terminal update: suppression is counted once per call.
-    // Replace the call that actually carries the marker — the budget exhausts
-    // on whichever read overflows, not necessarily the first one issued.
-    let suppressed_before_replacement = diagnostics.suppressed_tool_previews;
-    let suppressed_call_id = outcome_ctx
-        .ctx
-        .working_history
-        .iter()
-        .filter(|message| message.role == uni::MessageRole::Tool)
-        .find(|message| {
-            serde_json::from_str::<serde_json::Value>(&message.content.as_text())
-                .ok()
-                .and_then(|value| value.get("preview_budget_exhausted").and_then(serde_json::Value::as_bool))
-                == Some(true)
-        })
-        .and_then(|message| message.tool_call_id.clone())
-        .expect("registry marker response must exist in working history");
-    outcome_ctx.ctx.push_tool_response(
-        suppressed_call_id,
-        Some(tool_names::READ_FILE),
-        json!({
-            "total_output_bytes": 80_000,
-            "preview_budget_exhausted": true
-        })
-        .to_string(),
-    );
-    let after_replacement = outcome_ctx.ctx.harness_state.snapshot_turn_diagnostics(Default::default(), 0);
-    assert_eq!(
-        after_replacement.suppressed_tool_previews, suppressed_before_replacement,
-        "replacing one registry-suppressed response must not double-count it"
-    );
-
-    for (id, command) in [
-        ("post-exhaustion-read", format!("sed -n '1,20p' {}", sample_file.display())),
-        ("post-exhaustion-search", format!("rg -n 'line' {}", sample_file.display())),
-        ("post-exhaustion-diff", "git diff -- sample.txt".to_string()),
-    ] {
-        let blocked = enforce_preview_exhaustion_inspection_gate(
-            outcome_ctx.ctx,
-            id,
-            tool_names::EXEC_COMMAND,
-            &json!({"cmd": command}),
-            true,
-        );
-        assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)), "{command}");
+        let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+        let paths = (0..16)
+            .map(|index| {
+                let path = workspace.join(format!("evidence-{index}.txt"));
+                std::fs::write(&path, format!("evidence-{index} {}\n", "x".repeat(8000))).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let mut tracker = LoopTracker::new();
+        let mut modified = BTreeSet::new();
+        let mut ctx = backing.turn_processing_context();
+        let mut outcome_ctx = ToolOutcomeContext {
+            ctx: &mut ctx,
+            repeated_tool_attempts: &mut tracker,
+            turn_modified_files: &mut modified,
+        };
+        for (index, path) in paths.iter().enumerate() {
+            let result = handle_single_tool_call(
+                &mut outcome_ctx,
+                &format!("read-{index}"),
+                tool_names::READ_FILE,
+                json!({"path": path, "limit": 2_000, "condense": false}),
+            )
+            .await
+            .unwrap();
+            assert!(result.is_none(), "a productive read must not trigger a recovery outcome");
+            let stored = outcome_ctx
+                .ctx
+                .working_history
+                .iter()
+                .rev()
+                .find(|message| message.role == uni::MessageRole::Tool)
+                .unwrap()
+                .content
+                .as_text();
+            assert!(stored.contains(&format!("evidence-{index}")), "fresh evidence must remain visible: {stored}");
+            assert!(!stored.contains("preview_budget_exhausted"));
+        }
+        assert!(!outcome_ctx.ctx.is_recovery_active());
     }
 }
 
 #[tokio::test]
-async fn preview_exhaustion_gate_blocks_blind_inspection_but_keeps_useful_channels_open() {
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::ValidationResult;
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
-
-    let mut backing = TestContextBacking::new(8).await;
-    let mut ctx = backing.turn_processing_context();
-
-    // Fresh budget: everything passes through.
-    let fresh = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-fresh",
-        tool_names::READ_FILE,
-        &json!({"path": "src/main.rs"}),
-        true,
-    );
-    assert!(fresh.is_none(), "gate must not fire before exhaustion");
-
-    exhaust_preview_budget_for_test(&mut ctx);
-
-    // Ordinary inspection is blocked with actionable guidance.
-    let blocked = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-blind-read",
-        tool_names::READ_FILE,
-        &json!({"path": "src/main.rs"}),
-        true,
-    );
-    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
-    assert!(
-        ctx.working_history
-            .iter()
-            .any(|message| { message.content.as_text().contains("preview budget") })
-    );
-
-    let blocked_search = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-blind-search",
-        tool_names::CODE_SEARCH,
-        &json!({"query": "fn main"}),
-        true,
-    );
-    assert!(matches!(blocked_search, Some(ValidationResult::PreviewExhausted)));
-
-    let blocked_grep = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-blind-grep",
-        tool_names::EXEC_COMMAND,
-        &json!({"cmd": "rg -n 'fn run' src/main.rs"}),
-        true,
-    );
-    assert!(matches!(blocked_grep, Some(ValidationResult::PreviewExhausted)));
-
-    // A tiny ordinary inspection is still an inspection: output size must not
-    // turn it into a verifier or bypass the post-exhaustion gate.
-    let blocked_tiny = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-blind-tiny",
-        tool_names::EXEC_COMMAND,
-        &json!({"cmd": "printf tiny"}),
-        true,
-    );
-    assert!(matches!(blocked_tiny, Some(ValidationResult::PreviewExhausted)));
-
-    // Verification verdicts survive in stub metadata: checks keep running.
-    let check = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-check",
-        tool_names::EXEC_COMMAND,
-        &json!({"cmd": "cargo check --locked"}),
-        true,
-    );
-    assert!(check.is_none(), "verification must stay open after exhaustion");
-
-    // Bookkeeping, interview, and session polling stay open.
-    for (id, name, args) in [
-        ("call-tracker", tool_names::TASK_TRACKER, json!({})),
-        (
-            "call-interview",
-            tool_names::REQUEST_USER_INPUT,
-            json!({"questions": [{"id": "q1", "header": "Q1", "question": "Go?"}]}),
-        ),
-        ("call-poll", tool_names::WRITE_STDIN, json!({"session_id": "1"})),
-    ] {
-        let outcome = enforce_preview_exhaustion_inspection_gate(&mut ctx, id, name, &args, true);
-        assert!(outcome.is_none(), "{name} must stay open after exhaustion");
-    }
-
-    // Spool paging stays visible through preview credit: let it through.
-    let spool = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-spool",
-        tool_names::READ_FILE,
-        &json!({"path": ".vtcode/context/tool_outputs/write_stdin_run-abc123.txt"}),
-        true,
-    );
-    assert!(spool.is_none(), "spool paging must stay open after exhaustion");
-
-    // Non-readonly calls never reach this gate.
-    let edit = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-edit",
-        tool_names::EDIT_FILE,
-        &json!({"path": "src/main.rs"}),
-        false,
-    );
-    assert!(edit.is_none());
-}
-
-#[tokio::test]
-async fn parallel_preview_gate_rejections_allow_one_corrective_response() {
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
-
-    let mut backing = TestContextBacking::new(8).await;
-    let mut ctx = backing.turn_processing_context();
-    exhaust_preview_budget_for_test(&mut ctx);
-
-    // The latest session sent four inspection calls together. They were one
-    // model decision, so they must not exhaust the policy-denial fuse.
-    for index in 0..4 {
-        let call_id = format!("blind-{index}");
-        let args = json!({"cmd": "rg -n 'reduce_motion' crates/codegen/vtcode-ui/src"});
-        let result =
-            enforce_preview_exhaustion_inspection_gate(&mut ctx, &call_id, tool_names::EXEC_COMMAND, &args, true)
-                .expect("inspection should be rejected");
-        assert!(matches!(result, ValidationResult::PreviewExhausted));
-        assert!(matches!(
-            finalize_validation_result(&mut ctx, &call_id, tool_names::EXEC_COMMAND, &args, result),
-            ValidationTransition::Return(None)
-        ));
-    }
-    flush_blocked_tool_recovery(&mut ctx);
-    assert_eq!(ctx.blocked_tool_calls(), 0);
-    assert!(!ctx.harness_state.recovery_is_tool_free());
-
-    // A spool page remains available on the corrective response.
-    let spool_args = json!({"cmd": "sed -n '1,20p' .vtcode/context/tool_outputs/write_stdin_run-abc123.txt"});
-    assert!(
-        enforce_preview_exhaustion_inspection_gate(
-            &mut ctx,
-            "spool-page",
-            tool_names::EXEC_COMMAND,
-            &spool_args,
-            true,
-        )
-        .is_none()
-    );
-
-    // A successfully handled tool on the corrective response resets the
-    // blind-batch streak; the next rejection gets its own chance to recover.
-    assert!(matches!(
-        finalize_validation_result(
-            &mut ctx,
-            "handled-page",
-            tool_names::READ_FILE,
-            &json!({"path": ".vtcode/context/tool_outputs/write_stdin_run-abc123.txt"}),
-            ValidationResult::Handled,
-        ),
-        ValidationTransition::Return(None)
-    ));
-
-    // Repeated blind batches still converge to bounded recovery.
-    let args = json!({"path": "src/main.rs"});
-    for (index, should_recover) in [(0, false), (1, true)] {
-        let call_id = format!("blind-again-{index}");
-        let result = enforce_preview_exhaustion_inspection_gate(&mut ctx, &call_id, tool_names::READ_FILE, &args, true)
-            .expect("inspection should be rejected");
-        finalize_validation_result(&mut ctx, &call_id, tool_names::READ_FILE, &args, result);
-        flush_blocked_tool_recovery(&mut ctx);
-        assert_eq!(ctx.harness_state.recovery_is_tool_free(), should_recover);
-    }
-    assert!(ctx.harness_state.recovery_is_tool_free());
-}
-
-#[tokio::test]
-async fn preview_exhaustion_gate_directs_planning_toward_synthesis() {
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::ValidationResult;
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
-
-    let mut backing = TestContextBacking::new(8).await;
-    backing.tool_registry.enable_planning();
-    let mut ctx = backing.turn_processing_context();
-    exhaust_preview_budget_for_test(&mut ctx);
-
-    let blocked = enforce_preview_exhaustion_inspection_gate(
-        &mut ctx,
-        "call-plan-read",
-        tool_names::READ_FILE,
-        &json!({"path": "src/main.rs"}),
-        true,
-    );
-    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
-    assert!(
-        ctx.working_history
-            .iter()
-            .any(|message| { message.content.as_text().contains("<proposed_plan>") })
-    );
-}
-
-#[tokio::test]
-async fn preview_exhaustion_guidance_names_open_channels_without_inviting_retry() {
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::ValidationResult;
-    use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::read_guard::enforce_preview_exhaustion_inspection_gate;
-
-    // Planning: synthesis directive plus the channels that stay open.
-    let mut planning_backing = TestContextBacking::new(8).await;
-    planning_backing.tool_registry.enable_planning();
-    let mut planning_ctx = planning_backing.turn_processing_context();
-    exhaust_preview_budget_for_test(&mut planning_ctx);
-    let blocked = enforce_preview_exhaustion_inspection_gate(
-        &mut planning_ctx,
-        "call-plan-read",
-        tool_names::READ_FILE,
-        &json!({"path": "src/main.rs"}),
-        true,
-    );
-    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
-    let planning_text = planning_ctx
-        .working_history
-        .iter()
-        .map(|message| message.content.as_text())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(planning_text.contains("<proposed_plan>"));
-    assert!(planning_text.contains("spool paging"));
-    assert!(planning_text.contains("exhausted inspections are blocked"));
-    assert!(!planning_text.contains("repeat the call"));
-
-    // Execution: spool-paging recovery without a plan directive (asymmetric).
-    let mut exec_backing = TestContextBacking::new(8).await;
-    let mut exec_ctx = exec_backing.turn_processing_context();
-    exhaust_preview_budget_for_test(&mut exec_ctx);
-    let blocked = enforce_preview_exhaustion_inspection_gate(
-        &mut exec_ctx,
-        "call-exec-read",
-        tool_names::READ_FILE,
-        &json!({"path": "src/main.rs"}),
-        true,
-    );
-    assert!(matches!(blocked, Some(ValidationResult::PreviewExhausted)));
-    let exec_text = exec_ctx
-        .working_history
-        .iter()
-        .map(|message| message.content.as_text())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(exec_text.contains("page it in small ranges"));
-    assert!(!exec_text.contains("<proposed_plan>"));
-}
-
-#[tokio::test]
-async fn spool_guard_pass_banks_preview_credit_for_the_page() {
+async fn spool_page_remains_visible_after_large_results() {
     use crate::agent::runloop::unified::turn::tool_outcomes::handlers::guards::spool_guard::enforce_spool_chunk_read_guard;
-
     let mut backing = TestContextBacking::new(8).await;
     let mut ctx = backing.turn_processing_context();
-    exhaust_preview_budget_for_test(&mut ctx);
-
-    // An admitted spool-page read banks credit: the page pushed right after
-    // stays model-visible despite the exhausted aggregate budget.
+    ctx.push_tool_response("large", Some(tool_names::EXEC_COMMAND), "x".repeat(100_000));
     let passed = enforce_spool_chunk_read_guard(
         &mut ctx,
-        "call-spool-page",
+        "page",
         tool_names::READ_FILE,
         &json!({"path": ".vtcode/context/tool_outputs/write_stdin_run-abc123.txt"}),
     )
     .await;
-    assert!(passed.is_none(), "first spool page must pass the guard");
-
-    let page = "visible page content ".repeat(64);
-    ctx.push_tool_response("call-page", Some(tool_names::READ_FILE), page.clone());
-    let stored = ctx
-        .working_history
-        .iter()
-        .rev()
-        .find(|message| message.role == uni::MessageRole::Tool)
-        .expect("paged response must be stored")
-        .content
-        .as_text()
-        .into_owned();
-    assert!(stored.contains(&page), "credited spool page must stay visible");
-    assert!(!stored.contains("preview_budget_exhausted"));
+    assert!(passed.is_none());
+    let page = "visible page content ".repeat(256);
+    ctx.push_tool_response("page", Some(tool_names::READ_FILE), page.clone());
+    assert!(ctx.working_history.last().unwrap().content.as_text().contains(&page));
+    assert!(!ctx.is_recovery_active());
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@
 
 ## Coding Conventions
 
-`anyhow::Result`, `serde`, `tracing`. Manifest parsing uses `serde-saphyr` for YAML frontmatter. Template paths relative to `templates/`.
+`anyhow::Result`, `serde`, `tracing`. Manifest parsing uses `serde-saphyr` for YAML frontmatter. Reference extraction excludes Markdown delimiters and external URLs, deduplicates normalized paths, and sorts diagnostics. Template paths relative to `templates/`.
 
 ## Gotchas
 

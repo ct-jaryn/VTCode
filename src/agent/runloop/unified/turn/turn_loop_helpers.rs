@@ -635,7 +635,7 @@ fn is_turn_scoped_tool_restriction(text: &str) -> bool {
 }
 
 /// Supersede expired recovery guidance without rewriting replayed history.
-/// Only call at a fresh turn boundary, after the preview window is reset.
+/// Only call at a fresh turn boundary, never during an active recovery pass.
 pub(super) fn restore_fresh_turn_tool_guidance(history: &mut Vec<uni::Message>, recovery_active: bool) {
     if recovery_active {
         return;

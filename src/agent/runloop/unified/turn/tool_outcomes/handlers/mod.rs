@@ -305,20 +305,7 @@ pub(crate) fn flush_preflight_circuit_recovery(ctx: &mut TurnProcessingContext<'
 /// This is flushed after all responses from the current assistant batch so a
 /// recovery directive is never interleaved with tool responses.
 pub(crate) fn flush_blocked_tool_recovery(ctx: &mut TurnProcessingContext<'_>) {
-    let preview_gate_retried = ctx.harness_state.finish_preview_gate_batch();
     if !ctx.harness_state.take_blocked_tool_recovery() {
-        if preview_gate_retried {
-            let directive = if ctx.is_planning_active() {
-                PLANNING_TOOL_FREE_RECOVERY_DIRECTIVE
-            } else {
-                "Recovery: two assistant batches attempted inspection after the tool preview budget was exhausted without an admitted tool between them. Tools are disabled for this pass. Report the evidence already visible and what remains unverified. Do not claim that all tool access was revoked; spool paging, edits, and verification were still available."
-            };
-            ctx.push_system_message(directive);
-            if ctx.harness_state.recovery_reason.is_none() {
-                ctx.harness_state.recovery_reason = Some("repeated inspection after preview exhaustion".to_string());
-            }
-            ctx.harness_state.switch_to_tool_free_recovery();
-        }
         return;
     }
 
@@ -503,11 +490,6 @@ pub(super) fn finalize_validation_result(
         ValidationResult::Outcome(outcome) => ValidationTransition::Return(Some(outcome)),
         ValidationResult::Handled => {
             ctx.reset_blocked_tool_call_streak();
-            ctx.harness_state.reset_preview_gate_batches();
-            ValidationTransition::Return(None)
-        }
-        ValidationResult::PreviewExhausted => {
-            ctx.harness_state.record_preview_gate_rejection();
             ValidationTransition::Return(None)
         }
         ValidationResult::Blocked => {
@@ -523,7 +505,6 @@ pub(super) fn finalize_validation_result(
         }
         ValidationResult::Proceed(prepared) => {
             ctx.reset_blocked_tool_call_streak();
-            ctx.harness_state.reset_preview_gate_batches();
             ValidationTransition::Proceed(prepared)
         }
     }

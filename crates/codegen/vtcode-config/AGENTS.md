@@ -8,7 +8,7 @@
 ## Rules
 
 - `ModelId` enum is the canonical model identifier — all model matching must go through it.
-- `constants/` is organized by domain: `models/`, `urls.rs`, `env_vars.rs`, `tools.rs`.
+- `constants/` is organized by domain: `models/`, `urls.rs`, `env_vars.rs`, `tools.rs`. Historical `TURN_PREVIEW_BUDGET_BYTES*` names now bound one result, not aggregate turn output; the legacy tiny-preview reserve is not enforced.
 - `ConfigLayerStack` handles layered config (defaults → file → env → CLI) — do not bypass.
 - `bootstrap` feature (default) scaffolds config dirs. Disable for parse-only consumers.
 - `schema` feature gates `vtcode_config_schema_json()` — used by `build.rs`.

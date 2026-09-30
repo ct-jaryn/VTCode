@@ -202,7 +202,7 @@ pub fn generate_tool_guidelines_for_profile(
     // Tool-failure diagnosis, waiting on returned `next_wait_args` instead of
     // polling, the safeguard rule, the verification outcome rule (report
     // completion only after a check you ran), and spool paging with
-    // `preview_budget_exhausted` handling each have one home in Runtime
+    // per-result preview bounds each have one home in Runtime
     // Guidance, which every profile includes; do not restate them here.
     if has_stdin {
         lines.push(format!(
@@ -691,7 +691,7 @@ mod tests {
             "diagnose it and change approach",
             "rather than polling",
             "small ranges",
-            "preview_budget_exhausted",
+            "accumulated output never exhausts tool access",
             "additional_permissions",
             "bypass safeguards",
             "Delegate only sizeable",

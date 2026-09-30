@@ -79,7 +79,7 @@ pub(super) fn limit_output_preview(mut value: Value, max_output_tokens: usize) -
         return value;
     };
     let mut preview_truncated = false;
-    for field in ["raw_output", "output", "stdout", "content", "preview"] {
+    for field in ["raw_output", "output", "stdout", "stderr", "content", "preview"] {
         let Some(text) = object.get(field).and_then(Value::as_str) else {
             continue;
         };

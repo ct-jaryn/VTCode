@@ -93,21 +93,6 @@ pub(crate) struct ToolWallClockExhaustionNotice {
 
 pub(crate) const TOOL_BUDGET_WARNING_THRESHOLD: f64 = 0.75;
 
-/// Maximum aggregate tool-result preview bytes copied into the provider-facing
-/// history for one turn. Complete output remains in the internal spool and
-/// current-session tool-output viewer; this only bounds the diagnostic surface
-/// seen by a model during a recovery-heavy turn.
-/// Preview credit granted per admitted spool-page read. Paged spool reads are
-/// already size-bounded per result and capped sequentially per turn by the
-/// spool-chunk guard; without credit the aggregate budget blinds mid-file
-/// paging (a single large file can exhaust it), defeating the designed
-/// spool-then-page workflow in every mode.
-pub(crate) const SPOOL_PAGE_PREVIEW_CREDIT_BYTES: usize = 16 * 1024;
-/// Cap on banked spool-page credit per turn so paging cannot grow the prompt
-/// without bound. Six sequential spool pages trip the spool-chunk guard into
-/// recovery, so this covers a full paging run with headroom for its recovery
-/// payload.
-const MAX_SPOOL_PAGE_PREVIEW_CREDIT_BYTES: usize = 96 * 1024;
 /// Model-facing guidance emitted after a user increases the per-turn tool
 /// budget. Keep this shared by the normal and out-of-band provider paths so a
 /// grant has the same continuation semantics regardless of transport.
@@ -128,7 +113,6 @@ pub(crate) fn full_auto_loop_grants_enabled(full_auto: bool, vt_cfg: Option<&VTC
     full_auto
         && vt_cfg.is_some_and(|cfg| cfg.automation.full_auto.enabled && cfg.automation.full_auto.auto_grant_tool_limits)
 }
-const MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES: usize = 16 * 1024;
 const TOOL_PREVIEW_METADATA_MAX_DEPTH: usize = 8;
 
 const TOOL_PREVIEW_METADATA_STRING_LIMIT: usize = 512;
@@ -538,27 +522,15 @@ pub(crate) struct HarnessTurnState {
     spooled_results: u32,
     raw_spooled_bytes: u64,
     model_visible_output_bytes: u64,
-    model_visible_tool_preview_bytes: usize,
-    model_visible_tiny_tool_preview_bytes: usize,
-    model_visible_tool_metadata_bytes: usize,
     model_visible_tool_preview_budget_exhausted: bool,
     suppressed_tool_previews: u32,
-    /// Tool calls whose provider-visible preview was suppressed by either
-    /// budget layer. Shared identity tracking keeps diagnostics idempotent
+    /// Tool calls with a truncated preview or a legacy suppression marker.
+    /// Shared identity tracking keeps diagnostics idempotent
     /// when an in-progress response is replaced by its terminal result.
     suppressed_tool_call_ids: HashSet<String>,
-    /// Remaining bytes of spool-page preview credit. Admitted spool-page reads
-    /// grant credit so the designed paged-reading workflow stays model-visible
-    /// even after the aggregate preview budget is exhausted. Capped per turn;
-    /// reset every turn with the rest of the harness state.
-    spool_page_preview_credit_bytes: usize,
     recovery_activations: u32,
     pub blocked_tool_calls: usize,
     pub consecutive_blocked_tool_calls: usize,
-    /// Parallel preview-gate rejections are one failed decision, not separate
-    /// permission denials. Allow one response to choose spool paging or finish.
-    preview_gate_rejected_this_batch: bool,
-    consecutive_preview_gate_batches: u8,
     /// Counts consecutive malformed/schema-invalid tool calls independently
     /// from policy denials. A valid admitted call resets this streak.
     pub consecutive_preflight_failures: usize,
@@ -744,18 +716,12 @@ impl HarnessTurnState {
             spooled_results: 0,
             raw_spooled_bytes: 0,
             model_visible_output_bytes: 0,
-            model_visible_tool_preview_bytes: 0,
-            model_visible_tiny_tool_preview_bytes: 0,
-            model_visible_tool_metadata_bytes: 0,
             model_visible_tool_preview_budget_exhausted: false,
             suppressed_tool_previews: 0,
             suppressed_tool_call_ids: HashSet::new(),
-            spool_page_preview_credit_bytes: 0,
             recovery_activations: 0,
             blocked_tool_calls: 0,
             consecutive_blocked_tool_calls: 0,
-            preview_gate_rejected_this_batch: false,
-            consecutive_preview_gate_batches: 0,
             consecutive_preflight_failures: 0,
             consecutive_assistant_text_responses: 0,
             out_of_band_tool_progress: false,
@@ -965,18 +931,8 @@ impl HarnessTurnState {
         )
     }
 
-    /// Test-only wrapper for exercising the local limiter without a registry
-    /// tool-call identifier.
-    ///
-    /// Tool output processing already applies a per-result preview limit, but
-    /// a turn can still accumulate many independent previews (or repeatedly
-    /// inspect a spool file). Once the aggregate budget is exhausted, retain
-    /// only bounded metadata so recovery cannot amplify one diagnostic into a
-    /// recursively growing prompt.
-    ///
-    /// Callers pass the effective turn budget (`turn_preview_budget_bytes`)
-    /// so planning (`96 KiB`) and execution (`64 KiB`) share one accounting
-    /// path instead of duplicated ledgers.
+    /// Per-result fallback for provider-history insertion. Registry outputs
+    /// are already bounded; other producers still need a finite preview.
     #[cfg(test)]
     pub(crate) fn bound_model_visible_tool_preview_with_budget(
         &mut self,
@@ -987,10 +943,6 @@ impl HarnessTurnState {
         self.bound_model_visible_tool_preview_inner(None, tool_name, content, budget_bytes)
     }
 
-    /// Call-aware provider-history boundary. Registry markers are observed
-    /// before body-size bypasses, while locally generated suppression shares
-    /// the same call-id ledger so an interim response and its replacement are
-    /// counted once.
     pub(crate) fn bound_model_visible_tool_preview_for_call_with_budget(
         &mut self,
         tool_call_id: &str,
@@ -998,9 +950,9 @@ impl HarnessTurnState {
         content: String,
         budget_bytes: usize,
     ) -> String {
-        if self.observe_upstream_preview_budget_exhaustion(tool_call_id, &content, budget_bytes) {
-            return content;
-        }
+        // Retain diagnostics for archived/legacy markers without letting
+        // them hide new output or revoke the current tool catalog.
+        self.observe_upstream_preview_budget_exhaustion(tool_call_id, &content, budget_bytes);
         self.bound_model_visible_tool_preview_inner(Some(tool_call_id), tool_name, content, budget_bytes)
     }
 
@@ -1011,76 +963,32 @@ impl HarnessTurnState {
         content: String,
         budget_bytes: usize,
     ) -> String {
-        if content.is_empty() || !tool_preview_has_visible_body(&content) {
+        let limit = budget_bytes.max(1);
+        if content.len() <= limit {
             return content;
         }
-
-        // Spool paging bypass: an admitted spool-page read banks credit that
-        // keeps exactly that page model-visible. Only fully covered responses
-        // are exempted; anything larger falls through to the normal budget
-        // path below so oversized pages cannot silently bypass the bound.
-        if content.len() <= self.spool_page_preview_credit_bytes {
-            self.spool_page_preview_credit_bytes -= content.len();
-            return content;
-        }
-
-        // Verifier bypass: payloads at or under `TINY_PREVIEW_BYPASS_BYTES`
-        // use a separate finite per-turn reserve instead of the regular
-        // preview budget. This keeps short checks available after that budget
-        // is exhausted. Charge full serialized content so metadata overhead
-        // cannot bypass either bound.
-        if content.len() <= vtcode_config::constants::output_limits::TINY_PREVIEW_BYPASS_BYTES {
-            let tiny_budget = vtcode_config::constants::output_limits::TURN_TINY_PREVIEW_BUDGET_BYTES;
-            let remaining = tiny_budget.saturating_sub(self.model_visible_tiny_tool_preview_bytes);
-            if content.len() <= remaining {
-                self.model_visible_tiny_tool_preview_bytes =
-                    self.model_visible_tiny_tool_preview_bytes.saturating_add(content.len());
-                return content;
-            }
-            self.model_visible_tiny_tool_preview_bytes = tiny_budget;
-            return self.suppress_model_visible_tool_preview(tool_call_id, tool_name, content);
-        }
-
-        let budget = budget_bytes.max(1);
-        let remaining = budget.saturating_sub(self.model_visible_tool_preview_bytes);
-        if !self.model_visible_tool_preview_budget_exhausted && content.len() <= remaining {
-            self.model_visible_tool_preview_bytes = self.model_visible_tool_preview_bytes.saturating_add(content.len());
-            if self.model_visible_tool_preview_bytes >= budget {
-                self.model_visible_tool_preview_budget_exhausted = true;
-            }
-            return content;
-        }
-
-        self.model_visible_tool_preview_bytes = budget;
-        self.suppress_model_visible_tool_preview(tool_call_id, tool_name, content)
-    }
-
-    fn suppress_model_visible_tool_preview(
-        &mut self,
-        tool_call_id: Option<&str>,
-        tool_name: Option<&str>,
-        content: String,
-    ) -> String {
-        self.model_visible_tool_preview_budget_exhausted = true;
         self.record_suppressed_tool_preview(tool_call_id);
-        let metadata_remaining =
-            MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES.saturating_sub(self.model_visible_tool_metadata_bytes);
-        if metadata_remaining == 0 {
-            self.model_visible_tool_metadata_bytes = MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES;
-            return generic_tool_preview_metadata(content.len());
-        }
-        let metadata = bounded_tool_preview_metadata(tool_name, &content);
-        if metadata.len() <= metadata_remaining {
-            self.model_visible_tool_metadata_bytes =
-                self.model_visible_tool_metadata_bytes.saturating_add(metadata.len());
-            metadata
+        let preview = bounded_tool_preview_metadata(tool_name, &content);
+        if preview.len() <= limit {
+            preview
         } else {
-            self.model_visible_tool_metadata_bytes = MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES;
-            // Bounded metadata overflowed the remaining budget: fall back to
-            // the minimal stub to preserve the aggregate bound. The bounded
-            // path already preserves spool_path/byte_count/completion_state
-            // for all fits-budget cases.
-            generic_tool_preview_metadata(content.len())
+            // Pathological nested metadata must not produce a cut JSON object.
+            // Keep a finite excerpt in a valid envelope even on this fallback.
+            let fallback = serde_json::json!({
+                "preview_truncated": true,
+                "byte_count": content.len(),
+                "preview": vtcode_commons::sanitizer::redact_secrets(
+                    vtcode_commons::preview::condense_text_bytes(&content, limit / 16, limit / 16),
+                ),
+            })
+            .to_string();
+            if fallback.len() <= limit {
+                fallback
+            } else if limit >= 2 {
+                "{}".to_owned()
+            } else {
+                "0".to_owned()
+            }
         }
     }
 
@@ -1094,21 +1002,14 @@ impl HarnessTurnState {
         }
     }
 
-    /// Merge the registry's authoritative aggregate-budget transition into
-    /// the runloop state before provider-history body checks can return early.
-    ///
-    /// Registry exhaustion strips payload bodies and leaves the
-    /// `preview_budget_exhausted` control marker. Treating the resulting JSON
-    /// as "no visible body" before observing that marker left the inspection
-    /// gate, recovery balancer, checkpoints, and ATIF diagnostics unaware of
-    /// the exhaustion (turn 1163). The transition is monotonic and suppression
-    /// accounting is keyed by tool-call id so response replacement is
-    /// idempotent.
+    /// Recognize archived exhaustion markers for diagnostic compatibility.
+    /// These markers never gate calls, hide fresh results, or arm recovery.
+    /// Call identity keeps response replacements from inflating diagnostics.
     pub(crate) fn observe_upstream_preview_budget_exhaustion(
         &mut self,
         tool_call_id: &str,
         content: &str,
-        budget_bytes: usize,
+        _budget_bytes: usize,
     ) -> bool {
         // Registry responses are already bounded. Refuse to parse an
         // oversized marker candidate here so arbitrary local/MCP output cannot
@@ -1123,27 +1024,16 @@ impl HarnessTurnState {
             return false;
         }
 
-        self.model_visible_tool_preview_bytes = self.model_visible_tool_preview_bytes.max(budget_bytes.max(1));
         self.model_visible_tool_preview_budget_exhausted = true;
         self.record_suppressed_tool_preview(Some(tool_call_id));
         true
     }
 
-    /// Whether the per-turn model-visible tool preview budget is exhausted.
-    /// Once exhausted, every further tool response is stored as a metadata
-    /// stub without body content, so additional research calls cannot surface
-    /// new evidence to the model. The turn balancer uses this to converge
-    /// planning turns toward synthesis instead of blind retries.
+    /// Legacy exhaustion diagnostic, retained for replay compatibility only.
+    /// This flag does not gate new tool calls or preview visibility.
+    #[cfg(test)]
     pub(crate) fn model_visible_preview_budget_exhausted(&self) -> bool {
         self.model_visible_tool_preview_budget_exhausted
-    }
-
-    /// Bank preview credit for an admitted spool-page read. Only fully covered
-    /// responses are exempted, so credit never creates partial-visibility
-    /// states; unused credit simply expires with the turn.
-    pub(crate) fn grant_spool_page_preview_credit(&mut self, bytes: usize) {
-        self.spool_page_preview_credit_bytes =
-            MAX_SPOOL_PAGE_PREVIEW_CREDIT_BYTES.min(self.spool_page_preview_credit_bytes.saturating_add(bytes));
     }
 
     pub(crate) fn replace_model_visible_output_bytes(&mut self, previous_len: usize, new_len: usize) {
@@ -1291,25 +1181,6 @@ impl HarnessTurnState {
 
     pub(crate) fn reset_blocked_tool_call_streak(&mut self) {
         self.consecutive_blocked_tool_calls = 0;
-    }
-
-    pub(crate) fn record_preview_gate_rejection(&mut self) {
-        self.preview_gate_rejected_this_batch = true;
-    }
-
-    /// Returns true after two blind-inspection batches without an admitted
-    /// tool between them. A batch of parallel calls counts only once.
-    pub(crate) fn finish_preview_gate_batch(&mut self) -> bool {
-        if !std::mem::take(&mut self.preview_gate_rejected_this_batch) {
-            return false;
-        }
-        self.consecutive_preview_gate_batches = self.consecutive_preview_gate_batches.saturating_add(1);
-        self.consecutive_preview_gate_batches >= 2
-    }
-
-    pub(crate) fn reset_preview_gate_batches(&mut self) {
-        self.preview_gate_rejected_this_batch = false;
-        self.consecutive_preview_gate_batches = 0;
     }
 
     pub(crate) fn record_preflight_failure(&mut self) -> usize {
@@ -1844,44 +1715,10 @@ fn preview_completion_state(object: Option<&serde_json::Map<String, serde_json::
     if exited { "complete" } else { "unknown" }
 }
 
-/// Payload-body fields counted against the preview budget. Outcome/control
-/// metadata alone must not consume budget or trigger suppression.
-///
-/// Keep in sync with `PAYLOAD_BODY_FIELDS` in
-/// `crates/codegen/vtcode-core/src/tools/registry/output_processing.rs` (same
-/// field list; this side uses a broader visibility predicate covering
-/// non-string bodies): the two lists must agree or Layer1/Layer2 accounting
-/// diverges.
+/// Prefer one substantive body for a per-result head/tail excerpt. Outcome
+/// metadata is preserved separately; identical producer aliases are not copied
+/// into multiple preview fields.
 const TOOL_PREVIEW_BODY_FIELDS: [&str; 5] = ["output", "preview", "content", "stdout", "stderr"];
-
-fn tool_preview_body_value_is_visible(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(text) => !text.is_empty(),
-        serde_json::Value::Array(items) => !items.is_empty(),
-        serde_json::Value::Object(map) => !map.is_empty(),
-        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => true,
-        serde_json::Value::Null => false,
-    }
-}
-
-fn tool_preview_has_visible_body(content: &str) -> bool {
-    if content.len() > TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES {
-        // Oversized plain text and JSON both consume the preview budget. Do
-        // not parse an untrusted body merely to discover that it is large.
-        return true;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
-        // Non-JSON previews (plain text) always consume budget.
-        return true;
-    };
-    let Some(object) = value.as_object() else {
-        return !content.is_empty();
-    };
-    TOOL_PREVIEW_BODY_FIELDS
-        .iter()
-        .filter_map(|field| object.get(*field))
-        .any(tool_preview_body_value_is_visible)
-}
 
 fn bounded_tool_preview_metadata(tool_name: Option<&str>, content: &str) -> String {
     let parsed = (content.len() <= TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES)
@@ -1910,16 +1747,16 @@ fn bounded_tool_preview_metadata(tool_name: Option<&str>, content: &str) -> Stri
         });
 
     let note = if spool_path.is_some() {
-        "Aggregate tool preview budget exhausted; complete output remains in the internal spool and current-session tool-output viewer."
+        "This result has a bounded preview; complete output remains in the spool and current-session tool-output viewer."
     } else {
-        "Aggregate tool preview budget exhausted; outcome metadata is preserved below. Do not repeat or rephrase this call solely to recover hidden output."
+        "This result has a bounded preview; use targeted extraction for additional evidence."
     };
     let mut metadata = serde_json::json!({
         "tool": tool_name.map(|name| bounded_preview_string(name, TOOL_PREVIEW_METADATA_STRING_LIMIT)),
         "spool_path": spool_path,
         "byte_count": byte_count,
         "completion_state": completion_state,
-        "preview_budget_exhausted": true,
+        "preview_truncated": true,
         "note": note,
     });
     if let Some(diagnosis) = diagnosis {
@@ -1997,16 +1834,18 @@ fn bounded_tool_preview_metadata(tool_name: Option<&str>, content: &str) -> Stri
             metadata[key] = bounded;
         }
     }
+    let body = object
+        .and_then(|value| {
+            TOOL_PREVIEW_BODY_FIELDS
+                .iter()
+                .find_map(|field| value.get(*field).and_then(serde_json::Value::as_str))
+        })
+        .unwrap_or(content);
+    metadata["preview"] =
+        serde_json::Value::String(vtcode_commons::ansi::strip_ansi(&vtcode_commons::sanitizer::redact_secrets(
+            vtcode_commons::preview::condense_text_bytes(body, 2 * 1024, 2 * 1024),
+        )));
     metadata.to_string()
-}
-
-fn generic_tool_preview_metadata(byte_count: usize) -> String {
-    serde_json::json!({
-        "byte_count": u64::try_from(byte_count).unwrap_or(u64::MAX),
-        "preview_budget_exhausted": true,
-        "suppressed": true,
-    })
-    .to_string()
 }
 
 fn bounded_tool_failure_metadata(value: &serde_json::Value) -> Option<serde_json::Value> {
@@ -2232,170 +2071,88 @@ mod tests {
     use hashbrown::HashSet;
 
     use super::{
-        CrossTurnTracker, DiagnosisMemoEntry, DiagnosisMemoKey, HarnessTurnState,
-        MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES, RecoveryMode, SESSION_LIMIT_AUTO_GRANT_INCREMENT,
-        TOOL_BUDGET_WARNING_THRESHOLD, TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES, ToolBudgetExhaustion,
-        ToolBudgetExhaustionNotice, ToolBudgetWarning, ToolWallClockExhaustion, ToolWallClockExhaustionNotice,
-        TurnExecutionPhase, TurnId, TurnPhase, TurnRunId, full_auto_loop_grants_enabled,
+        CrossTurnTracker, DiagnosisMemoEntry, DiagnosisMemoKey, HarnessTurnState, RecoveryMode,
+        SESSION_LIMIT_AUTO_GRANT_INCREMENT, TOOL_BUDGET_WARNING_THRESHOLD, TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES,
+        ToolBudgetExhaustion, ToolBudgetExhaustionNotice, ToolBudgetWarning, ToolWallClockExhaustion,
+        ToolWallClockExhaustionNotice, TurnExecutionPhase, TurnId, TurnPhase, TurnRunId, full_auto_loop_grants_enabled,
     };
-    use vtcode_config::constants::output_limits::{
-        TINY_PREVIEW_BYPASS_BYTES, TURN_PREVIEW_BUDGET_BYTES, TURN_PREVIEW_BUDGET_BYTES_PLANNING,
-        TURN_TINY_PREVIEW_BUDGET_BYTES,
-    };
+    use vtcode_config::constants::output_limits::{TURN_PREVIEW_BUDGET_BYTES, TURN_PREVIEW_BUDGET_BYTES_PLANNING};
     use vtcode_core::config::loader::VTCodeConfig;
     use vtcode_core::types::CompactStr;
 
     #[test]
-    fn model_visible_tool_preview_budget_returns_bounded_metadata_after_exhaustion() {
-        // Sizes assume the 64 KiB exec budget: the 48 KiB first preview fits
-        // while the ~21 KiB second preview exhausts the remainder.
-        let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
-        let first = state.bound_model_visible_tool_preview(Some("exec_command"), "a".repeat(48 * 1024));
-        assert_eq!(first.len(), 48 * 1024);
-
-        let second = state.bound_model_visible_tool_preview(
-            Some("run_pty_cmd"),
-            serde_json::json!({
-                "output": "b".repeat(20 * 1024),
-                "spool_path": ".vtcode/context/tool_outputs/run-1.txt",
-                "spooled_bytes": 20 * 1024,
-                "spool_complete": true,
-                "exit_code": 1,
-                "status": "completed",
-                "success": false,
-                "error": {
-                    "message": "permission denied: token=secret-not-for-context",
-                    "original_error": "permission denied: token=secret-not-for-context",
-                    "retryable": false,
-                },
-                "error_summary": "permission denied: token=secret-not-for-context",
-                "diagnosis": {
-                    "observed": "exit 1",
-                    "likely_cause": "dependency check failed",
-                    "next_action": "\u{1b}[31minspect the first compiler error\u{1b}[0m\npassword=secret-not-for-context"
-                },
-            })
-            .to_string(),
-        );
-
-        assert!(second.len() < 2 * 1024);
-        assert!(second.contains(".vtcode/context/tool_outputs/run-1.txt"));
-        assert!(second.contains("\"byte_count\":20480"));
-        assert!(second.contains("\"completion_state\":\"complete\""));
-        assert!(second.contains("\"exit_code\":1"));
-        assert!(second.contains("\"status\":\"completed\""));
-        assert!(second.contains("\"success\":false"));
-        assert!(second.contains("\"error_summary\":\"permission denied"));
-        assert!(second.contains("\"message\":\"permission denied"));
-        assert!(second.contains("preview_budget_exhausted"));
-        assert!(second.contains("\"diagnosis\":{"));
-        assert!(second.contains("inspect the first compiler error"));
-        assert!(!second.contains("secret-not-for-context"));
-        assert!(!second.contains('\u{1b}'));
-        let repeated_b = "b".repeat(128);
-        assert!(!second.contains(repeated_b.as_str()));
-        assert_eq!(state.model_visible_tool_preview_bytes, TURN_PREVIEW_BUDGET_BYTES);
-        assert!(state.model_visible_tool_preview_budget_exhausted);
-        assert_eq!(state.suppressed_tool_previews, 1);
-
-        // Verifier-sized payloads bypass the budget so small checks stay
-        // visible after exhaustion (session-vtcode-20260913T074747Z).
-        let tiny = state.bound_model_visible_tool_preview(
-            Some("exec_command"),
-            serde_json::json!({"exit_code": 0, "status": "completed", "success": true, "output": "later output"})
-                .to_string(),
-        );
-        assert!(!tiny.contains("preview_budget_exhausted"));
-        assert!(tiny.contains("later output"));
-        assert_eq!(state.suppressed_tool_previews, 1);
-
-        let later = state.bound_model_visible_tool_preview(
-            Some("exec_command"),
-            serde_json::json!({
-                "exit_code": 0,
-                "status": "completed",
-                "success": true,
-                "session_id": "run-later",
-                "command": "grep -c pattern README.md",
-                "backend": "pipe",
-                "output": format!("later output {}", "x".repeat(5000)),
-            })
-            .to_string(),
-        );
-        assert!(later.contains("Aggregate tool preview budget exhausted"));
-        assert!(!later.contains("later output"));
-        assert!(later.contains("\"exit_code\":0"));
-        assert!(later.contains("\"status\":\"completed\""));
-        assert!(later.contains("\"success\":true"));
-        assert!(later.contains("run-later"));
-        assert!(later.contains("grep -c pattern README.md"));
-        assert!(later.contains("\"backend\":\"pipe\""));
-        assert_eq!(state.suppressed_tool_previews, 2);
-
-        let mut aggregate_metadata_bytes = second.len() + later.len();
-        for _ in 0..100 {
-            aggregate_metadata_bytes += state
-                .bound_model_visible_tool_preview(
-                    Some("exec_command"),
-                    serde_json::json!({
-                        "status": "completed",
-                        "success": true,
-                        "diagnosis": {"next_action": "x".repeat(2048)},
-                        "output": "hidden"
-                    })
-                    .to_string(),
-                )
-                .len();
+    fn repeated_tool_previews_keep_fresh_evidence_visible() {
+        let mut state = HarnessTurnState::new(TurnRunId("run-1".into()), TurnId("turn-1".into()), 120, 10, 1);
+        for index in 0..40 {
+            let evidence = format!("source-{index} {}", "x".repeat(8_000));
+            assert_eq!(state.bound_model_visible_tool_preview(Some("read_file"), evidence.clone()), evidence);
+            let verifier =
+                serde_json::json!({"exit_code": 1, "output": "check failed", "stderr": "missing dependency"})
+                    .to_string();
+            assert_eq!(state.bound_model_visible_tool_preview(Some("exec_command"), verifier.clone()), verifier);
         }
-        assert!(
-            aggregate_metadata_bytes < 100_000,
-            "aggregate metadata bytes grew unboundedly: {aggregate_metadata_bytes}"
-        );
-        assert_eq!(state.model_visible_tool_metadata_bytes, MODEL_VISIBLE_TOOL_METADATA_BUDGET_BYTES);
+        assert!(!state.model_visible_preview_budget_exhausted());
+        assert_eq!(state.suppressed_tool_previews, 0);
     }
 
     #[test]
-    fn tiny_verifier_previews_use_a_bounded_reserve_after_regular_budget_exhaustion() {
-        let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
-        let primary =
-            state.bound_model_visible_tool_preview(Some("read_file"), "a".repeat(TURN_PREVIEW_BUDGET_BYTES + 1));
-        assert!(primary.contains("preview_budget_exhausted"));
+    fn oversized_result_retains_head_tail_and_does_not_blind_next_call() {
+        let mut state = HarnessTurnState::new(TurnRunId("run-1".into()), TurnId("turn-1".into()), 120, 10, 1);
+        let oversized = serde_json::json!({
+            "output": format!("HEAD{}TAIL", "界".repeat(24_000)),
+            "spool_path": ".vtcode/context/tool_outputs/result.txt", "spool_complete": true,
+            "exit_code": 1, "stderr": "error: missing dependency", "success": false,
+        })
+        .to_string();
+        let visible = state.bound_model_visible_tool_preview(Some("exec_command"), oversized);
+        let parsed: serde_json::Value = serde_json::from_str(&visible).unwrap();
+        assert!(visible.len() < TURN_PREVIEW_BUDGET_BYTES);
+        assert_eq!(parsed["exit_code"], 1);
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["spool_path"], ".vtcode/context/tool_outputs/result.txt");
+        assert_eq!(parsed["stderr"], "error: missing dependency");
+        let preview = parsed["preview"].as_str().unwrap();
+        assert!(preview.starts_with("HEAD"));
+        assert!(preview.ends_with("TAIL"));
+        assert!(parsed.get("preview_budget_exhausted").is_none());
+        assert!(!state.model_visible_preview_budget_exhausted());
+        assert_eq!(
+            state.bound_model_visible_tool_preview(Some("read_file"), "fresh evidence".into()),
+            "fresh evidence"
+        );
+    }
 
-        let output = "3";
-        let tiny = serde_json::json!({"success": true, "exit_code": 0, "output": output}).to_string();
-        assert!(tiny.len() <= TINY_PREVIEW_BYPASS_BYTES);
-        let admitted_count = TURN_TINY_PREVIEW_BUDGET_BYTES / tiny.len();
-        assert!(admitted_count > 0);
-        for index in 0..admitted_count {
-            let visible = state.bound_model_visible_tool_preview_for_call_with_budget(
-                &format!("call-verifier-{index}"),
+    #[test]
+    fn oversized_preview_preserves_failure_metadata_without_secrets_and_counts_once() {
+        let mut state = HarnessTurnState::new(TurnRunId("run-1".into()), TurnId("turn-1".into()), 120, 10, 1);
+        let content = serde_json::json!({
+            "output": "x".repeat(80_000), "exit_code": 1, "success": false,
+            "error": {"message": "permission denied: token=secret-not-for-context", "retryable": false},
+            "diagnosis": {"observed": "exit 1", "next_action": "\u{1b}[31minspect compiler error\u{1b}[0m\npassword=secret-not-for-context"},
+        }).to_string();
+        for _ in 0..2 {
+            let result = state.bound_model_visible_tool_preview_for_call_with_budget(
+                "failure",
                 Some("exec_command"),
-                tiny.clone(),
+                content.clone(),
                 TURN_PREVIEW_BUDGET_BYTES,
             );
-            assert_eq!(visible, tiny);
+            let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(parsed["exit_code"], 1);
+            assert_eq!(parsed["error"]["retryable"], false);
+            assert!(parsed["error"]["message"].as_str().unwrap().contains("permission denied"));
+            assert!(
+                parsed["diagnosis"]["next_action"]
+                    .as_str()
+                    .unwrap()
+                    .contains("inspect compiler error")
+            );
+            assert!(!result.contains("secret-not-for-context"));
+            assert!(!result.contains("\\u001b"));
+            assert!(parsed.get("preview_budget_exhausted").is_none());
         }
-
-        let suppressed = state.bound_model_visible_tool_preview_for_call_with_budget(
-            "call-verifier-overflow",
-            Some("exec_command"),
-            tiny,
-            TURN_PREVIEW_BUDGET_BYTES,
-        );
-        assert!(suppressed.contains("preview_budget_exhausted"));
-        assert!(!suppressed.contains("\"output\":\"3\""));
-        assert!(suppressed.contains("\"success\":true"));
-        assert!(suppressed.contains("\"exit_code\":0"));
-        assert_eq!(state.model_visible_tiny_tool_preview_bytes, TURN_TINY_PREVIEW_BUDGET_BYTES);
-        assert_eq!(state.suppressed_tool_previews, 2);
-    }
-
-    #[test]
-    fn preview_budget_exhausted_getter_tracks_bound_flip() {
-        let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
+        assert_eq!(state.suppressed_tool_previews, 1);
         assert!(!state.model_visible_preview_budget_exhausted());
-        state.bound_model_visible_tool_preview(Some("exec_command"), "a".repeat(TURN_PREVIEW_BUDGET_BYTES + 1));
-        assert!(state.model_visible_preview_budget_exhausted());
     }
 
     #[test]
@@ -2457,67 +2214,18 @@ mod tests {
     }
 
     #[test]
-    fn replacement_suppression_is_idempotent_across_both_budget_layers() {
-        let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 32, 10, 1);
-        let locally_suppressed = state.bound_model_visible_tool_preview_for_call_with_budget(
-            "call-read",
-            Some("read_file"),
-            "x".repeat(TURN_PREVIEW_BUDGET_BYTES + 1),
-            TURN_PREVIEW_BUDGET_BYTES,
-        );
-        assert!(locally_suppressed.contains("preview_budget_exhausted"));
-        assert_eq!(state.suppressed_tool_previews, 1);
-
-        let registry_stub = serde_json::json!({
-            "total_output_bytes": 80_000,
-            "preview_budget_exhausted": true,
-        })
-        .to_string();
-        let preserved = state.bound_model_visible_tool_preview_for_call_with_budget(
-            "call-read",
-            Some("read_file"),
-            registry_stub.clone(),
-            TURN_PREVIEW_BUDGET_BYTES,
-        );
-        assert_eq!(preserved, registry_stub);
-        assert_eq!(state.suppressed_tool_previews, 1);
-
-        state.bound_model_visible_tool_preview_for_call_with_budget(
-            "call-read-2",
-            Some("read_file"),
-            "y".repeat(TURN_PREVIEW_BUDGET_BYTES + 1),
-            TURN_PREVIEW_BUDGET_BYTES,
-        );
-        assert_eq!(state.suppressed_tool_previews, 2);
-    }
-
-    #[test]
-    fn planning_preview_budget_keeps_midsize_payload_exec_strips_it() {
-        // Midsize payload sits between the exec (64 KiB) and planning (96 KiB)
-        // budgets: execution strips it while planning keeps it model-visible.
+    fn per_result_limits_differ_by_mode_without_exhausting_tools() {
         let payload = "a".repeat(80 * 1024);
-        assert!(payload.len() > TURN_PREVIEW_BUDGET_BYTES);
-        assert!(payload.len() < TURN_PREVIEW_BUDGET_BYTES_PLANNING);
-
-        let mut exec_state =
-            HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
-        let exec_result = exec_state.bound_model_visible_tool_preview_with_budget(
-            Some("exec_command"),
-            payload.clone(),
-            TURN_PREVIEW_BUDGET_BYTES,
-        );
-        assert!(exec_result.contains("preview_budget_exhausted"));
-        assert!(exec_state.model_visible_preview_budget_exhausted());
-
-        let mut plan_state =
-            HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
-        let plan_result = plan_state.bound_model_visible_tool_preview_with_budget(
-            Some("exec_command"),
-            payload.clone(),
-            TURN_PREVIEW_BUDGET_BYTES_PLANNING,
-        );
-        assert_eq!(plan_result, payload);
-        assert!(!plan_state.model_visible_preview_budget_exhausted());
+        for (limit, truncated) in [
+            (TURN_PREVIEW_BUDGET_BYTES, true),
+            (TURN_PREVIEW_BUDGET_BYTES_PLANNING, false),
+        ] {
+            let mut state = HarnessTurnState::new(TurnRunId("run-1".into()), TurnId("turn-1".into()), 120, 10, 1);
+            let visible = state.bound_model_visible_tool_preview_with_budget(Some("read_file"), payload.clone(), limit);
+            assert_eq!(visible != payload, truncated);
+            assert!(visible.len() <= limit);
+            assert!(!state.model_visible_preview_budget_exhausted());
+        }
     }
 
     #[test]
@@ -2560,38 +2268,6 @@ mod tests {
     }
 
     #[test]
-    fn spool_page_credit_keeps_pages_visible_after_exhaustion() {
-        use super::SPOOL_PAGE_PREVIEW_CREDIT_BYTES;
-
-        let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
-        state.bound_model_visible_tool_preview(Some("exec_command"), "a".repeat(TURN_PREVIEW_BUDGET_BYTES + 1));
-        assert!(state.model_visible_preview_budget_exhausted());
-
-        // Without credit a page over the verifier bypass is stubbed.
-        // (Pages at or under `TINY_PREVIEW_BYPASS_BYTES` bypass on their own,
-        // so use 5 KiB here to exercise the exhaustion path.)
-        let page = "p".repeat(5 * 1024);
-        let stubbed = state.bound_model_visible_tool_preview(Some("read_file"), page.clone());
-        assert!(stubbed.contains("preview_budget_exhausted"));
-        assert!(!stubbed.contains(&page));
-
-        // A granted page passes through fully visible without touching the
-        // aggregate budget counters.
-        state.grant_spool_page_preview_credit(SPOOL_PAGE_PREVIEW_CREDIT_BYTES);
-        let preview_bytes_before = state.model_visible_tool_preview_bytes;
-        let visible = state.bound_model_visible_tool_preview(Some("read_file"), page.clone());
-        assert_eq!(visible, page);
-        assert_eq!(state.model_visible_tool_preview_bytes, preview_bytes_before);
-        assert_eq!(state.suppressed_tool_previews, 2);
-
-        // Oversized pages are not partially exempted: they take the normal
-        // budget path instead of creating partial-visibility states.
-        let huge = "h".repeat(SPOOL_PAGE_PREVIEW_CREDIT_BYTES + 1);
-        let huge_result = state.bound_model_visible_tool_preview(Some("read_file"), huge);
-        assert!(huge_result.contains("preview_budget_exhausted"));
-    }
-
-    #[test]
     fn oversized_suppressed_preview_skips_unbounded_json_parse() {
         let mut state = HarnessTurnState::new(TurnRunId("run-1".to_string()), TurnId("turn-1".to_string()), 2, 10, 1);
         state.bound_model_visible_tool_preview(Some("exec_command"), "a".repeat(TURN_PREVIEW_BUDGET_BYTES));
@@ -2602,8 +2278,9 @@ mod tests {
         );
         let metadata = state.bound_model_visible_tool_preview(Some("exec_command"), content);
 
-        assert!(metadata.contains("\"preview_budget_exhausted\":true"));
-        assert!(!metadata.contains("should-not-be-parsed"));
+        assert!(metadata.contains("\"preview_truncated\":true"));
+        let parsed: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert!(parsed.get("error_summary").is_none());
         assert!(metadata.contains("\"byte_count\":"));
     }
 

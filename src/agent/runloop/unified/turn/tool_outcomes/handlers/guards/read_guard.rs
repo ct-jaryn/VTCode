@@ -12,13 +12,11 @@
 
 use serde_json::{Value, json};
 use vtcode_core::config::constants::tools as tool_names;
-use vtcode_core::tools::tool_intent::{ShellActivity, classify_shell_activity};
 
 use super::super::ValidationResult;
 use super::super::looping::low_signal_family_key;
 use super::common::{extract_read_path, is_read_action, push_guard_failure_messages};
 use crate::agent::runloop::git::normalize_workspace_path;
-use crate::agent::runloop::unified::tool_reads::spool_page_source_path;
 use crate::agent::runloop::unified::turn::context::TurnProcessingContext;
 use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{find_duplicate_in_history, signature_key_for};
 use crate::agent::runloop::unified::turn::tool_outcomes::read_extent;
@@ -302,103 +300,6 @@ fn is_plan_artifact_read(canonical_tool_name: &str, args: &Value) -> Option<Stri
     }
 }
 
-/// Whether a read-only call is an inspection whose value is its visible body.
-/// Once the model-visible preview budget is exhausted, inspections return
-/// metadata stubs without content, so admitting more of them only burns
-/// request cycles. Fail-open: unknown tools are never inspections.
-fn is_preview_gated_inspection(canonical_tool_name: &str, effective_args: &Value) -> bool {
-    if is_read_action(canonical_tool_name, effective_args) {
-        return true;
-    }
-    if matches!(
-        canonical_tool_name,
-        tool_names::CODE_SEARCH | tool_names::UNIFIED_SEARCH | tool_names::GREP_FILE | tool_names::LIST_FILES
-    ) {
-        return true;
-    }
-    if matches!(canonical_tool_name, tool_names::UNIFIED_EXEC | tool_names::EXEC_COMMAND | "command_session") {
-        return matches!(classify_shell_activity(canonical_tool_name, effective_args), ShellActivity::Inspection);
-    }
-    false
-}
-
-#[cold]
-fn build_preview_exhaustion_error_content(planning_active: bool) -> String {
-    let guidance = if planning_active {
-        "Tool preview budget is exhausted this turn; further inspection returns hidden stubs. \
-         Synthesize the `<proposed_plan>` now from the evidence already gathered. \
-         Verification, task_tracker, session polling, spool paging in small ranges using a spool_path already in this conversation, and plan-draft re-reads stay open; exhausted inspections are blocked."
-    } else {
-        "Tool preview budget is exhausted this turn; further inspection returns hidden stubs. \
-         Work from the evidence already visible: summarize status, edit, verify, or report. \
-         To read a spooled output, page it in small ranges using a spool_path already in this conversation."
-    };
-    super::super::super::execution_result::build_error_content(
-        guidance.to_string(),
-        None,
-        None,
-        "preview_exhaustion_gate",
-    )
-    .to_string()
-}
-
-/// Reject read-only inspections once the model-visible preview budget is
-/// exhausted. Post-exhaustion responses are metadata stubs without body
-/// content, so executing more inspections cannot surface new evidence — it
-/// only grows the request and starves synthesis or implementation.
-///
-/// Channels that stay useful without visible bodies remain open: verification
-/// commands (exit codes survive in stub metadata), the planning interview,
-/// task bookkeeping, session polling (verifier completions arrive through
-/// it), spool paging (kept visible through preview credit), and plan-draft
-/// re-reads (which carry finalize-the-plan guidance). Rejections feed the
-/// existing blocked-call fuse, so persistent flailing still converges on
-/// recovery instead of looping here.
-pub(crate) fn enforce_preview_exhaustion_inspection_gate(
-    ctx: &mut TurnProcessingContext<'_>,
-    tool_call_id: &str,
-    canonical_tool_name: &str,
-    effective_args: &Value,
-    readonly_classification: bool,
-) -> Option<ValidationResult> {
-    if !readonly_classification {
-        return None;
-    }
-    if !ctx.harness_state.model_visible_preview_budget_exhausted() {
-        return None;
-    }
-    if matches!(
-        canonical_tool_name,
-        tool_names::TASK_TRACKER | tool_names::REQUEST_USER_INPUT | tool_names::WRITE_STDIN
-    ) {
-        return None;
-    }
-    if matches!(canonical_tool_name, tool_names::UNIFIED_EXEC | tool_names::EXEC_COMMAND | "command_session")
-        && matches!(classify_shell_activity(canonical_tool_name, effective_args), ShellActivity::Verification)
-    {
-        return None;
-    }
-    if spool_page_source_path(canonical_tool_name, effective_args).is_some() {
-        return None;
-    }
-    if ctx.tool_registry.is_planning_active() && is_plan_artifact_read(canonical_tool_name, effective_args).is_some() {
-        return None;
-    }
-    if !is_preview_gated_inspection(canonical_tool_name, effective_args) {
-        return None;
-    }
-    let planning_active = ctx.tool_registry.is_planning_active();
-    let block_reason = if planning_active {
-        "Tool preview budget exhausted; inspection blocked. Synthesize the plan from collected evidence."
-    } else {
-        "Tool preview budget exhausted; inspection blocked. Work from visible evidence instead."
-    }
-    .to_string();
-    let error_content = build_preview_exhaustion_error_content(planning_active);
-    push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
-    Some(ValidationResult::PreviewExhausted)
-}
-
 /// Build the error content for a read-after-write guard trip.
 #[cold]
 fn build_read_after_write_error(path: &str) -> String {
@@ -472,20 +373,6 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
 ) -> Option<ValidationResult> {
     if !readonly_classification {
         return None;
-    }
-
-    // Blindness brake first: post-exhaustion inspections return hidden stubs,
-    // so executing them cannot surface new evidence. Reject before counting
-    // or serving anything; verification, spool paging, and bookkeeping stay
-    // open inside the gate itself.
-    if let Some(outcome) = enforce_preview_exhaustion_inspection_gate(
-        ctx,
-        tool_call_id,
-        canonical_tool_name,
-        effective_args,
-        readonly_classification,
-    ) {
-        return Some(outcome);
     }
 
     // Planning doubles the read caps, mirroring the generous planning research

@@ -28,7 +28,8 @@ fn install_tracing_stack(log_file: &Path, env_filter: tracing_subscriber::EnvFil
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(move || writer.clone())
-        .with_span_events(FmtSpan::FULL)
+        // Retain duration/outcome context without enter/exit rows on every poll.
+        .with_span_events(FmtSpan::CLOSE)
         .with_ansi(false);
 
     tracing_subscriber::registry()

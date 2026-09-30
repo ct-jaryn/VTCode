@@ -35,7 +35,7 @@ tracker:
   Blocked** turn — with or without tracker steps — it queues a bounded
   blocked-end resume ("The previous turn ended on a recoverable block: …").
   Recoverable means the production blocked-reason constants only (turn /
-  tool / tool-loop budgets, preview budgets, safety caps, blocked-tool fuse
+  tool / tool-loop budgets, per-result preview limits, safety caps, blocked-tool fuse
   and tool-call limits, tool-free recovery); provider refusals, verification
   blocks, true handoffs, and unknown reasons never auto-queue.
   Verification-blocked turns keep their own recovery path
@@ -75,12 +75,12 @@ configured cross-turn limit stops automatic retries even when steps stay blocked
 Only a completed-count high-water mark within the current user request resets
 the tracker retry budget; decreasing counts or recreating the checklist does
 not count as progress. A fresh user request starts a new progress episode.
-Preview exhaustion and tool-free recovery apply only to their turn. A fresh
-turn resets the preview window and supersedes expired recovery guidance while
+Tool-free recovery applies only to its turn. A fresh
+turn supersedes expired recovery guidance while
 retaining history and enforcing current planning, safety, verification, and
 permission checks. Cleared source context can be recovered with targeted reads.
 Restoration guidance is appended once per recovery episode, including planning,
-preflight, blocked-tool, budget, navigation, and empty-response synthesis paths.
+preflight, blocked-tool, loop-budget, navigation, and empty-response synthesis paths; historical preview-exhaustion directives are also superseded.
 A later restriction requires a new restoration; already superseded restrictions
 do not add redundant messages on subsequent turns.
 
@@ -502,26 +502,17 @@ PTY/session actions, polling, and stdin writes remain sequential. Both runloops
 honor `max_parallel_tool_calls` and trace the configured limit, admitted calls,
 group count, parallel-group count, and maximum group size.
 
-Across a turn, provider-visible tool previews are capped at 64 KiB execution
-(96 KiB planning). The
-budget is enforced twice: at the tool-registry output boundary (which charges
-each response's payload bodies and truncates or strips them, marked with
-`preview_budget_exhausted`) and again by the unified runloop when responses
-enter provider-facing history. The registry marker is an authoritative,
-monotonic state transition: the history boundary observes it before checking
-whether any payload body remains, so inspection admission, recovery,
-checkpoint diagnostics, and ATIF export cannot disagree with the result the
-model received. Replacing an in-progress result with its terminal result does
-not double-count suppression. Once that
-aggregate budget is exhausted, VTCode retains bounded outcome and control
-metadata while omitting payload bodies. A successful verifier therefore stays
-authoritative without encouraging duplicate reads or checks.
-
-Preview-gate rejections from parallel inspections count as one assistant batch;
-the agent gets one response to page a known spool, edit from visible evidence,
-verify, or finish. A second blind-inspection batch without an admitted tool
-between them triggers bounded
-tool-free recovery. The preview gate does not revoke access to all tools.
+Provider-visible tool previews are bounded independently for each result.
+The registry respects the requested output token limit, capped at 64 KiB for
+execution or 96 KiB for planning; the provider-history boundary applies the
+same fallback ceiling. Large output remains in the spool and current-session
+viewer, with a bounded preview and outcome/control metadata. Targeted reads,
+spool pages, and verifier diagnostics remain visible regardless of prior
+output volume. History compaction controls accumulated context; preview size
+never blocks inspections or forces a tool-free synthesis pass. Legacy
+`preview_budget_exhausted` markers remain readable for diagnostics but do not
+change current tool availability. Replacing a result does not double-count
+truncation diagnostics.
 
 Blocker live pointers are cleared only by the session that created them; archived blocker
 files remain self-contained, append a durable resolution marker before pointer

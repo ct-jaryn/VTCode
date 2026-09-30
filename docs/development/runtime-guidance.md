@@ -135,12 +135,12 @@ universal section is not taxed on turns with no live session; per-tool
 `guidelines.rs` `write_stdin` guidance carries only a one-line pointer that the
 hint may appear.
 
-The provider-facing history also has an aggregate tool-preview budget per
-turn (64 KiB execution, 96 KiB planning). After exhaustion, new payload bodies are replaced by bounded metadata,
-but scalar control signals such as success, exit code, completion status,
-verification requirements, and retryability remain visible. The metadata tells
-the agent not to repeat equivalent calls merely to recover hidden output, and
-checkpoint diagnostics record how many previews were suppressed.
+Provider-facing tool previews are bounded per result (up to 64 KiB execution,
+96 KiB planning), with larger output retained in the spool and session viewer.
+Each result retains a bounded preview and outcome/control metadata; earlier
+output volume never exhausts later visibility or disables tools. History
+compaction bounds accumulated context. Legacy preview-exhaustion markers are
+retained for diagnostic/replay compatibility, without gating new inspections.
 Diagnostics also report requested, admitted, and derived unadmitted tool-call
 counts so budget or policy rejections cannot disappear from turn accounting.
 Read-only results reused by same-turn caches, cross-turn target caches, or
@@ -178,3 +178,9 @@ cargo check --locked
 Release archives are independently allowlisted to contain the binary, man
 page, and shell completions only. They must never include `AGENTS.md` or other
 workspace guidance.
+
+Debug traces emit span completion records with timings instead of repetitive
+enter/exit records on each poll. Skill-reference extraction removes Markdown
+delimiters, ignores external links, and sorts deduplicated validation errors.
+PTY decoding handles large valid chunks and retains only an incomplete UTF-8
+suffix across reads; chunk size alone is not a Unicode error.
