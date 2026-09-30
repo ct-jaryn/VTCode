@@ -133,8 +133,9 @@ fn build_exit_postamble(data: &ExitData<'_>, color_enabled: bool) -> String {
 /// Theme-resolved styles for the exit postamble.
 ///
 /// Resolved once per exit so the block reads as a single surface with a clear
-/// hierarchy: a bold banner title, one bold notice row, subdued metadata, and
-/// the theme accent on the values the user acts on (model, resume command).
+/// hierarchy: a bold banner title, one bold + underlined warning notice row,
+/// subdued metadata, and the theme accent on the values the user acts on
+/// (model, resume command).
 ///
 /// Every color comes from the active theme — either its contrast-validated
 /// `ThemeStyles` tokens or its `banner_style()` — so no hand-picked palette
@@ -145,7 +146,10 @@ fn build_exit_postamble(data: &ExitData<'_>, color_enabled: bool) -> String {
 struct PostambleStyles {
     /// Bold theme banner color for the `> VT Code (version)` row.
     banner: AnsiStyle,
-    /// Bold secondary for the interrupt notice — the row that must be seen.
+    /// Bold + underlined warning amber for the interrupt notice — the row
+    /// that must be seen. Uses the dedicated `warning` token (scheme-picked
+    /// amber, never the brand `logo_accent`) so Ctrl+C reads as a warning,
+    /// matching Warning transcript semantics.
     notice: AnsiStyle,
     /// Subdued foreground for metadata rows and inline labels.
     muted: AnsiStyle,
@@ -160,7 +164,7 @@ impl PostambleStyles {
         let styles = theme::active_styles();
         Self {
             banner: theme::banner_style(),
-            notice: styles.info,
+            notice: styles.warning.underline(),
             muted: styles.tool_detail,
             accent: styles.primary,
             color_enabled,
@@ -679,6 +683,49 @@ mod tests {
             postamble.contains(&styles.muted.to_string()),
             "metadata rows must use the theme muted token: {postamble:?}"
         );
+
+        // The interrupt notice is a separate surface from the metadata block:
+        // it must use the warning token, not the muted/info tokens.
+        let interrupt_data = ExitData {
+            session_end_reason: vtcode_core::hooks::SessionEndReason::Exit,
+            ..stats_test_data(Duration::from_secs(30), 0, 0, 0, 0, None, 0, 0)
+        };
+        let interrupt_postamble = colored_postamble(&interrupt_data);
+        assert!(
+            interrupt_postamble.contains(&styles.notice.to_string()),
+            "interrupt notice must use the theme warning style: {interrupt_postamble:?}"
+        );
+    }
+
+    #[test]
+    fn postamble_notice_uses_warning_amber_with_bold_underline() {
+        use anstyle::Effects;
+
+        let styles = PostambleStyles::resolve(true);
+        let theme_styles = theme::active_styles();
+
+        // Same foreground as the design-system warning token (scheme-picked
+        // amber), never the brand logo accent or the old info token.
+        assert_eq!(
+            styles.notice.get_fg_color(),
+            theme_styles.warning.get_fg_color(),
+            "notice must carry the warning foreground"
+        );
+        assert_ne!(
+            styles.notice.get_fg_color(),
+            theme_styles.info.get_fg_color(),
+            "notice must no longer use the info token"
+        );
+
+        // Typographic hierarchy: bold (unless the terminal maps bold to
+        // bright) plus underline so the interrupt row stands out from the
+        // muted metadata block without resorting to faint.
+        let effects = styles.notice.get_effects();
+        assert!(effects.contains(Effects::UNDERLINE), "notice must be underlined: {effects:?}");
+        if !theme::is_bold_bright_mode() {
+            assert!(effects.contains(Effects::BOLD), "notice must stay bold: {effects:?}");
+        }
+        assert!(!effects.contains(Effects::DIMMED), "notice must not use faint/dimmed: {effects:?}");
     }
 
     #[test]
