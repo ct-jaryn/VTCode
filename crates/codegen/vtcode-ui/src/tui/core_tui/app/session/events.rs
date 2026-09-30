@@ -2710,6 +2710,59 @@ mod tests {
     }
 
     #[test]
+    fn sticky_prompt_keeps_compact_review_hint_hit_regions_aligned() {
+        let mut session = build_session();
+        session
+            .core
+            .push_line(InlineMessageKind::User, vec![text_segment("original prompt")]);
+        for _ in 0..24 {
+            session.core.push_line(InlineMessageKind::Agent, vec![text_segment("answer")]);
+        }
+        add_compact_activity(&mut session, 42, "printf sticky");
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|frame| session.render(frame)).expect("render sticky activity");
+        let body = session.core.transcript_area().unwrap();
+        let region = session
+            .compact_activity_hit_regions
+            .first()
+            .copied()
+            .expect("review hint below header");
+        assert_eq!(region.review_anchor, 42);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(body.x, body.y - 1)].symbol(), "o", "sticky prompt is visible");
+        assert!(buffer[(region.area.x, region.area.y)].modifier.contains(Modifier::UNDERLINED));
+        let original_top = session.core.transcript_view_top;
+        for _ in 0..3 {
+            terminal.draw(|frame| session.render(frame)).expect("repeat frame");
+            assert_eq!(session.core.transcript_view_top, original_top);
+            assert_eq!(session.core.transcript_area(), Some(body));
+        }
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+        session.handle_event(
+            CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: region.area.x,
+                row: region.area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &events,
+            None,
+        );
+        assert!(session.tool_output_viewer_state().is_some());
+        terminal.draw(|frame| session.render(frame)).expect("render covering viewer");
+        assert!(
+            !session.core.handle_sticky_prompt_click(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: body.x,
+                row: body.y - 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            "covered header target is invalidated"
+        );
+    }
+
+    #[test]
     fn compact_review_hint_click_opens_focused_transcript_review() {
         let mut session = build_session();
         add_compact_activity(&mut session, 41, "printf hello");

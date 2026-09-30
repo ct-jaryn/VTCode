@@ -198,6 +198,18 @@ impl SessionStyles {
         style
     }
 
+    /// Preserve theme foreground contrast while using the composer tint where
+    /// it remains readable. Some light themes sit close to the AA floor.
+    pub(crate) fn sticky_prompt_style(&self) -> Style {
+        let style = self.input_background_style();
+        if let (Some(Color::Rgb(fr, fg, fb)), Some(Color::Rgb(br, bg, bb))) = (style.fg, style.bg)
+            && crate::theme::contrast_ratio(RgbColor(fr, fg, fb), RgbColor(br, bg, bb)) < ui::THEME_MIN_CONTRAST_RATIO
+        {
+            return self.default_style();
+        }
+        style
+    }
+
     /// Get the prefix style for a message line
     pub(crate) fn prefix_style(&self, line: &MessageLine) -> InlineTextStyle {
         let fallback = self.text_fallback(line.kind).or(self.theme.foreground);

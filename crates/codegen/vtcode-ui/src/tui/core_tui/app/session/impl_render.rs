@@ -52,7 +52,8 @@ impl Session {
         self.core.render_base_frame(frame, &layout, transcript_area);
         {
             let buffer = &*frame.buffer_mut();
-            self.rebuild_compact_activity_hit_regions(buffer, transcript_area);
+            let body = self.core.transcript_area().unwrap_or(transcript_area);
+            self.rebuild_compact_activity_hit_regions(buffer, body);
         }
         self.core.render_input(frame, input_area);
         if let Some(panel_area) = bottom_panel_area {
@@ -94,6 +95,12 @@ impl Session {
             state.refresh(self, width, height);
             tool_output_viewer::render_tool_output_viewer(self, frame, layout.viewport, &mut state);
             self.tool_output_viewer_state = Some(state);
+        }
+        if self.local_agents_visible()
+            || self.diff_preview_state().is_some()
+            || self.tool_output_viewer_state().is_some()
+        {
+            self.core.clear_sticky_prompt_target();
         }
         self.core.finalize_mouse_selection(frame, layout.viewport);
     }

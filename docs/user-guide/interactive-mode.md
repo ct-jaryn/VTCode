@@ -56,6 +56,12 @@ When VT Code is running in alternate-screen mode, the transcript and composer us
 | `Ctrl+Home`     | Jump to the oldest transcript content.                        |
 | `Ctrl+End`      | Jump to the last transcript change and resume auto-follow.    |
 | Mouse wheel     | Scroll the live transcript when mouse capture is enabled.     |
+| Click sticky prompt | Jump to the original user message; auto-follow stays paused unless the destination is at the bottom. |
+
+When a turn’s user message has scrolled above the visible transcript, a
+one-line prompt preview stays at the top, including during live output. It
+uses retained live history and hides when the original first row is visible
+or fewer than four transcript rows are available. The composer stays pinned.
 
 ### Diff Preview Navigation
 

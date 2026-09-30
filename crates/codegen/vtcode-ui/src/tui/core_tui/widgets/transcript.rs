@@ -69,31 +69,17 @@ impl<'a> Widget for TranscriptWidget<'a> {
             self.session.clear_transcript_file_link_targets();
             return;
         }
-        self.session.set_transcript_area(Some(inner));
-
-        // Clamp effective dimensions to prevent pathological CPU usage with huge terminals
-        // See: https://github.com/anthropics/claude-code/issues/21567
-        let effective_height = inner.height.min(ui::TUI_MAX_VIEWPORT_HEIGHT);
-        let effective_width = inner.width.min(ui::TUI_MAX_VIEWPORT_WIDTH);
-
-        self.session.apply_transcript_rows(effective_height);
-
-        let content_width = effective_width;
-        if content_width == 0 {
-            self.session.clear_transcript_file_link_targets();
-            return;
+        let layout = self.session.layout_sticky_prompt(inner);
+        let scroll_area = layout.body;
+        let content_width = scroll_area.width;
+        let viewport_rows = usize::from(scroll_area.height);
+        let visible_start = layout.source_row;
+        if let Some(header) = layout.header {
+            let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            let style = self.session.styles.sticky_prompt_style();
+            Clear.render(header_area, buf);
+            Paragraph::new(header).style(style).render(header_area, buf);
         }
-        self.session.apply_transcript_width(content_width);
-
-        let viewport_rows = effective_height as usize;
-        let effective_padding = ui::effective_transcript_bottom_padding(viewport_rows);
-        let total_rows = self.session.total_transcript_rows(content_width) + effective_padding;
-        let (top_offset, _clamped_total_rows) = self.session.prepare_transcript_scroll(total_rows, viewport_rows);
-        let vertical_offset = top_offset.min(self.session.scroll_manager.max_offset());
-        self.session.transcript_view_top = vertical_offset;
-
-        let visible_start = vertical_offset;
-        let scroll_area = inner;
 
         // Use cached visible lines to avoid rebuilding on every frame
         let cached_lines = self

@@ -269,3 +269,43 @@ fn style_rgb(style: Style) -> Option<RgbColor> {
         _ => None,
     }
 }
+
+#[test]
+fn test_all_themes_sticky_prompt_meets_contrast() {
+    use crate::tui::core_tui::{
+        session::Session,
+        style::theme_from_styles,
+        types::{InlineMessageKind, InlineSegment, InlineTextStyle},
+        widgets::TranscriptWidget,
+    };
+    use ratatui::{buffer::Buffer, layout::Rect, style::Color as TuiColor, widgets::Widget};
+    use std::sync::Arc;
+
+    let accessibility = ColorAccessibilityConfig::default();
+    for definition in all_theme_definitions().values() {
+        let styles = definition.palette.build_styles_with_accessibility(&accessibility);
+        let mut session = Session::new(theme_from_styles(&styles), None, 16);
+        for index in 0..16 {
+            session.push_line(
+                if index == 0 {
+                    InlineMessageKind::User
+                } else {
+                    InlineMessageKind::Agent
+                },
+                vec![InlineSegment {
+                    text: "prompt or answer".into(),
+                    style: Arc::new(InlineTextStyle::default()),
+                }],
+            );
+        }
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        TranscriptWidget::new(&mut session).render(area, &mut buffer);
+        assert_eq!(session.transcript_area().unwrap().y, 1, "header is visible for {}", definition.id);
+        let (TuiColor::Rgb(fr, fg, fb), TuiColor::Rgb(br, bg, bb)) = (buffer[(0, 0)].fg, buffer[(0, 0)].bg) else {
+            panic!("RGB theme {} must render RGB header colors", definition.id)
+        };
+        let ratio = contrast_ratio(RgbColor(fr, fg, fb), RgbColor(br, bg, bb));
+        assert!(ratio >= accessibility.minimum_contrast, "theme={} sticky prompt contrast {ratio:.2}", definition.id);
+    }
+}

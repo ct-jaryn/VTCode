@@ -74,6 +74,7 @@ mod reflow;
 pub(crate) mod reverse_search;
 mod spinner;
 mod state;
+mod sticky_prompt;
 pub mod terminal_capabilities;
 pub(crate) mod terminal_title;
 #[cfg(test)]
@@ -273,6 +274,9 @@ pub struct Session {
     pub(crate) transcript_width: u16,
     pub(crate) transcript_view_top: usize,
     areas: SessionAreas,
+    sticky_prompt_target: Option<sticky_prompt::StickyPromptTarget>,
+    sticky_prompt_preview_cache: Option<sticky_prompt::StickyPromptPreviewCache>,
+    leading_user_prompt_truncated: bool,
     transcript_file_link_targets: Vec<TranscriptFileLinkTarget>,
     modal_link_targets: Vec<TranscriptFileLinkTarget>,
     hovered_transcript_file_link: Option<usize>,

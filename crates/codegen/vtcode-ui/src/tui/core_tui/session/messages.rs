@@ -222,6 +222,14 @@ impl Session {
         }
         self.thinking_runs.clear();
 
+        self.leading_user_prompt_truncated = self
+            .lines
+            .get(remove_count - 1)
+            .is_some_and(|line| line.kind == InlineMessageKind::User)
+            && self
+                .lines
+                .get(remove_count)
+                .is_some_and(|line| line.kind == InlineMessageKind::User);
         self.lines.drain(..remove_count);
         self.evicted_message_count += remove_count;
         self.shift_tracked_change_after_eviction(remove_count);
@@ -366,6 +374,9 @@ impl Session {
         self.collapsed_pastes.retain(|paste| paste.line_index < first_removed);
         let first_dirty = self.lines.len().saturating_sub(remove_count);
         self.lines.truncate(self.lines.len().saturating_sub(remove_count));
+        if self.lines.is_empty() {
+            self.leading_user_prompt_truncated = false;
+        }
         let mut link_ranges = link_ranges.unwrap_or_default().into_iter();
         for segments in lines {
             let revision = self.next_revision();

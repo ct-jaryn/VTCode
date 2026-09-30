@@ -16,6 +16,7 @@ mod overlay_list;
 mod queue_inputs;
 mod raw_paste;
 mod slash_palette;
+mod sticky_prompt;
 mod thinking_collapse;
 mod thinking_run_index;
 mod transcript_links;

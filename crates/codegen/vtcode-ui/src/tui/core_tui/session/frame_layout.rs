@@ -106,11 +106,16 @@ impl Session {
             return;
         }
 
-        self.mouse_selection.apply_highlight(frame.buffer_mut(), viewport);
+        let selection_area = if self.sticky_prompt_target.is_some() && self.mouse_selection.is_transcript_selection() {
+            self.transcript_area().unwrap_or(viewport)
+        } else {
+            viewport
+        };
+        self.mouse_selection.apply_highlight(frame.buffer_mut(), selection_area);
 
         let auto_copy_requested = self.fullscreen.interaction.copy_on_select && self.mouse_selection.needs_copy();
         if self.mouse_selection.has_copy_request() || auto_copy_requested {
-            let text = self.mouse_selection.extract_text(frame.buffer_mut(), viewport);
+            let text = self.mouse_selection.extract_text(frame.buffer_mut(), selection_area);
             if !text.is_empty() {
                 self.copy_text_to_clipboard(&text);
             }

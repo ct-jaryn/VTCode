@@ -221,6 +221,9 @@ impl Session {
     }
 
     pub(crate) fn set_transcript_area(&mut self, area: Option<Rect>) {
+        if self.areas.transcript() != area {
+            self.sticky_prompt_target = None;
+        }
         self.areas.set_transcript(area);
     }
 
@@ -315,6 +318,7 @@ impl Session {
 
     pub(crate) fn invalidate_transcript_viewport(&mut self) {
         self.visible_lines_cache = None;
+        self.sticky_prompt_target = None;
     }
 
     pub(crate) fn request_transcript_clear(&mut self) {
@@ -637,6 +641,7 @@ impl Session {
 
     /// Mark a specific line as dirty to optimize reflow scans
     pub(crate) fn mark_line_dirty(&mut self, index: usize) {
+        self.sticky_prompt_target = None;
         let index = self.reflow_dirty_index(index);
         self.first_dirty_line = match self.first_dirty_line {
             Some(current) => Some(current.min(index)),
@@ -717,6 +722,7 @@ impl Session {
     /// Clear the screen and reset scroll
     pub(crate) fn clear_screen(&mut self) {
         self.lines.clear();
+        self.leading_user_prompt_truncated = false;
         self.collapsed_pastes.clear();
         self.thinking_runs.clear();
         self.user_scrolled = false;
@@ -938,6 +944,7 @@ impl Session {
         if self.scroll_manager.offset() != previous_offset {
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             // Content moves down on screen; shift selection to match.
             self.mouse_selection.adjust_for_scroll(1);
         }
@@ -951,6 +958,7 @@ impl Session {
         if self.scroll_manager.offset() != previous_offset {
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             // Content moves up on screen; shift selection to match.
             self.mouse_selection.adjust_for_scroll(-1);
         }
@@ -966,6 +974,7 @@ impl Session {
             let actual_delta = self.scroll_manager.offset() - previous_offset;
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             self.mouse_selection.adjust_for_scroll(actual_delta as i32);
         }
     }
@@ -980,6 +989,7 @@ impl Session {
             let actual_delta = previous_offset - self.scroll_manager.offset();
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             self.mouse_selection.adjust_for_scroll(-(actual_delta as i32));
         }
     }

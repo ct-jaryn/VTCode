@@ -574,8 +574,19 @@ impl Session {
                             {
                                 self.core.mouse_drag_target = MouseDragTarget::Transcript;
                                 self.core.cancel_drag_auto_scroll();
-                                self.core.mouse_selection.start_selection(mouse_event.column, mouse_event.row);
+                                self.core
+                                    .mouse_selection
+                                    .start_overlay_selection(mouse_event.column, mouse_event.row);
                             }
+                            self.mark_dirty();
+                            return;
+                        }
+
+                        if !self.has_active_overlay()
+                            && !self.local_agents_visible()
+                            && self.diff_preview_state().is_none()
+                            && self.core.handle_sticky_prompt_click(mouse_event)
+                        {
                             self.mark_dirty();
                             return;
                         }
@@ -635,7 +646,9 @@ impl Session {
                                 }
 
                                 self.core.mouse_drag_target = MouseDragTarget::ModalText;
-                                self.core.mouse_selection.start_selection(mouse_event.column, mouse_event.row);
+                                self.core
+                                    .mouse_selection
+                                    .start_overlay_selection(mouse_event.column, mouse_event.row);
                                 self.mark_dirty();
                                 return;
                             }
