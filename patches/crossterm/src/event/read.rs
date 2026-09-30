@@ -6,7 +6,7 @@ use crate::event::source::unix::UnixInternalEventSource;
 use crate::event::source::windows::WindowsEventSource;
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
-use crate::event::{filter::Filter, source::EventSource, timeout::PollTimeout, InternalEvent};
+use crate::event::{InternalEvent, filter::Filter, source::EventSource, timeout::PollTimeout};
 
 /// Can be used to read `InternalEvent`s.
 pub(crate) struct InternalEventReader {
@@ -51,12 +51,7 @@ impl InternalEventReader {
 
         let event_source = match self.source.as_mut() {
             Some(source) => source,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to initialize input reader",
-                ))
-            }
+            None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to initialize input reader")),
         };
 
         let poll_timeout = PollTimeout::new(timeout);
@@ -152,12 +147,8 @@ mod tests {
         };
 
         assert!(reader.poll(None, &InternalEventFilter).is_err());
-        assert!(reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .is_err());
-        assert!(reader
-            .poll(Some(Duration::from_secs(10)), &InternalEventFilter)
-            .is_err());
+        assert!(reader.poll(Some(Duration::from_secs(0)), &InternalEventFilter).is_err());
+        assert!(reader.poll(Some(Duration::from_secs(10)), &InternalEventFilter).is_err());
     }
 
     #[test]
@@ -240,9 +231,7 @@ mod tests {
             skipped_events: Vec::with_capacity(32),
         };
 
-        assert!(!reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(!reader.poll(Some(Duration::from_secs(0)), &InternalEventFilter).unwrap());
     }
 
     #[test]
@@ -256,9 +245,7 @@ mod tests {
         };
 
         assert!(reader.poll(None, &InternalEventFilter).unwrap());
-        assert!(reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(reader.poll(Some(Duration::from_secs(0)), &InternalEventFilter).unwrap());
     }
 
     #[test]
@@ -308,9 +295,7 @@ mod tests {
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
-        assert!(!reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(!reader.poll(Some(Duration::from_secs(0)), &InternalEventFilter).unwrap());
     }
 
     #[test]
@@ -339,10 +324,7 @@ mod tests {
         };
 
         assert_eq!(
-            reader
-                .read(&InternalEventFilter)
-                .err()
-                .map(|e| format!("{:?}", &e.kind())),
+            reader.read(&InternalEventFilter).err().map(|e| format!("{:?}", &e.kind())),
             Some(format!("{:?}", io::ErrorKind::Other))
         );
     }
@@ -361,9 +343,7 @@ mod tests {
 
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert!(reader.read(&InternalEventFilter).is_err());
-        assert!(reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(reader.poll(Some(Duration::from_secs(0)), &InternalEventFilter).unwrap());
     }
 
     #[test]
@@ -398,10 +378,7 @@ mod tests {
         }
 
         fn with_events(events: &[InternalEvent]) -> FakeSource {
-            FakeSource {
-                events: events.to_vec().into(),
-                error: None,
-            }
+            FakeSource { events: events.to_vec().into(), error: None }
         }
     }
 
