@@ -621,6 +621,10 @@ pub(crate) struct HarnessTurnState {
     /// an assistant tool-call/result sequence on the provider wire.
     pending_auto_permission_probe_warning: Option<String>,
     pub recovery_reason: Option<String>,
+    /// Reason frozen into the `[Recovery Mode]` prompt block for the current
+    /// recovery activation. Updated only when a new activation starts so the
+    /// system-prompt bytes stay cache-stable across recovery retries.
+    recovery_prompt_reason: Option<String>,
     recovery_phase: RecoveryPhase,
     recovery_mode: Option<RecoveryMode>,
     recovery_retry_count: u8,
@@ -755,6 +759,7 @@ impl HarnessTurnState {
             session_limit_granted: false,
             pending_auto_permission_probe_warning: None,
             recovery_reason: None,
+            recovery_prompt_reason: None,
             recovery_phase: RecoveryPhase::Inactive,
             recovery_mode: None,
             recovery_retry_count: 0,
@@ -1229,6 +1234,7 @@ impl HarnessTurnState {
         if matches!(self.recovery_phase, RecoveryPhase::Inactive) {
             self.recovery_activations = self.recovery_activations.saturating_add(1);
             self.recovery_reason = Some(reason.into());
+            self.recovery_prompt_reason = self.recovery_reason.clone();
             self.recovery_phase = RecoveryPhase::Pending;
             self.recovery_mode = Some(mode);
             self.recovery_retry_count = 0;
@@ -1252,6 +1258,7 @@ impl HarnessTurnState {
 
         self.recovery_activations = self.recovery_activations.saturating_add(1);
         self.recovery_reason = Some(reason.into());
+        self.recovery_prompt_reason = self.recovery_reason.clone();
         self.recovery_phase = RecoveryPhase::Pending;
         self.recovery_mode = Some(RecoveryMode::ToolEnabledRetry);
         self.recovery_retry_count = 0;
@@ -1265,8 +1272,16 @@ impl HarnessTurnState {
         matches!(self.recovery_phase, RecoveryPhase::Pending | RecoveryPhase::InPass)
     }
 
+    #[cfg(test)]
     pub(crate) fn recovery_reason(&self) -> Option<&str> {
         self.recovery_reason.as_deref()
+    }
+
+    /// Reason frozen into the `[Recovery Mode]` prompt block. Stable for the
+    /// whole recovery activation so consecutive recovery turns keep an
+    /// identical system-prompt prefix.
+    pub(crate) fn recovery_prompt_reason(&self) -> Option<&str> {
+        self.recovery_prompt_reason.as_deref().or(self.recovery_reason.as_deref())
     }
 
     pub(crate) fn recovery_pass_used(&self) -> bool {
@@ -1308,6 +1323,9 @@ impl HarnessTurnState {
             if self.recovery_reason.is_none() {
                 self.recovery_reason = Some("post-tool follow-up failure".to_string());
             }
+            self.recovery_prompt_reason = self.recovery_reason.clone();
+        } else if self.recovery_prompt_reason.is_none() {
+            self.recovery_prompt_reason = self.recovery_reason.clone();
         }
         changed
     }

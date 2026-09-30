@@ -57,11 +57,19 @@ impl OpenAiCompatSpec for MergeGatewaySpec {
 
     fn insert_tool_choice(_core: &OpenAiCompatCore<Self>, request: &LLMRequest, payload: &mut Map<String, Value>) {
         // Merge routes that terminate at Anthropic Bedrock reject
-        // `tool_choice: "none"`. Removing the serialized tool definitions as
-        // well preserves the request's no-tool behavior on the legacy
-        // chat-completions surface.
+        // `tool_choice: "none"`. Keep the serialized tool definitions on the
+        // wire so the provider prefix stays cache-stable across recovery turns
+        // (OpenAI guidance: disable tool use with `tool_choice: "none"` rather
+        // than removing definitions). Only the choice field is omitted; the
+        // harness rejects tool calls during tool-free recovery.
         if matches!(request.tool_choice, Some(ToolChoice::None)) {
-            payload.remove("tools");
+            static OMITTED_CHOICE_ADVISORY: std::sync::Once = std::sync::Once::new();
+            OMITTED_CHOICE_ADVISORY.call_once(|| {
+                tracing::debug!(
+                    "Merge Gateway omits tool_choice for ToolChoice::None (Bedrock rejects none); \
+                     tool definitions stay on the wire for prompt-cache stability"
+                );
+            });
             return;
         }
 
@@ -87,13 +95,15 @@ fn is_legacy_openai_base_url(base_url: &str) -> bool {
         .ends_with("/v1/openai")
 }
 
-/// Whether the native request actually puts tool definitions on the wire,
-/// mirroring `build_native_payload`'s `tools_disabled` logic. Only such
-/// requests can fail tool-vendor routing, so only they consult and populate
-/// the no-tool-vendor cache.
-fn native_request_sends_tools(request: &LLMRequest) -> bool {
-    !matches!(request.tool_choice, Some(ToolChoice::None))
-        && request.tools.as_ref().is_some_and(|tools| !tools.is_empty())
+/// Whether the request will put tool definitions on the wire. Tool-free
+/// recovery keeps definitions for cache stability unless the route has no
+/// tool-capable vendor (then definitions are omitted so synthesis can still
+/// run). Only requests that actually send tools consult the no-tool-vendor
+/// cache.
+fn native_request_sends_tools(request: &LLMRequest, tool_vendor_missing: bool) -> bool {
+    let tools_present = request.tools.as_ref().is_some_and(|tools| !tools.is_empty());
+    let recovery_without_vendor = matches!(request.tool_choice, Some(ToolChoice::None)) && tool_vendor_missing;
+    tools_present && !recovery_without_vendor
 }
 
 /// Builds the terminal error for a failed Merge Gateway request, appending
@@ -487,11 +497,13 @@ impl MergeGatewayProvider {
         payload.insert("input".to_owned(), Value::Array(input));
 
         // Some Merge routes terminate at Anthropic Bedrock, which rejects
-        // `tool_choice: "none"`. A request that explicitly disables tools
-        // does not need either the choice or the definitions on the wire, so
-        // omit both while preserving the no-tool behavior across routes.
+        // `tool_choice: "none"`. Keep tool definitions on the wire even when
+        // tools are disabled so the rendered prefix stays cache-stable across
+        // recovery turns; only the choice field is omitted. If the route has
+        // no tool vendor at all, omit definitions so synthesis can still run.
         let tools_disabled = matches!(request.tool_choice, Some(ToolChoice::None));
-        if !tools_disabled
+        let omit_tools_for_missing_vendor = tools_disabled && self.tool_vendor_known_missing(&request.model);
+        if !omit_tools_for_missing_vendor
             && let Some(tools) = request
                 .tools
                 .as_ref()
@@ -572,7 +584,12 @@ impl MergeGatewayProvider {
     async fn generate_native(&self, mut request: LLMRequest) -> Result<LLMResponse, LLMError> {
         self.prepare_native_request(&mut request);
         LLMProvider::validate_request(self, &request)?;
-        if native_request_sends_tools(&request) && self.tool_vendor_known_missing(&request.model) {
+        // Fail fast only when this request would put tools on the wire and the
+        // route has no tool vendor. Recovery (ToolChoice::None) can still
+        // synthesize without tools.
+        if self.tool_vendor_known_missing(&request.model)
+            && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+        {
             return Err(Self::no_tool_vendor_cached_error(&request.model));
         }
         let payload = self.build_native_payload(&request, false)?;
@@ -610,7 +627,9 @@ impl MergeGatewayProvider {
             // tools at all: remember the verdict so later turns fail fast.
             // Streaming-capability misses never reach this point (the stream
             // path downgrades first), and tool-free requests bypass the cache.
-            if is_capability_unavailable(status, &body) && native_request_sends_tools(&request) {
+            if is_capability_unavailable(status, &body)
+                && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+            {
                 self.mark_tool_vendor_missing(&request.model);
             }
             return Err(merge_request_error(status, &body));
@@ -623,7 +642,9 @@ impl MergeGatewayProvider {
     async fn stream_native_normalized(&self, mut request: LLMRequest) -> Result<LLMNormalizedStream, LLMError> {
         self.prepare_native_request(&mut request);
         LLMProvider::validate_request(self, &request)?;
-        if native_request_sends_tools(&request) && self.tool_vendor_known_missing(&request.model) {
+        if self.tool_vendor_known_missing(&request.model)
+            && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+        {
             return Err(Self::no_tool_vendor_cached_error(&request.model));
         }
         request.stream = true;
@@ -2246,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn native_payload_omits_tool_choice_none_for_all_routes() {
+    fn native_payload_omits_tool_choice_none_but_keeps_tools_for_cache() {
         for model in models::merge_gateway::SUPPORTED_MODELS {
             let provider = MergeGatewayProvider::with_model("test-key".to_string(), (*model).to_string());
             let mut request = LLMRequest {
@@ -2262,7 +2283,9 @@ mod tests {
             };
 
             let payload = provider.build_native_payload(&request, false).expect("payload");
-            assert!(payload.get("tools").is_none(), "disabled tools must not be sent for route {model}");
+            // Definitions stay on the wire so recovery turns can reuse the
+            // same cached prefix as tool-enabled turns.
+            assert!(payload.get("tools").is_some(), "tools must stay on the wire for route {model}");
             assert!(payload.get("tool_choice").is_none(), "tool_choice=none must not be sent for route {model}");
 
             // The no-tool normalization must not suppress an explicit
@@ -2275,7 +2298,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_payload_omits_tool_choice_none_for_all_routes() {
+    fn legacy_payload_omits_tool_choice_none_but_keeps_tools_for_cache() {
         let provider = MergeGatewayProvider::from_config(
             Some("test-key".to_string()),
             Some(models::merge_gateway::DEFAULT_ROUTING.to_string()),
@@ -2301,7 +2324,7 @@ mod tests {
             };
 
             let payload = core.convert_request(&request).expect("legacy payload");
-            assert!(payload.get("tools").is_none(), "disabled tools must not be sent for route {model}");
+            assert!(payload.get("tools").is_some(), "tools must stay on the wire for route {model}");
             assert!(payload.get("tool_choice").is_none(), "tool_choice=none must not be sent for route {model}");
 
             request.tool_choice = Some(ToolChoice::Auto);
@@ -2309,6 +2332,41 @@ mod tests {
             assert!(enabled_payload.get("tools").is_some(), "tools must be preserved for route {model}");
             assert_eq!(enabled_payload["tool_choice"], json!("auto"));
         }
+    }
+
+    #[test]
+    fn native_payload_keeps_tools_for_tool_choice_none_but_omits_them_without_tool_vendor() {
+        let provider = MergeGatewayProvider::with_model(
+            "test-key".to_string(),
+            models::merge_gateway::DEFAULT_ROUTING.to_string(),
+        );
+        let mut request = LLMRequest {
+            model: models::merge_gateway::DEFAULT_ROUTING.to_string(),
+            messages: vec![Message::user("Summarize.".to_string())].into(),
+            tools: Some(Arc::new(vec![ToolDefinition::function(
+                "read_file".to_string(),
+                "Read a file".to_string(),
+                json!({"type": "object"}),
+            )])),
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+
+        // Default: recovery keeps tools for cache stability.
+        let payload = provider.build_native_payload(&request, false).expect("payload");
+        assert!(payload.get("tools").is_some());
+
+        // Once the route is known to lack a tool vendor, recovery omits tools
+        // so synthesis can still run (cache is secondary on that route).
+        provider.mark_tool_vendor_missing(&request.model);
+        let recovered = provider.build_native_payload(&request, false).expect("recovery payload");
+        assert!(recovered.get("tools").is_none(), "tools omitted when no tool vendor can serve them");
+        assert!(recovered.get("tool_choice").is_none());
+
+        // Tool-enabled requests still send tools (and fail fast upstream).
+        request.tool_choice = Some(ToolChoice::Auto);
+        let enabled = provider.build_native_payload(&request, false).expect("enabled payload");
+        assert!(enabled.get("tools").is_some());
     }
 
     #[test]
