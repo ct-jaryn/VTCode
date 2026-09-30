@@ -37,6 +37,13 @@ pub struct PromptCachingConfig {
     #[serde(default = "default_cache_friendly_prompt_shaping")]
     pub cache_friendly_prompt_shaping: bool,
 
+    /// Keep the wire tool catalog identical across planning and execution
+    /// turns (union of both modes' tools). Planning toggles then do not
+    /// rewrite the tool prefix. The fail-closed execution gate still blocks
+    /// mutations during planning.
+    #[serde(default = "default_true")]
+    pub stable_tool_catalog_across_modes: bool,
+
     /// Warn before a request when the pause since the previous request likely
     /// exceeded the provider prompt cache lifetime (advisory only).
     #[serde(default = "default_true")]
@@ -63,6 +70,7 @@ impl Default for PromptCachingConfig {
             enable_auto_cleanup: default_auto_cleanup(),
             min_quality_threshold: default_min_quality_threshold(),
             cache_friendly_prompt_shaping: default_cache_friendly_prompt_shaping(),
+            stable_tool_catalog_across_modes: true,
             gap_warning_enabled: default_true(),
             gap_warning_threshold_secs: None,
             providers: ProviderPromptCachingConfig::default(),
@@ -394,6 +402,12 @@ pub struct AnthropicPromptCacheSettings {
     /// Set to >= 3600 for 1-hour cache on messages
     #[serde(default = "default_anthropic_extended_ttl")]
     pub extended_ttl_seconds: Option<u64>,
+
+    /// Prefer the 1h extended TTL for tools/system/messages even when the
+    /// per-breakpoint TTLs are 5m. Use when sessions idle past the 5m cache
+    /// window. Opt-in; 1h writes cost 2x base input.
+    #[serde(default)]
+    pub prefer_extended_ttl: bool,
 }
 
 impl Default for AnthropicPromptCacheSettings {
@@ -408,6 +422,7 @@ impl Default for AnthropicPromptCacheSettings {
             cache_tool_definitions: default_true(),
             min_message_length_for_cache: default_min_message_length(),
             extended_ttl_seconds: default_anthropic_extended_ttl(),
+            prefer_extended_ttl: false,
         }
     }
 }

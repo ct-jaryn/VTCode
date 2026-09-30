@@ -27,7 +27,7 @@ use super::capabilities::{
     rejects_forced_tool_choice, rejects_sampling, resolve_model_name, supports_assistant_prefill, supports_effort,
     supports_mid_conversation_system_messages, supports_server_side_fallback, supports_task_budget, thinking_is_on,
 };
-use super::prompt_cache::{get_messages_cache_ttl, get_tools_cache_ttl};
+use super::prompt_cache::{get_messages_cache_ttl, get_profile_cache_ttl, get_tools_cache_ttl};
 use messages::{build_messages, hoist_largest_user_message};
 use system::{HistorySystemPlacement, SystemPromptBuildResult, build_system_prompt};
 use thinking::build_thinking_config;
@@ -55,7 +55,7 @@ fn resolve_messages_ttl(request: &LLMRequest, ctx: &RequestBuilderContext<'_>) -
     }
 
     match request.prompt_cache_profile {
-        Some(PromptCacheProfile::BudgetContinuation) => "1h",
+        Some(PromptCacheProfile::BudgetContinuation) => get_profile_cache_ttl(ctx.prompt_cache_settings),
         None => get_messages_cache_ttl(ctx.prompt_cache_settings),
     }
 }
