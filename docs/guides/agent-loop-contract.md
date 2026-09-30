@@ -444,6 +444,16 @@ returned session ID is reusable for a later wait. Wait time is excluded from
 the ordinary per-turn harness wall-clock budget, while cancellation, shutdown,
 safety policy, and the configured long-running-command ceiling remain active.
 
+Non-draining inspection returns the latest bounded output snapshot. A sliding
+head/tail preview, including a same-length update or a reset after another reader
+drains output, replaces the previous snapshot. Draining waits append new chunks.
+
+Missing sessions fail promptly, including during output inspection; they are not
+successful empty captures. Typed lookup errors preserve the distinction from
+permission or process failures and carry deterministic recovery guidance. Reuse
+the original response or recorded completion output before considering a fresh
+command; an absent handle alone does not establish execution failure.
+
 Managed background subprocess completion and user-launched background exec
 completion are delivered independently of that explicit wait. The controller
 persists managed terminal state before publishing its bounded payload; the raw

@@ -42,6 +42,19 @@ const EXEC_SESSION_WATCH_ABORT_TIMEOUT: tokio::time::Duration = tokio::time::Dur
 /// that never releases must not park close (and therefore the runloop).
 const EXEC_SESSION_OUTPUT_READ_LOCK_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
 
+/// A missing runtime handle does not establish whether its command failed.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`. If completion is recorded, reuse its output. Missing session state does not prove failure; rerun only if fresh execution is still needed."
+)]
+pub(crate) struct ExecSessionNotFound {
+    pub(crate) session_id: crate::types::CompactStr,
+}
+
+fn missing_exec_session_error(session_id: &str) -> anyhow::Error {
+    ExecSessionNotFound { session_id: session_id.into() }.into()
+}
+
 /// Maximum number of live background command sessions owned by one runtime.
 pub const MAX_BACKGROUND_PROCESSES: usize = 3;
 
@@ -527,7 +540,7 @@ impl PipeSessionManager {
             let mut sessions = self.sessions.write().await;
             sessions
                 .remove(session_id)
-                .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))?
+                .ok_or_else(|| missing_exec_session_error(session_id))?
         };
 
         // Kill the whole process group even when the direct child has already
@@ -590,7 +603,7 @@ impl PipeSessionManager {
         sessions
             .get(session_id)
             .cloned()
-            .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))
+            .ok_or_else(|| missing_exec_session_error(session_id))
     }
 
     fn ensure_within_workspace(&self, candidate: &Path) -> Result<()> {
@@ -1326,7 +1339,7 @@ impl ExecSessionManager {
                 let mut sessions = self.sessions.write().await;
                 sessions
                     .remove(session_id)
-                    .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))?
+                    .ok_or_else(|| missing_exec_session_error(session_id))?
             };
 
             let pending_background_request = self.clear_foreground_and_take_pending_request(session_id);
@@ -1913,7 +1926,7 @@ impl ExecSessionManager {
         sessions
             .get(session_id)
             .cloned()
-            .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))
+            .ok_or_else(|| missing_exec_session_error(session_id))
     }
 }
 

@@ -75,7 +75,7 @@ impl ToolRegistry {
             .context("Maximum PTY sessions reached; cannot start new session")?;
         let capture = self
             .wait_for_exec_yield(session_metadata.id.as_str(), request.yield_duration, Some(tools::UNIFIED_EXEC), true)
-            .await;
+            .await?;
 
         let session_metadata = self
             .exec_session_metadata(session_metadata.id.as_str())
@@ -251,7 +251,7 @@ impl ToolRegistry {
         let max_tokens = max_output_tokens_from_payload(payload);
         let capture = self
             .wait_for_exec_yield(session.metadata.id.as_str(), deadline, Some(tools::WRITE_STDIN), true)
-            .await;
+            .await?;
         let session_metadata = self
             .exec_session_metadata(session.metadata.id.as_str())
             .await
@@ -314,7 +314,7 @@ impl ToolRegistry {
             let yield_time_ms = clamp_peek_yield_ms(payload.get("yield_time_ms").and_then(Value::as_u64));
             let capture = self
                 .wait_for_exec_yield(session_id, Duration::from_millis(yield_time_ms), None, false)
-                .await;
+                .await?;
             (filter_pty_output(&strip_ansi(&capture.output)), false)
         } else {
             return Err(anyhow!("inspect requires either `session_id` or `spool_path`"));
@@ -461,12 +461,12 @@ impl ToolRegistry {
         yield_duration: Duration,
         tool_name: Option<&str>,
         drain_output: bool,
-    ) -> PtyEphemeralCapture {
+    ) -> Result<PtyEphemeralCapture> {
         let mut output = String::new();
-        let mut peeked_bytes = 0usize;
+        let mut last_peeked_output = None;
         let start = Instant::now();
         let poll_interval = Duration::from_millis(50);
-        let mut activity_rx = self.exec_session_activity_receiver(session_id).await.ok().flatten();
+        let mut activity_rx = self.exec_session_activity_receiver(session_id).await?;
         let progress_callback = self.progress_callback();
         let mut last_ui_update = Instant::now();
         let ui_update_interval = Duration::from_millis(100);
@@ -475,28 +475,29 @@ impl ToolRegistry {
         loop {
             let observed_activity = activity_rx.as_mut().map(|receiver| *receiver.borrow_and_update());
 
-            let promoted = self.exec_sessions.promote_requested_session(session_id).await.unwrap_or(false);
-            let promoted_by_foreground_watcher =
-                self.exec_sessions.take_foreground_promotion(session_id).await.unwrap_or(false);
+            let promoted = self.exec_sessions.promote_requested_session(session_id).await?;
+            let promoted_by_foreground_watcher = self.exec_sessions.take_foreground_promotion(session_id).await?;
             if promoted || promoted_by_foreground_watcher {
-                if let Ok(Some(final_output)) =
-                    self.next_exec_session_output(session_id, drain_output, &mut peeked_bytes).await
+                if let Some(final_output) = self
+                    .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
+                    .await?
                 {
-                    append_bounded_capture(&mut output, &final_output);
+                    update_exec_capture_output(&mut output, &final_output, drain_output);
                     if let Some(tool_name) = tool_name
                         && let Some(ref callback) = progress_callback
                     {
                         callback(tool_name, &final_output);
                     }
                 }
-                return PtyEphemeralCapture { output, exit_code: None, duration: start.elapsed() };
+                return Ok(PtyEphemeralCapture { output, exit_code: None, duration: start.elapsed() });
             }
 
-            if let Ok(Some(code)) = self.exec_session_completed(session_id).await {
-                if let Ok(Some(final_output)) =
-                    self.next_exec_session_output(session_id, drain_output, &mut peeked_bytes).await
+            if let Some(code) = self.exec_session_completed(session_id).await? {
+                if let Some(final_output) = self
+                    .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
+                    .await?
                 {
-                    append_bounded_capture(&mut output, &final_output);
+                    update_exec_capture_output(&mut output, &final_output, drain_output);
 
                     if let Some(tool_name) = tool_name
                         && let Some(ref callback) = progress_callback
@@ -511,9 +512,12 @@ impl ToolRegistry {
                 let drain_deadline = Instant::now() + Duration::from_millis(1000);
                 let mut last_output_at = Instant::now();
                 while Instant::now() < drain_deadline {
-                    match self.next_exec_session_output(session_id, drain_output, &mut peeked_bytes).await {
-                        Ok(Some(extra_output)) => {
-                            append_bounded_capture(&mut output, &extra_output);
+                    match self
+                        .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
+                        .await?
+                    {
+                        Some(extra_output) => {
+                            update_exec_capture_output(&mut output, &extra_output, drain_output);
                             if let Some(tool_name) = tool_name
                                 && let Some(ref callback) = progress_callback
                             {
@@ -525,8 +529,8 @@ impl ToolRegistry {
                             }
                             last_output_at = Instant::now();
                         }
-                        Ok(None) | Err(_) => {
-                            let output_drained = self.exec_session_output_drained(session_id).await.unwrap_or(true);
+                        None => {
+                            let output_drained = self.exec_session_output_drained(session_id).await?;
                             if output_drained && Instant::now().duration_since(last_output_at) >= quiet_window {
                                 break;
                             }
@@ -534,17 +538,18 @@ impl ToolRegistry {
                         }
                     }
                 }
-                return PtyEphemeralCapture {
+                return Ok(PtyEphemeralCapture {
                     output,
                     exit_code: Some(code),
                     duration: start.elapsed(),
-                };
+                });
             }
 
-            if let Ok(Some(new_output)) =
-                self.next_exec_session_output(session_id, drain_output, &mut peeked_bytes).await
+            if let Some(new_output) = self
+                .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
+                .await?
             {
-                append_bounded_capture(&mut output, &new_output);
+                update_exec_capture_output(&mut output, &new_output, drain_output);
                 if tool_name.is_some() {
                     pending_lines.push_str(&new_output);
                 }
@@ -564,22 +569,22 @@ impl ToolRegistry {
             }
 
             if start.elapsed() >= yield_duration {
-                let output_drained = self.exec_session_output_drained(session_id).await.unwrap_or(false);
+                let output_drained = self.exec_session_output_drained(session_id).await?;
                 if output_drained {
                     let exit_grace_deadline = Instant::now() + Duration::from_millis(250);
                     while Instant::now() < exit_grace_deadline {
-                        if let Ok(Some(code)) = self.exec_session_completed(session_id).await {
+                        if let Some(code) = self.exec_session_completed(session_id).await? {
                             if let Some(tool_name) = tool_name
                                 && let Some(ref callback) = progress_callback
                                 && !pending_lines.is_empty()
                             {
                                 callback(tool_name, &pending_lines);
                             }
-                            return PtyEphemeralCapture {
+                            return Ok(PtyEphemeralCapture {
                                 output,
                                 exit_code: Some(code),
                                 duration: start.elapsed(),
-                            };
+                            });
                         }
                         tokio::time::sleep(Duration::from_millis(15)).await;
                     }
@@ -590,7 +595,7 @@ impl ToolRegistry {
                 {
                     callback(tool_name, &pending_lines);
                 }
-                return PtyEphemeralCapture { output, exit_code: None, duration: start.elapsed() };
+                return Ok(PtyEphemeralCapture { output, exit_code: None, duration: start.elapsed() });
             }
 
             if let Some(observed_version) = observed_activity
@@ -618,14 +623,14 @@ impl ToolRegistry {
         settle_until_terminal: bool,
     ) -> Result<PtyEphemeralCapture> {
         if !settle_until_terminal {
-            return Ok(self.wait_for_exec_yield(session_id, yield_duration, tool_name, true).await);
+            return self.wait_for_exec_yield(session_id, yield_duration, tool_name, true).await;
         }
 
         let start = Instant::now();
         let mut output = String::new();
 
         loop {
-            let capture = self.wait_for_exec_yield(session_id, yield_duration, tool_name, true).await;
+            let capture = self.wait_for_exec_yield(session_id, yield_duration, tool_name, true).await?;
             append_bounded_capture(&mut output, &capture.output);
 
             if let Some(exit_code) = capture.exit_code {
@@ -650,24 +655,19 @@ impl ToolRegistry {
         &self,
         session_id: &str,
         drain_output: bool,
-        peeked_bytes: &mut usize,
+        last_peeked_output: &mut Option<String>,
     ) -> Result<Option<String>> {
-        let Some(output) = self.read_exec_session_output(session_id, drain_output).await? else {
-            return Ok(None);
-        };
+        let output = self.read_exec_session_output(session_id, drain_output).await?;
         if drain_output {
-            return Ok(Some(output));
+            return Ok(output);
         }
-        if output.len() <= *peeked_bytes {
+        let output = output.unwrap_or_default();
+        // A bounded peek can slide or shrink; byte offsets are not stable.
+        if last_peeked_output.as_ref() == Some(&output) {
             return Ok(None);
         }
-
-        let next = output
-            .get(*peeked_bytes..)
-            .ok_or_else(|| anyhow!("exec session '{session_id}' output boundary became invalid"))?
-            .to_string();
-        *peeked_bytes = output.len();
-        if next.is_empty() { Ok(None) } else { Ok(Some(next)) }
+        *last_peeked_output = Some(output.clone());
+        Ok(Some(output))
     }
 
     async fn finalize_exec_run_response(
@@ -777,6 +777,13 @@ impl ToolRegistry {
     }
 }
 
+fn update_exec_capture_output(output: &mut String, chunk: &str, drain_output: bool) {
+    if !drain_output {
+        output.clear();
+    }
+    append_bounded_capture(output, chunk);
+}
+
 fn attach_spool_metadata(
     response: &mut Value,
     stats: &crate::tools::exec_session::PipeOutputStats,
@@ -841,10 +848,164 @@ fn resolve_exec_session_id(
 mod tests {
     use serde_json::json;
 
-    use super::{ResolvedExecSession, attach_spool_metadata};
+    use super::{ResolvedExecSession, attach_spool_metadata, update_exec_capture_output};
     use crate::tools::exec_session::PipeOutputStats;
     use crate::tools::registry::ExecSettlementMode;
     use crate::tools::types::VTCodeExecSession;
+
+    #[cfg(unix)]
+    struct PipePeekFixture {
+        registry: super::ToolRegistry,
+        _workspace: tempfile::TempDir,
+        expected_bytes: u64,
+    }
+
+    #[cfg(unix)]
+    impl PipePeekFixture {
+        async fn new(initial: &str) -> anyhow::Result<Self> {
+            let workspace = tempfile::tempdir()?;
+            let registry = super::ToolRegistry::new(workspace.path().to_path_buf()).await;
+            registry
+                .exec_sessions
+                .create_pipe_session(
+                    "run-peek".into(),
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf '%s' \"$1\"; while IFS= read -r line; do printf '%s' \"$line\"; done".into(),
+                        "peek-fixture".into(),
+                        initial.into(),
+                    ],
+                    workspace.path().to_path_buf(),
+                    Default::default(),
+                )
+                .await?;
+            let fixture = Self {
+                registry,
+                _workspace: workspace,
+                expected_bytes: initial.len() as u64,
+            };
+            fixture.wait_for_bytes().await?;
+            Ok(fixture)
+        }
+
+        async fn append(&mut self, text: &str) -> anyhow::Result<()> {
+            self.registry
+                .exec_sessions
+                .send_input_to_session("run-peek", text.as_bytes(), true)
+                .await?;
+            self.expected_bytes += text.len() as u64;
+            self.wait_for_bytes().await
+        }
+
+        async fn wait_for_bytes(&self) -> anyhow::Result<()> {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let stats = self.registry.exec_sessions.output_stats("run-peek").await?;
+                    if stats.is_some_and(|stats| stats.total_bytes >= self.expected_bytes) {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await??;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn exec_capture_replaces_peeks_and_appends_drains() {
+        let mut output = "previous snapshot".to_string();
+        update_exec_capture_output(&mut output, "latest snapshot", false);
+        assert_eq!(output, "latest snapshot");
+        update_exec_capture_output(&mut output, " and drained output", true);
+        assert_eq!(output, "latest snapshot and drained output");
+        update_exec_capture_output(&mut output, "", false);
+        assert!(output.is_empty(), "a reset snapshot clears stale output");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pipe_peek_preserves_sliding_unicode_snapshots() -> anyhow::Result<()> {
+        let mut fixture = PipePeekFixture::new(&format!("{}{}", "h".repeat(8192), "€".repeat(2731))).await?;
+        let mut previous = None;
+        let first = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await?
+            .unwrap();
+        assert!(
+            fixture
+                .registry
+                .next_exec_session_output("run-peek", false, &mut previous)
+                .await?
+                .is_none()
+        );
+        fixture.append("aa€").await?;
+        let updated = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await?
+            .unwrap();
+        assert!(!updated.is_char_boundary(first.len()), "old byte cursor would split the final character");
+        assert!(updated.ends_with("aa€"));
+        let mut captured = first;
+        update_exec_capture_output(&mut captured, &updated, false);
+        assert_eq!(captured, updated, "peek capture must replace its previous snapshot");
+        fixture.registry.close_exec_session("run-peek").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pipe_peek_preserves_same_length_and_reset_snapshots() -> anyhow::Result<()> {
+        let mut fixture = PipePeekFixture::new(&format!("{}{}", "x".repeat(8192), "y".repeat(8192))).await?;
+        let mut previous = None;
+        let first = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await?
+            .unwrap();
+        fixture.append("FRESH").await?;
+        let updated = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await?
+            .unwrap();
+        assert_eq!(first.len(), updated.len());
+        assert!(updated.ends_with("FRESH"));
+        fixture.registry.read_exec_session_output("run-peek", true).await?;
+        let cleared = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await?
+            .unwrap();
+        assert!(cleared.is_empty(), "an empty snapshot after draining is still a change");
+        fixture.append("RESET").await?;
+        let reset = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await?
+            .unwrap();
+        assert_eq!(reset, "RESET");
+        let mut captured = updated;
+        update_exec_capture_output(&mut captured, &cleared, false);
+        assert!(captured.is_empty());
+        update_exec_capture_output(&mut captured, &reset, false);
+        assert_eq!(captured, "RESET");
+        update_exec_capture_output(&mut captured, "-drained", true);
+        assert_eq!(captured, "RESET-drained", "drains remain incremental");
+        fixture.registry.close_exec_session("run-peek").await?;
+        let missing = fixture
+            .registry
+            .next_exec_session_output("run-peek", false, &mut previous)
+            .await
+            .unwrap_err();
+        let error =
+            crate::tools::registry::ToolExecutionError::from_anyhow("write_stdin", &missing, 0, false, false, None);
+        assert!(error.is_exec_session_not_found());
+        Ok(())
+    }
 
     #[test]
     fn incomplete_spool_is_not_advertised_as_a_reusable_reference() {

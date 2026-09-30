@@ -6,7 +6,7 @@ Universal model-facing behavior is compiled in `crates/codegen/vtcode-core/src/p
 
 ## Core Workflow (repo-only)
 
-- Orient: read `.vtcode/memory/` (`gotchas.md`, `issues.md`, `library.md`, `decisions.md`) before acting; for self-bugs also read `.vtcode/logs/trajectory.jsonl` + `.vtcode/checkpoints`.
+- Orient: consult `.vtcode/memory/` (`gotchas.md`, `issues.md`, `library.md`, `decisions.md`) before acting. Search for task-relevant entries and read matching sections; avoid concatenating the full memory corpus. For self-bugs inspect relevant events in `.vtcode/logs/trajectory.jsonl`, `.vtcode/checkpoints`, and `.vtcode/sessions`.
 - Only when the request touches core agent harness/agent logic (`src/agent/runloop/`, `vtcode-core` agent loop/tools/prompts, `agent.harness`/`automation.full_auto`), you may consult `openai/codex` via DeepWiki MCP (`deepwiki` in `.mcp.json` / `vtcode.toml [mcp.providers]`); otherwise skip. Fallback to `gh api repos/openai/codex/...` or `git fetch https://github.com/openai/codex` only if needed.
 - Implement surgically in the existing small crate; when adapting a Codex pattern cite source + commit (`codex-rs/...`, Apache-2.0 © 2025 OpenAI, https://github.com/openai/codex), preserve notices/state changes per Apache-2.0 §4, extend `scripts/templates/third-party-header.txt` + regen notices if substantive, and keep VT Code invariants (`ThreadEvent`, harness split, sandbox boundary).
 - Verify with `./scripts/check-dev.sh` + `cargo nextest run`; record durable learnings in `.vtcode/memory/` (local-only, gitignored).

@@ -935,6 +935,54 @@ async fn command_session_inspect_accepts_compact_session_alias() -> Result<()> {
 }
 
 #[tokio::test]
+async fn command_session_inspect_rejects_missing_session_without_waiting() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        registry.execute_harness_command_session(json!({
+            "action": "inspect",
+            "session_id": "run-missing",
+            "yield_time_ms": 5000,
+        })),
+    )
+    .await
+    .expect("missing session must fail before the five-second yield");
+    let source = result.expect_err("missing session must not look like successful empty output");
+    let error = ToolExecutionError::from_anyhow(tools::UNIFIED_EXEC, &source, 0, false, false, None);
+    assert!(error.is_exec_session_not_found());
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn command_session_inspect_distinguishes_empty_and_closed_sessions() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry
+        .exec_sessions
+        .create_pipe_session(
+            "run-empty".into(),
+            vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+            temp_dir.path().to_path_buf(),
+            Default::default(),
+        )
+        .await?;
+    let args = json!({"action": "inspect", "s": "run-empty", "yield_time_ms": 0});
+    let empty = registry.execute_harness_command_session(args.clone()).await?;
+    assert_eq!(empty["success"], true);
+    assert_eq!(empty["output"], "");
+    registry.close_exec_session("run-empty").await?;
+    let source = registry
+        .execute_harness_command_session(args)
+        .await
+        .expect_err("closed session is unavailable");
+    let error = ToolExecutionError::from_anyhow(tools::UNIFIED_EXEC, &source, 0, false, false, None);
+    assert!(error.is_exec_session_not_found());
+    Ok(())
+}
+
+#[tokio::test]
 async fn mutating_tools_clear_recent_read_reuse_history() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;

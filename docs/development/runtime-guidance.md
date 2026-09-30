@@ -28,6 +28,29 @@ to reveal hidden output; material findings belong in a visible progress update
 or the final reply. The provider-neutral collapsed-output disclosure reinforces
 this after each affected tool result.
 
+Empty searches are evidence of absence within the queried scope, so retries
+should ask a new question or change scope. For optional tooling, inspect the
+declared project/CI commands and check availability once; report an unavailable
+check as skipped and continue. A failure from an available checker still needs
+to be resolved.
+
+The navigation tracker counts empty successful read-only search pipelines as
+low-signal results even when a final filter such as `head` or `sed` returns
+exit 0. It uses the existing planning/execution convergence limits; it does not
+change command permissions or treat pipeline success as verification. Quiet
+existence probes, non-empty results, unfinished captures, and hidden or spooled
+output do not count as empty evidence.
+
+Standalone grep-style searches with exit 1 and fully visible empty output use
+deterministic no-match diagnosis without a model request or diagnosis-budget
+charge. Compound commands, redirected diagnostics, and hidden output retain
+the ordinary failure path because the search's exit status is not established.
+
+Orientation uses topic searches over code, memory, and logs followed by matching
+read ranges. Repository memory can grow large; concatenating the full corpus for
+each task consumes context and forces unnecessary spool reads. This guidance
+ships in every prompt profile and does not impose another output quota.
+
 ## Continuity and long-running work
 
 ### Runtime observability and cancellation
@@ -121,6 +144,15 @@ direct user commands do not fabricate an unrelated autonomous turn. The
 explicit `wait` action remains available when a caller needs a synchronous
 observation. The canonical completion record is emitted as
 `background_subprocess_completed` in event schema 0.16.0.
+
+Exec-session lookup failures are typed `ResourceNotFound` errors with the existing
+debug metadata code `exec_session_not_found`. They use deterministic recovery
+without a model-diagnosis call or circuit-breaker charge. Wait, poll, and inspect
+propagate missing-session/output errors immediately instead of returning empty
+success or spending the full wait deadline. Recover the exact ID from the original
+response and reuse recorded completion output. A missing handle does not prove a
+command failed; rerun only when fresh execution is needed. The pending-verification
+gate still requires a successful verifier when its result was lost.
 
 Cross-turn resume hint body is transient, not universal guidance: when a turn ends with a
 live foreground session, the next turn start injects a bounded `Exec session resume:` hint

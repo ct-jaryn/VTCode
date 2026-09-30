@@ -11,7 +11,9 @@ use vtcode_core::tools::tool_intent::{
 
 use crate::agent::runloop::unified::tool_pipeline::{ToolExecutionStatus, ToolPipelineOutcome};
 use crate::agent::runloop::unified::turn::tool_outcomes::read_extent;
-use crate::agent::runloop::unified::turn::tool_outcomes::{is_grep_style_no_match, output_field_is_empty};
+use crate::agent::runloop::unified::turn::tool_outcomes::{
+    is_empty_shell_search, is_grep_style_no_match, output_field_is_empty,
+};
 
 /// Threshold: number of consecutive file mutations before the Anti-Blind-Editing
 /// warning fires. NL2Repo-Bench recommends verifying after every few edits.
@@ -2180,6 +2182,7 @@ fn is_low_signal_outcome(outcome: &ToolPipelineOutcome, canonical_tool_name: &st
         ToolExecutionStatus::Success { output, command_success, .. } => {
             output_has_empty_search_results(output)
                 || output_reuses_recent_result(output)
+                || (*command_success && is_empty_shell_search(canonical_tool_name, args, output))
                 || (matches!(
                     canonical_tool_name,
                     vtcode_core::config::constants::tools::UNIFIED_EXEC
@@ -2677,7 +2680,7 @@ pub(crate) fn update_repetition_tracker(
     if is_session_follow_up(canonical_name, args)
         && loop_tracker.verification_is_pending()
         && let ToolExecutionStatus::Failure { error } = &outcome.status
-        && error_text_indicates_lost_session(&error.message)
+        && (error.is_exec_session_not_found() || error_text_indicates_lost_session(&error.message))
     {
         loop_tracker.verification_result_lost_notice_pending = true;
         loop_tracker.record_failed_verification();
@@ -3670,6 +3673,27 @@ mod tests {
         assert!(tracker.verification_is_pending());
         assert_eq!(tracker.fix_edits_remaining, FAILED_VERIFICATION_FIX_ALLOWANCE);
         assert!(!mutation_blocked_until_verification(&tracker, tools::EDIT_FILE, &json!({"path": "src/lib.rs"})));
+        assert!(tracker.take_verification_result_lost_notice());
+    }
+
+    #[test]
+    fn typed_lost_exec_session_failure_preserves_verification_gate() {
+        let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+        let error = vtcode_core::tools::registry::ToolExecutionError::new(
+            tools::WRITE_STDIN,
+            vtcode_core::tools::registry::ToolErrorType::ResourceNotFound,
+            "runtime handle unavailable",
+        )
+        .with_debug_metadata("failure_code", "exec_session_not_found");
+        let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Failure { error });
+        assert!(update_repetition_tracker(
+            &mut tracker,
+            &outcome,
+            tools::WRITE_STDIN,
+            &json!({"action": "wait", "session_id": "run-7"}),
+        ));
+        assert!(tracker.verification_is_pending());
+        assert_eq!(tracker.fix_edits_remaining, FAILED_VERIFICATION_FIX_ALLOWANCE);
         assert!(tracker.take_verification_result_lost_notice());
     }
 
@@ -4838,6 +4862,67 @@ mod tests {
         assert_eq!(tracker.max_low_signal_count(), 2);
         assert_eq!(tracker.consecutive_low_signal_navigations, 2);
         assert_eq!(tracker.total_low_signal_navigations, 2);
+    }
+
+    #[test]
+    fn low_signal_tracker_counts_empty_successful_search_pipelines() {
+        let mut tracker = LoopTracker::new();
+        let empty = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"exit_code": 0, "output": "", "total_output_bytes": 0}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for command in [
+            "rg --files --hidden | rg -i 'markdownlint' | sed -n '1,15p'",
+            "git ls-files | grep markdownlint | head -10",
+            "git status --short --ignored | rg -i 'markdownlint' | sed -n '1,10p'",
+            "rg -e -query src | head -10",
+            "rg --field-match-separator -q missing src | head -10",
+        ] {
+            update_repetition_tracker(&mut tracker, &empty, tools::EXEC_COMMAND, &json!({"cmd": command}));
+        }
+        assert_eq!(tracker.consecutive_navigations, 5);
+        assert_eq!(tracker.total_low_signal_navigations, 5);
+        assert_eq!(tracker.low_signal_tool_calls, 5);
+        assert_eq!(tracker.max_low_signal_count(), 1, "distinct searches retain distinct families");
+        assert!(!tracker.verification_is_pending());
+    }
+
+    #[test]
+    fn low_signal_tracker_preserves_productive_hidden_and_quiet_searches() {
+        let args = json!({"cmd": "rg missing src | head -10"});
+        for output in [
+            json!({"exit_code": 0, "output": "src/lib.rs:7:missing"}),
+            json!({"exit_code": 0, "output": "", "total_output_bytes": 42}),
+            json!({"exit_code": 0, "output": "", "output_truncated": true}),
+            json!({"exit_code": 0, "output": "", "spool_path": ".vtcode/context/tool_outputs/search.txt"}),
+            json!({"exit_code": 0, "output": "", "stderr": "permission denied"}),
+            json!({"output": "", "lifecycle_state": "running"}),
+            json!({"exit_code": 2, "output": ""}),
+        ] {
+            let mut tracker = LoopTracker::new();
+            let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                output,
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            });
+            tracker.mark_verification_pending();
+            update_repetition_tracker(&mut tracker, &outcome, tools::EXEC_COMMAND, &args);
+            assert_eq!(tracker.low_signal_tool_calls, 0, "{:?}", outcome.status);
+            assert!(tracker.verification_is_pending(), "inspection never clears verification");
+        }
+        let empty = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"exit_code": 0, "output": ""}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        let mut tracker = LoopTracker::new();
+        update_repetition_tracker(&mut tracker, &empty, tools::EXEC_COMMAND, &json!({"cmd": "rg -q hit src"}));
+        update_repetition_tracker(&mut tracker, &empty, tools::EXEC_COMMAND, &json!({"cmd": "cat empty.txt"}));
+        assert_eq!(tracker.low_signal_tool_calls, 0);
     }
 
     #[test]

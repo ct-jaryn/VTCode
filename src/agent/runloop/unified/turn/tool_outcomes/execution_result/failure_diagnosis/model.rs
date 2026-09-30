@@ -39,12 +39,7 @@ pub(super) async fn diagnose_with_optional_model(
     tool_name: &str,
     evidence: &str,
     fallback: ToolFailureDiagnosis,
-    deterministic_only: bool,
 ) -> ToolFailureDiagnosis {
-    if deterministic_only {
-        return fallback;
-    }
-
     // Fix-verify loops re-hit the same failure shape. Reuse the first
     // diagnosis and stop spending model calls once the per-turn budget is
     // gone — each failure otherwise adds 1-2 hidden LLM round-trips.

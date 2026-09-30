@@ -114,7 +114,7 @@ pub fn generate_tool_guidelines_with_capabilities(
             }
             if has(TOOL_WRITE_STDIN) {
                 lines.push(format!(
-                    "- `write_stdin` needs an active `session_id`; repeat the wait after an in-progress deadline{CROSS_TURN_RESUME_HINT_CLAUSE}"
+                    "- `write_stdin`: use returned `session_id`; if missing, recover prior output; repeat waits after in-progress deadlines{CROSS_TURN_RESUME_HINT_CLAUSE}"
                 ));
             }
             // Safeguard, verification, wait-instead-of-poll, and spool/preview
@@ -210,7 +210,7 @@ pub fn generate_tool_guidelines_for_profile(
     // Guidance, which every profile includes; do not restate them here.
     if has_stdin {
         lines.push(format!(
-            "- `write_stdin`: reuse the existing `session_id` of an active exec session; `spool_complete: false` marks readable partial output; an exited pending spool arrives on a later wait{CROSS_TURN_RESUME_HINT_CLAUSE}"
+            "- `write_stdin`: use the existing `session_id`; if missing, recover prior output; rerun only for fresh results. `spool_complete: false` is partial; wait for exited pending spools{CROSS_TURN_RESUME_HINT_CLAUSE}"
         ));
     }
     if has_search {
@@ -693,8 +693,10 @@ mod tests {
         // or the shared contract and must not be restated by tool sections.
         let markers = [
             "never claim a check passed",
-            "diagnose it and change approach",
-            "rather than polling",
+            "Diagnose failures; change approach",
+            "Use returned `next_wait_args`",
+            "Treat empty searches as evidence",
+            "Check optional tools once",
             "small non-overlapping ranges",
             "accumulated output never exhausts tool access",
             "additional_permissions",
@@ -918,6 +920,8 @@ mod tests {
         let default_guidance = generate_tool_guidelines_for_profile(&tools, None, ResolvedShellPromptProfile::UnixLike);
         assert!(default_guidance.contains("`Exec session resume:`"));
         assert!(default_guidance.contains("prior turn ended mid-run"));
+        assert!(default_guidance.contains("if missing, recover prior output"));
+        assert!(default_guidance.contains("rerun only for fresh results"));
 
         let minimal = generate_tool_guidelines_with_capabilities(
             &tools,
@@ -928,6 +932,7 @@ mod tests {
         );
         assert!(minimal.contains("`Exec session resume:`"));
         assert!(minimal.contains("prior turn ended mid-run"));
+        assert!(minimal.contains("if missing, recover prior output"));
     }
 
     #[test]

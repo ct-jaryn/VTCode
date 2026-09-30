@@ -209,6 +209,10 @@ What do you want to find?
 | `rg "needle" .` on a huge tree | `rg --glob "src/**/*.ts" "needle" .` | Narrow scope |
 | `rg -C 50 "needle"` | `rg -C 3 "needle"` | Keep nearby output small |
 | Large codebase searches | `rg -t rust "needle"` | Use a type filter where possible |
+| Repeat an empty search with cosmetic flag changes | Search again only for a new scope or question | Empty results are evidence; an empty pipeline still counts toward navigation convergence even if its final filter exits 0 |
+
+Quiet probes (`-q`, `--quiet`) are excluded from empty-output accounting. Option
+values such as the pattern in `rg -e -query src` are not quiet flags.
 
 ## See Also
 

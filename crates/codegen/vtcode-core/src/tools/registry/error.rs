@@ -7,6 +7,8 @@ use vtcode_commons::ErrorCategory;
 use crate::retry::{RetryDecision, RetryPolicy, RetryPolicyCoreExt};
 use crate::tools::tool_intent::is_command_tool;
 
+const EXEC_SESSION_NOT_FOUND_CODE: &str = "exec_session_not_found";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolErrorDebugContext {
     pub surface: Option<String>,
@@ -136,6 +138,22 @@ impl ToolExecutionError {
         let tool_name = tool_name.into();
         // Classify exactly once into the canonical category; the wire-visible
         // `error_type` is derived from it inside `from_category`.
+        if let Some(session_error) = error.downcast_ref::<crate::tools::exec_session::ExecSessionNotFound>() {
+            let mut structured =
+                Self::from_category(tool_name, ErrorCategory::ResourceNotFound, session_error.to_string())
+                    .with_debug_metadata("failure_code", EXEC_SESSION_NOT_FOUND_CODE);
+            structured.original_error =
+                Some(vtcode_commons::formatting::head_tail_truncate(&format!("{error:#}"), 640, " ... ").0);
+            structured.partial_state_possible = partial_state_possible;
+            structured.rollback_performed = rollback_performed;
+            structured.recovery_suggestions = vec![Cow::Borrowed(
+                "Recover the exact session ID from the original response. Reuse recorded completion output; rerun only if fresh execution is still needed.",
+            )];
+            if let Some(surface) = surface {
+                structured = structured.with_surface(surface);
+            }
+            return structured;
+        }
         if let Some(patch_error) = error.downcast_ref::<crate::tools::editing::PatchError>() {
             use crate::tools::editing::PatchError;
             let category = match patch_error {
@@ -205,6 +223,18 @@ impl ToolExecutionError {
             Some(PatchFailure::ContextMismatch { path, .. }) => Some(path),
             _ => None,
         }
+    }
+
+    /// Whether a typed runtime lookup failed, independent of quoted text.
+    #[must_use]
+    pub fn is_exec_session_not_found(&self) -> bool {
+        self.category == ErrorCategory::ResourceNotFound
+            && self.debug_context.as_ref().is_some_and(|context| {
+                context
+                    .metadata
+                    .iter()
+                    .any(|(key, value)| key == "failure_code" && value == EXEC_SESSION_NOT_FOUND_CODE)
+            })
     }
 
     #[must_use]
@@ -606,6 +636,27 @@ mod tests {
         let structured = ToolExecutionError::from_anyhow("grep_search", &err, 0, false, false, None);
         assert_eq!(structured.category, ErrorCategory::RateLimit);
         assert_eq!(structured.error_type, ToolErrorType::from(structured.category));
+    }
+
+    #[test]
+    fn missing_exec_session_classification_survives_context_and_round_trip() {
+        let source = Error::new(crate::tools::exec_session::ExecSessionNotFound { session_id: "run-missing".into() })
+            .context("quoted diagnostic: permission denied in vtcode.toml");
+        let structured = ToolExecutionError::from_anyhow("write_stdin", &source, 0, false, false, Some("registry"));
+        assert_eq!(structured.category, ErrorCategory::ResourceNotFound);
+        assert!(structured.is_exec_session_not_found());
+        assert!(!structured.retryable);
+        assert!(!structured.circuit_breaker_impact);
+        assert_eq!(structured.debug_context.as_ref().unwrap().surface.as_deref(), Some("registry"));
+        assert!(structured.message.contains("reuse its output"));
+        assert!(!structured.message.contains("re-run the command instead of waiting"));
+        let decoded = ToolExecutionError::from_error_payload(&structured.to_json_value()).unwrap();
+        assert!(decoded.is_exec_session_not_found());
+
+        let lookalike = anyhow!("exec session 'run-missing' not found: permission denied");
+        let untyped = ToolExecutionError::from_anyhow("write_stdin", &lookalike, 0, false, false, None);
+        assert_eq!(untyped.category, ErrorCategory::PermissionDenied);
+        assert!(!untyped.is_exec_session_not_found());
     }
 
     #[test]

@@ -172,9 +172,11 @@ pub(super) async fn diagnose_error(
     failure_kind: &str,
 ) -> ToolFailureDiagnosis {
     let fallback = deterministic_error_diagnosis(error, failure_kind);
+    if classification::is_deterministic_only_error(error) {
+        return fallback;
+    }
     let evidence = evidence::build_error_evidence(tool_name, args, error, failure_kind);
-    let deterministic_only = classification::is_deterministic_only_error(error);
-    model::diagnose_with_optional_model(ctx, tool_name, &evidence, fallback, deterministic_only).await
+    model::diagnose_with_optional_model(ctx, tool_name, &evidence, fallback).await
 }
 
 /// Diagnose a command/tool result whose execution completed with a non-zero
@@ -186,13 +188,100 @@ pub(super) async fn diagnose_output(
     output: &Value,
 ) -> ToolFailureDiagnosis {
     let fallback = deterministic_output_diagnosis(tool_name, args, output);
+    if crate::agent::runloop::unified::turn::tool_outcomes::is_grep_style_no_match(tool_name, args, output) {
+        return fallback;
+    }
     let evidence = evidence::build_output_evidence(tool_name, args, output);
-    model::diagnose_with_optional_model(ctx, tool_name, &evidence, fallback, false).await
+    model::diagnose_with_optional_model(ctx, tool_name, &evidence, fallback).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_exec_session_diagnosis_preserves_model_budget() {
+        use crate::agent::runloop::unified::turn::turn_processing::test_support::TestTurnProcessingBacking;
+
+        let temp = tempfile::tempdir().expect("workspace");
+        let registry = vtcode_core::tools::ToolRegistry::new(temp.path().to_path_buf()).await;
+        let args = json!({"session_id": "run-missing", "action": "wait"});
+        let source = registry
+            .execute_harness_command_session(args.clone())
+            .await
+            .expect_err("unknown session");
+        let error = ToolExecutionError::from_anyhow(tool_names::WRITE_STDIN, &source, 0, false, false, None);
+        assert!(error.is_exec_session_not_found());
+
+        let mut backing = TestTurnProcessingBacking::new(8).await;
+        let mut ctx = backing.turn_processing_context();
+        let diagnosis = diagnose_error(&mut ctx, tool_names::WRITE_STDIN, &args, &error, "execution").await;
+        assert!(diagnosis.likely_cause.contains("does not establish the command's outcome"));
+        assert!(diagnosis.next_action.contains("reuse its output"));
+        assert!(diagnosis.next_action.contains("only if fresh execution is still needed"));
+        for _ in 0..3 {
+            assert!(ctx.harness_state.can_spend_failure_diagnosis_model_call());
+            ctx.harness_state.record_failure_diagnosis_model_call();
+        }
+        assert!(!ctx.harness_state.can_spend_failure_diagnosis_model_call());
+
+        let unrelated = ToolExecutionError::new(
+            "read_file",
+            vtcode_core::tools::registry::ToolErrorType::ResourceNotFound,
+            "file not found",
+        );
+        assert!(!classification::is_deterministic_only_error(&unrelated));
+    }
+
+    #[tokio::test]
+    async fn grep_no_match_diagnosis_preserves_model_budget() {
+        use crate::agent::runloop::unified::turn::turn_processing::test_support::TestTurnProcessingBacking;
+
+        let mut backing = TestTurnProcessingBacking::new(8).await;
+        let mut ctx = backing.turn_processing_context();
+        for command in [
+            "rg missing src",
+            "grep -q missing README.md",
+            "LANG=C /usr/bin/grep missing src",
+        ] {
+            let diagnosis = diagnose_output(
+                &mut ctx,
+                tool_names::EXEC_COMMAND,
+                &json!({"cmd": command}),
+                &json!({"stdout": "", "exit_code": 1}),
+            )
+            .await;
+            assert!(diagnosis.likely_cause.contains("no matching results"));
+            assert!(diagnosis.next_action.contains("new scope or question"));
+        }
+        // All three optional model calls remain available for actual failures.
+        for _ in 0..3 {
+            assert!(ctx.harness_state.can_spend_failure_diagnosis_model_call());
+            ctx.harness_state.record_failure_diagnosis_model_call();
+        }
+        assert!(!ctx.harness_state.can_spend_failure_diagnosis_model_call());
+    }
+
+    #[test]
+    fn grep_no_match_diagnosis_rejects_ambiguous_or_hidden_failures() {
+        for command in ["rg missing src; false", "echo '/rg missing'; false", "! rg missing src"] {
+            let diagnosis = deterministic_output_diagnosis(
+                tool_names::EXEC_COMMAND,
+                &json!({"cmd": command}),
+                &json!({"exit_code": 1}),
+            );
+            assert!(!diagnosis.likely_cause.contains("no matching results"), "{command}");
+        }
+        for hidden in [
+            json!({"exit_code": 1, "truncated": true}),
+            json!({"exit_code": 1, "spool_path": "output.txt"}),
+            json!({"exit_code": 1, "total_output_bytes": 10}),
+        ] {
+            let diagnosis =
+                deterministic_output_diagnosis(tool_names::EXEC_COMMAND, &json!({"cmd": "rg missing src"}), &hidden);
+            assert!(!diagnosis.likely_cause.contains("no matching results"));
+        }
+    }
 
     #[test]
     fn parses_exact_model_diagnosis_contract() {
