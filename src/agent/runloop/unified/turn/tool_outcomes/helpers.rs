@@ -1301,11 +1301,35 @@ mod tracker_continue_tests {
         assert_eq!(stats.tracker_continuation_turns(), 0);
         // Same count is not further progress.
         assert!(!stats.note_tracker_completed_count(1));
-        // Tracker recreate with a lower completed count still resets the episode.
+        // Tracker recreate and re-completing the same number of items do not
+        // restore the budget; only a new completion high-water mark does.
         assert!(stats.record_tracker_continuation_turn_with_limit(32));
-        assert!(stats.note_tracker_completed_count(0));
+        assert!(!stats.note_tracker_completed_count(0));
+        assert!(!stats.note_tracker_completed_count(1));
+        assert_eq!(stats.tracker_continuation_turns(), 1);
+        assert!(stats.note_tracker_completed_count(2));
         stats.reset_tracker_continuation_budget();
         assert_eq!(stats.tracker_continuation_turns(), 0);
+    }
+
+    #[test]
+    fn tracker_status_churn_cannot_keep_continuation_budget_alive() {
+        use crate::agent::runloop::unified::state::{FollowUpPromptAction, SessionStats};
+
+        let mut stats = SessionStats::default();
+        assert!(stats.note_tracker_completed_count(1));
+        let follow_up = tracker_continue_follow_up(&["#2 README (blocked)".to_owned()]);
+        for completed in [0, 1, 0] {
+            assert!(stats.record_tracker_continuation_turn_with_limit(3));
+            assert_eq!(stats.register_follow_up_prompt(&follow_up), FollowUpPromptAction::None);
+            assert!(!stats.note_tracker_completed_count(completed));
+        }
+        assert_eq!(stats.tracker_continuation_turns(), 3);
+        assert!(!stats.record_tracker_continuation_turn_with_limit(3));
+        assert!(!stats.note_tracker_completed_count(1));
+        assert_eq!(stats.register_follow_up_prompt("Start the next task"), FollowUpPromptAction::None);
+        assert_eq!(stats.tracker_continuation_turns(), 0);
+        assert!(stats.note_tracker_completed_count(1), "a new user request starts a fresh progress episode");
     }
 
     #[test]

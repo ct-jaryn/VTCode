@@ -6,6 +6,27 @@ use super::looping::{
     low_signal_family_key, shell_run_signature, spool_chunk_read_path, task_tracker_create_signature,
 };
 use super::recovery;
+
+#[test]
+fn fresh_turn_restores_handler_recovery_directives_once() {
+    use crate::agent::runloop::unified::turn::turn_loop_helpers::restore_fresh_turn_tool_guidance;
+    use vtcode_core::llm::provider::Message;
+
+    for directive in [
+        super::PLANNING_TOOL_FREE_RECOVERY_DIRECTIVE.to_owned(),
+        super::PREFLIGHT_CIRCUIT_RECOVERY_DIRECTIVE.to_owned(),
+        super::BLOCKED_TOOL_RECOVERY_DIRECTIVE.to_owned(),
+        super::INTERVIEW_DENIAL_RECOVERY_DIRECTIVE.to_owned(),
+        format!("{} Trigger: command rejected", super::BLOCKED_TOOL_RECOVERY_DIRECTIVE),
+    ] {
+        let mut history = vec![Message::system(directive.clone())];
+        restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), 2, "must restore emitted handler directive: {directive}");
+        assert_eq!(history[0].content.as_text(), directive);
+        restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), 2, "restoration must be idempotent");
+    }
+}
 use super::{
     ToolOutcomeContext, ValidationResult, ValidationTransition, apply_reused_read_only_loop_metadata,
     build_tool_permissions_context, enforce_blocked_tool_call_guard, enforce_duplicate_task_tracker_create_guard,

@@ -581,7 +581,7 @@ fn apply_pending_follow_ups_mid_turn(
 /// True for machine-generated continuation prompts that must not echo to the
 /// TUI. Matches the stable openings of every harness-queued follow-up so a
 /// reworded tail cannot reintroduce transcript noise.
-fn is_internal_harness_follow_up(input: &str) -> bool {
+pub(crate) fn is_internal_harness_follow_up(input: &str) -> bool {
     use crate::agent::runloop::unified::turn::session_loop::{
         BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX, VERIFICATION_AUTO_RECOVERY_PREFIX,
     };
@@ -595,6 +595,72 @@ fn is_internal_harness_follow_up(input: &str) -> bool {
         || input.starts_with(RECOVERABLE_BLOCKED_CONTINUE_FOLLOW_UP_PREFIX)
         || input.starts_with(BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX)
         || input.starts_with(VERIFICATION_AUTO_RECOVERY_PREFIX)
+}
+
+const FRESH_TURN_TOOL_GUIDANCE: &str = "Fresh turn: the previous turn's preview budget and tool-free recovery restrictions have expired. Tools are available subject to this turn's catalog, planning mode, safety, verification, and permission checks. Older recovery messages do not disable tools in this turn. If earlier file contents were cleared, recover the needed context with a targeted read or small spool range before editing; do not repeat broad inspections.";
+
+fn is_turn_scoped_tool_restriction(text: &str) -> bool {
+    // Inspect the runtime-owned instruction, not bounded evidence that a
+    // planning synthesis directive may append beneath it.
+    let instruction = text.lines().next().unwrap_or_default().trim().to_ascii_lowercase();
+    if instruction.starts_with("tool preview budget exhausted;")
+        || instruction.starts_with("planning recovery: the proposed plan was rejected.")
+    {
+        return true;
+    }
+    let recovery_family = [
+        "recovery:",
+        "planning recovery:",
+        "planning recovery synthesis:",
+        "planning navigation produced",
+        "planning tool preview budget exhausted",
+        "planning research completed",
+        "navigation loop detected",
+        "repeated low-signal navigation calls",
+        "diverse low-signal navigation reached",
+        "turn balancer detected repeated low-signal tool churn",
+        "tool loop budget exhausted",
+        "tool-call budget exhausted for this turn",
+        "tool wall-clock budget exhausted for this turn",
+        "tool follow-up failed.",
+        "model returned no answer after tool activity.",
+        "model follow-up failed after tool activity.",
+    ]
+    .iter()
+    .any(|prefix| instruction.starts_with(prefix));
+    recovery_family
+        && (instruction.contains("tools are disabled")
+            || instruction.contains("tools disabled")
+            || instruction.contains("do not emit tool calls"))
+}
+
+/// Supersede expired recovery guidance without rewriting replayed history.
+/// Only call at a fresh turn boundary, after the preview window is reset.
+pub(super) fn restore_fresh_turn_tool_guidance(history: &mut Vec<uni::Message>, recovery_active: bool) {
+    if recovery_active {
+        return;
+    }
+    // A newer restoration supersedes every older restriction. Search only
+    // back to that boundary so later turns neither duplicate the instruction
+    // nor scan all of the session's old recovery history.
+    let has_expired_restriction = history
+        .iter()
+        .rev()
+        .filter(|message| message.role == uni::MessageRole::System)
+        .find_map(|message| {
+            let text = message.content.as_text();
+            if text == FRESH_TURN_TOOL_GUIDANCE {
+                Some(false)
+            } else if is_turn_scoped_tool_restriction(&text) {
+                Some(true)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false);
+    if has_expired_restriction {
+        history.push(uni::Message::system(FRESH_TURN_TOOL_GUIDANCE.to_owned()));
+    }
 }
 
 /// Append a steered user message tagged with its intent id so restart
@@ -1209,6 +1275,87 @@ mod tests {
         assert!(!is_stale_approved_plan_pause_response(
             "Implementation is paused while I wait for the user to clarify the API contract."
         ));
+    }
+
+    #[test]
+    fn fresh_turn_supersedes_expired_recovery_without_changing_history() {
+        use vtcode_core::llm::provider::Message;
+
+        let restriction = "Recovery: two assistant batches attempted inspection after the tool preview budget was exhausted. Tools are disabled for this pass.";
+        let mut history = vec![
+            Message::system(restriction.to_owned()),
+            Message::assistant("All six steps remain blocked".to_owned()),
+            Message::user("Continue the approved plan".to_owned()),
+        ];
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].content.as_text(), restriction);
+        assert_eq!(history[3].role, MessageRole::System);
+        let fresh = history[3].content.as_text();
+        assert!(fresh.contains("restrictions have expired"));
+        assert!(fresh.contains("permission checks"));
+        assert!(fresh.contains("targeted read or small spool range"));
+
+        history.push(Message::user("Continue the next step".to_owned()));
+        let restored_len = history.len();
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), restored_len, "already superseded restrictions must not duplicate guidance");
+        history.push(Message::system(TOOL_LOOP_LIMIT_RECOVERY_REASON.to_owned()));
+        history.push(Message::user("Retry after the new recovery".to_owned()));
+        super::restore_fresh_turn_tool_guidance(&mut history, true);
+        assert_eq!(history.len(), restored_len + 2, "active recovery still takes precedence");
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), restored_len + 3, "a newer restriction needs one new restoration");
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), restored_len + 3);
+
+        let mut active = vec![Message::system(restriction.to_owned())];
+        super::restore_fresh_turn_tool_guidance(&mut active, true);
+        assert_eq!(active.len(), 1, "current recovery must still disable tools");
+
+        let mut policy = vec![Message::system(
+            "exec_command is denied by permission policy".to_owned(),
+        )];
+        super::restore_fresh_turn_tool_guidance(&mut policy, false);
+        assert_eq!(policy.len(), 1, "permission restrictions must not be superseded");
+
+        let mut user_text = vec![Message::user(restriction.to_owned())];
+        super::restore_fresh_turn_tool_guidance(&mut user_text, false);
+        assert_eq!(user_text.len(), 1, "user text is not a harness recovery event");
+
+        let mut quoted_evidence = vec![Message::system(
+            "Planning recovery synthesis: gather evidence.\n<bounded_recovery_evidence>tools are disabled</bounded_recovery_evidence>".to_owned(),
+        )];
+        super::restore_fresh_turn_tool_guidance(&mut quoted_evidence, false);
+        assert_eq!(quoted_evidence.len(), 1, "quoted evidence must not become a runtime restriction");
+    }
+
+    #[test]
+    fn fresh_turn_restores_generated_budget_and_post_tool_recovery_directives() {
+        use crate::agent::runloop::unified::run_loop_context::{ToolBudgetExhaustion, ToolWallClockExhaustion};
+        use crate::agent::runloop::unified::turn::turn_loop::{
+            POST_TOOL_RECOVERY_REASON, POST_TOOL_RECOVERY_REASON_PLAN_MODE,
+            RECOVERY_TOOL_CALL_RETRY_DIRECTIVE_PLAN_MODE,
+        };
+        use vtcode_core::llm::provider::Message;
+
+        for directive in [
+            TOOL_LOOP_LIMIT_RECOVERY_REASON.to_owned(),
+            ToolBudgetExhaustion { used: 4, max: 4, remaining: 0 }.synthesis_directive_message(),
+            ToolWallClockExhaustion { max_secs: 600 }.synthesis_directive_message(),
+            POST_TOOL_RECOVERY_REASON.to_owned(),
+            POST_TOOL_RECOVERY_REASON_PLAN_MODE.to_owned(),
+            RECOVERY_TOOL_CALL_RETRY_DIRECTIVE_PLAN_MODE.to_owned(),
+            crate::agent::runloop::unified::planning_workflow::build_plan_repair_directive("Invalid plan"),
+        ] {
+            let mut history = vec![Message::system(directive.clone())];
+            super::restore_fresh_turn_tool_guidance(&mut history, false);
+            assert_eq!(history.len(), 2, "must restore production directive: {directive}");
+            assert_eq!(history[0].content.as_text(), directive);
+            super::restore_fresh_turn_tool_guidance(&mut history, false);
+            assert_eq!(history.len(), 2);
+        }
     }
 
     #[test]

@@ -721,6 +721,16 @@ mod tests {
         assert!(guidance.contains("task_tracker"));
     }
 
+    fn assert_recovery_expires_at_fresh_turn(history: &[vtcode_core::llm::provider::Message]) {
+        use crate::agent::runloop::unified::turn::turn_loop_helpers::restore_fresh_turn_tool_guidance;
+
+        let mut restored = history.to_vec();
+        restore_fresh_turn_tool_guidance(&mut restored, false);
+        assert_eq!(restored.len(), history.len() + 1, "the guard's emitted directive must be superseded");
+        restore_fresh_turn_tool_guidance(&mut restored, false);
+        assert_eq!(restored.len(), history.len() + 1, "restoration must not duplicate itself");
+    }
+
     #[test]
     fn navigation_loop_guidance_uses_generic_text_outside_planning_workflow() {
         let guidance = navigation_loop_guidance(false, 1);
@@ -774,6 +784,7 @@ mod tests {
                 || message.content.as_text().contains("synthesize the plan")
                 || message.content.as_text().contains("<proposed_plan>")
         }));
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
     }
 
     #[tokio::test]
@@ -871,6 +882,7 @@ mod tests {
         assert!(matches!(first, TurnHandlerOutcome::Continue));
         assert!(ctx.is_recovery_active());
         assert!(tracker.planning_low_signal_synthesis_triggered);
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
 
         // Even with low-signal counters also at threshold, the shared
         // once-per-turn flag must prevent a second recovery scheduling.
@@ -1239,6 +1251,7 @@ mod tests {
                 .iter()
                 .any(|message| { message.content.as_text().contains("Navigation loop detected") })
         );
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
         assert!(ctx.consume_recovery_pass());
 
         let recovery_outcome = ctx
@@ -1322,6 +1335,7 @@ mod tests {
                 .as_text()
                 .contains("Repeated low-signal navigation calls reached the per-turn fast-path cap")
         }));
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
     }
 
     #[tokio::test]
@@ -1523,6 +1537,7 @@ mod tests {
         assert!(ctx.is_recovery_active());
         let reason = ctx.recovery_reason().unwrap_or_default();
         assert!(reason.contains("Diverse low-signal navigation reached 12"));
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
     }
 
     #[tokio::test]

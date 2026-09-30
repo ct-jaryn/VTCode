@@ -111,8 +111,8 @@ pub(crate) struct SessionStats {
     /// clears, and when a tracker step completes (progress-reset) — not by
     /// `reset_verification_recovery_episode`.
     tracker_continuation_turns: u8,
-    /// Last observed completed checklist count for tracker progress-reset.
-    tracker_completed_count_last: u32,
+    /// Highest completed checklist count in the current user-request episode.
+    tracker_completed_count_high_water: u32,
     /// Cached incomplete tracker items used when the live probe fails so a
     /// transient tracker read error does not drop auto-queue.
     last_incomplete_tracker_items: Option<Vec<String>>,
@@ -589,6 +589,12 @@ impl SessionStats {
     }
 
     pub(crate) fn register_follow_up_prompt(&mut self, input: &str) -> FollowUpPromptAction {
+        // Internal continuations belong to the existing recovery episode.
+        // Treating their verbose text as fresh user input resets the budget
+        // on every retry and makes the cross-turn limit unreachable.
+        if crate::agent::runloop::unified::turn::is_internal_harness_follow_up(input) {
+            return FollowUpPromptAction::None;
+        }
         let suppression_active = self.consume_follow_up_prompt_suppression();
         let is_follow_up = is_follow_up_prompt_like(input);
 
@@ -603,6 +609,7 @@ impl SessionStats {
             self.turn_stall_reason = None;
             self.reset_verification_recovery_episode();
             self.reset_tracker_continuation_budget();
+            self.tracker_completed_count_high_water = 0;
             return FollowUpPromptAction::None;
         }
 
@@ -694,15 +701,14 @@ impl SessionStats {
         )
     }
 
-    /// Observe the live completed checklist count. Returns `true` when progress
-    /// increased **or** the checklist was replaced with a lower completed
-    /// count (tracker recreate) — either restores the auto-continue episode.
+    /// Only new completion progress restores the auto-continue episode.
+    /// Recreating a checklist or toggling statuses must not refresh retries.
     pub(crate) fn note_tracker_completed_count(&mut self, completed: u32) -> bool {
-        let changed = completed != self.tracker_completed_count_last;
-        if changed {
-            self.tracker_completed_count_last = completed;
+        let progressed = completed > self.tracker_completed_count_high_water;
+        if progressed {
+            self.tracker_completed_count_high_water = completed;
         }
-        changed
+        progressed
     }
 
     /// Record one plan-mode auto-continue turn against its own budget.
@@ -1597,6 +1603,37 @@ mod tests {
         assert!(!stats.record_first_call_composition(later));
         assert_eq!(stats.first_call_composition(), Some(first));
         assert_eq!(first.fixed_overhead_tokens(), 3_200);
+    }
+
+    #[test]
+    fn internal_continuations_cannot_reset_cross_turn_budgets() {
+        use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
+            plan_mode_continue_follow_up, recoverable_blocked_continue_follow_up, tracker_continue_follow_up,
+        };
+
+        let prompts = [
+            tracker_continue_follow_up(&["#1 README (blocked)".to_owned()]),
+            plan_mode_continue_follow_up(),
+            recoverable_blocked_continue_follow_up("preview budget exhausted"),
+        ];
+        for prompt in prompts {
+            let mut stats = SessionStats::default();
+            for turn in 1..=3 {
+                assert!(stats.record_tracker_continuation_turn_with_limit(3));
+                assert!(stats.record_plan_continuation_turn_with_limit(3));
+                assert!(stats.record_verification_auto_recovery_turn_with_limit(3));
+                assert_eq!(stats.register_follow_up_prompt(&prompt), FollowUpPromptAction::None);
+                assert_eq!(stats.tracker_continuation_turns(), turn);
+                assert_eq!(stats.plan_continuation_turns(), turn);
+                assert_eq!(stats.verification_auto_recovery_turns(), turn);
+            }
+            assert!(!stats.record_tracker_continuation_turn_with_limit(3));
+            assert!(!stats.record_plan_continuation_turn_with_limit(3));
+            assert!(!stats.record_verification_auto_recovery_turn_with_limit(3));
+            assert_eq!(stats.register_follow_up_prompt("Fix the README links"), FollowUpPromptAction::None);
+            assert_eq!(stats.tracker_continuation_turns(), 0);
+            assert_eq!(stats.verification_auto_recovery_turns(), 0);
+        }
     }
 
     #[test]

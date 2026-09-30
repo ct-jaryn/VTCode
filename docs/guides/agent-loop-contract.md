@@ -68,6 +68,22 @@ tracker:
   later tracker auto-continue until a genuine user turn resets the episode.
 - Kill-switch: `[agent.harness.continuation].auto_continue_tracker = false`.
 
+Harness-generated tracker, plan, blocked-end, verification, and background
+continuations preserve the existing episode budgets; their prompt text must
+never reset counters as if it were a new user request. Without progress, the
+configured cross-turn limit stops automatic retries even when steps stay blocked.
+Only a completed-count high-water mark within the current user request resets
+the tracker retry budget; decreasing counts or recreating the checklist does
+not count as progress. A fresh user request starts a new progress episode.
+Preview exhaustion and tool-free recovery apply only to their turn. A fresh
+turn resets the preview window and supersedes expired recovery guidance while
+retaining history and enforcing current planning, safety, verification, and
+permission checks. Cleared source context can be recovered with targeted reads.
+Restoration guidance is appended once per recovery episode, including planning,
+preflight, blocked-tool, budget, navigation, and empty-response synthesis paths.
+A later restriction requires a new restoration; already superseded restrictions
+do not add redundant messages on subsequent turns.
+
 Shared classifiers live in `vtcode_core::core::agent::completion`
 (`tracker_final_text_is_safety_handoff`, `tracker_final_text_requires_user_input`,
 `recoverable_status_recap_phrasing`) so the binary runloop, outer queue, and
