@@ -2,6 +2,37 @@
 
 All notable changes to vtcode will be documented in this file.
 ## 0.169.2 - 2026-09-24
+## 0.171.2 - 2026-09-30
+
+### Highlights
+#### Bug Fixes
+
+- Expire recovery restrictions and bound continuations (5625b649) 
+- Use warning amber for exit postamble notice (70574dc8) 
+- Keep tool previews available across long turns (2760a1b2) 
+- Stop OSC palette replies leaking into input on launch (9f2cf374) 
+- Preserve metadata and allow optional markdown lint (a7f91c12) 
+- Keep tool prefix stable across tool-free recovery (9c43d616) 
+- Make patch calls reliable with bounded recovery (37e11dfa) 
+- Preserve tracker state and expose spool line counts (8ed31945) 
+- Restrict LLM image parts to JPEG/PNG/GIF/WebP (61429d85) 
+- Bound search recovery and preserve exec session output (37bbc318) 
+#### Documentation
+
+- Finalize prompt-cache-hitrate feature document (9ef26918) 
+- Finalize prompt-cache-provider-gaps feature document (12f3f342) 
+- Tighten prose and promote Resources section (c221839b) 
+- Tighten wording and regroup sections (d471dac5) 
+- Restructure sections and tighten wording (d0f61971) 
+#### Features
+
+- Close provider prompt-cache gaps (4d60c077) 
+- Add sticky user-message navigation (398ac6b4) 
+### Other Changes
+#### Other
+
+- Update README (b2645476) 
+- Normalize line endings and apply cargo fmt (2b749ddd) 
 ## 0.171.1 - 2026-09-30
 
 ### Highlights
