@@ -112,11 +112,14 @@ impl LLMProvider for GeminiProvider {
             return Self::convert_from_interaction_response(interaction_response, model);
         }
 
-        let gemini_request = self.convert_to_gemini_request(&request)?;
+        let mut gemini_request = self.convert_to_gemini_request(&request)?;
+        if let Some(cache_name) = self.ensure_explicit_cache(&request, &gemini_request).await? {
+            gemini_request = self.apply_explicit_cache_to_request(gemini_request, &cache_name);
+        }
 
         let url = format!("{}/models/{}:generateContent", self.base_url, request.model);
 
-        let response = self
+        let mut response = self
             .http_client
             .post(&url)
             .header("x-goog-api-key", self.api_key.as_ref())
@@ -128,6 +131,30 @@ impl LLMProvider for GeminiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = crate::providers::common::read_provider_error_body(response).await;
+            // Stale `cachedContent` name: drop the slot and retry once with a
+            // full (uncached) request so the turn can still complete.
+            if gemini_request.cached_content.is_some()
+                && explicit_cache::is_stale_cache_error(status.as_u16(), &error_text)
+            {
+                self.explicit_cache.clear();
+                let full_request = self.convert_to_gemini_request(&request)?;
+                response = self
+                    .http_client
+                    .post(&url)
+                    .header("x-goog-api-key", self.api_key.as_ref())
+                    .json(&full_request)
+                    .send()
+                    .await
+                    .map_err(|e| format_network_error("Gemini", &e))?;
+                if response.status().is_success() {
+                    let gemini_response: GenerateContentResponse =
+                        response.json().await.map_err(|e| format_parse_error("Gemini", &e))?;
+                    return Self::convert_from_gemini_response(gemini_response, model);
+                }
+                let retry_status = response.status();
+                let error_text = crate::providers::common::read_provider_error_body(response).await;
+                return Err(Self::handle_http_error(retry_status, &error_text));
+            }
             return Err(Self::handle_http_error(status, &error_text));
         }
 
@@ -225,7 +252,10 @@ impl LLMProvider for GeminiProvider {
         }
 
         let model = request.model.clone();
-        let gemini_request = self.convert_to_gemini_request(&request)?;
+        let mut gemini_request = self.convert_to_gemini_request(&request)?;
+        if let Some(cache_name) = self.ensure_explicit_cache(&request, &gemini_request).await? {
+            gemini_request = self.apply_explicit_cache_to_request(gemini_request, &cache_name);
+        }
 
         let url = format!("{}/models/{}:streamGenerateContent", self.base_url, request.model);
 

@@ -193,7 +193,8 @@ min_message_length_for_cache = 256
 
 -   `tools_ttl_seconds` — TTL for tool definitions and system prompt cache hints.
 -   `messages_ttl_seconds` — TTL for user message cache hints.
--   `extended_ttl_seconds` — optional longer-lived TTL. When present, VT Code automatically opts into Anthropic’s extended prompt caching beta header.
+-   `extended_ttl_seconds` — optional longer-lived TTL. When present, VT Code automatically opts into Anthropic’s extended prompt caching beta header. Budget-continuation profile requests use this TTL (default 1h).
+-   `prefer_extended_ttl` — when true, tools/system/message breakpoints upgrade from 5m to 1h (2× write cost) for sessions that idle past the 5m window.
 -   `max_breakpoints` — maximum number of cache insertion points per request (tools, system prompt, user messages).
 -   `cache_system_messages` / `cache_user_messages` / `cache_tool_definitions` — toggle cache hints for each content type.
 -   `min_message_length_for_cache` — avoids setting cache hints on very short user messages.
@@ -209,10 +210,17 @@ min_prefix_tokens = 128
 explicit_ttl_seconds = 900
 ```
 
--   `mode` — `implicit` leverages built-in cache detection; `explicit` reserves cache slots for manual lifecycle management; `off` disables all Gemini caching.
+-   `mode` — `implicit` leverages built-in cache detection; `explicit` uses the `cachedContents` lifecycle; `off` disables all Gemini caching.
 -   `min_prefix_tokens` — minimum prompt size before requesting cache evaluation.
--   `explicit_ttl_seconds` — optional TTL when explicit mode is active.
--   Explicit mode currently falls back to the implicit wire shape: `generateContent` `systemInstruction` accepts text only, so no inline TTL part is sent (true explicit caching needs the separate `cachedContents.create` + `cachedContent` lifecycle, which is unimplemented). Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design. Keep the system instruction and early history byte-stable; thought-signature round-tripping is deterministic.
+-   `explicit_ttl_seconds` — TTL for `cachedContents.create` (default 900s). Explicit mode creates a cache of the system instruction + tools when the segment fingerprint matches is stable, then sends `cachedContent` on `generateContent` while keeping conversation contents on the body. A fingerprint change (model/system/tools) creates a new cache and best-effort deletes the old name. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
+
+### Stable tool catalog across planning modes
+
+`prompt_cache.stable_tool_catalog_across_modes` (default `true`) keeps the wire tool array identical on planning and execution turns (union of both modes' tools). Planning toggles then do not rewrite the tool prefix. The fail-closed execution gate still blocks mutations during planning; interview / `request_user_input` visibility remains mode-scoped.
+
+### Cache write pricing and rate limits
+
+Cache writes cost more than uncached input (default 1.25×; Anthropic 1h extended TTL 2×). `usage_cost::cache_write_rate` applies that multiplier when a model catalog does not declare `cache_write`. Provider TPM-style limits still count the full prompt volume (`uncached + cached + creation`); use `usage_cost::prompt_tokens_for_rate_limit` when estimating rate-limit pressure.
 
 ### OpenRouter
 ```toml

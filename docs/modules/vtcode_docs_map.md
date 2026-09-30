@@ -1068,6 +1068,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks
   - **User Questions**: "What can you tell me about Prompt Cache Hit-Rate Recovery?", "How does Report work?", "How does [S1] Problem work?"
 
+- **File**: `docs/compose/spec/prompt-cache-provider-gaps.md`
+  - **Content**: Prompt Cache Provider Gaps
+  - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks
+  - **User Questions**: "What can you tell me about Prompt Cache Provider Gaps?", "How does Report work?", "How does [S1] Problem work?"
+
 - **File**: `docs/compose/spec/provider-cache-affinity-p2.md`
   - **Content**: Provider Cache Affinity P2
   - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks

@@ -152,10 +152,15 @@ async fn build_prompt_output(
                 false,
             )
         } else {
-            let base_snapshot_future = ctx.tool_catalog.filtered_snapshot_with_stats(
+            let stable_catalog = ctx
+                .vt_cfg
+                .map(|cfg| cfg.prompt_cache.stable_tool_catalog_across_modes)
+                .unwrap_or(true);
+            let base_snapshot_future = ctx.tool_catalog.filtered_snapshot_with_stats_ex(
                 ctx.tools,
                 input.turn.planning_active,
                 input.turn.request_user_input_enabled,
+                stable_catalog,
             );
             #[cfg(feature = "profiling")]
             let base_snapshot = {

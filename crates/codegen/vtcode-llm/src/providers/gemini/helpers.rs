@@ -73,6 +73,93 @@ impl GeminiProvider {
         models::google::CACHING_MODELS.contains(&model)
     }
 
+    /// Whether explicit `cachedContents` mode is active for this provider.
+    pub(super) fn explicit_cache_active(&self) -> bool {
+        self.prompt_cache_enabled && matches!(self.prompt_cache_settings.mode, GeminiPromptCacheMode::Explicit)
+    }
+
+    /// Ensure a `cachedContents` entry exists for the request's stable
+    /// system+tools prefix. Conversation contents stay on the generateContent
+    /// body so the cache is not rebuilt every turn as history grows.
+    pub(super) async fn ensure_explicit_cache(
+        &self,
+        request: &LLMRequest,
+        gemini_request: &GenerateContentRequest,
+    ) -> Result<Option<String>, LLMError> {
+        if !self.explicit_cache_active() {
+            return Ok(None);
+        }
+        let ttl = self.prompt_cache_settings.explicit_ttl_seconds.unwrap_or(900).max(60);
+        let fingerprint = explicit_cache::CacheFingerprint::new(
+            &request.model,
+            gemini_request.system_instruction.as_ref(),
+            gemini_request.tools.as_deref(),
+            0,
+        );
+        if let Some((name, existing)) = self.explicit_cache.current()
+            && existing == fingerprint
+        {
+            return Ok(Some(name));
+        }
+
+        if let Some(old) = self.explicit_cache.clear() {
+            self.delete_cached_content(&old).await;
+        }
+
+        let body = explicit_cache::build_create_request(
+            &request.model,
+            gemini_request.system_instruction.clone(),
+            gemini_request.tools.clone(),
+            Vec::new(),
+            ttl,
+        );
+        let url = format!("{}/cachedContents", self.base_url);
+        let response = self
+            .http_client
+            .post(&url)
+            .header("x-goog-api-key", self.api_key.as_ref())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format_network_error("Gemini", &e))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = crate::providers::common::read_provider_error_body(response).await;
+            // Explicit mode is best-effort: fall back to the implicit shape.
+            tracing::warn!(status = %status, "Gemini cachedContents.create failed; falling back to implicit cache shape");
+            let _ = error_text;
+            return Ok(None);
+        }
+        let created: explicit_cache::CachedContent =
+            response.json().await.map_err(|e| format_parse_error("Gemini", &e))?;
+        self.explicit_cache.install(created.name.clone(), fingerprint);
+        Ok(Some(created.name))
+    }
+
+    async fn delete_cached_content(&self, name: &str) {
+        let url = format!("{}/{}", self.base_url, name.trim_start_matches('/'));
+        let _ = self
+            .http_client
+            .delete(&url)
+            .header("x-goog-api-key", self.api_key.as_ref())
+            .send()
+            .await;
+    }
+
+    /// Rewrite a generateContent body to use `cachedContent` for system+tools.
+    /// Conversation contents remain on the request.
+    pub(super) fn apply_explicit_cache_to_request(
+        &self,
+        mut gemini_request: GenerateContentRequest,
+        cache_name: &str,
+    ) -> GenerateContentRequest {
+        gemini_request.system_instruction = None;
+        gemini_request.tools = None;
+        gemini_request.tool_config = None;
+        gemini_request.cached_content = Some(cache_name.to_string());
+        gemini_request
+    }
+
     /// Check if model supports code execution
     pub fn supports_code_execution(model: &str) -> bool {
         models::google::CODE_EXECUTION_MODELS.contains(&model)
@@ -179,19 +266,10 @@ impl GeminiProvider {
     }
 
     pub(super) fn convert_to_gemini_request(&self, request: &LLMRequest) -> Result<GenerateContentRequest, LLMError> {
-        if self.prompt_cache_enabled && matches!(self.prompt_cache_settings.mode, GeminiPromptCacheMode::Explicit) {
-            // True explicit caching needs the separate `cachedContents`
-            // lifecycle (`caches.create` + `cachedContent` per request), which
-            // is not implemented yet. Fall through to the implicit wire shape
-            // so explicit mode never emits the invalid inline `ttlSeconds`
-            // part (generateContent `systemInstruction` accepts text only).
-            static EXPLICIT_MODE_WARNED: std::sync::Once = std::sync::Once::new();
-            EXPLICIT_MODE_WARNED.call_once(|| {
-                tracing::warn!(
-                    "Gemini explicit prompt-cache mode is not implemented; falling back to the implicit wire shape. Explicit `ttl_seconds` has no wire effect until the cachedContents lifecycle ships."
-                );
-            });
-        }
+        // Explicit mode is applied in `generate`/`stream` via the
+        // `cachedContents` lifecycle (`ensure_explicit_cache`); this converter
+        // always emits the full implicit-shaped body so the cache create can
+        // reuse the same system/tools/contents payload.
 
         let mut call_map: HashMap<String, String> = HashMap::with_capacity(request.messages.len());
         for message in request.messages.iter() {
@@ -367,6 +445,7 @@ impl GeminiProvider {
                 }
             },
             generation_config: Some(generation_config.into()),
+            cached_content: None,
         })
     }
 
