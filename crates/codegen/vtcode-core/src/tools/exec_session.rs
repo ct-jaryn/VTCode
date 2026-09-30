@@ -18,7 +18,7 @@ use vtcode_bash_runner::{
 
 use crate::sandboxing::build_sanitized_env;
 use crate::tools::ExecSessionId;
-use crate::tools::output_spooler::{SpoolIntegrity, encode_digest_hex};
+use crate::tools::output_spooler::{SpoolIntegrity, SpoolLineCounter, encode_digest_hex};
 use crate::tools::pty::PtySize;
 use crate::tools::registry::{PtySessionGuard, PtySessionManager};
 use crate::tools::types::VTCodeExecSession;
@@ -361,6 +361,7 @@ impl PipeSessionManager {
             let mut spool_redactor = vtcode_commons::sanitizer::StreamingSecretRedactor::default();
             let mut spool_hasher = Sha256::new();
             let mut spool_byte_count = 0_u64;
+            let mut spool_lines = SpoolLineCounter::default();
             loop {
                 match tokio::time::timeout(tokio::time::Duration::from_millis(15), output_rx.recv()).await {
                     Ok(Some(chunk)) => {
@@ -377,6 +378,7 @@ impl PipeSessionManager {
                                     spool_file = None;
                                 } else {
                                     spool_hasher.update(sanitized.as_bytes());
+                                    spool_lines.append(sanitized.as_bytes());
                                     spool_byte_count = spool_byte_count.saturating_add(sanitized.len() as u64);
                                 }
                             }
@@ -396,6 +398,7 @@ impl PipeSessionManager {
                 let write_failed = !sanitized.is_empty() && file.write_all(sanitized.as_bytes()).await.is_err();
                 if !write_failed && !sanitized.is_empty() {
                     spool_hasher.update(sanitized.as_bytes());
+                    spool_lines.append(sanitized.as_bytes());
                     spool_byte_count = spool_byte_count.saturating_add(sanitized.len() as u64);
                 }
                 // Spool files are live-read while the session runs, so every
@@ -406,6 +409,7 @@ impl PipeSessionManager {
                 } else {
                     *spool_integrity_for_task.lock() = Some(SpoolIntegrity {
                         byte_count: spool_byte_count,
+                        line_count: spool_lines.line_count(),
                         sha256: encode_digest_hex(spool_hasher.finalize()),
                     });
                 }

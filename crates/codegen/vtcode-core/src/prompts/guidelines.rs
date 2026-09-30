@@ -39,7 +39,7 @@ const START_PLANNING_GUIDANCE_LINE: &str = "- For demanding, ambiguous, or multi
 /// must be >= 1`); checklist-level `index: 0` completion exists only outside
 /// planning, so neither line advertises it.
 const PLANNING_TASK_TRACKER_COMPACT_LINE: &str = "- Keep blockers and verification open in `task_tracker`; updates use positive indices or index_path, and index 0 is invalid while planning.";
-const PLANNING_TASK_TRACKER_INDEX_LINE: &str = "- Use `task_tracker` action=update with positive flat indices or positive hierarchical index_path values (index 0 is invalid while planning), and use items for bulk updates.";
+const PLANNING_TASK_TRACKER_INDEX_LINE: &str = "- Use `task_tracker` action=update with positive flat indices or positive hierarchical index_path values (index 0 is invalid while planning), and use items only for full checklist replacement with descriptions and statuses, never JSON-encoded updates.";
 
 /// Documentation density is independent of the tools a session may execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -695,7 +695,7 @@ mod tests {
             "never claim a check passed",
             "diagnose it and change approach",
             "rather than polling",
-            "small ranges",
+            "small non-overlapping ranges",
             "accumulated output never exhausts tool access",
             "additional_permissions",
             "bypass safeguards",
@@ -880,7 +880,7 @@ mod tests {
         assert!(guidelines.contains(&format!("\n{PLANNING_TASK_TRACKER_INDEX_LINE}")));
         assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("positive flat indices"));
         assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("(index 0 is invalid while planning)"));
-        assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("use items for bulk updates"));
+        assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("full checklist replacement"));
         // The planning sidecar rejects index 0, so no planning line may present
         // it as a valid checklist-completion index.
         for line in [PLANNING_TASK_TRACKER_INDEX_LINE, PLANNING_TASK_TRACKER_COMPACT_LINE] {

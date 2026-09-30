@@ -721,6 +721,7 @@ mod tests {
         let output = json!({
             "spool_path": ".vtcode/context/tool_outputs/command.log",
             "spooled_bytes": 38_912,
+            "spool_line_count": 377,
             "preview": "bounded command preview",
             "output": "large output that was written to the spool"
         });
@@ -729,6 +730,7 @@ mod tests {
         let shaped: serde_json::Value = serde_json::from_str(&content).expect("shaped response should be JSON");
         assert_eq!(shaped["spool_path"], output["spool_path"]);
         assert_eq!(shaped["spooled_bytes"], 38_912);
+        assert_eq!(shaped["spool_line_count"], 377);
         assert_eq!(shaped["preview"], "bounded command preview");
         assert!(shaped.get("output").is_none());
     }

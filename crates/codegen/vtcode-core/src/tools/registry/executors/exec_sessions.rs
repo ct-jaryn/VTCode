@@ -807,6 +807,7 @@ fn attach_spool_metadata(
         response["spool_complete"] = json!(true);
         response["spool_state"] = json!("completed");
         response["spooled_bytes"] = json!(integrity.byte_count);
+        response["spool_line_count"] = json!(integrity.line_count);
         response["spool_sha256"] = json!(integrity.sha256);
     } else if stats.spool_available && !session_exited {
         response["spool_path"] = json!(stats.spool_path);
@@ -886,6 +887,7 @@ mod tests {
         assert_eq!(response["spool_complete"], false);
         assert_eq!(response["spool_pending"], true);
         assert_eq!(response["spool_state"], "pending");
+        assert!(response.get("spool_line_count").is_none());
     }
 
     #[test]
@@ -898,6 +900,7 @@ mod tests {
             spool_complete: true,
             spool_integrity: Some(crate::tools::output_spooler::SpoolIntegrity {
                 byte_count: 42,
+                line_count: 3,
                 sha256: "digest".to_string(),
             }),
         };
@@ -910,6 +913,7 @@ mod tests {
         assert_eq!(response["spool_complete"], true);
         assert_eq!(response["spool_state"], "completed");
         assert_eq!(response["spooled_bytes"], 42);
+        assert_eq!(response["spool_line_count"], 3);
         assert_eq!(response["spool_sha256"], "digest");
         assert!(response.get("spool_pending").is_none());
     }
@@ -987,6 +991,7 @@ mod tests {
             spool_complete: true,
             spool_integrity: Some(crate::tools::output_spooler::SpoolIntegrity {
                 byte_count: 42,
+                line_count: 3,
                 sha256: "digest".to_string(),
             }),
         };
@@ -1009,6 +1014,7 @@ mod tests {
             spool_complete: true,
             spool_integrity: Some(crate::tools::output_spooler::SpoolIntegrity {
                 byte_count: 42,
+                line_count: 3,
                 sha256: "digest".to_string(),
             }),
         };

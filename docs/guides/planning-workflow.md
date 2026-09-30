@@ -63,7 +63,12 @@ positive and 1-based; the compatibility form `index: 0` is reserved for
 checklist-level completion with `status: "completed"`. Planning workflow
 updates accept positive flat indices or positive hierarchical `index_path`
 values such as `2.1`. Use `items` for bulk synchronization rather than an
-item index.
+item index. Bulk synchronization replaces the full checklist, including its
+progress and metadata. Send complete descriptions with status prefixes or
+actual objects such as `{"description":"Review links","status":"completed"}`.
+JSON-encoded update commands inside strings are rejected before changing the
+tracker. To change one existing step while preserving its description and
+metadata, use `{"action":"update","index_path":"1","status":"completed"}`.
 
 Successful tracker updates honor display mode: compact shows header plus the
 single current task (`  ▶ …`, first `in_progress` leaf else first

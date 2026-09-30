@@ -8,7 +8,7 @@ VT Code has two distinct prompt sources:
 | Project instruction map | User/workspace `AGENTS.md`, `CLAUDE.md`, and `.vtcode/rules/` | Project conventions, local architecture, and maintainer workflows | User-controlled context, never a security boundary |
 
 The compiled section is deterministic, cached with the static profile, and
-kept below its approximate 420-token cap. It must not read, embed, or generate
+kept below its approximate 590-token cap. It must not read, embed, or generate
 content from repository instruction files. Profile-specific operating details
 remain in the prompt builder; correctness-critical behavior belongs in runtime
 policy, schemas, tests, or lints.

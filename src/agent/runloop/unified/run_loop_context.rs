@@ -1843,6 +1843,7 @@ fn bounded_tool_preview_metadata(tool_name: Option<&str>, content: &str) -> Stri
             "waited_seconds",
             "total_output_bytes",
             "spooled_bytes",
+            "spool_line_count",
             "matched_count",
             "truncated",
             "content_type",
@@ -2153,6 +2154,7 @@ mod tests {
         let mut state = HarnessTurnState::new(TurnRunId("run-1".into()), TurnId("turn-1".into()), 120, 10, 1);
         let content = serde_json::json!({
             "output": "x".repeat(80_000), "exit_code": 1, "success": false,
+            "spool_line_count": 1,
             "error": {"message": "permission denied: token=secret-not-for-context", "retryable": false},
             "diagnosis": {"observed": "exit 1", "next_action": "\u{1b}[31minspect compiler error\u{1b}[0m\npassword=secret-not-for-context"},
         }).to_string();
@@ -2165,6 +2167,7 @@ mod tests {
             );
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
             assert_eq!(parsed["exit_code"], 1);
+            assert_eq!(parsed["spool_line_count"], 1);
             assert_eq!(parsed["error"]["retryable"], false);
             assert!(parsed["error"]["message"].as_str().unwrap().contains("permission denied"));
             assert!(

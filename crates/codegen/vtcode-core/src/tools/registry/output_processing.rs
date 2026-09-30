@@ -184,6 +184,7 @@ impl ToolRegistry {
                         "spool_complete",
                         "spool_pending",
                         "spooled_bytes",
+                        "spool_line_count",
                         "spool_note",
                     ] {
                         object.remove(field);

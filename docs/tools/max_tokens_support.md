@@ -72,6 +72,10 @@ Command responses preserve execution metadata even when output is capped:
 
 If a response includes `spool_path`, inspect it once with a targeted shell
 command rather than repeatedly dumping the whole file.
+Completed spools include `spool_line_count`, the exact physical line count
+including a final line without a newline. Keep ranges within that extent,
+avoid rereading overlapping sections, and stop at EOF. Pending live spools do
+not advertise a final line count.
 
 ## Recommended Budgets
 

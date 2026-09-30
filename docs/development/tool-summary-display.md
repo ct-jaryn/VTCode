@@ -131,6 +131,8 @@ commands remain fail-closed; they cannot opt out of normal spooling.
 
 | Signal | Expected behavior | Where it is defined |
 | --- | --- | --- |
+| `spool_line_count` | Completed spool's exact physical line count, including an unterminated last line; read missing ranges within this extent and stop at EOF. Pending spools have no final count. | `tools/output_spooler.rs`, shared pipe/PTY integrity metadata |
+| Encoded task updates in `items` | Reject without changing progress; update a step directly or send a complete checklist with descriptions and statuses. | Shared `handlers/task_tracking.rs` validation |
 | `preview_budget_exhausted` | Trust preserved metadata, run one `&&` verifier, then synthesize; never repeat an equivalent call | `RUNTIME_GUIDANCE_SECTION` in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs` |
 | `turn.blocked` | Resumable stop with streak and counter metadata; one tool-free synthesis, then checkpoint resume | `ThreadEvent::TurnBlocked` in `crates/common/vtcode-exec-events`, `docs/guides/agent-loop-contract.md` |
 | Mid-execution replan | Keep scopes, add falsifiers, continue the run on existing `plan.delta` events | `docs/guides/planning-workflow.md` |

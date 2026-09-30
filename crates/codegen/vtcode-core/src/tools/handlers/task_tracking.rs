@@ -206,6 +206,32 @@ pub(crate) fn validate_action_index_fields(action: &str, index: Option<usize>, i
     Ok(())
 }
 
+pub(crate) const TASK_ITEMS_DESCRIPTION: &str = "Full checklist replacement for create or bulk update, not indexed updates. Send plain descriptions with [x]/[~]/[!]/[ ] status prefixes or actual objects with description and status; never JSON-encoded strings.";
+
+/// Checklist replacement must not interpret encoded update commands as descriptions.
+pub(crate) fn validate_task_item_inputs(items: &[TaskItemInput]) -> Result<()> {
+    for item in items {
+        let TaskItemInput::Text(text) = item else {
+            continue;
+        };
+        let (_, description) = parse_status_prefix(text.trim());
+        if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(&description)
+            && ["index", "index_path", "description", "status"]
+                .iter()
+                .any(|key| object.contains_key(*key))
+        {
+            bail!(
+                "'items' replaces the complete checklist; JSON-encoded task updates are not task descriptions. \
+                 Update an existing step directly: {{\"action\":\"update\",\"index_path\":\"1\",\"status\":\"completed\"}}. \
+                 For full synchronization, send descriptions with statuses, for example \
+                 {{\"action\":\"update\",\"items\":[{{\"description\":\"Original step\",\"status\":\"completed\"}}]}}. \
+                 The checklist was not changed. Retry once with the intended shape."
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn is_bulk_sync_update<T>(
     items: Option<&[T]>,
     index: Option<usize>,
@@ -665,6 +691,29 @@ mod tests {
         let mut markdown = "# Title\n".to_string();
         append_notes_section(&mut markdown, Some("   "));
         assert_eq!(markdown, "# Title\n");
+    }
+
+    #[test]
+    fn bulk_sync_validation_preserves_text_and_actual_structured_items() {
+        let valid = vec![
+            TaskItemInput::Text(r#"[x] Document {"status":"completed"}"#.to_string()),
+            TaskItemInput::Text(r#"{"example":"literal JSON"}"#.to_string()),
+            TaskItemInput::Structured(TaskItemInputObject {
+                description: "Original step".to_string(),
+                status: Some("completed".to_string()),
+                ..Default::default()
+            }),
+        ];
+        validate_task_item_inputs(&valid).unwrap();
+        for text in [
+            r#"{"index":1,"status":"completed"}"#,
+            r#"{"description":"Encoded step","status":"completed"}"#,
+        ] {
+            for prefix in ["", "[x] ", "[X] ", "[~] ", "[/] ", "[!] ", "[ ] "] {
+                let item = TaskItemInput::Text(format!("  {prefix}{text}  "));
+                assert!(validate_task_item_inputs(&[item]).is_err(), "prefix {prefix:?}");
+            }
+        }
     }
 
     #[test]
