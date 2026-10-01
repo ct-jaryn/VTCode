@@ -168,8 +168,12 @@ impl ToolResponseBuilder {
             obj.insert(k, v);
         }
 
-        // Build and merge metadata
-        let meta = self.metadata.build();
+        // Build and merge metadata. Keys already surfaced as top-level custom
+        // fields stay top-level only: duplicating them inside `metadata.data`
+        // re-serializes the same values on every tool result (read_file paid
+        // that tax for `content_kind`/`encoding` on every call).
+        let mut meta = self.metadata.build();
+        meta.data.retain(|key, _| !obj.contains_key(key));
         if !meta.data.is_empty() || !meta.files.is_empty() || !meta.lines.is_empty() {
             obj.insert("metadata".to_string(), json!(meta));
         }
@@ -201,6 +205,7 @@ impl ToolResponseBuilder {
 #[cfg(test)]
 mod tests {
     use super::ToolResponseBuilder;
+    use serde_json::json;
 
     #[test]
     fn build_json_omits_stdout_when_same_as_content() {
@@ -208,5 +213,34 @@ mod tests {
 
         assert_eq!(value.get("content").and_then(|v| v.as_str()), Some("same"));
         assert!(value.get("stdout").is_none());
+    }
+
+    #[test]
+    fn build_json_keeps_metadata_only_keys_and_deduplicates_field_keys() {
+        let value = ToolResponseBuilder::new("read_file")
+            .field("content_kind", json!("text"))
+            .field("encoding", json!("utf8"))
+            .data("content_kind", json!("text"))
+            .data("encoding", json!("utf8"))
+            .data("size_bytes", json!(1024))
+            .build_json();
+
+        // Duplicated keys stay top-level only; metadata-only keys survive.
+        assert_eq!(value["content_kind"], json!("text"));
+        assert_eq!(value["encoding"], json!("utf8"));
+        assert_eq!(value["metadata"]["data"]["size_bytes"], json!(1024));
+        assert!(value["metadata"]["data"].get("content_kind").is_none());
+        assert!(value["metadata"]["data"].get("encoding").is_none());
+    }
+
+    #[test]
+    fn build_json_omits_metadata_object_when_all_data_keys_are_duplicates() {
+        let value = ToolResponseBuilder::new("read_file")
+            .field("content_kind", json!("text"))
+            .data("content_kind", json!("text"))
+            .build_json();
+
+        assert_eq!(value["content_kind"], json!("text"));
+        assert!(value.get("metadata").is_none());
     }
 }
