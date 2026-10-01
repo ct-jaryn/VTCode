@@ -186,14 +186,17 @@ pub(super) fn resolve_thread_completion_status(
     last_turn_result: Option<&RunLoopTurnLoopResult>,
     last_turn_response_was_fallback: bool,
 ) -> (&'static str, ThreadCompletionSubtype) {
-    if matches!(session_end_reason, SessionEndReason::Completed) {
+    if budget_limit_reached {
+        return session_end_reason.thread_completion_status(true);
+    }
+
+    if matches!(session_end_reason, SessionEndReason::Completed | SessionEndReason::NewSession) {
         return match (last_approved_plan_summary_status, last_turn_result) {
             (Some(ExecutionSummaryStatus::Blocked), _)
             | (_, Some(RunLoopTurnLoopResult::Blocked { .. }))
             | (_, Some(RunLoopTurnLoopResult::Aborted)) => ("blocked", ThreadCompletionSubtype::ErrorDuringExecution),
-            (Some(ExecutionSummaryStatus::Failed), _)
-            | (_, Some(RunLoopTurnLoopResult::Completed { .. }))
-            | (_, Some(RunLoopTurnLoopResult::Cancelled))
+            (Some(ExecutionSummaryStatus::Failed), _) => ("failed", ThreadCompletionSubtype::ErrorDuringExecution),
+            (_, Some(RunLoopTurnLoopResult::Completed { .. })) | (_, Some(RunLoopTurnLoopResult::Cancelled))
                 if last_turn_response_was_fallback =>
             {
                 ("failed", ThreadCompletionSubtype::ErrorDuringExecution)

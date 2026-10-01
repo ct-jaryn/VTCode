@@ -2,12 +2,30 @@ use crate::agent::runloop::unified::inline_events::harness::{HarnessEventEmitter
 use serde_json::Value;
 use vtcode_core::core::agent::events::{
     ToolOutputPayload, error_item_completed_event, tool_invocation_completed_event, tool_output_completed_event,
-    tool_output_payload_from_value,
+    tool_output_payload_from_value, tool_started_event,
 };
 use vtcode_core::exec::events::{ToolCallStatus, tool_outcome_from_status};
 use vtcode_core::tools::registry::ToolExecutionError;
 
 use super::status::{ToolExecutionStatus, ToolPipelineOutcome};
+
+pub(crate) fn emit_tool_start_if_needed(
+    harness_emitter: Option<&HarnessEventEmitter>,
+    already_started: bool,
+    tool_item_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    args: &Value,
+) -> bool {
+    if already_started {
+        return true;
+    }
+    if let Some(emitter) = harness_emitter {
+        let _ = emitter.emit(tool_started_event(tool_item_id.to_string(), tool_name, Some(args), Some(tool_call_id)));
+        return true;
+    }
+    false
+}
 
 pub(crate) fn emit_tool_outcome_observation(
     harness_emitter: Option<&HarnessEventEmitter>,
@@ -83,7 +101,7 @@ pub(super) fn emit_tool_completion_status(
     }
 }
 
-pub(super) fn emit_tool_completion_for_status(
+pub(crate) fn emit_tool_completion_for_status(
     harness_emitter: Option<&HarnessEventEmitter>,
     tool_started_emitted: bool,
     tool_execution_started: bool,

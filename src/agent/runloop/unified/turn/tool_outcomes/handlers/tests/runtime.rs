@@ -11,6 +11,164 @@ use vtcode_core::config::ToolDisplayMode;
 use vtcode_core::tools::registry::ToolExecutionError;
 
 #[tokio::test]
+async fn parallel_reads_persist_actual_outcomes_and_consume_streamed_items() {
+    assert_parallel_read_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn cancelled_parallel_reads_persist_terminal_events_while_draining() {
+    assert_parallel_read_lifecycle(true).await;
+}
+
+struct ParallelReadCase {
+    call_id: &'static str,
+    args: serde_json::Value,
+    status: &'static str,
+    exit_code: Option<i64>,
+}
+
+async fn assert_parallel_read_lifecycle(cancelled: bool) {
+    use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
+    use crate::agent::runloop::unified::run_loop_context::StreamedToolCallItem;
+    use crate::agent::runloop::unified::turn::context::TurnLoopResult;
+    use vtcode_core::core::agent::events::tool_started_event;
+
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().expect("sample workspace").to_path_buf();
+    let emitter = HarnessEventEmitter::new_async(&workspace, "parallel-outcomes", None)
+        .await
+        .expect("canonical emitter");
+    let read_cases = [
+        ParallelReadCase {
+            call_id: "parallel_read",
+            args: json!({"cmd":"sed -n '1p' sample.txt", "workdir":workspace}),
+            status: "completed",
+            exit_code: Some(0),
+        },
+        ParallelReadCase {
+            call_id: "parallel_no_match",
+            args: json!({"cmd":"grep 'absent-pattern' sample.txt", "workdir":workspace}),
+            status: "failed",
+            exit_code: Some(1),
+        },
+    ];
+    for case in &read_cases {
+        cache_tool_permission(&mut backing, tool_names::EXEC_COMMAND, &case.args, PermissionGrant::Permanent).await;
+    }
+    backing.harness_state.remember_streamed_tool_call_items([(
+        "parallel_read".to_string(),
+        StreamedToolCallItem {
+            item_id: "streamed-read".to_string(),
+            tool_name: tool_names::EXEC_COMMAND.to_string(),
+        },
+    )]);
+    emitter
+        .emit(tool_started_event(
+            "streamed-read".to_string(),
+            tool_names::EXEC_COMMAND,
+            Some(&read_cases[0].args),
+            Some("parallel_read"),
+        ))
+        .expect("streamed start");
+    let calls = read_cases
+        .iter()
+        .map(|case| {
+            PreparedAssistantToolCall::new(uni::ToolCall::function(
+                case.call_id.to_string(),
+                tool_names::EXEC_COMMAND.to_string(),
+                serde_json::to_string(&case.args).expect("arguments"),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut repeated_tool_attempts = LoopTracker::new();
+    let mut turn_modified_files = BTreeSet::new();
+    {
+        let mut ctx = backing.turn_processing_context();
+        ctx.full_auto = true;
+        ctx.harness_emitter = Some(&emitter);
+        if cancelled {
+            ctx.ctrl_c_state.request_local_cancel();
+            ctx.ctrl_c_notify.notify_one();
+        }
+        let mut outcome_ctx = ToolOutcomeContext {
+            ctx: &mut ctx,
+            repeated_tool_attempts: &mut repeated_tool_attempts,
+            turn_modified_files: &mut turn_modified_files,
+        };
+        let outcome = handle_tool_calls(&mut outcome_ctx, &calls).await.expect("parallel reads");
+        if cancelled {
+            assert!(matches!(outcome, Some(TurnHandlerOutcome::Break(TurnLoopResult::Cancelled))));
+        } else {
+            assert!(outcome.is_none());
+        }
+        assert!(
+            ctx.harness_state.take_all_streamed_tool_call_item_ids().is_empty(),
+            "turn teardown must not close executed calls again"
+        );
+        if !cancelled {
+            for case in &read_cases {
+                let response = ctx
+                    .working_history
+                    .iter()
+                    .find(|message| message.tool_call_id.as_deref() == Some(case.call_id))
+                    .expect("provider tool response");
+                assert!(!response.content.as_text().contains("before it could execute"));
+            }
+        }
+    }
+    emitter.finish().await.expect("persist canonical events");
+    let persisted = std::fs::read_to_string(workspace.join(".vtcode/sessions/parallel-outcomes/events.jsonl"))
+        .expect("canonical events");
+    let events = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event JSON"))
+        .collect::<Vec<_>>();
+    for case in &read_cases {
+        let call_id = case.call_id;
+        let status = if cancelled { "failed" } else { case.status };
+        let exit_code = if cancelled { None } else { case.exit_code };
+        let matching = events
+            .iter()
+            .filter(|record| record["event"]["item"]["tool_call_id"] == call_id)
+            .map(|record| &record["event"])
+            .collect::<Vec<_>>();
+        let starts = matching
+            .iter()
+            .filter(|event| event["type"] == "item.started")
+            .collect::<Vec<_>>();
+        assert_eq!(starts.len(), 1, "one invocation start for {call_id}");
+        let completions = matching
+            .iter()
+            .filter(|event| event["type"] == "item.completed")
+            .collect::<Vec<_>>();
+        assert_eq!(completions.len(), 2, "invocation and output completion for {call_id}");
+        let invocation = completions
+            .iter()
+            .find(|event| event["item"]["type"] == "tool_invocation")
+            .expect("invocation completion");
+        assert_eq!(invocation["item"]["id"], starts[0]["item"]["id"]);
+        assert_eq!(invocation["item"]["status"], status);
+        let output = completions
+            .iter()
+            .find(|event| event["item"]["type"] == "tool_output")
+            .expect("output completion");
+        assert_eq!(output["item"]["status"], status);
+        assert_eq!(output["item"]["exit_code"].as_i64(), exit_code);
+        if call_id == "parallel_read" {
+            assert_eq!(invocation["item"]["id"], "streamed-read");
+        }
+        let output_text = output["item"]["output"].as_str().expect("output text");
+        if cancelled {
+            assert!(output_text.contains("Tool execution cancelled"));
+        } else if call_id == "parallel_read" {
+            assert!(output_text.contains("hello"));
+        }
+    }
+    assert_eq!(persisted.matches("tool_latency_recorded").count(), 2, "one terminal observation per call");
+}
+
+#[tokio::test]
 async fn blocked_tool_call_guard_emits_tool_and_system_messages() {
     let mut backing = TestContextBacking::new(4).await;
     let mut ctx = backing.turn_processing_context();
@@ -958,6 +1116,19 @@ async fn validate_tool_call_blocks_when_wall_clock_budget_exhausted() {
             .await
             .expect("validate second wall-clock-exhausted tool call");
     assert!(matches!(second, ValidationResult::Blocked));
+    let stub = ctx
+        .working_history
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("wall_clock_exhausted_2"))
+        .expect("wall-clock rejection response");
+    let payload: serde_json::Value = serde_json::from_str(&stub.content.as_text()).unwrap();
+    assert!(
+        payload["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("Synthesize your final answer now")
+    );
+    assert!(!stub.content.as_text().contains("alternative tool"));
     let policy_violation_count = ctx
         .working_history
         .iter()
@@ -1582,6 +1753,29 @@ async fn end_to_end_blocked_calls_do_not_burn_budget_before_valid_call() {
     assert!(outcome_ctx.ctx.working_history.iter().any(|message| {
         message.role == uni::MessageRole::Tool && message.content.as_text().contains("exceeded max tool calls per turn")
     }));
+    let second_exhausted = validate_tool_call(
+        outcome_ctx.ctx,
+        "exhausted_stub",
+        tool_names::READ_FILE,
+        &json!({"path": valid_file.to_string_lossy()}),
+    )
+    .await
+    .expect("second budget rejection");
+    assert!(matches!(second_exhausted, ValidationResult::Blocked));
+    let stub = outcome_ctx
+        .ctx
+        .working_history
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("exhausted_stub"))
+        .expect("tool-call budget rejection response");
+    let payload: serde_json::Value = serde_json::from_str(&stub.content.as_text()).unwrap();
+    assert!(
+        payload["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("Synthesize your final answer now")
+    );
+    assert!(!stub.content.as_text().contains("narrower scope"));
 }
 
 #[tokio::test]

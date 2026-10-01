@@ -18,7 +18,7 @@ use vtcode_core::tools::tool_intent;
 
 use crate::agent::runloop::git::confirm_changes_with_git_diff;
 use crate::agent::runloop::unified::async_mcp_manager::approval_policy_from_human_in_the_loop;
-use crate::agent::runloop::unified::inline_events::harness::{HarnessEventEmitter, tool_started_event};
+use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
 use crate::agent::runloop::unified::run_loop_context::{RunLoopContext, full_auto_loop_grants_enabled};
 use crate::agent::runloop::unified::state::CtrlCState;
 use crate::agent::runloop::unified::tool_call_safety::invocation_id_from_call_id;
@@ -29,6 +29,7 @@ use crate::agent::runloop::unified::tool_routing::{
 use super::execute_hitl_tool;
 use super::execution_events::{
     emit_tool_completion_for_status, emit_tool_completion_status, emit_tool_outcome_observation,
+    emit_tool_start_if_needed,
 };
 use super::execution_runtime::execute_with_cache_and_streaming;
 use super::file_conflict_prompt::resolve_file_conflict_status;
@@ -184,17 +185,16 @@ pub(crate) async fn run_tool_call_with_args(
         .harness_state
         .take_streamed_tool_call_item_id(tool_call_id)
         .map(|streamed| streamed.item_id);
-    let mut tool_started_emitted = streamed_harness_item_id.is_some();
+    let already_started = streamed_harness_item_id.is_some();
     let harness_item_id = streamed_harness_item_id.unwrap_or(fallback_harness_item_id);
-    if !tool_started_emitted && let Some(emitter) = harness_emitter {
-        let _ = emitter.emit(tool_started_event(
-            harness_item_id.clone(),
-            name,
-            Some(effective_args.as_ref()),
-            Some(tool_call_id),
-        ));
-        tool_started_emitted = true;
-    }
+    let tool_started_emitted = emit_tool_start_if_needed(
+        harness_emitter,
+        already_started,
+        &harness_item_id,
+        tool_call_id,
+        name,
+        effective_args.as_ref(),
+    );
     let max_tool_retries = ctx.harness_state.max_tool_retries as usize;
     let finish_with_status = |status: ToolExecutionStatus, tool_execution_started: bool, args: &Value| {
         let mut outcome = ToolPipelineOutcome::from_status(status);

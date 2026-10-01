@@ -144,7 +144,7 @@ impl ToolBudgetWarning {
 }
 
 /// Shared tail of the tool-call and wall-clock budget exhaustion directives.
-const BUDGET_EXHAUSTED_SYNTHESIS_NOTE: &str = "Tools are disabled for the rest of this turn, so further tool calls are \
+pub(crate) const BUDGET_EXHAUSTED_SYNTHESIS_NOTE: &str = "Tools are disabled for the rest of this turn, so further tool calls are \
 skipped. Synthesize your final answer now from the tool outputs already gathered in this conversation.";
 
 impl ToolBudgetExhaustion {

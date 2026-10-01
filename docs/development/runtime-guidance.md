@@ -34,6 +34,11 @@ declared project/CI commands and check availability once; report an unavailable
 check as skipped and continue. A failure from an available checker still needs
 to be resolved.
 
+Verify edits in place. When a checker fails and a baseline comparison is useful,
+read the baseline files separately instead of stashing and restoring workspace
+edits. Report the failing check and baseline comparison separately; a filtering
+pipeline's exit status does not establish verifier success.
+
 The navigation tracker counts empty successful read-only search pipelines as
 low-signal results even when a final filter such as `head` or `sed` returns
 exit 0. It uses the existing planning/execution convergence limits; it does not

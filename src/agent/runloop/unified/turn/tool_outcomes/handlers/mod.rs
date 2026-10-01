@@ -251,6 +251,14 @@ fn build_failure_error_content(error: String, failure_kind: &'static str) -> Str
     super::execution_result::build_error_content(error, None, None, failure_kind).to_string()
 }
 
+fn build_turn_budget_error_content(error: String) -> String {
+    let mut payload = super::execution_result::build_error_content(error, None, None, "policy");
+    if let Some(next_action) = payload.get_mut("next_action") {
+        *next_action = crate::agent::runloop::unified::run_loop_context::BUDGET_EXHAUSTED_SYNTHESIS_NOTE.into();
+    }
+    payload.to_string()
+}
+
 const INTERVIEW_DENIAL_RECOVERY_DIRECTIVE: &str = "Planning recovery: the interactive interview is unavailable in this runtime. Tools are disabled for the next pass. If you have a clarifying question, present it to the user in plain text and end your turn — the user's next message will answer it and you can continue planning. Otherwise, synthesize exactly one completed `<proposed_plan>` from the research already gathered. Do not emit tool calls or request approval until the plan is present.";
 
 const PREFLIGHT_CIRCUIT_RECOVERY_DIRECTIVE: &str = "Recovery: repeated tool preflight validation failures tripped the circuit breaker, so tools are disabled for this pass. Do not emit tool calls. Summarize what you were trying to do and the validation errors above, then tell the user in plain text what you need to proceed (e.g. re-state the request so the next turn retries with correct arguments). End your turn after this response.";
@@ -888,7 +896,7 @@ pub(crate) async fn validate_tool_call<'a>(
             tool_call_id,
             Some(tool_name),
             Some(args_val),
-            build_failure_error_content(error_msg, "policy"),
+            build_turn_budget_error_content(error_msg),
         );
         return Ok(ValidationResult::Blocked);
     }
@@ -908,7 +916,7 @@ pub(crate) async fn validate_tool_call<'a>(
             tool_call_id,
             Some(tool_name),
             Some(args_val),
-            build_failure_error_content(error_msg, "policy"),
+            build_turn_budget_error_content(error_msg),
         );
         return Ok(ValidationResult::Blocked);
     }

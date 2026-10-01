@@ -194,6 +194,11 @@ and the canonical error category when the invocation failed or recovered.
 Legacy retry/recovered event variants remain readable, but new executions do
 not emit redundant per-retry terminal observations.
 
+Parallel read-only calls consume any existing streamed invocation ID and emit
+the same canonical invocation and output completion events as serial calls.
+Completion belongs to the execution future, including when the group is drained
+after interruption, so turn teardown cannot label an executed call as unexecuted.
+
 When the product collapses or bounds a tool result, every provider/model
 receives the fixed disclosure after the tool-result user message: `Only you
 see that command's output — the user's terminal shows at most a few lines of
@@ -529,6 +534,17 @@ files remain self-contained, append a durable resolution marker before pointer
 cleanup, and do not claim ownership of the workspace-global task tracker. An
 ordinary user exit after a completed non-fallback turn is reported as successful
 thread completion; an exit that terminates active work remains cancellation.
+Starting a new session also preserves the last turn's blocked, aborted,
+fallback, or cancelled outcome instead of reporting success for unconfirmed
+work. A failed approved-plan summary remains a failure even when its final
+response is substantive. A thread budget limit takes precedence over both
+the last turn outcome and a clean exit.
+
+After a tool-call or wall-clock budget is exhausted, compact rejection stubs
+direct the model to synthesize from existing evidence. They do not suggest
+another tool or narrower scope; the batch still receives exactly one synthesis
+directive and the existing tool-free recovery pass. Control-plane waits retain
+their tool-call budget exemption.
 
 Turn-balancer recovery resets navigation/repetition evidence only. It preserves
 the anti-blind mutation count, `verification_pending`, and any failed-verifier
