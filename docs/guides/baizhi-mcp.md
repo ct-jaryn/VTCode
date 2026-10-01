@@ -58,6 +58,10 @@ blocked. These are client-side tool filters, not server-side key scopes.
 
 Check the stored provider configuration:
 
+VT Code runs its normal model-provider startup checks before these commands.
+If it reports a missing model API key, complete your existing model setup
+first; that error does not diagnose the MCP connection.
+
 ```bash
 vtcode mcp get baizhi
 vtcode mcp list
