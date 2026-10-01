@@ -31,7 +31,9 @@ use super::metrics::{
     TokenBudgetBreakdown, ToolCatalogCacheMetrics, emit_token_budget_breakdown, emit_tool_catalog_cache_metrics,
     estimate_message_history_tokens, estimate_tool_schema_tokens,
 };
-use super::prompt_assembly::{PromptAssemblyInput, assemble_prompt, render_primary_agent_runtime_context};
+use super::prompt_assembly::{
+    PromptAssemblyInput, assemble_prompt, recovery_mode_directive, render_primary_agent_runtime_context,
+};
 use super::request_context::{
     persist_turn_editor_context, persist_turn_few_shot_context, request_context_needs_wire_translation,
     translate_request_context_for_wire,
@@ -247,11 +249,12 @@ pub(super) async fn build_turn_request(
         ctx.session_stats.prompt_cache_lineage_id(),
     );
     // Keep tool definitions on the wire during tool-free recovery so the
-    // rendered prefix stays cache-stable. OpenAI guidance: disable tool use
-    // with `tool_choice: "none"` rather than removing definitions. Merge
-    // Gateway omits only the choice field (Bedrock rejects `tool_choice=none`).
-    // Client-local deferral still filters the wire set so recovery and
-    // tool-enabled turns share the same ordered catalog.
+    // rendered prefix stays cache-stable (the recovery contract itself rides
+    // in a request-only tail message for the same reason). OpenAI guidance:
+    // disable tool use with `tool_choice: "none"` rather than removing
+    // definitions. Merge Gateway omits only the choice field (Bedrock rejects
+    // `tool_choice=none`). Client-local deferral still filters the wire set
+    // so recovery and tool-enabled turns share the same ordered catalog.
     let selected_tools = if use_out_of_band_copilot_tools {
         None
     } else if turn_snapshot.client_local_tool_deferral {
@@ -378,6 +381,20 @@ pub(super) async fn build_turn_request(
         Cow::Borrowed(_) => Arc::clone(&continuation_messages),
         Cow::Owned(messages) => Arc::new(messages),
     };
+
+    // The tool-free recovery contract rides as a request-only tail message
+    // instead of mutating the system prompt: a recovery dispatch's system
+    // prompt stays byte-identical to the tool-enabled turns that gathered the
+    // evidence, so the provider prefix cache (tools -> system -> history)
+    // still hits. It is never persisted to canonical history, so it cannot
+    // outlive the recovery episode; routes without native turn-scoped
+    // support receive it as an ordinary system directive via
+    // `translate_request_context_for_wire` below.
+    if turn_snapshot.tool_free_recovery {
+        let directive =
+            recovery_mode_directive(turn_snapshot.planning_active, turn_snapshot.recovery_reason.as_deref());
+        Arc::make_mut(&mut request_messages).push(uni::Message::turn_scoped_system(directive));
+    }
 
     // Typed turn-scoped markers (the collapsed-output notice, few-shot
     // context) and editor context are persisted once in canonical history.
@@ -670,10 +687,36 @@ mod tests {
         assert_eq!(built.request.max_tokens, Some(320));
 
         let system_prompt = built.request.system_prompt.as_ref().expect("system prompt").as_ref();
-        assert!(system_prompt.contains("[Recovery Mode]"));
-        assert!(system_prompt.contains("do_not_request_more_tools: true"));
-        assert!(system_prompt.contains("recovery_reason: loop detector"));
+        // The recovery contract rides as a request-only tail message, so the
+        // system prompt stays byte-identical to the tool-enabled turn and the
+        // provider prefix cache (tools -> system -> history) still hits.
+        assert_eq!(
+            built.request.system_prompt.as_deref(),
+            normal_built.request.system_prompt.as_deref(),
+            "recovery must not mutate the cached system prefix"
+        );
+        assert!(!system_prompt.contains("[Recovery Mode]"));
+        assert!(!system_prompt.contains("recovery_reason: loop detector"));
         assert!(!system_prompt.contains("<budget:token_budget>"));
+
+        let directive = built
+            .request
+            .messages
+            .as_ref()
+            .last()
+            .expect("recovery request carries messages");
+        let directive_text = directive.content.as_text();
+        assert!(directive_text.as_ref().contains("[Recovery Mode]"));
+        assert!(directive_text.as_ref().contains("do_not_request_more_tools: true"));
+        assert!(directive_text.as_ref().contains("recovery_reason: loop detector"));
+        assert!(
+            !normal_built.request.messages.as_ref().iter().any(|message| message
+                .content
+                .as_text()
+                .as_ref()
+                .contains("[Recovery Mode]")),
+            "non-recovery requests must not carry the recovery directive"
+        );
     }
 
     #[tokio::test]

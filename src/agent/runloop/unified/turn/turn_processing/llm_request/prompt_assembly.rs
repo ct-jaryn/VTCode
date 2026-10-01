@@ -41,37 +41,45 @@ pub(super) struct PromptAssemblyOutput {
     pub(super) few_shot_context: Option<String>,
 }
 
-fn append_recovery_mode_prompt(system_prompt: &mut String, planning_active: bool, recovery_reason: Option<&str>) {
-    system_prompt.push_str("\n[Recovery Mode]\n");
-    system_prompt.push_str("- tools_disabled: true\n");
-    system_prompt.push_str("- tool_definitions_remain_for_cache_stability_only: true\n");
-    system_prompt.push_str("- do_not_request_more_tools: true\n");
-    system_prompt.push_str("- do_not_emit_tool_calls: true\n");
+/// Builds the tool-free recovery contract as a standalone tail-position
+/// system message. Keeping this text out of the system prompt preserves the
+/// prompt-cache prefix: a recovery dispatch's system prompt stays
+/// byte-identical to the tool-enabled turns that gathered the evidence being
+/// summarized. `build_turn_request` pushes the directive request-side and
+/// never persists it, so it cannot outlive the recovery episode.
+pub(super) fn recovery_mode_directive(planning_active: bool, recovery_reason: Option<&str>) -> String {
+    let mut directive = String::from("[Recovery Mode]\n");
+    directive.push_str("- tools_disabled: true\n");
+    directive.push_str("- tool_definitions_remain_for_cache_stability_only: true\n");
+    directive.push_str("- do_not_request_more_tools: true\n");
+    directive.push_str("- do_not_emit_tool_calls: true\n");
 
     if planning_active {
-        system_prompt.push_str(
+        directive.push_str(
             "- answer_mode: emit one complete approval-ready plan from evidence already collected in this turn\n",
         );
-        system_prompt.push_str("- required_output: exactly one `<proposed_plan>` block\n");
-        system_prompt.push_str(
+        directive.push_str("- required_output: exactly one `<proposed_plan>` block\n");
+        directive.push_str(
             "- required_headings: `## Summary`, `## Implementation Steps`, `## Test Cases and Validation`, `## Assumptions and Defaults`\n",
         );
-        system_prompt.push_str(
+        directive.push_str(
             "- step_format: `1. Action -> files: [concrete/path.rs] -> verify: [cargo check --locked]`; replace the examples with evidence-backed targets and one concrete command or observable check (build/test gates such as `cargo nextest run`, inspection commands such as `rg -n`/`sed -n`/`grep -n`, or an observable check); every step must name a concrete file, symbol, or behavior target and generic targets or vague checks are rejected\n",
         );
-        system_prompt.push_str(
+        directive.push_str(
             "- if evidence is incomplete: state a concrete assumption inside the plan; do not omit a required heading\n",
         );
-        system_prompt.push_str("- do_not_emit_prose_outside_plan: true\n");
+        directive.push_str("- do_not_emit_prose_outside_plan: true\n");
     } else {
-        system_prompt.push_str("- answer_mode: summarize only from evidence already collected in this turn\n");
-        system_prompt.push_str("- if evidence is incomplete, say so explicitly\n");
-        system_prompt.push_str("- keep_response_brief: true\n");
+        directive.push_str("- answer_mode: summarize only from evidence already collected in this turn\n");
+        directive.push_str("- if evidence is incomplete, say so explicitly\n");
+        directive.push_str("- keep_response_brief: true\n");
     }
 
     if let Some(reason) = recovery_reason {
-        let _ = writeln!(system_prompt, "- recovery_reason: {reason}");
+        let _ = writeln!(directive, "- recovery_reason: {reason}");
     }
+
+    directive
 }
 
 #[cfg_attr(feature = "profiling", hotpath::measure)]
@@ -133,15 +141,9 @@ async fn build_prompt_output(
     let tool_snapshot = {
         // Keep the real tool catalog during tool-free recovery so the wire
         // tools array and the [Runtime Tool Catalog] section stay byte-stable
-        // with tool-enabled turns (prompt-cache prefix reuse). [Recovery Mode]
+        // with tool-enabled turns (prompt-cache prefix reuse). The recovery
+        // directive (a request-only tail message, see `build_turn_request`)
         // plus `tool_choice: none` (or Merge's omitted choice) prevent calls.
-        if input.turn.tool_free_recovery {
-            append_recovery_mode_prompt(
-                &mut system_prompt,
-                input.turn.planning_active,
-                input.turn.recovery_reason.as_deref(),
-            );
-        }
         if !input.turn.capabilities.tools {
             SessionToolCatalogSnapshot::new(
                 ctx.tool_catalog.current_version(),
@@ -336,26 +338,27 @@ mod tests {
     }
 
     #[test]
-    fn planning_recovery_prompt_requires_complete_plan_artifact() {
-        let mut prompt = String::new();
-        super::append_recovery_mode_prompt(&mut prompt, true, Some("per-file read cap"));
+    fn planning_recovery_directive_requires_complete_plan_artifact() {
+        let directive = super::recovery_mode_directive(true, Some("per-file read cap"));
 
-        assert!(prompt.contains("exactly one `<proposed_plan>` block"));
-        assert!(prompt.contains("`## Summary`"));
-        assert!(prompt.contains("`## Implementation Steps`"));
-        assert!(prompt.contains("`## Test Cases and Validation`"));
-        assert!(prompt.contains("`## Assumptions and Defaults`"));
-        assert!(prompt.contains("Action -> files: [concrete/path.rs] -> verify: [cargo check --locked]"));
-        assert!(!prompt.contains("keep_response_brief"));
+        assert!(directive.contains("[Recovery Mode]"));
+        assert!(directive.contains("tools_disabled: true"));
+        assert!(directive.contains("exactly one `<proposed_plan>` block"));
+        assert!(directive.contains("`## Summary`"));
+        assert!(directive.contains("`## Implementation Steps`"));
+        assert!(directive.contains("`## Test Cases and Validation`"));
+        assert!(directive.contains("`## Assumptions and Defaults`"));
+        assert!(directive.contains("Action -> files: [concrete/path.rs] -> verify: [cargo check --locked]"));
+        assert!(directive.contains("recovery_reason: per-file read cap"));
+        assert!(!directive.contains("keep_response_brief"));
     }
 
     #[test]
-    fn execution_recovery_prompt_keeps_brief_summary_contract() {
-        let mut prompt = String::new();
-        super::append_recovery_mode_prompt(&mut prompt, false, Some("follow-up failure"));
+    fn execution_recovery_directive_keeps_brief_summary_contract() {
+        let directive = super::recovery_mode_directive(false, Some("follow-up failure"));
 
-        assert!(prompt.contains("summarize only from evidence"));
-        assert!(prompt.contains("keep_response_brief: true"));
-        assert!(!prompt.contains("exactly one `<proposed_plan>` block"));
+        assert!(directive.contains("summarize only from evidence"));
+        assert!(directive.contains("keep_response_brief: true"));
+        assert!(!directive.contains("exactly one `<proposed_plan>` block"));
     }
 }
