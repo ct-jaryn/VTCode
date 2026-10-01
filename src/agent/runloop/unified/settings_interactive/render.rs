@@ -165,11 +165,14 @@ mod tests {
     #[test]
     fn summarize_value_collapses_f32_temperature_artifact() {
         // Screenshot artifact: `temperature = 0.7` (`f32`) rendered as
-        // `0.699999988079071` after widening to `f64`; the asymmetric
-        // counterpart keeps genuine `f64` precision intact.
+        // `0.699999988079071` after widening to `f64`, and one `+0.1` press
+        // lands on `0.799999988079071`; asymmetric counterparts keep genuine
+        // `f64` precision intact.
         assert_eq!(summarize_value(&TomlValue::Float(f64::from(0.7f32))), "0.7");
         assert_eq!(summarize_value(&TomlValue::Float(f64::from(0.3f32))), "0.3");
-        assert_eq!(summarize_value(&TomlValue::Float(0.30000000000000004)), "0.30000000000000004");
+        assert_eq!(summarize_value(&TomlValue::Float(f64::from(0.7f32) + 0.1)), "0.8");
+        assert_eq!(summarize_value(&TomlValue::Float(0.30000000000000004)), "0.3");
+        assert_eq!(summarize_value(&TomlValue::Float(0.3333333333333333)), "0.3333333333333333");
         assert_eq!(summarize_value(&TomlValue::Float(1.0)), "1");
     }
 

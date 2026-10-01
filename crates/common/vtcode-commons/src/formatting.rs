@@ -570,20 +570,22 @@ fn push_split_word(lines: &mut Vec<String>, word: &str, width: usize, continuati
     rest.to_string()
 }
 
-/// Format an `f64` float for display, collapsing `f32`-widening artifacts.
+/// Format an `f64` float for display, collapsing decimal artifacts.
 ///
 /// Config floats backed by `f32` (temperatures, thresholds) widen to long
 /// `f64` tails (`0.7` becomes `0.699999988079071`) once serialized to
-/// `toml::Value`. When the value round-trips exactly through `f32`, the
-/// shorter `f32` form is displayed; otherwise full `f64` precision is kept
-/// so genuine precision is never silently dropped. Display-only: the stored
-/// value is untouched.
+/// `toml::Value`, and `±0.1` stepper presses accumulate similar tails
+/// (`0.8` becomes `0.799999988079071`). When the value round-trips exactly
+/// through `f32`, the shorter `f32` form is displayed; otherwise a value
+/// within a tiny epsilon of a 1- or 2-decimal grid shows the grid form.
+/// Genuine precision is never rounded. Display-only: the stored value is
+/// untouched.
 ///
 /// ```
 /// # use vtcode_commons::formatting::format_float_display;
 /// assert_eq!(format_float_display(0.699999988079071), "0.7");
-/// assert_eq!(format_float_display(0.3), "0.3");
-/// assert_eq!(format_float_display(0.30000000000000004), "0.30000000000000004");
+/// assert_eq!(format_float_display(0.799999988079071), "0.8");
+/// assert_eq!(format_float_display(0.3333333333333333), "0.3333333333333333");
 /// ```
 #[allow(
     clippy::cast_possible_truncation,
@@ -591,10 +593,21 @@ fn push_split_word(lines: &mut Vec<String>, word: &str, width: usize, continuati
     reason = "Narrowing `f64` to `f32` and comparing exactly is the detection mechanism: only exact round-trips collapse."
 )]
 pub fn format_float_display(value: f64) -> String {
-    if value.is_finite() {
-        let narrowed = value as f32;
-        if (narrowed as f64) == value {
-            return narrowed.to_string();
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    let narrowed = value as f32;
+    if (narrowed as f64) == value {
+        return narrowed.to_string();
+    }
+    // Stepper/grid artifacts differ from the grid form by ~1e-8 or less;
+    // anything at or beyond 1e-6 off-grid keeps full precision.
+    const GRID_EPSILON: f64 = 1e-7;
+    for precision in [1i32, 2i32] {
+        let factor = 10f64.powi(precision);
+        let snapped = (value * factor).round() / factor;
+        if (snapped - value).abs() < GRID_EPSILON {
+            return snapped.to_string();
         }
     }
     value.to_string()
@@ -759,7 +772,19 @@ mod tests {
         assert_eq!(format_float_display(f64::from(0.7f32)), "0.7");
         assert_eq!(format_float_display(f64::from(0.3f32)), "0.3");
         assert_eq!(format_float_display(f64::from(-0.7f32)), "-0.7");
-        assert_eq!(format_float_display(0.30000000000000004), "0.30000000000000004");
+        assert_eq!(format_float_display(0.3333333333333333), "0.3333333333333333");
+    }
+
+    #[test]
+    fn format_float_display_snaps_stepper_artifacts_to_grid() {
+        // One `+0.1` press on the widened `0.7` default lands at
+        // `0.799999988079071`; the classic `0.1 + 0.2` sum snaps the same way.
+        // Asymmetric counterpart keeps genuine off-grid precision.
+        assert_eq!(format_float_display(f64::from(0.7f32) + 0.1), "0.8");
+        assert_eq!(format_float_display(0.799999988079071), "0.8");
+        assert_eq!(format_float_display(0.1 + 0.2), "0.3");
+        assert_eq!(format_float_display(-0.799999988079071), "-0.8");
+        assert_eq!(format_float_display(0.123456789), "0.123456789");
     }
 
     #[test]
