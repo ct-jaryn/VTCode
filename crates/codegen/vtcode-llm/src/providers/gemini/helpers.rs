@@ -78,6 +78,28 @@ impl GeminiProvider {
         self.prompt_cache_enabled && matches!(self.prompt_cache_settings.mode, GeminiPromptCacheMode::Explicit)
     }
 
+    /// Whether the built request carries a tool configuration that must travel
+    /// in the body.
+    ///
+    /// Gemini rejects a `generateContent` request that combines `cachedContent`
+    /// with `systemInstruction`, `tools`, or `toolConfig` ("CachedContent can
+    /// not be used with GenerateContent request setting system_instruction,
+    /// tools or tool_config"), and a cached entry's own `toolConfig` is
+    /// immutable and shared for the whole segment. Plain `AUTO` without
+    /// server-side flags is the documented default when the field is omitted,
+    /// so only a request that narrows, disables, or validates tool use needs
+    /// the body field.
+    fn body_tool_config_is_non_default(gemini_request: &GenerateContentRequest) -> bool {
+        let Some(config) = gemini_request.tool_config.as_ref() else {
+            return false;
+        };
+        let constrained_mode = config
+            .function_calling_config
+            .as_ref()
+            .is_some_and(|calling| calling.mode != "AUTO" || calling.allowed_function_names.is_some());
+        constrained_mode || config.include_server_side_tool_invocations == Some(true)
+    }
+
     /// Ensure a `cachedContents` entry exists for the request's stable
     /// system+tools prefix. Conversation contents stay on the generateContent
     /// body so the cache is not rebuilt every turn as history grows.
@@ -89,6 +111,16 @@ impl GeminiProvider {
         if !self.explicit_cache_active() {
             return Ok(None);
         }
+
+        // A non-default tool configuration cannot travel next to
+        // `cachedContent`, so such requests keep the implicit shape (with
+        // `toolConfig` on the body) instead of silently losing the constraint.
+        // The installed segment entry is left intact for later unconstrained
+        // turns.
+        if Self::body_tool_config_is_non_default(gemini_request) {
+            return Ok(None);
+        }
+
         let ttl = self.prompt_cache_settings.explicit_ttl_seconds.unwrap_or(900).max(60);
         let fingerprint = explicit_cache::CacheFingerprint::new(
             &request.model,
@@ -148,6 +180,11 @@ impl GeminiProvider {
 
     /// Rewrite a generateContent body to use `cachedContent` for system+tools.
     /// Conversation contents remain on the request.
+    ///
+    /// The API rejects `systemInstruction`, `tools`, and `toolConfig` next to
+    /// `cachedContent`, so all three are dropped here. Requests whose tool
+    /// choice is not the default `AUTO` never reach this function (see
+    /// [`Self::request_requires_body_tool_config`]).
     pub(super) fn apply_explicit_cache_to_request(
         &self,
         mut gemini_request: GenerateContentRequest,
@@ -1596,6 +1633,62 @@ pub fn serialize_gemini_tools(tools: &[ToolDefinition]) -> Result<Option<Value>,
             message: format!("failed to serialize Gemini tools: {err}"),
             metadata: None,
         })
+}
+
+#[cfg(test)]
+mod explicit_cache_tool_choice_tests {
+    use super::*;
+
+    fn tool_definition() -> ToolDefinition {
+        ToolDefinition::function(
+            "search_workspace".to_string(),
+            "Search project files".to_string(),
+            json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+        )
+    }
+
+    fn request(tool_choice: Option<ToolChoice>, with_tools: bool) -> LLMRequest {
+        LLMRequest {
+            model: models::google::GEMINI_3_FLASH_PREVIEW.to_string(),
+            messages: vec![Message::user("hello".to_string())].into(),
+            tools: with_tools.then(|| Arc::new(vec![tool_definition()])),
+            tool_choice,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_non_default_tool_configs_require_the_body() {
+        let provider = GeminiProvider::new("test-key".to_string());
+        let built = |tool_choice, with_tools| {
+            provider
+                .convert_to_gemini_request(&request(tool_choice, with_tools))
+                .expect("request builds")
+        };
+
+        // Unspecified and explicit AUTO both resolve to the API default, so the
+        // cached body may omit the field and the cache stays usable.
+        assert!(!GeminiProvider::body_tool_config_is_non_default(&built(None, true)));
+        assert!(!GeminiProvider::body_tool_config_is_non_default(&built(Some(ToolChoice::Auto), true)));
+        assert!(!GeminiProvider::body_tool_config_is_non_default(&built(None, false)));
+
+        // Constrained choices must stay on the body; the API forbids them next
+        // to `cachedContent`.
+        for tool_choice in [
+            ToolChoice::None,
+            ToolChoice::Any,
+            ToolChoice::function("search_workspace".to_string()),
+        ] {
+            assert!(
+                GeminiProvider::body_tool_config_is_non_default(&built(Some(tool_choice), true)),
+                "constrained tool choice must keep its body config"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

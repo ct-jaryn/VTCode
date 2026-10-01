@@ -1824,6 +1824,7 @@ mod caching_tests {
         let retried: Value = serde_json::from_slice(&attempts[1].body).expect("retry body");
         assert_eq!(cached["cachedContent"], "cachedContents/vtcode-test");
         assert!(cached.get("systemInstruction").is_none(), "the cached attempt supplies the prefix from the cache");
+        assert!(cached.get("toolConfig").is_none(), "the API rejects toolConfig alongside cachedContent");
         assert!(retried.get("cachedContent").is_none(), "the retry must not reuse the expired cache name");
         assert!(retried.get("systemInstruction").is_some(), "the retry must resend the full system instruction");
         assert!(
@@ -1864,6 +1865,69 @@ mod caching_tests {
         assert!(
             provider.explicit_cache.current().is_some(),
             "an unrelated failure must keep the cache slot for the next request"
+        );
+    }
+
+    /// The API forbids `toolConfig` next to `cachedContent`, so a request that
+    /// constrains tool use must keep the implicit shape and send the config
+    /// itself; otherwise the constraint is silently lost.
+    #[tokio::test]
+    async fn constrained_tool_choice_skips_explicit_cache_and_keeps_body_config() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let Some(server) = start_mock_server_or_skip().await else {
+            return;
+        };
+        let model = models::google::GEMINI_3_FLASH_PREVIEW;
+
+        cached_contents_mock().mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path(format!("/models/{model}:streamGenerateContent")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw("data: {\"candidates\":[]}\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = explicit_cache_provider(&server.uri(), model);
+        let request = LLMRequest {
+            model: model.to_string(),
+            messages: vec![Message::user("hello".to_string())].into(),
+            tools: Some(Arc::new(vec![ToolDefinition::function(
+                "search_workspace".to_string(),
+                "Search project files".to_string(),
+                json!({
+                    "type": "object",
+                    "properties": { "query": { "type": "string" } },
+                    "required": ["query"]
+                }),
+            )])),
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+        if let Err(err) = provider.stream(request).await {
+            panic!("a constrained tool choice must stay enforceable on the wire: {err}");
+        }
+
+        let requests = server.received_requests().await.expect("received requests");
+        assert!(
+            !requests.iter().any(|request| request.url.path().ends_with("/cachedContents")),
+            "a constrained tool choice must not create or reuse an explicit cache entry"
+        );
+        let attempts = stream_attempts(&requests);
+        assert_eq!(attempts.len(), 1, "the constrained request must go out exactly once");
+        let body: Value = serde_json::from_slice(&attempts[0].body).expect("stream body");
+        assert!(body.get("cachedContent").is_none(), "the constraint cannot travel alongside cachedContent");
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["mode"], "NONE",
+            "the disabled-tool constraint must reach the provider"
+        );
+        assert!(
+            provider.explicit_cache.current().is_none(),
+            "no segment entry is installed for the constrained request"
         );
     }
 }

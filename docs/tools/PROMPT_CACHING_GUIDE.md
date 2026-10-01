@@ -193,7 +193,7 @@ min_message_length_for_cache = 256
 
 -   `tools_ttl_seconds` — TTL for tool definitions and system prompt cache hints.
 -   `messages_ttl_seconds` — TTL for user message cache hints.
--   `extended_ttl_seconds` — optional longer-lived TTL. When present, VT Code automatically opts into Anthropic’s extended prompt caching beta header. Budget-continuation profile requests use this TTL (default 1h).
+-   `extended_ttl_seconds` — optional longer-lived TTL. When present, VT Code automatically opts into Anthropic’s extended prompt caching beta header. Budget-continuation profile requests use this TTL for the messages breakpoint (default 1h), and the beta header follows whichever breakpoint actually resolves to 1h — including that profile promotion — so a promoted breakpoint is never sent without the header.
 -   `prefer_extended_ttl` — when true, tools/system/message breakpoints upgrade from 5m to 1h (2× write cost) for sessions that idle past the 5m window.
 -   `max_breakpoints` — maximum number of cache insertion points per request (tools, system prompt, user messages).
 -   `cache_system_messages` / `cache_user_messages` / `cache_tool_definitions` — toggle cache hints for each content type.
@@ -212,7 +212,7 @@ explicit_ttl_seconds = 900
 
 -   `mode` — `implicit` leverages built-in cache detection; `explicit` uses the `cachedContents` lifecycle; `off` disables all Gemini caching.
 -   `min_prefix_tokens` — minimum prompt size before requesting cache evaluation.
--   `explicit_ttl_seconds` — TTL for `cachedContents.create` (config default 1h; a null/absent value falls back to 900s). Explicit mode creates a cache of the system instruction + tools while the segment fingerprint (model/system/tools) is stable, then sends `cachedContent` on `generateContent`/`streamGenerateContent` while keeping conversation contents on the body. A fingerprint change creates a new cache and best-effort deletes the old name. When the provider reports the cached name as stale (expired or evicted), VT Code drops the slot and retries the request once without the cache on both the streaming and non-streaming paths. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
+-   `explicit_ttl_seconds` — TTL for `cachedContents.create` (config default 1h; a null/absent value falls back to 900s). Explicit mode creates a cache of the system instruction + tools while the segment fingerprint (model/system/tools) is stable, then sends `cachedContent` on `generateContent`/`streamGenerateContent` while keeping conversation contents on the body. A fingerprint change creates a new cache and best-effort deletes the old name. When the provider reports the cached name as stale (expired or evicted), VT Code drops the slot and retries the request once without the cache on both the streaming and non-streaming paths. The API rejects `systemInstruction`, `tools`, and `toolConfig` next to `cachedContent`, so a request that constrains tool use (`tool_choice` none/any/specific) skips the explicit cache and keeps its `toolConfig` on the body — the constraint stays enforceable instead of being dropped, and the installed segment entry is left intact for the next unconstrained turn. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
 
 ### Stable tool catalog across planning modes
 

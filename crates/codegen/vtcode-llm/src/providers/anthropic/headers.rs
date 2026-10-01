@@ -9,6 +9,7 @@ use vtcode_config::core::{AnthropicConfig, AnthropicPromptCacheSettings};
 
 use super::capabilities::supports_manual_interleaved_beta;
 use super::prompt_cache::requires_extended_ttl_beta;
+use crate::provider::PromptCacheProfile;
 
 const EXTENDED_CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
 pub(crate) const MID_CONVERSATION_SYSTEM_CLEAR_AT_BETA: &str = "mid-conversation-system-clear-at-2026-08-21";
@@ -64,6 +65,9 @@ pub struct BetaHeaderConfig<'a> {
     pub include_mid_conversation_tool_changes: bool,
     pub include_mid_conversation_system_clear_at: bool,
     pub include_thinking_display_updates: bool,
+    /// Request profile that can promote the messages breakpoint to 1h; the
+    /// beta header decision must see it or a 1h breakpoint ships uncovered.
+    pub prompt_cache_profile: Option<PromptCacheProfile>,
 }
 
 pub fn combined_beta_header_value(
@@ -74,7 +78,7 @@ pub fn combined_beta_header_value(
     let mut pieces: Vec<String> = Vec::new();
 
     // Prompt caching is GA and needs no beta; only the 1h TTL still does.
-    if cache_enabled && requires_extended_ttl_beta(settings) {
+    if cache_enabled && requires_extended_ttl_beta(settings, config.prompt_cache_profile) {
         pieces.push(EXTENDED_CACHE_TTL_BETA.to_owned());
     }
 
@@ -142,6 +146,7 @@ mod tests {
             include_mid_conversation_tool_changes: false,
             include_mid_conversation_system_clear_at: false,
             include_thinking_display_updates: false,
+            prompt_cache_profile: None,
         }
     }
 
@@ -200,6 +205,28 @@ mod tests {
         let header = combined_beta_header_value(true, &cache_settings(3600), &beta_config(&config));
 
         assert_eq!(header.as_deref(), Some(EXTENDED_CACHE_TTL_BETA));
+    }
+
+    /// A budget-continuation profile emits a 1h messages breakpoint from the
+    /// profile TTL even when both configured TTLs stay at 5m; the beta header
+    /// must follow the effective breakpoint, not the raw settings.
+    #[test]
+    fn profile_ttl_promotes_messages_breakpoint_and_requires_extended_ttl_beta() {
+        let config = AnthropicConfig::default();
+        let settings = cache_settings(300);
+        let mut beta = beta_config(&config);
+        beta.prompt_cache_profile = Some(PromptCacheProfile::BudgetContinuation);
+
+        assert_eq!(combined_beta_header_value(true, &settings, &beta).as_deref(), Some(EXTENDED_CACHE_TTL_BETA));
+
+        // The same settings without the profile stay uncovered: the messages
+        // breakpoint resolves to the configured 5m TTL.
+        beta.prompt_cache_profile = None;
+        assert_eq!(combined_beta_header_value(true, &settings, &beta), None);
+
+        // Disabling prompt caching still suppresses the header.
+        beta.prompt_cache_profile = Some(PromptCacheProfile::BudgetContinuation);
+        assert_eq!(combined_beta_header_value(false, &settings, &beta), None);
     }
 
     #[test]

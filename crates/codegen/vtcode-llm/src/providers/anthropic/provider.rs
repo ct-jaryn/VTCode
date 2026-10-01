@@ -443,6 +443,10 @@ impl AnthropicProvider {
                 )
                 .flatten()
                 .any(|thinking| thinking.get("display").and_then(Value::as_str) == Some("updates")),
+            // A budget-continuation profile promotes the messages breakpoint to
+            // the profile TTL, so the beta decision must see the same profile
+            // the request builder used.
+            prompt_cache_profile: request.prompt_cache_profile,
         };
 
         headers::combined_beta_header_value(self.prompt_cache_enabled, &self.prompt_cache_settings, &beta_config)
