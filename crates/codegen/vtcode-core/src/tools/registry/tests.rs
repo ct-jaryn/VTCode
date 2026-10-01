@@ -2441,13 +2441,20 @@ async fn apply_patch_payload_correction_is_concrete_and_preserves_aliases() -> R
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
     registry.allow_all_tools().await?;
-    for args in [json!({}), json!({"input": 42}), json!({"patch": []}), json!(null)] {
+    for args in [
+        json!({}),
+        json!({"input": 42}),
+        json!({"patch": []}),
+        json!(null),
+        json!({"cmd":"*** Begin Patch\n*** Add File: created.txt\n+wrong field\n*** End Patch\n"}),
+    ] {
         let error = registry
             .preflight_validate_call(tools::APPLY_PATCH, &args)
             .expect_err("invalid payload");
         let message = error.to_string();
         assert!(message.contains(r#"{"input":"*** Begin Patch\n"#), "{message}");
         assert!(message.contains("retry once"), "{message}");
+        assert!(!message.contains("Missing required argument: patch"), "{message}");
         assert!(!temp_dir.path().join("created.txt").exists());
     }
     for (index, field) in ["input", "patch"].into_iter().enumerate() {

@@ -2268,6 +2268,10 @@ async fn patch_context_mismatch_gets_one_fresh_read_after_path_cap_then_correcte
 fn patch_preflight_correction_names_canonical_json_input() {
     for (name, error) in [
         (tool_names::APPLY_PATCH, "Missing required argument: input"),
+        (
+            tool_names::APPLY_PATCH,
+            "Tool preflight validation failed for 'apply_patch': Missing required argument: patch",
+        ),
         (tool_names::EXEC_COMMAND, "apply_patch is a tool, not a shell executable"),
     ] {
         let correction = preflight_schema_correction(name, error);
