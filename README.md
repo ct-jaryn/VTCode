@@ -30,16 +30,12 @@
   - [3. Start an interactive session](#3-start-an-interactive-session)
 - [Workflows](#workflows)
   - [Interactive work](#interactive-work)
-  - [Headless automation](#headless-automation)
-  - [Scheduled tasks](#scheduled-tasks)
-  - [Session management](#session-management)
-  - [Optional integrations](#optional-integrations)
+  - [Automation](#automation)
 - [Documentation](#documentation)
+  - [Integrations](#integrations)
 - [Development](#development)
 - [Contributing](#contributing)
-  - [Contribute](#contribute)
 - [Community](#community)
-  - [Contributors](#contributors)
   - [Contact](#contact)
   - [Resources](#resources)
   - [Share VT Code](#share-vt-code)
@@ -53,8 +49,7 @@
 VT Code is an open-source terminal coding agent built in Rust. Explore a
 codebase, plan changes, run tools, and review edits in the interactive TUI, or
 run `vtcode exec` headless. You pick the model and permissions; the runtime
-handles context, tools, and execution policy, and you review every change
-before it lands.
+handles context, tools, and execution policy.
 
 - **Plan and review:** read-only planning mode, then inspect edits in turn diffs.
 - **Sustain long sessions:** project instructions, context compaction, resumption, execution logs.
@@ -116,7 +111,7 @@ login flows. See [Getting started](./docs/user-guide/getting-started.md) and
 
 > [!NOTE]
 > ChatGPT OAuth reuses the Codex CLI's public client identity through an
-> unofficial compatibility flow; prefer your own OpenAI API key. GitHub
+> unofficial compatibility flow, so prefer your own OpenAI API key; GitHub
 > Copilot uses the official `copilot` CLI. See
 > [OAuth authentication](./docs/guides/oauth-authentication.md).
 
@@ -142,7 +137,10 @@ For larger tasks, start with [read-only planning](./docs/guides/planning-workflo
 and review [turn diffs](./docs/development/diff-preview.md) before committing.
 See the [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
-### Headless automation
+### Automation
+
+Run tasks without the TUI: one-shot answers, headless coding jobs, scheduled
+work, and session resume.
 
 Use `ask` for a tool-free answer and `exec` for a tool-enabled coding task:
 
@@ -155,20 +153,17 @@ vtcode review                     # agent review of uncommitted changes
 `exec` needs autonomous execution enabled in `[automation.full_auto]` plus
 `full_auto` workspace trust. In a terminal, an untrusted workspace prompts for
 trust; in CI or another non-TTY environment, grant trust beforehand or set
-`VTCODE_TRUST_WORKSPACE=full-auto`; otherwise non-TTY runs fail rather than
-prompt. Full-auto's tool allow-list, explicit denies, and execution policy still
-apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust and output
-options and [full automation](./docs/guides/full-automation.md) for
-configuration.
+`VTCODE_TRUST_WORKSPACE=full-auto` — non-TTY runs fail rather than prompt.
+Full-auto's tool allow-list, explicit denies, and execution policy still apply.
+See [exec mode](./docs/user-guide/exec-mode.md) for trust and output options
+and [full automation](./docs/guides/full-automation.md) for configuration.
 
 For repeatable, environment-checked results, use the
 [eval framework](./docs/guides/eval.md): a completion message alone is not
 verification.
 
-### Scheduled tasks
-
 For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md):
-durable prompt jobs on the same exec runtime:
+durable prompt jobs on the same exec runtime.
 
 ```bash
 # Weekly dependency audit (Mondays 09:00)
@@ -176,8 +171,6 @@ vtcode schedule create --name "weekly-dep-audit" \
   --cron "0 9 * * 1" \
   --prompt "Check for outdated dependencies and report known vulnerabilities"
 ```
-
-### Session management
 
 ```bash
 # Resume the most recent interactive session
@@ -191,12 +184,6 @@ vtcode trajectory
 ```
 
 Use `vtcode continue --session-id <id>` to fork an earlier session.
-See `vtcode --help` or the [command reference](./docs/user-guide/commands.md)
-for all commands and flags.
-
-### Optional integrations
-
-Enable these only when you need them; none are required for the quick start.
 
 - **Tools and extensions:** [MCP servers](./docs/guides/mcp-integration.md),
   [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
@@ -233,6 +220,10 @@ Guides by task; the full catalog lives in the
 | Extend VT Code | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md) |
 | Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) |
 
+### Integrations
+
+Enable these only when you need them; none are required for the quick start.
+
 ## Development
 
 ```mermaid
@@ -267,8 +258,6 @@ Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/r
 
 ## Contributing
 
-### Contribute
-
 Contributions are welcome:
 
 - **Code**: pick or propose an issue; keep changes surgical and tested.
@@ -277,13 +266,11 @@ Contributions are welcome:
   [eval guide](./docs/guides/eval.md).
 - **Bug reports**: include `vtcode trajectory` output when possible.
 
-Before a PR: [Conventional Commits](https://www.conventionalcommits.org)
-(`type(scope): subject`), `./scripts/check-dev.sh` + `cargo nextest run`, and a
-focused diff.
+Before a PR, see the [contribution guide](./docs/CONTRIBUTING.md): Conventional
+Commits (`type(scope): subject`), `./scripts/check-dev.sh` + `cargo nextest
+run`, and a focused diff.
 
 ## Community
-
-### Contributors
 
 VT Code is what it is because of the people who build, test, and improve it
 alongside me; thank you, all of you.
