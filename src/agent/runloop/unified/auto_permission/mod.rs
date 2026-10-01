@@ -185,9 +185,9 @@ pub(crate) async fn probe_tool_output(
     let probe_prompt = format!(
         "Recent user context:\n{}\n\nTool output:\n{}",
         if user_context.is_empty() {
-            "<none>".to_string()
+            "<none>"
         } else {
-            user_context.to_string()
+            user_context
         },
         truncate_text(tool_output, MAX_TOOL_OUTPUT_CHARS)
     );

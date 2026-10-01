@@ -14,11 +14,9 @@ async fn auto_permission_probe_warning(
     if !ctx.full_auto || ctx.is_planning_active() {
         return None;
     }
-    let Some(permissions) = ctx.vt_cfg.map(|cfg| &cfg.permissions) else {
-        return None;
-    };
-    // Skip the pre-filter-free spend: empty outputs carry nothing to probe,
-    // and they must not consume the per-turn probe budget.
+    let permissions = ctx.vt_cfg.map(|cfg| &cfg.permissions)?;
+    // Empty outputs carry nothing to probe and must not consume the
+    // per-turn probe budget.
     if content_for_model.trim().is_empty() {
         return None;
     }

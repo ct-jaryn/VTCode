@@ -403,7 +403,14 @@ pub fn dangerous_command_reason(command: &[String]) -> Option<&'static str> {
     let (idx, subcommand) = if extract_command_name(cmd0.unwrap_or("")) == "git" {
         find_git_subcommand(command, GIT_GUARDED_SUBCOMMANDS)?
     } else {
-        find_git_subcommand_from_args(command, GIT_GUARDED_SUBCOMMANDS)?
+        // Without the git executable in front, `rm` is ambiguous with the
+        // plain Unix command — `rm -f`/`sudo rm -rf` must not receive the
+        // `git rm --cached` remedy.
+        let (idx, subcommand) = find_git_subcommand_from_args(command, GIT_GUARDED_SUBCOMMANDS)?;
+        if subcommand == "rm" {
+            return None;
+        }
+        (idx, subcommand)
     };
     classify_git_subcommand(subcommand, &command[idx + 1..])
 }
@@ -572,6 +579,21 @@ mod tests {
         let pushed = vec_str(&["sudo", "git", "rm", "file.txt"]);
         let sudo_reason = dangerous_command_reason(&pushed).expect("sudo-wrapped git rm carries a reason");
         assert!(sudo_reason.contains("git rm"), "sudo prefix must be unwrapped: {sudo_reason}");
+    }
+
+    #[test]
+    fn dangerous_command_reason_does_not_label_plain_rm_as_git_rm() {
+        // `rm -f` is dangerous via the plain-rm arm, not the git matcher, so
+        // it must keep the generic rejection instead of the `git rm --cached`
+        // remedy.
+        for cmd in [
+            vec_str(&["rm", "-f", "build.log"]),
+            vec_str(&["rm", "-rf", "dir"]),
+            vec_str(&["sudo", "rm", "-rf", "/tmp/x"]),
+        ] {
+            assert!(command_might_be_dangerous(&cmd), "plain rm must stay classified dangerous: {cmd:?}");
+            assert_eq!(dangerous_command_reason(&cmd), None, "plain rm must not receive the git rm remedy: {cmd:?}");
+        }
     }
 
     #[test]
