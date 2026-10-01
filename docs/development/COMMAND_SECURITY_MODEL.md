@@ -207,6 +207,14 @@ VT Code supports automation through internal scheduling primitives instead:
 -   `kubectl *` - Kubernetes operations (admin access)
 -   `docker run *` - Container creation (requires careful review)
 
+### Mode-Sensitive Git Operations
+
+Preflight hard-denies only the destructive modes of guarded git subcommands; recoverable invocations pass preflight and proceed through normal policy/approval routing (consistent with `exec_policy`'s `validate_git_reset`):
+
+-   **Blocked**: `git reset --hard/--merge/--keep`, working-tree `git rm` (any form without `--cached`), forced branch deletion (`git branch -D`, `--delete --force`, stacked `-dD`/`-df`), plus the pre-existing `git push --force` and `git clean --force` rules.
+-   **Pass preflight**: `git reset` (bare/`--soft`/`--mixed` — reflog-restorable), `git rm --cached` (index-only), `git branch -d`/`--delete` (refuses unmerged branches).
+-   Rejections name the matched pattern and the remedy (for example, use `git stash` or `git reset --soft` instead of `git reset --hard`). Sudo/env-wrapped destructive forms stay blocked.
+
 ## Validation Rules (Configuration Reference)
 
 ### `allow_list` - Explicit Commands

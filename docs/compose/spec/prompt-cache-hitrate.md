@@ -10,7 +10,7 @@ commits: b26454764..9c43d6161
 
 ## Report
 
-**What was built** — Tool-free recovery no longer strips tool definitions or drops `reasoning_effort` from the wire. Recovery requests keep the same ordered tool catalog and effort as tool-enabled turns (`tool_choice: none` on OpenAI/Anthropic; Merge Gateway keeps tools and omits only `tool_choice` because Bedrock rejects `none`). The `recovery_reason` written into `[Recovery Mode]` is frozen when a recovery activation starts so retries do not rotate system-prompt bytes. Client-local deferral applies the same wire filter on recovery turns so the prefix matches. Fingerprint telemetry attributes `tools_omitted` and `recovery_reason` as distinct cache-change causes, and `vtcode trajectory` churn output reports them. StepFun/Ollama follow the keep-tools/omit-choice rule; Merge omits tools only when no tool vendor can serve them so synthesis can still run.
+**What was built** — Tool-free recovery no longer strips tool definitions or drops `reasoning_effort` from the wire. Recovery requests keep the same ordered tool catalog and effort as tool-enabled turns (`tool_choice: none` on OpenAI/Anthropic; Merge Gateway keeps tools and omits only `tool_choice` because Bedrock rejects `none`). The `[Recovery Mode]` contract rides as a request-only tail-position turn-scoped system message — never part of the system prompt — so the cached prefix survives recovery dispatches, and the `recovery_reason` inside it is frozen when a recovery activation starts so retries do not rotate the directive bytes. Client-local deferral applies the same wire filter on recovery turns so the prefix matches. Fingerprint telemetry attributes `tools_omitted` and `recovery_reason` as distinct cache-change causes, and `vtcode trajectory` churn output reports them. StepFun/Ollama follow the keep-tools/omit-choice rule; Merge omits tools only when no tool vendor can serve them so synthesis can still run.
 
 **Verification** — `./scripts/check-dev.sh` PASS; `cargo nextest run -p vtcode -E 'test(prompt_cache) or test(recovery) or test(tool_free) or test(fingerprint) or test(trajectory)'` 198/198 PASS; `cargo nextest run -p vtcode-llm -E 'test(merge) or test(stepfun) or test(ollama) or test(tool_choice)'` 110/110 PASS. Pre-existing on main: `responses_payload_includes_prompt_cache_retention_for_native_openai` (listed in `.vtcode/memory/gotchas.md`).
 
@@ -43,15 +43,16 @@ On `tool_free_recovery` (and any other "do not call tools" pass):
 - Do **not** omit the `tools` array on OpenAI Responses / Chat, Anthropic, Merge native, or OpenAI-compat paths when the provider accepts `tool_choice: none`.
 - Providers that reject `tool_choice: none` with tools present may still omit tools; that exception is per-provider and must be capability-gated, not global.
 
-Wire invariant (regression-tested): two consecutive recovery requests with an otherwise unchanged conversation must serialize identical `tools` arrays and identical stable system-prompt bytes (modulo the recovery block that is frozen at recovery entry).
+Wire invariant (regression-tested): two consecutive recovery requests with an otherwise unchanged conversation must serialize identical `tools` arrays and identical stable system-prompt bytes. The `[Recovery Mode]` contract is not part of the system prompt: it rides as a request-only tail-position turn-scoped system message (`recovery_mode_directive`, pushed in `build_turn_request`, never persisted to canonical history), so the cached prefix — tools, system, and all history — survives recovery dispatches byte-identically.
 
 ### S2.2 Freeze recovery-mode prompt at recovery entry
 
-`[Recovery Mode]` is part of the system prompt. To keep the recovery segment cache-stable:
+The `[Recovery Mode]` contract rides as a request-only tail message, so it cannot perturb the cached prefix. To keep the recovery segment stable across retries:
 
 - Snapshot `recovery_reason` when recovery is armed (`switch_to_tool_free_recovery` / `activate_recovery*`) and reuse that snapshot for every recovery turn in the same recovery pass/retry chain.
-- Later reason updates (blocked-tool fuse, preflight circuit, etc.) are recorded for telemetry but do **not** rewrite the `[Recovery Mode]` block mid-pass.
+- Later reason updates (blocked-tool fuse, preflight circuit, etc.) are recorded for telemetry but do **not** rewrite the recovery directive mid-pass.
 - If a new recovery *activation* starts after a completed pass, the new activation may update the snapshot (that is one intentional segment boundary).
+- The directive is request-only: it is never appended to canonical history, so it cannot outlive the recovery episode or leak into later turns' prefixes.
 
 ### S2.3 Multi-provider cache identity on recovery
 
@@ -82,7 +83,7 @@ Recovery turns must keep the same session affinity keys as normal turns:
 ## Tasks
 
 - [x] T1: Keep tool definitions on tool-free recovery (tools stay on wire, `tool_choice: none`) — acceptance: unit tests show recovery request serializes the same `tools` array as the prior normal request and sets `tool_choice` to none on OpenAI Responses and Anthropic builders (covers: S2.1) — `recovery_request_keeps_tools_for_cache_and_disables_tool_choice`, Merge `*_keeps_tools_for_cache`
-- [x] T2: Freeze recovery_reason in `[Recovery Mode]` for the recovery pass — acceptance: consecutive recovery prompts with mutated `harness_state.recovery_reason` produce byte-identical system prompts; a new recovery activation may refresh the snapshot (covers: S2.2) — `recovery_prompt_reason_is_frozen_across_reason_updates`
+- [x] T2: Freeze recovery_reason in the recovery directive for the recovery pass — acceptance: consecutive recovery prompts with mutated `harness_state.recovery_reason` produce an identical frozen directive; the recovery system prompt stays byte-identical to the tool-enabled turn (tail message, request-only); a new recovery activation may refresh the snapshot (covers: S2.2) — `recovery_prompt_reason_is_frozen_across_reason_updates`, `recovery_request_keeps_tools_for_cache_and_disables_tool_choice`
 - [x] T3: Preserve session affinity keys and Anthropic cache_control on recovery — acceptance: recovery-built `LLMRequest` keeps `prompt_cache_key` / session identity and does not drop Anthropic `cache_control` markers (covers: S2.3; depends: T1) — recovery path does not touch `prompt_cache_key` construction; Merge `session_id`/`X-Session-Id` tests still pass; Anthropic `cache_control` is independent of tool_choice
 - [x] T4: Attribute zero-hit turns to a miss cause in telemetry — acceptance: turn snapshot / trajectory records `tools_omitted` or `recovery_reason` when those change across consecutive measured turns; `Usage` mapping still reports DeepSeek `prompt_cache_hit_tokens` (covers: S2.4; depends: T1, T2) — `prompt_cache_fingerprint_attributes_tools_omitted_and_recovery_reason`
 - [x] T5: Provider fallback when `tool_choice: none` is rejected — acceptance: providers that cannot send `tool_choice: none` keep tool definitions (cache) and omit only the choice field, with a one-time advisory (covers: S2.5; depends: T1) — Merge Gateway proactive policy (Bedrock rejects `none`); harness still rejects recovery tool calls; `insert_tool_choice` logs a once-per-process debug advisory. A 400-retry that *removes tools* would re-introduce the cache bust and is intentionally not used.

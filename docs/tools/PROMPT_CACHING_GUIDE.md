@@ -101,9 +101,9 @@ VT Code therefore:
 - Keeps the same ordered tool catalog on the wire during recovery (and in the `[Runtime Tool Catalog]` section) as on tool-enabled turns.
 - Sets `tool_choice: none` on providers that accept it (OpenAI Responses/Chat, Anthropic).
 - On Merge Gateway, keeps the tool definitions but omits `tool_choice` entirely (Bedrock routes reject `tool_choice: "none"`). The harness still rejects tool calls during recovery.
-- Freezes the `recovery_reason` written into the `[Recovery Mode]` block when the recovery activation starts, so retries do not rotate the prompt bytes. Later telemetry reasons do not rewrite that block.
+- Delivers the `[Recovery Mode]` contract as a request-only tail-position turn-scoped system message (the same mechanism as the collapsed-output notice), never as a system-prompt section, and freezes the `recovery_reason` inside it when the recovery activation starts so retries do not rotate the directive bytes. Later telemetry reasons do not rewrite that message.
 
-`[Recovery Mode]` is a dynamic section header, so it rides the uncached suffix (OpenAI trailing `[System reminder]`, Anthropic uncached system block) and does not perturb the stable prefix hash. Consecutive recovery turns should reuse the same cached prefix as the preceding tool-enabled turn.
+Because the system prompt is at the front of every request, any per-turn delta there (the old in-prompt `[Recovery Mode]` block included) would bust the entire cached prefix — tools, system, and all history. The tail-message placement keeps the system prompt byte-identical to the tool-enabled turns that gathered the evidence, so consecutive recovery turns reuse the same cached prefix. The directive is never persisted to canonical history, so it cannot outlive the recovery episode; routes without native turn-scoped support receive it through the request-only wire translation.
 
 When a recovery pass ends and a new activation starts, the frozen reason may refresh once (one intentional segment boundary). Fingerprint telemetry records `tools_omitted` and `recovery_reason` as distinct change causes alongside `stable_prefix` / `tool_catalog` / `model`.
 

@@ -49,8 +49,13 @@ immutable `system_prompt` in this order:
 4. **Auto-permission notice** — only when `auto_permission && !planning`.
 5. **Active Primary Agent Skills** — when a primary agent is active.
 6. **Harness Limits** — `harness_limits::upsert_harness_limits_section`.
-7. **Recovery Mode** — when `tool_free_recovery` is active; tools are
-   stripped from the catalog snapshot.
+7. **Recovery Mode** — not a system-prompt section: when
+   `tool_free_recovery` is active, the recovery contract rides as a
+   request-only tail-position turn-scoped system message
+   (`recovery_mode_directive`, pushed in `build_turn_request`, never
+   persisted to canonical history), keeping the system prompt and tool
+   catalog byte-identical to tool-enabled turns for prefix-cache reuse
+   (`tool_choice: none` prevents calls).
 8. **Runtime Tool Catalog** — `append_runtime_tool_prompt_sections` with
    the planning/capability filtered `SessionToolCatalogSnapshot`.
 9. **GitHub Copilot Client Tools** — only for the Copilot provider.
