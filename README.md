@@ -29,10 +29,10 @@
   - [2. Configure your project](#2-configure-your-project)
   - [3. Start an interactive session](#3-start-an-interactive-session)
 - [Workflows](#workflows)
-  - [Interactive work](#interactive-work)
-  - [Automation](#automation)
+  - [Headless runs](#headless-runs)
+  - [Scheduling and sessions](#scheduling-and-sessions)
+- [Integrations](#integrations)
 - [Documentation](#documentation)
-  - [Integrations](#integrations)
 - [Development](#development)
 - [Contributing](#contributing)
 - [Community](#community)
@@ -51,10 +51,10 @@ codebase, plan changes, run tools, and review edits in the interactive TUI, or
 run `vtcode exec` headless. You pick the model and permissions; the runtime
 handles context, tools, and execution policy.
 
-- **Plan and review:** read-only planning mode, then inspect edits in turn diffs.
-- **Sustain long sessions:** project instructions, context compaction, resumption, execution logs.
-- **Control execution:** command policy and sandboxing at the boundary.
-- **Choose your stack:** hosted or local models, plus MCP servers, Agent Skills, and Plugins.
+- **Plan and review:** read-only planning mode, then turn diffs.
+- **Sustain long sessions:** project instructions, compaction, resumption, execution logs.
+- **Control execution:** command policy and sandboxing.
+- **Choose your stack:** hosted or local models, plus MCP, Skills, and Plugins.
 
 <div align="center">
 
@@ -137,12 +137,10 @@ For larger tasks, start with [read-only planning](./docs/guides/planning-workflo
 and review [turn diffs](./docs/development/diff-preview.md) before committing.
 See the [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
-### Automation
+### Headless runs
 
-Run tasks without the TUI: one-shot answers, headless coding jobs, scheduled
-work, and session resume.
-
-Use `ask` for a tool-free answer and `exec` for a tool-enabled coding task:
+Run tasks without the TUI: `ask` for a tool-free answer, `exec` for a
+tool-enabled coding task, and `review` for uncommitted changes:
 
 ```bash
 vtcode ask "explain Rc vs Arc"    # one-shot answer, no session, no tools
@@ -150,17 +148,17 @@ vtcode exec "refactor main.rs"    # headless task with the full tool loop
 vtcode review                     # agent review of uncommitted changes
 ```
 
-`exec` needs autonomous execution enabled in `[automation.full_auto]` plus
-`full_auto` workspace trust. In a terminal, an untrusted workspace prompts for
-trust; in CI or another non-TTY environment, grant trust beforehand or set
-`VTCODE_TRUST_WORKSPACE=full-auto` — non-TTY runs fail rather than prompt.
-Full-auto's tool allow-list, explicit denies, and execution policy still apply.
-See [exec mode](./docs/user-guide/exec-mode.md) for trust and output options
-and [full automation](./docs/guides/full-automation.md) for configuration.
-
-For repeatable, environment-checked results, use the
-[eval framework](./docs/guides/eval.md): a completion message alone is not
+`exec` requires autonomous execution enabled in `[automation.full_auto]` plus
+`full_auto` workspace trust: a terminal prompts for trust, while non-TTY runs
+fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. Full-auto's tool
+allow-list, explicit denies, and execution policy still apply. See
+[exec mode](./docs/user-guide/exec-mode.md) for trust and output options and
+[full automation](./docs/guides/full-automation.md) for configuration. For
+repeatable, environment-checked results, use the
+[eval framework](./docs/guides/eval.md) — a completion message alone is not
 verification.
+
+### Scheduling and sessions
 
 For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md):
 durable prompt jobs on the same exec runtime.
@@ -184,6 +182,10 @@ vtcode trajectory
 ```
 
 Use `vtcode continue --session-id <id>` to fork an earlier session.
+
+## Integrations
+
+Enable these only when you need them; none are required for the quick start.
 
 - **Tools and extensions:** [MCP servers](./docs/guides/mcp-integration.md),
   [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
@@ -219,10 +221,6 @@ Guides by task; the full catalog lives in the
 | Automate tasks | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md) |
 | Extend VT Code | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md) |
 | Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) |
-
-### Integrations
-
-Enable these only when you need them; none are required for the quick start.
 
 ## Development
 
@@ -272,8 +270,7 @@ run`, and a focused diff.
 
 ## Community
 
-VT Code is what it is because of the people who build, test, and improve it
-alongside me; thank you, all of you.
+Thanks to everyone who builds, tests, and improves VT Code alongside me.
 
 <details>
 <summary>View all contributors</summary>
