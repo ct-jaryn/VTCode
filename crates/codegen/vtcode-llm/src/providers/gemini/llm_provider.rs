@@ -35,6 +35,61 @@ fn normalize_completed_event(response: Box<LLMResponse>) -> Vec<NormalizedStream
     events
 }
 
+/// Shared transport for `generateContent` and `streamGenerateContent`.
+impl GeminiProvider {
+    async fn post_generate_content(
+        &self,
+        url: &str,
+        body: &GenerateContentRequest,
+    ) -> Result<reqwest::Response, LLMError> {
+        self.http_client
+            .post(url)
+            .header("x-goog-api-key", self.api_key.as_ref())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format_network_error("Gemini", &e))
+    }
+
+    /// Send a generate request and return only a successful response.
+    ///
+    /// A stale `cachedContent` name (expired or evicted) is retried once
+    /// without the cache and with the full system instruction/tools resent.
+    /// Both `generate` and `stream` share this path so recovery cannot drift
+    /// between them. The dead slot is dropped before the retry so the next
+    /// turn rebuilds it.
+    async fn send_generate_request_with_cache_recovery(
+        &self,
+        url: &str,
+        gemini_request: &GenerateContentRequest,
+        request: &LLMRequest,
+    ) -> Result<reqwest::Response, LLMError> {
+        let response = self.post_generate_content(url, gemini_request).await?;
+        if response.status().is_success() {
+            return Ok(response);
+        }
+
+        let status = response.status();
+        let error_text = crate::providers::common::read_provider_error_body(response).await;
+        if gemini_request.cached_content.is_none()
+            || !explicit_cache::is_stale_cache_error(status.as_u16(), &error_text)
+        {
+            return Err(Self::handle_http_error(status, &error_text));
+        }
+
+        self.explicit_cache.clear();
+        let full_request = self.convert_to_gemini_request(request)?;
+        let retry = self.post_generate_content(url, &full_request).await?;
+        if retry.status().is_success() {
+            return Ok(retry);
+        }
+
+        let retry_status = retry.status();
+        let retry_error_text = crate::providers::common::read_provider_error_body(retry).await;
+        Err(Self::handle_http_error(retry_status, &retry_error_text))
+    }
+}
+
 #[async_trait]
 impl LLMProvider for GeminiProvider {
     fn name(&self) -> &str {
@@ -119,44 +174,9 @@ impl LLMProvider for GeminiProvider {
 
         let url = format!("{}/models/{}:generateContent", self.base_url, request.model);
 
-        let mut response = self
-            .http_client
-            .post(&url)
-            .header("x-goog-api-key", self.api_key.as_ref())
-            .json(&gemini_request)
-            .send()
-            .await
-            .map_err(|e| format_network_error("Gemini", &e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = crate::providers::common::read_provider_error_body(response).await;
-            // Stale `cachedContent` name: drop the slot and retry once with a
-            // full (uncached) request so the turn can still complete.
-            if gemini_request.cached_content.is_some()
-                && explicit_cache::is_stale_cache_error(status.as_u16(), &error_text)
-            {
-                self.explicit_cache.clear();
-                let full_request = self.convert_to_gemini_request(&request)?;
-                response = self
-                    .http_client
-                    .post(&url)
-                    .header("x-goog-api-key", self.api_key.as_ref())
-                    .json(&full_request)
-                    .send()
-                    .await
-                    .map_err(|e| format_network_error("Gemini", &e))?;
-                if response.status().is_success() {
-                    let gemini_response: GenerateContentResponse =
-                        response.json().await.map_err(|e| format_parse_error("Gemini", &e))?;
-                    return Self::convert_from_gemini_response(gemini_response, model);
-                }
-                let retry_status = response.status();
-                let error_text = crate::providers::common::read_provider_error_body(response).await;
-                return Err(Self::handle_http_error(retry_status, &error_text));
-            }
-            return Err(Self::handle_http_error(status, &error_text));
-        }
+        let response = self
+            .send_generate_request_with_cache_recovery(&url, &gemini_request, &request)
+            .await?;
 
         let gemini_response: GenerateContentResponse =
             response.json().await.map_err(|e| format_parse_error("Gemini", &e))?;
@@ -260,19 +280,8 @@ impl LLMProvider for GeminiProvider {
         let url = format!("{}/models/{}:streamGenerateContent", self.base_url, request.model);
 
         let response = self
-            .http_client
-            .post(&url)
-            .header("x-goog-api-key", self.api_key.as_ref())
-            .json(&gemini_request)
-            .send()
-            .await
-            .map_err(|e| format_network_error("Gemini", &e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = crate::providers::common::read_provider_error_body(response).await;
-            return Err(Self::handle_http_error(status, &error_text));
-        }
+            .send_generate_request_with_cache_recovery(&url, &gemini_request, &request)
+            .await?;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel::<Result<LLMStreamEvent, LLMError>>();
         let completion_sender = event_tx.clone();

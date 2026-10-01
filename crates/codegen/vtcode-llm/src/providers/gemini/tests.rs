@@ -1713,6 +1713,159 @@ mod caching_tests {
         assert!(!system_str.contains("ttlSeconds"), "no inline TTL part on the wire");
         assert!(gemini_req.system_instruction.is_some(), "System instruction should be set");
     }
+
+    /// Explicit-cache provider pointed at a mock server.
+    fn explicit_cache_provider(server_uri: &str, model: &str) -> GeminiProvider {
+        let mut config = PromptCachingConfig { enabled: true, ..Default::default() };
+        config.providers.gemini.enabled = true;
+        config.providers.gemini.mode = GeminiPromptCacheMode::Explicit;
+        config.providers.gemini.explicit_ttl_seconds = Some(1200);
+        GeminiProvider::from_config(
+            Some("test-key".to_string()),
+            Some(model.to_string()),
+            Some(server_uri.to_string()),
+            Some(config),
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(message) = payload.downcast_ref::<String>() {
+            return message.clone();
+        }
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            return (*message).to_string();
+        }
+        "unknown panic".to_string()
+    }
+
+    async fn start_mock_server_or_skip() -> Option<wiremock::MockServer> {
+        match tokio::spawn(async { wiremock::MockServer::start().await }).await {
+            Ok(server) => Some(server),
+            Err(err) if err.is_panic() => {
+                let message = panic_message(err.into_panic());
+                if message.contains("Operation not permitted") || message.contains("PermissionDenied") {
+                    return None;
+                }
+                panic!("mock server should start: {message}");
+            }
+            Err(err) => panic!("mock server task should complete: {err}"),
+        }
+    }
+
+    /// First attempt carries `cachedContent` and gets a stale-cache 404; the
+    /// uncached retry gets a minimal SSE success.
+    fn stale_cache_then_stream(request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if body.get("cachedContent").is_some() {
+            return wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "error": {
+                    "code": 404,
+                    "message": "CachedContent not found: cachedContents/vtcode-test",
+                    "status": "NOT_FOUND"
+                }
+            }));
+        }
+        wiremock::ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_raw("data: {\"candidates\":[]}\n\n", "text/event-stream")
+    }
+
+    /// Explicit-cache creation succeeds against `{base}/cachedContents`.
+    fn cached_contents_mock() -> wiremock::Mock {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        Mock::given(method("POST"))
+            .and(path("/cachedContents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "name": "cachedContents/vtcode-test" })))
+    }
+
+    fn stream_attempts(requests: &[wiremock::Request]) -> Vec<&wiremock::Request> {
+        requests
+            .iter()
+            .filter(|request| request.url.path().ends_with(":streamGenerateContent"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stream_recovers_from_stale_explicit_cache_with_uncached_retry() {
+        use wiremock::Mock;
+        use wiremock::matchers::{method, path};
+
+        let Some(server) = start_mock_server_or_skip().await else {
+            return;
+        };
+        let model = models::google::GEMINI_3_FLASH_PREVIEW;
+
+        cached_contents_mock().mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path(format!("/models/{model}:streamGenerateContent")))
+            .respond_with(stale_cache_then_stream)
+            .mount(&server)
+            .await;
+
+        let provider = explicit_cache_provider(&server.uri(), model);
+        let request = LLMRequest {
+            model: model.to_string(),
+            messages: vec![Message::user("hello".to_string())].into(),
+            ..Default::default()
+        };
+        if let Err(err) = provider.stream(request).await {
+            panic!("a stale cachedContent must not fail the streaming turn: {err}");
+        }
+
+        let requests = server.received_requests().await.expect("received requests");
+        let attempts = stream_attempts(&requests);
+        assert_eq!(attempts.len(), 2, "the stale cache name must be retried exactly once");
+        let cached: Value = serde_json::from_slice(&attempts[0].body).expect("cached attempt body");
+        let retried: Value = serde_json::from_slice(&attempts[1].body).expect("retry body");
+        assert_eq!(cached["cachedContent"], "cachedContents/vtcode-test");
+        assert!(cached.get("systemInstruction").is_none(), "the cached attempt supplies the prefix from the cache");
+        assert!(retried.get("cachedContent").is_none(), "the retry must not reuse the expired cache name");
+        assert!(retried.get("systemInstruction").is_some(), "the retry must resend the full system instruction");
+        assert!(
+            provider.explicit_cache.current().is_none(),
+            "the dead cache slot must be cleared so the next turn rebuilds it"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_stale_stream_failure_is_not_retried_without_cache() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let Some(server) = start_mock_server_or_skip().await else {
+            return;
+        };
+        let model = models::google::GEMINI_3_FLASH_PREVIEW;
+
+        cached_contents_mock().mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path(format!("/models/{model}:streamGenerateContent")))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": { "code": 400, "message": "Invalid request: unsupported generationConfig field" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = explicit_cache_provider(&server.uri(), model);
+        let request = LLMRequest {
+            model: model.to_string(),
+            messages: vec![Message::user("hello".to_string())].into(),
+            ..Default::default()
+        };
+        assert!(provider.stream(request).await.is_err(), "a non-stale 400 must surface as an error");
+
+        let requests = server.received_requests().await.expect("received requests");
+        assert_eq!(stream_attempts(&requests).len(), 1, "only stale-cache failures may trigger the uncached retry");
+        assert!(
+            provider.explicit_cache.current().is_some(),
+            "an unrelated failure must keep the cache slot for the next request"
+        );
+    }
 }
 
 #[test]

@@ -212,7 +212,7 @@ explicit_ttl_seconds = 900
 
 -   `mode` — `implicit` leverages built-in cache detection; `explicit` uses the `cachedContents` lifecycle; `off` disables all Gemini caching.
 -   `min_prefix_tokens` — minimum prompt size before requesting cache evaluation.
--   `explicit_ttl_seconds` — TTL for `cachedContents.create` (default 900s). Explicit mode creates a cache of the system instruction + tools when the segment fingerprint matches is stable, then sends `cachedContent` on `generateContent` while keeping conversation contents on the body. A fingerprint change (model/system/tools) creates a new cache and best-effort deletes the old name. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
+-   `explicit_ttl_seconds` — TTL for `cachedContents.create` (config default 1h; a null/absent value falls back to 900s). Explicit mode creates a cache of the system instruction + tools while the segment fingerprint (model/system/tools) is stable, then sends `cachedContent` on `generateContent`/`streamGenerateContent` while keeping conversation contents on the body. A fingerprint change creates a new cache and best-effort deletes the old name. When the provider reports the cached name as stale (expired or evicted), VT Code drops the slot and retries the request once without the cache on both the streaming and non-streaming paths. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
 
 ### Stable tool catalog across planning modes
 
