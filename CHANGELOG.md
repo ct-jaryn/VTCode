@@ -2,6 +2,49 @@
 
 All notable changes to vtcode will be documented in this file.
 ## 0.169.2 - 2026-09-24
+## 0.171.3 - 2026-10-01
+
+### Highlights
+#### Bug Fixes
+
+- Recover streaming turns from a stale explicit cache (6f55c7bf) 
+- Keep constrained tool config and extended-TTL beta enforceable (c95e1505) 
+- Comfortable spacing, concise copy, clean float values (3b59b8b3) 
+- Preserve tool outcomes and terminal recovery state (9a273deb) 
+- Universal comfortable spacing for shared modal lists (4aefb71b) 
+- Snap near-grid floats in display formatting (bec67d6e) 
+- Deliver recovery contract as tail message to preserve prompt-cache prefix (658a9736) 
+- Gate git reset/rm/branch by destructiveness with actionable preflight messages (b0e173c2) 
+- Point heredoc rejection at apply_patch, not the hidden write_file (0fe49e3a) 
+- Keep the generic rejection for plain rm in dangerous_command_reason (4362100b) 
+- Block end-of-options git rm hiding working-tree deletes (0bc5e7db) 
+- Return partial exec capture when a session closes mid-wait (ff8f08d6) 
+- Require cachedContent in a 400 to treat it as stale (69b5c9fd) 
+- Dedupe only explicit field twins in ToolResponseBuilder (7b004f42) 
+#### Documentation
+
+- Regroup workflows and promote Integrations (523c78b4) 
+- Align prompt-cache, security-model, and module guidance with session changes (f4761a3c) 
+#### Features
+
+- Tint composer border and status pill by agent mode (dbabba47) 
+### Other Changes
+#### Other
+
+- Refine README (c71d3f60) 
+#### Performance
+
+- Bound auto-permission probe with per-turn budget, timeout, no history clone (0af03fe0) 
+- Deduplicate field/data keys in ToolResponseBuilder::build_json (3362ac0c) 
+#### Refactors
+
+- Share provider mock helpers and pin cache-skip invariants (0dda69d4) 
+#### Tests
+
+- Assert typed numeric hunk context mismatch (4a96f31d) (@ct-jaryn)
+- Cover malformed patch payload recovery (378dfb06) 
+- Align numeric-hunk expectation with typed patch context error (42fc429a) 
+- Align dangerous-command fuzz invariants with mode-sensitive git gating (90269e36) 
 ## 0.171.2 - 2026-09-30
 
 ### Highlights
