@@ -213,6 +213,7 @@ Preflight hard-denies only the destructive modes of guarded git subcommands; rec
 
 -   **Blocked**: `git reset --hard/--merge/--keep`, working-tree `git rm` (any form without `--cached`), forced branch deletion (`git branch -D`, `--delete --force`, stacked `-dD`/`-df`), plus the pre-existing `git push --force` and `git clean --force` rules.
 -   **Pass preflight**: `git reset` (bare/`--soft`/`--mixed` — reflog-restorable), `git rm --cached` (index-only), `git branch -d`/`--delete` (refuses unmerged branches).
+-   `--` ends option parsing: for the option-only subcommands (`reset`/`rm`/`branch`/`clean`) classification scans only the pre-`--` arguments, so a literal `--cached`/`--hard`/`-D` **after** `--` is a path or ref name and cannot hide or carry a flag (`git rm -- --cached f` stays blocked as a working-tree delete). `push` scans all arguments: its dangerous payloads are refspecs, which legitimately occupy the post-`--` positional slot (`git push origin -- :refs/heads/x` deletes a remote branch).
 -   Rejections name the matched pattern and the remedy (for example, use `git stash` or `git reset --soft` instead of `git reset --hard`). Sudo/env-wrapped destructive forms stay blocked.
 
 ## Validation Rules (Configuration Reference)

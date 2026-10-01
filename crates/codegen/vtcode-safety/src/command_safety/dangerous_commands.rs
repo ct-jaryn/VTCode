@@ -377,18 +377,34 @@ fn git_branch_is_force_delete(branch_args: &[String]) -> bool {
 /// the invocation is recoverable and must proceed through normal policy and
 /// approval routing instead of dying at preflight.
 fn classify_git_subcommand(subcommand: &str, args: &[String]) -> Option<&'static str> {
+    // `--` ends option parsing: for the option-only subcommands every later
+    // token is a path or ref name, never a flag (`git rm -- --cached f`
+    // deletes working-tree files). Classify only the pre-`--` option
+    // arguments there; destructive flags before `--` still classify, and a
+    // post-`--` token can only turn a block into a pass when it is genuinely
+    // a name. `push` is excluded: its dangerous payloads are refspecs, which
+    // legitimately occupy the post-`--` positional slot
+    // (`git push origin -- :refs/heads/x` deletes a remote branch).
+    let scan_args = if subcommand == "push" {
+        args
+    } else {
+        match args.iter().position(|arg| arg == "--") {
+            Some(end) => &args[..end],
+            None => args,
+        }
+    };
     match subcommand {
-        "reset" if git_reset_is_destructive(args) => {
+        "reset" if git_reset_is_destructive(scan_args) => {
             Some("git reset --hard/--merge/--keep discards uncommitted changes; use `git stash` or `git reset --soft`")
         }
-        "rm" if git_rm_is_destructive(args) => {
+        "rm" if git_rm_is_destructive(scan_args) => {
             Some("git rm deletes working-tree files; unstage with `git rm --cached` instead")
         }
-        "branch" if git_branch_is_force_delete(args) => {
+        "branch" if git_branch_is_force_delete(scan_args) => {
             Some("git branch -D/--delete --force skips the unmerged-branch guard; use `-d` for merged branches")
         }
-        "push" if git_push_is_dangerous(args) => Some("git push force-updates or deletes remote refs"),
-        "clean" if git_clean_is_force(args) => Some("git clean --force deletes untracked files"),
+        "push" if git_push_is_dangerous(scan_args) => Some("git push force-updates or deletes remote refs"),
+        "clean" if git_clean_is_force(scan_args) => Some("git clean --force deletes untracked files"),
         _ => None,
     }
 }
@@ -562,6 +578,46 @@ mod tests {
         assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "branch", "--delete", "--force", "feature"])));
         assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "branch", "-d", "-f", "feature"])));
         assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "branch", "-df", "feature"])));
+    }
+
+    #[test]
+    fn end_of_options_separator_cannot_hide_working_tree_git_rm() {
+        // After `--`, git treats `--cached` as a PATH, not the index-only
+        // flag: `git rm --ignore-unmatch -- --cached f` deletes working-tree
+        // files while carrying a literal `--cached` argument.
+        assert!(
+            is_dangerous_to_call_with_exec(&vec_str(&["git", "rm", "--", "--cached", "file.txt"])),
+            "`--cached` after `--` is a path; the invocation deletes working-tree files"
+        );
+        assert!(
+            is_dangerous_to_call_with_exec(&vec_str(&["git", "rm", "--ignore-unmatch", "--", "--cached", "file.txt"])),
+            "--ignore-unmatch must not let a missing `--cached` path mask the deletion"
+        );
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["sudo", "git", "rm", "--", "--cached", "file.txt"])));
+        // The flag itself before `--` keeps the index-only pass.
+        assert!(!is_dangerous_to_call_with_exec(&vec_str(&["git", "rm", "--cached", "--", "file.txt"])));
+        // The rejection must keep the pattern-specific remedy.
+        let reason = dangerous_command_reason(&vec_str(&["git", "rm", "--", "--cached", "file.txt"]))
+            .expect("end-of-options git rm carries a reason");
+        assert!(reason.contains("git rm"), "reason should name the pattern: {reason}");
+    }
+
+    #[test]
+    fn end_of_options_separator_stops_flag_classification_for_other_guarded_subcommands() {
+        // Post-`--` tokens are paths/refs for the option-only subcommands, so
+        // they can never carry flag semantics.
+        assert!(!is_dangerous_to_call_with_exec(&vec_str(&["git", "reset", "--", "--hard"])));
+        assert!(!is_dangerous_to_call_with_exec(&vec_str(&["git", "branch", "--", "-D", "feature"])));
+        assert!(!is_dangerous_to_call_with_exec(&vec_str(&["git", "clean", "--", "-fd"])));
+        // Flags before `--` still classify.
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "reset", "--hard", "--", "file.txt"])));
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "branch", "-D", "--", "feature"])));
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "clean", "-fd", "--", "dir"])));
+        // `push` scans all args: its dangerous payloads are refspecs, which
+        // legitimately occupy the post-`--` positional slot.
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "push", "origin", "--", "--force"])));
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "push", "origin", "--", ":refs/heads/main"])));
+        assert!(is_dangerous_to_call_with_exec(&vec_str(&["git", "push", "--force", "--", "origin", "main"])));
     }
 
     #[test]

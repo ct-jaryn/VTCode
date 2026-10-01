@@ -290,6 +290,9 @@ mod tests {
         assert!(validate_shell_script("git reset --soft HEAD~1").is_ok());
         assert!(validate_shell_script("git rm --cached src/main.rs").is_ok());
         assert!(validate_shell_script("git rm src/main.rs").is_err());
+        // `--cached` after `--` is a path, not the index-only flag: the
+        // working-tree deletion must stay blocked in script form too.
+        assert!(validate_shell_script("git rm --ignore-unmatch -- --cached src/main.rs").is_err());
     }
 
     #[test]

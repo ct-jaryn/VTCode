@@ -228,6 +228,11 @@ fn fuzz_known_dangerous_commands() {
         vec!["git", "reset", "--keep"],
         vec!["git", "rm"],
         vec!["git", "rm", "file.txt"],
+        // `--cached` after `--` is a PATH, not the index-only flag.
+        vec!["git", "rm", "--", "--cached", "file.txt"],
+        vec!["git", "rm", "--ignore-unmatch", "--", "--cached", "file.txt"],
+        // Push refspecs after `--` still delete/force remote refs.
+        vec!["git", "push", "origin", "--", ":refs/heads/main"],
         vec!["git", "branch", "-D", "feature"],
         vec!["git", "push", "--force"],
         vec!["git", "push", "-f"],
@@ -257,6 +262,8 @@ fn fuzz_known_safe_commands() {
         vec!["git", "reset"],
         vec!["git", "reset", "--soft", "HEAD~1"],
         vec!["git", "rm", "--cached", "file.txt"],
+        // Post-`--` tokens are paths/refs for the option-only subcommands.
+        vec!["git", "reset", "--", "--hard"],
         vec!["git", "branch", "-d", "feature"],
         vec!["ls", "-la"],
         vec!["echo", "hello"],
