@@ -339,6 +339,23 @@ pub(crate) fn plan_repair_directive_for_error(error: &PlanArtifactError) -> Stri
     build_plan_repair_directive(&feedback)
 }
 
+/// Validator-owned feedback for a **terminal** plan rejection that is stored
+/// in assistant history (as opposed to a system repair directive).
+///
+/// Terminal paths previously published only a fixed rejection sentence, so the
+/// TUI showed `missing sections: …` while the model saw no reason and a later
+/// `continue` resubmitted the same invalid shape (session-vtcode-20260924T133543Z).
+/// Uses the same `repair_feedback()` source as [`plan_repair_directive_for_error`]
+/// for `Invalid` errors so both surfaces report the same validation contract.
+/// Non-`Invalid` variants fall back to their Display text here (terminal) while
+/// the repair directive uses a generic default report.
+pub(crate) fn plan_rejection_history_feedback(error: &PlanArtifactError) -> String {
+    match error {
+        PlanArtifactError::Invalid { report, .. } => report.repair_feedback(),
+        other => format!("Rejection detail: {other}"),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedPlanArtifact {
     pub(crate) plan_file: PathBuf,
@@ -486,6 +503,40 @@ Improve launch time.
 ## Assumptions and Defaults
 1. Keep existing behavior.
 "#;
+
+    // --- plan_rejection_history_feedback tests ---
+
+    #[test]
+    fn plan_rejection_history_feedback_carries_validator_contract() {
+        // Terminal rejections store this string in assistant history. It must
+        // name the concrete validation failures and the canonical step format
+        // so a later user `continue` can repair instead of resubmitting.
+        let report = validate_plan_content(INVALID_PROSE_PLAN);
+        assert!(!report.is_ready());
+        let error = PlanArtifactError::Invalid {
+            reasons: report.reasons().join("; "),
+            report: Box::new(report),
+        };
+        let feedback = plan_rejection_history_feedback(&error);
+        assert!(
+            feedback.contains("Plan validation issues:") && feedback.contains("2 of 2 implementation step(s)"),
+            "feedback must name the invalid steps: {feedback}"
+        );
+        assert!(
+            feedback.contains(CANONICAL_STEP_FORMAT),
+            "feedback must include the canonical step format: {feedback}"
+        );
+    }
+
+    #[test]
+    fn plan_rejection_history_feedback_uses_display_for_non_invalid_errors() {
+        let error = PlanArtifactError::Persistence { reason: "disk full".to_string() };
+        let feedback = plan_rejection_history_feedback(&error);
+        assert!(
+            feedback.contains("failed to persist plan draft: disk full"),
+            "non-invalid errors must surface their Display text: {feedback}"
+        );
+    }
 
     // --- plan_repair_directive_for_error tests ---
 

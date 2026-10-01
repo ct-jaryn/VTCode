@@ -81,6 +81,13 @@ commit_preprocessors = [
 
 # Protect commits from being parsed (e.g., version bumps, release commits)
 commit_parsers = [
+    # Skip owner-only TODO churn (docs/project/TODO.md) to reduce release noise.
+    # Must come before type grouping so `docs: update project TODO` etc. don't
+    # leak into Documentation/Other sections.
+    { message = "(?i)update.*todo", skip = true },
+    { message = "(?i)docs\\(todos?\\)", skip = true },
+    { message = "(?i)docs\\(project\\).*todo", skip = true },
+    { message = "(?i)^update project$", skip = true },
     # Skip changelog update commits (must come before other parsers)
     { message = "^[a-zA-Z]+: update changelog for", skip = true },
     { message = "update changelog for", skip = true },
@@ -192,6 +199,13 @@ exclude_patterns = [
     # Exclude TODO.md updates
     "docs/project/TODO\\.md",
     "TODO\\.md",
+    # Exclude owner-only TODO churn ("Update TODO", "Update TODOs",
+    # "docs: update project TODO", "docs(todo): ..."). Case-insensitive so
+    # capitalized subjects are caught.
+    "(?i)update.*todo",
+    "(?i)docs\\(todos?\\)",
+    "(?i)docs\\(project\\).*todo",
+    "(?i)^update project$",
     # Exclude merge commits - we want to show the original commits with their actual authors
     "Merge pull request",
 ]

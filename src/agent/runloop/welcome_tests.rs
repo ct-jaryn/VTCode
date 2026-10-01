@@ -181,6 +181,43 @@ async fn test_prepare_session_bootstrap_hides_placeholder_when_planning_disabled
     }
 }
 
+/// The shell paint path and the full bootstrap must derive the same
+/// placeholder so the ready re-drive never visibly swaps it.
+#[test]
+fn configured_chat_placeholder_matches_bootstrap_derivation() {
+    // Custom placeholder surfaces on both paths.
+    let mut vt_cfg = VTCodeConfig::default();
+    vt_cfg.agent.onboarding.chat_placeholder = Some("  Type your plan  ".into());
+    let configured = super::welcome::configured_chat_placeholder(Some(&vt_cfg));
+    assert_eq!(configured.as_deref(), Some("Type your plan"));
+
+    // Default config: no custom placeholder -> None on both paths (the shell
+    // falls back to CHAT_INPUT_PLACEHOLDER_BOOTSTRAP, which the bootstrap
+    // also leaves unset).
+    assert!(super::welcome::configured_chat_placeholder(Some(&VTCodeConfig::default())).is_none());
+    assert!(super::welcome::configured_chat_placeholder(None).is_none());
+}
+
+#[test]
+fn configured_chat_placeholder_respects_gates() {
+    let mut vt_cfg = VTCodeConfig::default();
+    vt_cfg.agent.onboarding.chat_placeholder = Some("Type your plan".into());
+
+    // Planning disabled hides the custom placeholder.
+    vt_cfg.agent.todo_planning_mode = false;
+    assert!(super::welcome::configured_chat_placeholder(Some(&vt_cfg)).is_none());
+    vt_cfg.agent.todo_planning_mode = true;
+
+    // Onboarding disabled hides it too.
+    vt_cfg.agent.onboarding.enabled = false;
+    assert!(super::welcome::configured_chat_placeholder(Some(&vt_cfg)).is_none());
+    vt_cfg.agent.onboarding.enabled = true;
+
+    // Whitespace-only values are treated as unset.
+    vt_cfg.agent.onboarding.chat_placeholder = Some("   ".into());
+    assert!(super::welcome::configured_chat_placeholder(Some(&vt_cfg)).is_none());
+}
+
 #[tokio::test]
 async fn test_prepare_session_bootstrap_does_not_surface_acp_trust_in_terminal_session() {
     let tmp = tempdir().expect("Failed to create temp directory");

@@ -37,54 +37,6 @@ pub struct OptimizationConfig {
     /// Read-only command result cache
     #[serde(default)]
     pub command_cache: CommandCacheConfig,
-
-    /// Reinforcement-learning adaptive action-selection (bandit / actor-critic).
-    #[serde(default)]
-    pub rl: RlConfig,
-}
-
-/// Reinforcement-learning adaptive action-selection configuration.
-///
-/// Drives `vtcode_core::llm::rl::RlEngine`: success/timeout + latency feed a
-/// `RewardSignal` stored in a rolling `RewardLedger`, and `select` prefers
-/// low-latency, high-success actions (e.g. edge vs cloud executors).
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RlConfig {
-    /// Selection strategy: `bandit` (UCB / epsilon-greedy) or `actor_critic`.
-    #[serde(default = "default_rl_strategy")]
-    pub strategy: String,
-    /// Exploration constant for the bandit (higher = more exploration).
-    #[serde(default = "default_rl_epsilon")]
-    pub epsilon: f64,
-    /// Reward shaping weight for latency vs success trade-off (`0.0..=1.0`).
-    #[serde(default = "default_rl_latency_weight")]
-    pub latency_weight: f64,
-}
-
-impl Default for RlConfig {
-    fn default() -> Self {
-        Self {
-            strategy: default_rl_strategy(),
-            epsilon: default_rl_epsilon(),
-            latency_weight: default_rl_latency_weight(),
-        }
-    }
-}
-
-/// Serde/default for [`RlConfig::strategy`].
-fn default_rl_strategy() -> String {
-    "bandit".to_string()
-}
-
-/// Serde/default for [`RlConfig::epsilon`].
-fn default_rl_epsilon() -> f64 {
-    0.15
-}
-
-/// Serde/default for [`RlConfig::latency_weight`].
-fn default_rl_latency_weight() -> f64 {
-    0.5
 }
 
 /// File read cache configuration
@@ -441,7 +393,6 @@ impl OptimizationConfig {
             },
             file_read_cache: FileReadCacheConfig::default(),
             command_cache: CommandCacheConfig::default(),
-            rl: RlConfig::default(),
         }
     }
 
@@ -515,7 +466,6 @@ impl OptimizationConfig {
                     .map(|s| s.to_string())
                     .collect(),
             },
-            rl: RlConfig::default(),
         }
     }
 }

@@ -31,6 +31,8 @@ pub enum ModelId {
     GPT6Astra,
     /// GPT-6 Sol - Cost-efficient high-end model in the GPT-6 series for demanding professional work
     GPT6Sol,
+    /// GPT-6.1 Sol - Near-Astra performance for complex coding, computer use, and professional work at a lower cost
+    GPT61Sol,
     /// GPT-6 Luna - Fast cost-efficient model in the GPT-6 series for high-volume latency-sensitive workloads
     GPT6Luna,
     /// GPT-5.6 Sol - Frontier model for complex professional work in the GPT-5.6 family
@@ -48,6 +50,8 @@ pub enum ModelId {
     /// Claude Sonnet 5 - The best combination of speed and intelligence with adaptive thinking on by default
     #[default]
     ClaudeSonnet5,
+    /// Claude Sonnet 5.5 - Latest Sonnet: best speed/intelligence balance, 1M context, 128K output, `between_tools` as the lowest thinking setting, default effort high
+    ClaudeSonnet55,
     /// Claude Fable 5 - Anthropic's most capable widely released model for demanding reasoning and long-horizon agentic work
     ClaudeFable5,
     /// Claude Fable 5.1 - successor to Fable 5 for demanding reasoning and long-horizon agentic work, 1M context, adaptive thinking always on, cache reads at 1/4 cost
@@ -96,6 +100,8 @@ pub enum ModelId {
     MergeGatewayAnthropicClaudeOpus55,
     /// Anthropic Claude Sonnet 5 through Merge Gateway
     MergeGatewayAnthropicClaudeSonnet5,
+    /// Anthropic Claude Sonnet 5.5 through Merge Gateway
+    MergeGatewayAnthropicClaudeSonnet55,
     /// Google Gemini 3.6 Flash through Merge Gateway
     /// Google Gemini 3.7 Flash through Merge Gateway
     /// DeepSeek V4.1 Flash through Merge Gateway
@@ -134,6 +140,8 @@ pub enum ModelId {
     MergeGatewayOpenAIGpt6Astra,
     /// OpenAI GPT-6 Sol through Merge Gateway
     MergeGatewayOpenAIGpt6Sol,
+    /// OpenAI GPT-6.1 Sol through Merge Gateway
+    MergeGatewayOpenAIGpt61Sol,
     /// OpenAI GPT-6 Luna through Merge Gateway
     MergeGatewayOpenAIGpt6Luna,
 

@@ -33,8 +33,10 @@ variant captures a specific moment in the lifecycle of an execution thread:
 -   **Harness lifecycle** – continuation, verification, snapshot, blocked-handoff, and
     same-turn limit-grant events expose recovery state; `session_tool_limit_increased`
     and `tool_loop_limit_increased` record the current agent and the approved
-    capacity change (manual approval, or a full-auto grant when
-    `automation.full_auto.auto_grant_tool_limits` is on), while `blocked_handoff_resolved` confirms that the owning session
+    capacity change (manual approval, a full-auto grant when
+    `automation.full_auto.auto_grant_tool_limits` is on, or a session-preauthorized
+    auto-grant after the first successful interactive tool-loop grant in the
+    process session), while `blocked_handoff_resolved` confirms that the owning session
     marked the archive resolved before removing its live pointer.
 -   **Errors** – `ThreadErrorEvent` and `ErrorItem` record terminal failures alongside the
     human-readable messages surfaced to operators.F:crates/common/vtcode-exec-events/src/lib.rs†L41-L44F:crates/common/vtcode-exec-events/src/lib.rs†L242-L248

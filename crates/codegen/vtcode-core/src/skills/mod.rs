@@ -41,7 +41,8 @@ pub use vtcode_skills::file_references::FileReferenceValidator;
 pub use vtcode_skills::injection::{SkillInjections, build_skill_injections};
 pub use vtcode_skills::instructions::{SKILL_INSTRUCTIONS_PREFIX, SkillInstructions};
 pub use vtcode_skills::locations::{
-    DiscoveredSkill, DiscoveryStats as LocationDiscoveryStats, SkillLocation, SkillLocationType, SkillLocations,
+    DiscoveredSkill, DiscoveryStats as LocationDiscoveryStats, MAX_DISCOVERY_DEPTH, MAX_DISCOVERY_DIRS,
+    SKIPPED_DISCOVERY_DIRS, SkillLocation, SkillLocationType, SkillLocations, discovery_dir_skipped,
 };
 pub use vtcode_skills::manifest::{SkillYaml, generate_skill_template, parse_skill_content, parse_skill_file};
 pub use vtcode_skills::model::{SkillErrorInfo, SkillLoadOutcome, SkillMetadata};

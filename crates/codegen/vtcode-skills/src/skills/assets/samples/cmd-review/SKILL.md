@@ -107,13 +107,31 @@ Report every suspected bug with the concrete scenario (inputs, state, or environ
 
 ## Tools
 
-Use these to inform your review:
+You have repository access through native function tool calls. Use them —
+never claim you cannot access the repository, cannot run commands, or need
+the user to paste the diff.
 
-- **Explore agent** - Find how existing code handles similar problems. Check patterns, conventions, and prior art before claiming something doesn't fit.
-- **Available documentation and code-search tools** - Verify correct usage of libraries/APIs before flagging something as wrong.
-- **Web Search** - Research best practices if you're unsure about a pattern.
+- **exec_command (action `run`)** - Run read-only shell commands such as
+  `git status --short`, `git diff`, `git diff --cached`,
+  `git rev-parse --verify <sha>`, `git show <verified-sha>`,
+  `git diff <verified-target>...HEAD`, `gh pr view <number-or-url>`,
+  `gh pr diff <number-or-url>`. Free-form review instructions are focus
+  text only; never interpolate prose into shell arguments.
+- **read_file / unified_file (action `read`)** - Read full files identified
+  by the diff plus `CONVENTIONS.md`, `AGENTS.md`, `.editorconfig` context.
+- **code_search / grep tools** - Verify API usage, callers, tests, and docs
+  before flagging something as wrong.
+- **Explore agent** - Find how existing code handles similar problems.
 
-If you cannot verify something with these tools, report it with low confidence and say what would confirm it.
+Rules:
+
+- Always use native function tool calls with structured arguments. Never
+  emit `<tool_call>`, `<invoke>`, `<function=>`, or other textual
+  tool-call markup — it is not executed.
+- Run at least `git status --short` plus the appropriate diff before
+  reporting. A review written without any tool output is a failure.
+- If you cannot verify something with these tools, report it with low
+  confidence and say what would confirm it.
 
 ---
 

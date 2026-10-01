@@ -246,7 +246,7 @@ fn info_warning_error_lines_use_semantic_colors() {
 }
 
 #[test]
-fn active_file_operation_indicator_renders_spinner_frame() {
+fn active_file_operation_indicator_shimmers_without_losing_text() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Editing vtcode.toml...")]);
     session.handle_command(InlineCommand::SetInputStatus {
@@ -254,15 +254,10 @@ fn active_file_operation_indicator_renders_spinner_frame() {
         right: None,
     });
     let rendered = rendered_transcript_widget_lines(&mut session, VIEW_WIDTH, VIEW_ROWS);
-    let expected = format!("{} Editing vtcode.toml...", pulse_spinner_frame_for_phase(0.0));
 
     assert!(
-        rendered.iter().any(|line| line.contains(&expected)),
-        "active file operation indicator should show a spinner frame"
-    );
-    assert!(
-        !rendered.iter().any(|line| line.contains("❋ Editing vtcode.toml...")),
-        "spinner should replace the static file operation marker while active"
+        rendered.iter().any(|line| line.contains("❋ Editing vtcode.toml...")),
+        "shimmer must restyle the indicator row, never eat its text, got: {rendered:?}"
     );
 }
 
@@ -303,6 +298,80 @@ fn non_file_tool_status_keeps_static_file_operation_indicator() {
     assert!(
         rendered.iter().any(|line| line.contains("❋ Editing vtcode.toml...")),
         "non-file tool activity should not animate stale file operation indicators"
+    );
+}
+
+#[test]
+fn planning_indicator_shimmers_without_losing_text() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Drafting plan — researching codebase...")]);
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Drafting plan... (42 chars)".to_string()),
+        right: None,
+    });
+    let rendered = rendered_transcript_widget_lines(&mut session, VIEW_WIDTH, VIEW_ROWS);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("❋ Drafting plan — researching codebase...")),
+        "planning shimmer must restyle the row, never eat its text, got: {rendered:?}"
+    );
+}
+
+#[test]
+fn planning_indicator_shimmers_while_validating() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Validating plan...")]);
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Validating plan...".to_string()),
+        right: None,
+    });
+    let rendered = rendered_transcript_widget_lines(&mut session, VIEW_WIDTH, VIEW_ROWS);
+
+    assert!(
+        rendered.iter().any(|line| line.contains("❋ Validating plan...")),
+        "planning shimmer must restyle the row, never eat its text, got: {rendered:?}"
+    );
+}
+
+#[test]
+fn unrelated_status_keeps_planning_indicator_static() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Drafting plan — researching codebase...")]);
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Running tool: code_search".to_string()),
+        right: None,
+    });
+
+    let rendered = rendered_transcript_widget_lines(&mut session, VIEW_WIDTH, VIEW_ROWS);
+
+    assert!(
+        rendered.iter().any(|line| line.contains("❋ Drafting plan")),
+        "unrelated tool activity should not animate a stale planning indicator"
+    );
+}
+
+#[test]
+fn reduced_motion_keeps_planning_marker_static() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.appearance.reduce_motion_mode = true;
+    session.push_line(InlineMessageKind::Info, vec![make_segment("❋ Drafting plan — researching codebase...")]);
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Drafting plan... (42 chars)".to_string()),
+        right: None,
+    });
+
+    let rendered = rendered_transcript_widget_lines(&mut session, VIEW_WIDTH, VIEW_ROWS);
+    let animated = format!("{} Drafting plan — researching codebase...", pulse_spinner_frame_for_phase(0.0));
+
+    assert!(
+        rendered.iter().any(|line| line.contains("❋ Drafting plan")),
+        "reduced motion should keep the planning label visible"
+    );
+    assert!(
+        !rendered.iter().any(|line| line.contains(&animated)),
+        "reduced motion should not replace the static planning marker with a spinner"
     );
 }
 
@@ -464,6 +533,24 @@ fn stage_state_with_running_tool_shows_tool_status() {
     assert!(session.has_status_spinner(), "stage label must animate while a tool runs");
     assert!(session.is_running_activity());
     assert!(session.input_enabled(), "stage states keep input usable mid-tool");
+}
+
+#[test]
+fn planning_stage_surfaces_live_drafting_status() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.handle_command(InlineCommand::SetActivityState(ActivityState::Planning));
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: Some("Drafting plan... (42 chars)".to_string()),
+        right: None,
+    });
+
+    // The live synthesis status must replace the stage label so the footer
+    // shows the drafting progress (and shimmers) instead of a frozen
+    // "Planning...". Input stays usable: Planning is a non-busy stage.
+    assert_eq!(session.status_left_text(), Some("Drafting plan... (42 chars)"));
+    assert!(session.has_status_spinner(), "drafting status must animate");
+    assert!(session.is_running_activity());
+    assert!(session.input_enabled(), "planning keeps input usable mid-draft");
 }
 
 #[test]
@@ -841,4 +928,44 @@ fn escape_still_interrupts_running_activity_with_a_selection() {
         "running activity keeps interrupt precedence, got {event:?}"
     );
     assert!(session.mouse_selection.has_selection, "interrupt must not silently consume the selection");
+}
+
+#[test]
+fn set_fullscreen_interaction_command_updates_all_fields() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    assert!(session.fullscreen.interaction.copy_on_select, "copy_on_select defaults on");
+    assert_eq!(session.fullscreen.interaction.scroll_speed, 3);
+
+    session.handle_command(InlineCommand::SetFullscreenInteraction {
+        interaction: FullscreenInteractionSettings {
+            mouse_capture: false,
+            copy_on_select: false,
+            scroll_speed: 7,
+        },
+    });
+
+    assert!(!session.fullscreen.interaction.copy_on_select);
+    assert!(!session.fullscreen.interaction.mouse_capture);
+    assert_eq!(session.fullscreen.interaction.scroll_speed, 7);
+}
+
+#[test]
+fn app_session_forwards_fullscreen_interaction_to_core() {
+    use crate::tui::core_tui::app::types::InlineCommand as AppInlineCommand;
+
+    let mut session = app_session_with_input("", 0);
+    assert!(session.core.fullscreen.interaction.copy_on_select);
+
+    session.handle_command(AppInlineCommand::SetFullscreenInteraction {
+        interaction: FullscreenInteractionSettings {
+            mouse_capture: true,
+            copy_on_select: false,
+            scroll_speed: 3,
+        },
+    });
+
+    assert!(
+        !session.core.fullscreen.interaction.copy_on_select,
+        "app-layer command must reach the core session's fullscreen interaction"
+    );
 }

@@ -31,7 +31,7 @@ fn new_local_agent_auto_opens_drawer() {
 }
 
 #[test]
-fn local_agents_drawer_hides_input_while_open() {
+fn local_agents_window_captures_keys_but_keeps_status_line() {
     let mut session = app_session_with_input("draft command", "draft command".len());
 
     session.handle_command(app_types::InlineCommand::SetLocalAgents {
@@ -43,12 +43,13 @@ fn local_agents_drawer_hides_input_while_open() {
     assert!(!session.core.build_input_widget_data(VIEW_WIDTH, 1).cursor_should_be_visible);
 
     let lines = rendered_app_session_lines(&mut session, 20);
-    assert!(session.core.input_area().is_none());
-    assert!(session.core.bottom_panel_area().is_some());
-    assert!(lines.iter().any(|line| line.contains("Local Agents")), "drawer should still render");
+    // Floating window no longer docks over the composer: the input/status
+    // region stays painted so the background indicator remains clickable.
+    assert!(session.core.input_area().is_some());
+    assert!(session.core.bottom_panel_area().is_none());
     assert!(
-        !lines.iter().any(|line| line.contains("draft command")),
-        "hidden composer should not render draft text"
+        lines.iter().any(|line| line.contains("Background")),
+        "expanded window should render, got: {lines:?}"
     );
 }
 
@@ -215,6 +216,20 @@ fn ctrl_r_still_opens_history_picker_for_non_exec_local_agents() {
 
     assert!(event.is_none());
     assert!(session.history_picker_state.active);
+}
+
+#[test]
+fn auto_opened_local_agents_window_closes_when_delegated_work_finishes() {
+    let mut running = sample_local_agent_entry_with_id("a1", "running-agent", app_types::LocalAgentKind::Delegated);
+    running.status = "running".to_string();
+    let mut session = app_session_with_input("", 0);
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![running.clone()] });
+    assert!(session.local_agents_visible());
+
+    let mut done = running;
+    done.status = "completed".to_string();
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![done] });
+    assert!(!session.local_agents_visible(), "auto-opened window should close once live delegated work finishes");
 }
 
 #[test]
@@ -708,16 +723,17 @@ fn exited_exec_entries_do_not_drive_shimmer_while_running_ones_do() {
     let text = rendered.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
     assert!(text.contains("Running 1 background task"), "live exec must shimmer, got: {text:?}");
 
-    // Once everything settles to `exited`, the retained entries keep the
-    // drawer hint but must stop the loading shimmer.
+    // Once everything settles to `exited`, retained history switches the
+    // indicator to a finished summary and must stop the loading shimmer.
     session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![exited] });
     assert!(!session.core.has_background_activity());
-    assert!(session.core.background_activity_status_text().is_none());
+    assert_eq!(session.core.background_activity_status_text().as_deref(), Some("1 agent finished"));
     assert!(!TuiSessionDriver::has_status_spinner(&session));
 
     let rendered = session.core.render_input_status_line(VIEW_WIDTH).expect("input status line");
     let text = rendered.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
     assert!(!text.contains("background task"), "exited exec must not shimmer, got: {text:?}");
+    assert!(text.contains("1 agent finished"), "finished summary should show, got: {text:?}");
     assert!(text.contains("local agents"), "retained exec must keep the drawer hint, got: {text:?}");
 }
 
@@ -811,4 +827,153 @@ fn combined_drawer_and_pty_hint_styles_both_shortcuts_once() {
             .unwrap_or_else(|| panic!("{key} must be its own styled span, got: {rendered:?}"));
         assert!(span.style.add_modifier.contains(Modifier::BOLD), "{key} must be bold as a visual indicator");
     }
+}
+
+#[test]
+fn live_and_finished_counts_split_loading_from_history() {
+    let mut running = sample_local_agent_entry_with_id("a1", "running-agent", app_types::LocalAgentKind::Delegated);
+    running.status = "running".to_string();
+    let mut finished = sample_local_agent_entry_with_id("a2", "done-agent", app_types::LocalAgentKind::Delegated);
+    finished.status = "completed".to_string();
+    let mut failed_bg = sample_local_agent_entry_with_id("b1", "failed-bg", app_types::LocalAgentKind::Background);
+    failed_bg.status = "error".to_string();
+
+    let mut session = app_session_with_input("", 0);
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![running, finished, failed_bg] });
+
+    // Live work drives the running indicator; finished rows stay out of it.
+    assert_eq!(session.core.background_activity_status_text().as_deref(), Some("Running 1 background task..."));
+    let lines = rendered_app_session_lines(&mut session, 30);
+    assert!(
+        lines.iter().any(|line| line.contains("1 running · 2 finished")),
+        "window header should split live vs finished counts, got: {lines:?}"
+    );
+}
+
+#[test]
+fn finished_summary_applies_when_no_live_work_remains() {
+    let mut finished = sample_local_agent_entry_with_id("a1", "done-agent", app_types::LocalAgentKind::Delegated);
+    finished.status = "completed".to_string();
+
+    let mut session = app_session_with_input("", 0);
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![finished.clone(), finished] });
+
+    assert!(!session.core.has_background_activity());
+    assert_eq!(session.core.background_activity_status_text().as_deref(), Some("2 agents finished"));
+}
+
+#[test]
+fn background_indicator_hit_targets_status_text() {
+    let mut running = sample_local_agent_entry_with_id("a1", "running-agent", app_types::LocalAgentKind::Delegated);
+    running.status = "running".to_string();
+
+    let mut session = app_session_with_input("", 0);
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![running] });
+    let _ = rendered_app_session_lines(&mut session, 20);
+
+    let hits = session.core.background_indicator_hits();
+    assert!(!hits.is_empty(), "running background status should be clickable");
+    let hit = hits[0];
+    assert!(hit.height >= 1);
+    assert!(hit.width > 0);
+    assert!(session.core.background_indicator_contains(hit.x, hit.y));
+    let outside = hit.x.saturating_add(hit.width).saturating_add(2);
+    if outside < VIEW_WIDTH {
+        assert!(
+            !session.core.background_indicator_contains(outside, hit.y),
+            "columns past the indicator must not open the window"
+        );
+    }
+    assert!(!session.core.background_indicator_contains(hit.x, hit.y.saturating_sub(1)));
+}
+
+#[test]
+fn combined_hint_hit_covers_key_background_not_local_agents_label() {
+    let mut running = sample_local_agent_entry_with_id("a1", "running-agent", app_types::LocalAgentKind::Delegated);
+    running.status = "running".to_string();
+
+    let mut session = app_session_with_input("", 0);
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![running] });
+    let lines = rendered_app_session_lines(&mut session, 20);
+    assert!(
+        lines.iter().any(|line| line.contains("Alt+S") && line.contains("background")),
+        "combined hint expected, got: {lines:?}"
+    );
+
+    let hits = session.core.background_indicator_hits();
+    assert!(hits.len() >= 2, "expected activity + key-background hits, got {hits:?}");
+    let key_hit = hits.last().copied().expect("key background hit");
+    let activity_hit = hits[0];
+    assert!(
+        key_hit.x >= activity_hit.x + activity_hit.width,
+        "key hit must be disjoint from the activity span: {hits:?}"
+    );
+    // Positive: both the key label and the ` background` tail are clickable.
+    assert!(
+        session.core.background_indicator_contains(key_hit.x, key_hit.y),
+        "key label start must be clickable"
+    );
+    assert!(
+        session
+            .core
+            .background_indicator_contains(key_hit.x + key_hit.width.saturating_sub(1), key_hit.y),
+        "background tail must be clickable"
+    );
+    // Negative: `Alt+S local agents` sits well left of `{key}` (the combined
+    // hint is `↓ or Alt+S local agents · {key} background`).
+    let alt_s_probe = key_hit.x.saturating_sub(6);
+    assert!(
+        !session.core.background_indicator_contains(alt_s_probe, key_hit.y),
+        "Alt+S local agents label must not be clickable (probe {alt_s_probe})"
+    );
+}
+
+#[test]
+fn click_on_background_indicator_toggles_window() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    let mut running = sample_local_agent_entry_with_id("a1", "running-agent", app_types::LocalAgentKind::Delegated);
+    running.status = "running".to_string();
+
+    let mut session = app_session_with_input("", 0);
+    session.handle_command(app_types::InlineCommand::SetLocalAgents { entries: vec![running] });
+    let _ = rendered_app_session_lines(&mut session, 20);
+    session.close_transient();
+    assert!(!session.local_agents_visible());
+    let _ = rendered_app_session_lines(&mut session, 20);
+
+    let hit = session
+        .core
+        .background_indicator_hits()
+        .first()
+        .copied()
+        .expect("indicator hit");
+    let (tx, _rx) = unbounded_channel();
+    let click = CrosstermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: hit.x,
+        row: hit.y,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    session.handle_event(click.clone(), &tx, None);
+    assert!(session.local_agents_visible(), "click should open the expanded window");
+
+    // Re-paint so the indicator hit rect is current while the window is open.
+    let _ = rendered_app_session_lines(&mut session, 20);
+    let hit = session
+        .core
+        .background_indicator_hits()
+        .first()
+        .copied()
+        .expect("indicator hit while open");
+    let click = CrosstermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: hit.x,
+        row: hit.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    session.handle_event(click, &tx, None);
+    assert!(!session.local_agents_visible(), "second click should close the window");
 }

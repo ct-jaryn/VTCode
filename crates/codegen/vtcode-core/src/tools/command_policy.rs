@@ -25,7 +25,18 @@ pub struct CommandPolicyEvaluator {
 impl CommandPolicyEvaluator {
     pub fn from_config(config: &CommandsConfig) -> Self {
         let allow_prefixes = crate::utils::merge_env_patterns(&config.allow_list, "VTCODE_COMMANDS_ALLOW_LIST");
-        let deny_prefixes = crate::utils::merge_env_patterns(&config.deny_list, "VTCODE_COMMANDS_DENY_LIST");
+        // Deny prefix entries are matched against policy segments whose
+        // leading `KEY=value` / `env` words are already stripped, so an entry
+        // authored with an assignment prefix (`FOO=1 rm`) would never match.
+        // Normalize the entry the same way; this is fail-safe because it can
+        // only widen deny matching, never narrow it.
+        let deny_prefixes = crate::utils::merge_env_patterns(&config.deny_list, "VTCODE_COMMANDS_DENY_LIST")
+            .into_iter()
+            .map(|pattern| {
+                let words: Vec<String> = pattern.split_whitespace().map(str::to_string).collect();
+                crate::tools::command_args::command_words_after_environment_prefix(&words).join(" ")
+            })
+            .collect::<Vec<_>>();
 
         let allow_regex_patterns = crate::utils::merge_env_patterns(&config.allow_regex, "VTCODE_COMMANDS_ALLOW_REGEX");
         let deny_regex_patterns = crate::utils::merge_env_patterns(&config.deny_regex, "VTCODE_COMMANDS_DENY_REGEX");
@@ -262,7 +273,17 @@ enum ShellInvocationKind {
 /// handle the syntax, preserving the previous whole-string behavior.
 fn policy_segments(command_text: &str) -> Vec<String> {
     match crate::command_safety::shell_parser::parse_shell_commands(command_text) {
-        Ok(segments) if !segments.is_empty() => segments.into_iter().map(|argv| argv.join(" ")).collect(),
+        Ok(segments) if !segments.is_empty() => segments
+            .into_iter()
+            .map(|argv| {
+                // The shell parser keeps leading `KEY=value` assignments as
+                // words so intent/activity classification can inspect injection
+                // keys. For policy matching they are the command's environment,
+                // not its executable: strip them so `FOO=bar rg …` still matches
+                // the allow rule for `rg` (shared helper, single source of truth).
+                crate::tools::command_args::command_words_after_environment_prefix(&argv).join(" ")
+            })
+            .collect(),
         _ => vec![command_text.to_string()],
     }
 }
@@ -311,6 +332,55 @@ mod tests {
         let evaluator = CommandPolicyEvaluator::from_config(&config);
         assert!(evaluator.allows_text("cargo fmt"));
         assert!(evaluator.allows(&["cargo".into(), "check".into()]));
+    }
+
+    /// Environment-assignment prefixes are the command's environment, not its
+    /// executable: `FOO=bar rg …` / `IFS= read …` must still match the allow
+    /// rule for the real program. Regression guard for the shell parser keeping
+    /// `KEY=value` words so intent/activity classification can inspect them.
+    #[test]
+    fn environment_prefix_does_not_block_allow_rules() {
+        let prefix = CommandsConfig {
+            allow_list: vec!["rg".into(), "read".into(), "printf".into()],
+            ..Default::default()
+        };
+        let prefixed = CommandPolicyEvaluator::from_config(&prefix);
+        assert!(prefixed.allows(&["LANG=C".into(), "rg".into(), "foo".into()]));
+        assert!(prefixed.allows(&["IFS=".into(), "read".into(), "-r".into(), "line".into()]));
+        // An explicit shell wrapper carries the prefix inside its script.
+        assert!(prefixed.allows_text("LANG=C rg foo"));
+
+        // A denied program stays denied even behind an assignment prefix.
+        let deny = CommandsConfig {
+            allow_list: vec!["rg".into()],
+            deny_list: vec!["rm".into()],
+            ..Default::default()
+        };
+        let denying = CommandPolicyEvaluator::from_config(&deny);
+        assert!(denying.allows(&["LANG=C".into(), "rg".into()]));
+        assert!(!denying.allows(&["FOO=1".into(), "rm".into(), "-rf".into(), "/".into()]));
+    }
+
+    /// A deny entry authored *with* an assignment prefix (`FOO=1 rm`) must
+    /// still match: deny entries are compared against segments whose leading
+    /// `KEY=value` words are stripped, so the entry is normalized the same way
+    /// at construction. Fail-safe direction: this can only widen deny
+    /// matching, never narrow it.
+    #[test]
+    fn deny_entry_with_env_prefix_matches_stripped_segment() {
+        let config = CommandsConfig {
+            allow_list: vec!["rg".into()],
+            deny_list: vec!["FOO=1 rm".into(), "env rm".into()],
+            ..Default::default()
+        };
+        let evaluator = CommandPolicyEvaluator::from_config(&config);
+        // Both prefix forms of the deny entry collapse onto the bare program.
+        assert!(!evaluator.allows(&["FOO=1".into(), "rm".into(), "-rf".into(), "/".into()]));
+        assert!(!evaluator.allows(&["env".into(), "rm".into(), "x".into()]));
+        assert!(!evaluator.allows_text("FOO=1 rm -rf /"));
+        // The allow rule for `rg` is unaffected by deny-entry normalization.
+        assert!(evaluator.allows(&["rg".into(), "foo".into()]));
+        assert!(evaluator.allows(&["LANG=C".into(), "rg".into(), "foo".into()]));
     }
 
     #[test]

@@ -75,13 +75,31 @@ impl Session {
             // Render passes the inline custom-note editor, which appends one row
             // to its item; the shared helper measures the same heights.
             let inline_editor = modal::inline_editor_for_step(step);
-            return modal::visible_index_at_row(&step.list, None, inline_editor.as_ref(), &styles, area, row);
+            return modal::visible_index_at_row(
+                &step.list,
+                None,
+                inline_editor.as_ref(),
+                &styles,
+                area,
+                row,
+                wizard.numbered_shortcuts(),
+                false,
+            );
         }
 
         let modal = self.modal_state()?;
         let list = modal.list.as_ref()?;
         // Plain modals never render an inline editor (render passes `None`).
-        modal::visible_index_at_row(list, modal.footer_hint.as_deref(), None, &styles, area, row)
+        modal::visible_index_at_row(
+            list,
+            modal.footer_hint.as_deref(),
+            None,
+            &styles,
+            area,
+            row,
+            modal.search.is_none(),
+            modal.status.is_some(),
+        )
     }
 
     fn mouse_in_modal_area(&self, column: u16, row: u16) -> bool {
@@ -212,6 +230,9 @@ impl Session {
                 }
                 MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                     self.clear_pending_link_click();
+                    if self.handle_sticky_prompt_click(mouse_event) {
+                        return;
+                    }
                     if self.queue_link_click_action(self.transcript_file_link_click_action(
                         mouse_event.column,
                         mouse_event.row,
@@ -251,7 +272,8 @@ impl Session {
                             }
 
                             self.mouse_drag_target = MouseDragTarget::ModalText;
-                            self.mouse_selection.start_selection(mouse_event.column, mouse_event.row);
+                            self.mouse_selection
+                                .start_overlay_selection(mouse_event.column, mouse_event.row);
                             self.mark_dirty();
                             return;
                         }

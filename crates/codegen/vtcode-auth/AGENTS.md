@@ -1,10 +1,10 @@
 # vtcode-auth
 
-[Root AGENTS.md](../AGENTS.md) | OAuth PKCE flows and credential storage for LLM providers.
+[Root AGENTS.md](../../../AGENTS.md) | OAuth PKCE flows and credential storage for LLM providers.
 
 ## Modules
 
-`openai_chatgpt_oauth/` OpenAI ChatGPT OAuth | `openai_refresh_policy/` pure refresh classification | `openai_session_storage/` typed session persistence | `openrouter_oauth/` OpenRouter OAuth | `openrouter_token_storage/` typed token persistence | `mcp_oauth/` MCP server OAuth | `oauth_server/` local callback server | `pkce/` PKCE challenge generation | `credentials/` credential storage (keyring + file) | `auth_service/` OpenAIAccountAuthService | `config/` AuthConfig types | `storage_paths/` path resolution
+`openai_chatgpt_oauth/` OpenAI ChatGPT OAuth | `openai_refresh_policy/` pure refresh classification | `openai_session_storage/` typed session persistence | `openrouter_oauth/` OpenRouter OAuth | `openrouter_token_storage/` typed token persistence | `mcp_oauth/` MCP server OAuth | `oauth_server/` local callback server | `pkce/` PKCE challenge generation | `credentials/` credential storage (keyring + file) | `auth_service/` OpenAIAccountAuthService | `config/` AuthConfig types | `storage_paths/` path resolution | `codex_auth_import.rs` Codex CLI auth.json reuse
 
 ## Rules
 

@@ -35,7 +35,30 @@ Interactive continuation:
 {"session_id":"7","chars":"\u0003"}
 ```
 
-Patch edit:
+Patch edit (call `apply_patch` directly; it is never a shell executable):
+
+```json
+{"input":"*** Begin Patch\n*** Update File: docs/example.md\n@@\n-old\n+new\n*** End Patch\n"}
+```
+
+`input` is canonical; the `patch` alias and supported raw/native payloads remain
+compatible. JSON-only models receive the patch function eagerly; native models
+retain their native representation. Planning and permission restrictions still
+block unauthorized editing.
+
+Context and deletion lines must match exactly. Missing or invalid arguments
+return a concrete JSON example and one correction retry. A typed context
+mismatch reports the affected path and bounded evidence, and permits one fresh
+targeted file read with a limit of 1–200 lines per affected path per turn.
+Use an available file read tool or a single `sed -n` range through
+`exec_command`, for example `{"cmd":"sed -n '1,100p' docs/example.md"}`. It
+can pass the per-path cap and bypasses stale cache reuse. Repeated failures
+cannot replenish it; identical-read loop guards, permissions, budgets, and
+other safeguards still apply. Malformed patches, denied permissions, and path
+violations grant no allowance. Quoted file content does not trigger configuration
+repair advice; genuine configuration errors retain that advice.
+
+The equivalent native patch payload is:
 
 ```diff
 *** Begin Patch

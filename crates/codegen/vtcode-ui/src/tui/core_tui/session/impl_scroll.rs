@@ -120,6 +120,7 @@ impl Session {
         self.mouse_selection.adjust_for_scroll(offset_delta as i32);
         self.mouse_selection.update_selection(scroll.column, scroll.row);
         self.user_scrolled = true;
+        self.invalidate_transcript_viewport();
         self.mark_dirty();
     }
 
@@ -132,6 +133,7 @@ impl Session {
         let offset_delta = self.scroll_manager.offset() as i64 - previous_offset as i64;
         self.mouse_selection.adjust_for_scroll(offset_delta as i32);
         self.user_scrolled = true;
+        self.invalidate_transcript_viewport();
         self.mark_dirty();
     }
 
@@ -144,6 +146,52 @@ impl Session {
         let offset_delta = self.scroll_manager.offset() as i64 - previous_offset as i64;
         self.mouse_selection.adjust_for_scroll(offset_delta as i32);
         self.user_scrolled = false;
+        self.invalidate_transcript_viewport();
         self.mark_dirty();
+    }
+
+    /// Whether the Jump to last change hint should be shown.
+    ///
+    /// Visible only while scrolled up with a tracked change. At the live
+    /// bottom edge there is nothing to jump to.
+    pub(crate) fn should_show_jump_to_last_change(&self) -> bool {
+        self.user_scrolled && self.last_change_line_idx.is_some()
+    }
+
+    /// Scroll so the most recent change is pinned to the bottom edge.
+    ///
+    /// Returns `true` when a jump target existed and the viewport was updated.
+    pub(crate) fn jump_to_last_change(&mut self) -> bool {
+        let Some(target_idx) = self.last_change_line_idx else {
+            return false;
+        };
+        if target_idx >= self.lines.len() || self.transcript_width == 0 {
+            return false;
+        }
+        self.ensure_scroll_metrics();
+        let width = self.transcript_width;
+        let Some((_start_row, end_row)) = self.transcript_message_row_range(width, target_idx) else {
+            return false;
+        };
+        let viewport_rows = self.viewport_height();
+        if viewport_rows == 0 {
+            return false;
+        }
+        let effective_padding = ui::effective_transcript_bottom_padding(viewport_rows);
+        let max_offset = self.scroll_manager.max_offset();
+        let desired_top = end_row.saturating_add(effective_padding).saturating_sub(viewport_rows);
+        let clamped_top = desired_top.min(max_offset);
+        let previous_offset = self.scroll_manager.offset();
+        let new_offset = max_offset.saturating_sub(clamped_top);
+        self.mark_scrolling();
+        self.scroll_manager.set_offset(new_offset);
+        let offset_delta = new_offset as i64 - previous_offset as i64;
+        if offset_delta != 0 {
+            self.mouse_selection.adjust_for_scroll(offset_delta as i32);
+        }
+        self.user_scrolled = new_offset != 0;
+        self.invalidate_transcript_viewport();
+        self.mark_dirty();
+        true
     }
 }

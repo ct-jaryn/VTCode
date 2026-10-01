@@ -24,7 +24,8 @@ use crate::agent::runloop::unified::tool_routing::{
     PreToolHookPhaseResult, ToolPermissionFlow, ensure_tool_permission_with_call_id,
 };
 use crate::agent::runloop::unified::turn::context::{
-    PreparedAssistantToolCall, TurnHandlerOutcome, TurnLoopResult, TurnProcessingContext,
+    PreparedAssistantToolCall, TOOL_NAME_NOT_CLEAN_IDENTIFIER_ERROR, TurnHandlerOutcome, TurnLoopResult,
+    TurnProcessingContext,
 };
 pub(crate) use looping::low_signal_family_key;
 use looping::maybe_apply_spool_read_offset_hint;
@@ -62,6 +63,54 @@ use rate_limit::acquire_adaptive_rate_limit_slot;
 use recovery::try_interactive_circuit_recovery;
 pub(crate) use types::{PreparedToolCall, ToolOutcomeContext, ValidationResult};
 
+/// Whether a preflight reject is a tool-name/identity mistake rather than a
+/// policy block or a repeated argument-schema failure.
+///
+/// Name mistakes (prose-blob tool names, unknown tools, empty names) are
+/// per-call rejects: the model already gets a schema correction and can retry.
+/// Counting them toward the preflight circuit lets one malformed name in an
+/// assistant batch skip every remaining valid sibling
+/// (`drain_preflight_circuit_responses`). Argument-schema failures still count
+/// so a model stuck on bad JSON trips the recovery fuse; policy and security
+/// rejects always count.
+pub(crate) fn preflight_failure_is_llm_mistake(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    // The name-mistake error embeds the raw model-supplied tool name after
+    // the constant. Classify that error on its static prefix only: the name
+    // is arbitrary model prose, and policy phrases inside it ("not allowed",
+    // "command injection", ...) must not flip a name mistake into a policy
+    // block, which would advance the preflight circuit and skip valid
+    // sibling calls in the same batch.
+    let name_mistake_marker = format!("{}:", TOOL_NAME_NOT_CLEAN_IDENTIFIER_ERROR).to_ascii_lowercase();
+    if let Some((static_prefix, _)) = lower.split_once(&name_mistake_marker) {
+        return !is_policy_reject_phrase(static_prefix);
+    }
+    if is_policy_reject_phrase(&lower) {
+        return false;
+    }
+    // Name-mistake allow-list. Each phrase names its producer so rewording
+    // one side keeps the other discoverable:
+    // - `TOOL_NAME_NOT_CLEAN_IDENTIFIER_ERROR` from `turn/context.rs`.
+    // - "unknown tool" from vtcode-core `tools/handlers/router.rs`.
+    // - "empty tool name" from the empty-name guard in this file below.
+    lower.contains(TOOL_NAME_NOT_CLEAN_IDENTIFIER_ERROR)
+        || lower.contains("unknown tool")
+        || lower.contains("empty tool name")
+}
+
+/// Security / policy phrases that always count toward the preflight circuit,
+/// even when they mention a tool name. Keep these phrases tight: a bare
+/// "sandbox" substring would misclassify `Unknown tool: sandbox_helper` as a
+/// policy block.
+fn is_policy_reject_phrase(lower: &str) -> bool {
+    lower.contains("command security check failed")
+        || lower.contains("command injection")
+        || lower.contains("sandbox denied")
+        || lower.contains("sandbox policy")
+        || lower.contains("policy violation")
+        || lower.contains("not allowed")
+}
+
 /// Record a malformed or preflight-invalid tool call. When the independent
 /// preflight circuit breaker reaches its cap, arm a bounded tool-free
 /// recovery pass (mirroring budget-exhaustion and interview-denial) so the
@@ -71,6 +120,9 @@ pub(crate) use types::{PreparedToolCall, ToolOutcomeContext, ValidationResult};
 /// so a blocked build turn was never re-queued and the agent could not
 /// continue (checkpoint turn_874). Policy denials intentionally do not use
 /// this path; they remain governed by the existing blocked-call fuse.
+///
+/// LLM-mistake rejects do not advance the circuit streak and never trip it;
+/// valid sibling calls in the same batch continue to execute.
 pub(crate) fn handle_preflight_failure(
     ctx: &mut TurnProcessingContext<'_>,
     tool_call_id: &str,
@@ -78,9 +130,19 @@ pub(crate) fn handle_preflight_failure(
     error: &str,
     fallback: Option<(String, serde_json::Value)>,
 ) -> Option<TurnHandlerOutcome> {
-    let failure_count = ctx.record_preflight_failure();
+    let is_llm_mistake = preflight_failure_is_llm_mistake(error);
+    let failure_count = if is_llm_mistake {
+        // Report the current streak without advancing it so the model still
+        // sees failure_count telemetry, but a prose blob cannot poison the
+        // batch circuit.
+        ctx.harness_state.consecutive_preflight_failures
+    } else {
+        ctx.record_preflight_failure()
+    };
     let max_failures = max_consecutive_blocked_tool_calls_per_turn(ctx);
-    let circuit_tripped = failure_count >= max_failures;
+    // LLM mistakes never trip the circuit, even if a prior policy streak is
+    // already at the cap: one prose blob must not skip valid sibling calls.
+    let circuit_tripped = !is_llm_mistake && failure_count >= max_failures;
     let schema_correction = preflight_schema_correction(tool_name, error);
     let next_action = if circuit_tripped && ctx.is_planning_active() {
         "Stop retrying this malformed call. Tools are disabled for the next pass — synthesize exactly one complete <proposed_plan> from the evidence already gathered."
@@ -135,6 +197,9 @@ pub(crate) fn handle_preflight_failure(
 }
 
 fn preflight_schema_correction(tool_name: &str, error: &str) -> String {
+    if tool_name == tool_names::APPLY_PATCH || error.contains("apply_patch is a tool") {
+        return vtcode_core::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION.to_string();
+    }
     if matches!(tool_name, tool_names::EXEC_COMMAND | tool_names::UNIFIED_EXEC | "command_session")
         && error.contains("dynamic shell expansion in find commands")
     {
@@ -243,20 +308,7 @@ pub(crate) fn flush_preflight_circuit_recovery(ctx: &mut TurnProcessingContext<'
 /// This is flushed after all responses from the current assistant batch so a
 /// recovery directive is never interleaved with tool responses.
 pub(crate) fn flush_blocked_tool_recovery(ctx: &mut TurnProcessingContext<'_>) {
-    let preview_gate_retried = ctx.harness_state.finish_preview_gate_batch();
     if !ctx.harness_state.take_blocked_tool_recovery() {
-        if preview_gate_retried {
-            let directive = if ctx.is_planning_active() {
-                PLANNING_TOOL_FREE_RECOVERY_DIRECTIVE
-            } else {
-                "Recovery: two assistant batches attempted inspection after the tool preview budget was exhausted without an admitted tool between them. Tools are disabled for this pass. Report the evidence already visible and what remains unverified. Do not claim that all tool access was revoked; spool paging, edits, and verification were still available."
-            };
-            ctx.push_system_message(directive);
-            if ctx.harness_state.recovery_reason.is_none() {
-                ctx.harness_state.recovery_reason = Some("repeated inspection after preview exhaustion".to_string());
-            }
-            ctx.harness_state.switch_to_tool_free_recovery();
-        }
         return;
     }
 
@@ -441,11 +493,6 @@ pub(super) fn finalize_validation_result(
         ValidationResult::Outcome(outcome) => ValidationTransition::Return(Some(outcome)),
         ValidationResult::Handled => {
             ctx.reset_blocked_tool_call_streak();
-            ctx.harness_state.reset_preview_gate_batches();
-            ValidationTransition::Return(None)
-        }
-        ValidationResult::PreviewExhausted => {
-            ctx.harness_state.record_preview_gate_rejection();
             ValidationTransition::Return(None)
         }
         ValidationResult::Blocked => {
@@ -461,7 +508,6 @@ pub(super) fn finalize_validation_result(
         }
         ValidationResult::Proceed(prepared) => {
             ctx.reset_blocked_tool_call_streak();
-            ctx.harness_state.reset_preview_gate_batches();
             ValidationTransition::Proceed(prepared)
         }
     }
@@ -806,6 +852,7 @@ pub(crate) async fn validate_tool_call<'a>(
 ) -> Result<ValidationResult> {
     // Early guard: reject empty tool names with a clear error message.
     // This handles malformed LLM responses where tool name is missing.
+    // The "empty tool name" phrase is matched by `preflight_failure_is_llm_mistake`.
     if tool_name.trim().is_empty() {
         let outcome = handle_preflight_failure(
             ctx,

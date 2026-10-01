@@ -73,7 +73,7 @@ VT Code has undergone significant improvements:
 - **WebMCP Browser Bridge** - Connect a supported browser editor to an active VT Code session or a bounded standalone workspace bridge through authenticated pairing, origin validation, and terminal-owned approval. See [WebMCP Browser Bridge](./user-guide/webmcp.md).
 - **Primary Agent Switching & Mode Guard** - Switch main-session agents (`plan`/`build`/`auto`) with `Shift+Tab`; mode switches lock during a turn to keep tool-access and instructions consistent. See [Keyboard Shortcuts](./user-guide/keyboard-shortcuts.md#agent-and-mode-switching).
 - **Automatic Compaction & Memory Envelope** - Unified compaction orchestration with a shared memory envelope as the single source of truth for both runloops.
-- **`/checkup` Command** - Configuration diagnostics that surface reversible, confirm-before-apply optimizations (e.g. tool-result clearing, client tool search, token-efficiency warnings).
+- **`/config checkup` Command** - Configuration diagnostics that surface reversible, confirm-before-apply optimizations (e.g. tool-result clearing, client tool search, token-efficiency warnings).
 - **GPT-5.6 Models** - Added support for OpenAI's GPT-5.6 family across configurations.
 
 - **GLM-5.3 Model Support** - Z.ai's flagship coding model with frontier long-horizon agentic performance and 1M-token context, as the new ZAI provider default
@@ -90,7 +90,7 @@ VT Code has undergone significant improvements:
 - **Web Search & Fetch** — `web_search` and `defuddle_fetch` tools with TOML-driven network allowlist and domain-scoped approval caching
 - **Post-Tool Recovery Cycles** — Automatic detection and cap enforcement for post-tool recovery loops with temporary file cleanup
 - **CLI `did you mean?`** — Fuzzy suggestions for unrecognized commands with colorized output
-- **Session Resume** — `/continue` slash command to resume the most recent session
+- **Session Resume** — `/resume` picker (CLI: `vtcode --continue`) to resume archived sessions
 - **Loop Detection Hardening** — Blocked-streak fuse prevents false positives; read-extent-aware duplicate detection
 
 See [CHANGELOG](../CHANGELOG.md) for complete details on these improvements.
@@ -112,7 +112,7 @@ New to VT Code? Start with installation and basic usage:
 - **[User Data Directories](./guides/user-data-directories.md)** - XDG/native storage paths, migration, permissions, and troubleshooting
 - **[Status Line Configuration](./guides/status-line.md)** - Customize the inline prompt footer
 - **[Responses API & Reasoning Models](./guides/responses-api-reasoning.md)** - Align reasoning-centric prompts with the OpenAI Responses API
-- **[External Editor Configuration](./tools/EDITOR_CONFIG.md)** - Setup and usage of the `/edit` command with your preferred editor
+- **[External Editor Configuration](./tools/EDITOR_CONFIG.md)** - Setup and usage of the external editor (Ctrl+G) with your preferred editor
 
 ### For Developers
 
@@ -401,6 +401,6 @@ This documentation reflects version 0.133.21 of VT Code, which includes signific
 - query-led `code_search` for definitions, syntactic usages, literal text, and matching paths in the advanced VT Code profile
 - Post-tool recovery cycle tracking with cap checks and temporary file cleanup
 - CLI `did you mean?` suggestions for unrecognized commands
-- `/continue` command to resume the most recent session
+- `/resume` picker (CLI: `vtcode --continue`) to resume archived sessions
 - Loop detection improvements with blocked-streak fuse and read-extent awareness
 - Colorized CLI suggestions and case-insensitive `StatusLineMode` deserialization

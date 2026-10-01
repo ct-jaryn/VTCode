@@ -142,25 +142,23 @@ fn exec_session_summary(metadata: &VTCodeExecSession) -> String {
     )
 }
 
+/// Retain live and finished delegated agents so the expanded window can show
+/// history. `Closed` stays hidden — that status means the user dismissed it.
 pub(super) fn visible_delegated_local_agents(entries: Vec<SubagentStatusEntry>) -> Vec<SubagentStatusEntry> {
     let mut entries = entries
         .into_iter()
-        .filter(|entry| !matches!(entry.status, SubagentStatus::Completed | SubagentStatus::Closed))
+        .filter(|entry| !matches!(entry.status, SubagentStatus::Closed))
         .collect::<Vec<_>>();
     entries.sort_by_key(|left| std::cmp::Reverse(left.updated_at));
     entries
 }
 
+/// Retain live and finished background subprocesses (`Starting`, `Running`,
+/// `Stopped`, `Error`) so the window can show what finished. There is no
+/// dismissed/closed status on this type today.
 pub(super) fn visible_background_local_agents(
-    entries: Vec<BackgroundSubprocessEntry>,
+    mut entries: Vec<BackgroundSubprocessEntry>,
 ) -> Vec<BackgroundSubprocessEntry> {
-    let mut entries = entries
-        .into_iter()
-        .filter(|entry| {
-            matches!(entry.status, BackgroundSubprocessStatus::Starting | BackgroundSubprocessStatus::Running)
-                || (entry.desired_enabled && matches!(entry.status, BackgroundSubprocessStatus::Error))
-        })
-        .collect::<Vec<_>>();
     entries.sort_by_key(|left| std::cmp::Reverse(left.updated_at));
     entries
 }

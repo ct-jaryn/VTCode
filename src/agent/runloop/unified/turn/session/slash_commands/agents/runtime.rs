@@ -1,3 +1,5 @@
+use crate::agent::runloop::ui_list;
+use crate::agent::runloop::ui_list::Tone;
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -89,6 +91,7 @@ pub(super) async fn show_threads_modal(mut ctx: SlashCommandContext<'_>) -> Resu
                     "{} {} {} {}",
                     entry.id, entry.display_label, entry.agent_name, entry.description
                 )),
+                ..Default::default()
             })
             .collect::<Vec<_>>();
         let selected = items.first().and_then(|item| item.selection.clone());
@@ -105,6 +108,7 @@ pub(super) async fn show_threads_modal(mut ctx: SlashCommandContext<'_>) -> Resu
             search: Some(InlineListSearchConfig {
                 label: String::new(),
                 placeholder: Some("id, agent, source, status".to_string()),
+                fuzzy: false,
             }),
             hotkeys: vec![
                 TransientHotkey {
@@ -116,6 +120,7 @@ pub(super) async fn show_threads_modal(mut ctx: SlashCommandContext<'_>) -> Resu
                     action: TransientHotkeyAction::GracefulStopSubagent,
                 },
             ],
+            status: None,
         }));
 
         let Some(action) =
@@ -314,7 +319,8 @@ pub(super) async fn show_active_agent_inspector(
                         action: TransientHotkeyAction::GracefulStopSubagent,
                     },
                 ],
-            }));
+    status: None,
+}));
 
         let Some(action) = wait_for_inspector_action(
             ctx.handle,
@@ -441,7 +447,8 @@ pub(super) async fn show_background_subprocess_inspector(
                         action: TransientHotkeyAction::ForceCancelSubagent,
                     },
                 ],
-            }));
+    status: None,
+}));
 
         let Some(action) = wait_for_inspector_action(
             ctx.handle,
@@ -700,64 +707,76 @@ fn truncate_preview_text(text: String, max_chars: usize) -> String {
 fn active_agent_inspector_items(entry: &SubagentStatusEntry) -> Vec<InlineListItem> {
     let mut items = Vec::new();
     if entry.transcript_path.is_some() {
-        items.push(InlineListItem {
-            title: "Open transcript".to_string(),
-            subtitle: Some("Open the archived child transcript in your editor".to_string()),
-            badge: Some("Open".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ConfigAction(format!("{THREAD_TRANSCRIPT_PREFIX}{}", entry.id))),
-            search_value: Some("open transcript".to_string()),
-        });
+        items.push(
+            ui_list::action(
+                "Open transcript",
+                "Open the archived child transcript in your editor".to_string(),
+                Some("Open".to_string()),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction(format!("{THREAD_TRANSCRIPT_PREFIX}{}", entry.id))),
+            )
+            .with_search_value("open transcript".to_string()),
+        );
     }
-    items.push(InlineListItem {
-        title: "Cancel agent".to_string(),
-        subtitle: Some("Stop this delegated agent and keep the main session active".to_string()),
-        badge: Some("Ctrl+K".to_string()),
-        indent: 0,
-        selection: Some(InlineListSelection::ConfigAction(format!("{THREAD_CANCEL_PREFIX}{}", entry.id))),
-        search_value: Some("cancel active agent".to_string()),
-    });
+    items.push(
+        ui_list::action(
+            "Cancel agent",
+            "Stop this delegated agent and keep the main session active".to_string(),
+            Some("Ctrl+K".to_string()),
+            Tone::Accent,
+            Some(InlineListSelection::ConfigAction(format!("{THREAD_CANCEL_PREFIX}{}", entry.id))),
+        )
+        .with_search_value("cancel active agent".to_string()),
+    );
     items
 }
 
 fn background_subprocess_inspector_items(entry: &BackgroundSubprocessEntry) -> Vec<InlineListItem> {
     let mut items = Vec::new();
     if entry.transcript_path.is_some() {
-        items.push(InlineListItem {
-            title: "Open transcript".to_string(),
-            subtitle: Some("Open the archived subprocess transcript".to_string()),
-            badge: Some("Open".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_TRANSCRIPT_PREFIX}{}", entry.id))),
-            search_value: Some("open subprocess transcript".to_string()),
-        });
+        items.push(
+            ui_list::action(
+                "Open transcript",
+                "Open the archived subprocess transcript".to_string(),
+                Some("Open".to_string()),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_TRANSCRIPT_PREFIX}{}", entry.id))),
+            )
+            .with_search_value("open subprocess transcript".to_string()),
+        );
     }
     if entry.archive_path.is_some() {
-        items.push(InlineListItem {
-            title: "Open archive".to_string(),
-            subtitle: Some("Open the persisted session archive".to_string()),
-            badge: Some("Open".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_ARCHIVE_PREFIX}{}", entry.id))),
-            search_value: Some("open subprocess archive".to_string()),
-        });
+        items.push(
+            ui_list::action(
+                "Open archive",
+                "Open the persisted session archive".to_string(),
+                Some("Open".to_string()),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_ARCHIVE_PREFIX}{}", entry.id))),
+            )
+            .with_search_value("open subprocess archive".to_string()),
+        );
     }
-    items.push(InlineListItem {
-        title: "Graceful stop".to_string(),
-        subtitle: Some("Request a clean shutdown for this subprocess".to_string()),
-        badge: Some("Ctrl+K".to_string()),
-        indent: 0,
-        selection: Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_STOP_PREFIX}{}", entry.id))),
-        search_value: Some("graceful stop subprocess".to_string()),
-    });
-    items.push(InlineListItem {
-        title: "Force cancel".to_string(),
-        subtitle: Some("Close the subprocess immediately and clean up".to_string()),
-        badge: Some("Ctrl+X".to_string()),
-        indent: 0,
-        selection: Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_CANCEL_PREFIX}{}", entry.id))),
-        search_value: Some("force cancel subprocess".to_string()),
-    });
+    items.push(
+        ui_list::action(
+            "Graceful stop",
+            "Request a clean shutdown for this subprocess".to_string(),
+            Some("Ctrl+K".to_string()),
+            Tone::Accent,
+            Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_STOP_PREFIX}{}", entry.id))),
+        )
+        .with_search_value("graceful stop subprocess".to_string()),
+    );
+    items.push(
+        ui_list::action(
+            "Force cancel",
+            "Close the subprocess immediately and clean up".to_string(),
+            Some("Ctrl+X".to_string()),
+            Tone::Accent,
+            Some(InlineListSelection::ConfigAction(format!("{SUBPROCESS_CANCEL_PREFIX}{}", entry.id))),
+        )
+        .with_search_value("force cancel subprocess".to_string()),
+    );
     items
 }
 
@@ -824,22 +843,22 @@ async fn confirm_list_action(
         title.to_string(),
         vec![message.to_string()],
         vec![
-            InlineListItem {
-                title: confirm_label.to_string(),
-                subtitle: Some("Proceed with the selected action".to_string()),
-                badge: Some("Confirm".to_string()),
-                indent: 0,
-                selection: Some(InlineListSelection::ConfigAction("agents:confirm-action".to_string())),
-                search_value: Some("confirm action".to_string()),
-            },
-            InlineListItem {
-                title: "Cancel".to_string(),
-                subtitle: Some("Keep the subprocess/session running".to_string()),
-                badge: None,
-                indent: 0,
-                selection: Some(InlineListSelection::ConfigAction("agents:cancel-action".to_string())),
-                search_value: Some("cancel".to_string()),
-            },
+            ui_list::action(
+                confirm_label.to_string(),
+                "Proceed with the selected action".to_string(),
+                Some("Confirm".to_string()),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction("agents:confirm-action".to_string())),
+            )
+            .with_search_value("confirm action".to_string()),
+            ui_list::action(
+                "Cancel",
+                "Keep the subprocess/session running".to_string(),
+                None,
+                Tone::Neutral,
+                Some(InlineListSelection::ConfigAction("agents:cancel-action".to_string())),
+            )
+            .with_search_value("cancel".to_string()),
         ],
         Some(InlineListSelection::ConfigAction("agents:cancel-action".to_string())),
         None,
@@ -860,11 +879,11 @@ pub(super) fn render_background_setup_guidance(ctx: &mut SlashCommandContext<'_>
     )?;
     ctx.renderer.line(
         MessageStyle::Output,
-        r#"Add `[subagents.background] enabled = true` and `default_agent = "<agent-name>"`, then use `Ctrl+B` or `/subprocesses toggle`."#,
+        r#"Add `[subagents.background] enabled = true` and `default_agent = "<agent-name>"`, then use `Ctrl+B` or `/config subprocess toggle`."#,
     )?;
     ctx.renderer.line(
         MessageStyle::Info,
-        "Use `/agent` to browse available agent names. `/subprocesses` opens the Local Agents drawer.",
+        "Use `/agent` to browse available agent names. `/config subprocess` opens the Local Agents drawer.",
     )?;
     Ok(())
 }

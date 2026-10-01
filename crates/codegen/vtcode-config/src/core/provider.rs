@@ -12,8 +12,9 @@ pub enum ThinkingDisplayMode {
     /// Thinking blocks are returned with an empty `thinking` field (default on Claude Opus 4.7).
     Omitted,
     /// Only the short progress updates written between tool calls come back as
-    /// text; reasoning stays hidden (Claude Opus 5.5, Claude Fable 5.x). Sent
-    /// with the `thinking-display-updates-2026-08-18` beta.
+    /// text; reasoning stays hidden (Claude Sonnet 5.5, Claude Opus 5.5,
+    /// Claude Fable 5.x). Sent with the `thinking-display-updates-2026-08-18`
+    /// beta.
     Updates,
     /// Catch-all for unknown display modes added by the Anthropic API.
     #[serde(other)]
@@ -39,6 +40,7 @@ impl ThinkingDisplayMode {
 pub enum OpenAIServiceTier {
     Flex,
     Priority,
+    Ultrafast,
 }
 
 impl OpenAIServiceTier {
@@ -46,6 +48,7 @@ impl OpenAIServiceTier {
         match self {
             Self::Flex => "flex",
             Self::Priority => "priority",
+            Self::Ultrafast => "ultrafast",
         }
     }
 
@@ -55,6 +58,8 @@ impl OpenAIServiceTier {
             Some(Self::Flex)
         } else if normalized.eq_ignore_ascii_case("priority") {
             Some(Self::Priority)
+        } else if normalized.eq_ignore_ascii_case("ultrafast") {
+            Some(Self::Ultrafast)
         } else {
             None
         }
@@ -408,7 +413,7 @@ pub struct OpenAIConfig {
 
     /// Optional native OpenAI `service_tier` request parameter.
     /// Leave unset to inherit the Project-level default service tier.
-    /// Options: "flex", "priority"
+    /// Options: "flex", "priority", "ultrafast"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<OpenAIServiceTier>,
 
@@ -490,7 +495,8 @@ pub struct AnthropicConfig {
     ///   - "summarized": Thinking blocks contain summarized text (default on Opus 4.6 and earlier).
     ///   - "omitted": Thinking blocks have an empty `thinking` field (default on Opus 4.7+).
     ///   - "updates": Only the progress updates between tool calls are returned as text
-    ///     (Claude Opus 5.5 and Claude Fable 5.x; the VT Code default on Claude Opus 5.5).
+    ///     (Claude Sonnet 5.5, Claude Opus 5.5 and Claude Fable 5.x; the VT Code
+    ///     default on Claude Sonnet 5.5 and Claude Opus 5.5).
     ///     Ignored on models without progress updates.
     ///
     /// When set, this overrides the model-specific default.
@@ -932,6 +938,14 @@ instructions = "Preserve the bug reproduction steps."
     fn openai_config_parses_flex_service_tier() {
         let parsed: OpenAIConfig = toml::from_str(r#"service_tier = "flex""#).expect("config should parse");
         assert_eq!(parsed.service_tier, Some(OpenAIServiceTier::Flex));
+    }
+
+    #[test]
+    fn openai_config_parses_ultrafast_service_tier() {
+        let parsed: OpenAIConfig = toml::from_str(r#"service_tier = "ultrafast""#).expect("config should parse");
+        assert_eq!(parsed.service_tier, Some(OpenAIServiceTier::Ultrafast));
+        assert_eq!(OpenAIServiceTier::Ultrafast.as_str(), "ultrafast");
+        assert_eq!(OpenAIServiceTier::parse("ULTRAFAST"), Some(OpenAIServiceTier::Ultrafast));
     }
 
     #[test]

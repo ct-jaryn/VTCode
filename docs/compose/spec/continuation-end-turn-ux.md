@@ -62,8 +62,8 @@ In-turn `apply_tracker_continuation_override`:
 Orchestration after a turn end:
 
 1. Probe tracker; progress-reset budget on completed-count change.
-2. If plan-mode recoverable blocked → queue plan continuation or one compact plan-status line (no generic blocked nudge).
-3. Else if tracker auto-queue eligible → queue follow-up + system directive; on success print one info line (`Tracker auto-continue turn N/M`) and **continue** the session loop (no blocked handoff, no blocked placeholder).
+2. If plan-mode recoverable blocked → queue plan continuation quietly (`tracing::debug!`, no TUI echo) or one compact plan-status line (no generic blocked nudge).
+3. Else if tracker auto-queue eligible → queue follow-up + system directive; on success stay quiet (`tracing::debug!`, no `Tracker auto-continue turn N/M` TUI line) and **continue** the session loop (no blocked handoff, no blocked placeholder). Mid-turn application of the queued harness follow-up also stays quiet — only genuine user steering prints `Steered into active turn`.
 4. Else if tracker auto-queue was eligible but **exhausted/queue-full** → print **one** info line stating autonomous continuation cannot resume and the user must type `continue` (or fix the named blocker). Do **not** also emit the generic blocked-handoff “Type 'continue'” stack or set the blocked TUI placeholder for this recoverable budget end when tracker steps remain.
 5. Else if Blocked and not auto-queued → existing blocked handoff + placeholder (true handoffs, verification escalation, unknown reasons).
 6. Tracker-complete / no incomplete work → reset budgets; ordinary completion path.

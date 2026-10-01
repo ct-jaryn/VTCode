@@ -71,8 +71,13 @@ pub(crate) fn normalization_strip_keys() -> impl Iterator<Item = &'static str> {
 /// any offset/limit/page key. A bounded read is a deliberate request for exact
 /// content at a known location.
 pub(crate) fn args_have_bounded_extent(args: &Value) -> bool {
-    args.as_object()
-        .is_some_and(|obj| bounded_extent_keys().any(|key| obj.contains_key(key)))
+    // Key presence alone would admit malformed extents (e.g. `"limit": "abc"`
+    // or duplicated aliases) as "bounded"; require the values to actually
+    // parse so the admission stays a real sub-range request.
+    extent_values_are_valid(args)
+        && args
+            .as_object()
+            .is_some_and(|obj| bounded_extent_keys().any(|key| obj.contains_key(key)))
 }
 
 fn as_u64_lenient(value: &Value) -> Option<u64> {
@@ -196,6 +201,18 @@ mod tests {
     fn whole_file_read_is_not_bounded() {
         assert!(!args_have_bounded_extent(&json!({"action": "read", "path": "src/lib.rs"})));
         assert!(!args_have_bounded_extent(&json!({"action": "read", "path": "src/lib.rs", "encoding": "utf8"})));
+    }
+
+    #[test]
+    fn malformed_extent_values_are_not_bounded() {
+        // Key presence alone must not admit a read past the read-after-write
+        // guard: unparseable extents are not a deliberate sub-range request.
+        assert!(!args_have_bounded_extent(&json!({"limit": "abc"})));
+        assert!(!args_have_bounded_extent(&json!({"offset": true})));
+        // Two aliases from the same family are a malformed extent.
+        assert!(!args_have_bounded_extent(&json!({"offset": 1, "start_line": 2})));
+        // Cross-family combinations stay bounded (e.g. page + per_page).
+        assert!(args_have_bounded_extent(&json!({"page": 2, "per_page": 50})));
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn session_with_highlights(highlights: Vec<InlineHeaderHighlight>) -> Session {
 #[test]
 fn copy_notification_renders_in_input_status_line() {
     let mut session = fresh_session();
-    session.show_copy_notification();
+    session.show_copy_notification(277);
 
     let rendered = session
         .render_input_status_line(VIEW_WIDTH)
@@ -82,13 +82,23 @@ fn copy_notification_renders_in_input_status_line() {
         .map(|span| span.content.as_ref())
         .collect::<String>();
 
-    assert!(rendered.contains("Copied to clipboard"));
+    assert!(rendered.contains("copied 277 chars to clipboard"), "got: {rendered}");
 }
 
 #[test]
-fn copy_notification_expires_after_five_seconds() {
+fn copy_notification_includes_char_count() {
+    assert_eq!(Session::format_copy_notification(1), "copied 1 char to clipboard");
+    assert_eq!(Session::format_copy_notification(277), "copied 277 chars to clipboard");
+
     let mut session = fresh_session();
-    session.show_copy_notification();
+    session.show_copy_notification(1);
+    assert_eq!(session.copy_notification_text().as_deref(), Some("copied 1 char to clipboard"));
+}
+
+#[test]
+fn copy_notification_expires_after_duration() {
+    let mut session = fresh_session();
+    session.show_copy_notification(5);
     session.copy_notification_until = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
     session.handle_tick();
 
@@ -97,7 +107,7 @@ fn copy_notification_expires_after_five_seconds() {
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
         .unwrap_or_default();
 
-    assert!(!rendered.contains("Copied to clipboard"));
+    assert!(!rendered.contains("chars to clipboard"));
 }
 
 #[test]
@@ -170,10 +180,12 @@ fn permission_overlay_surfaces_action_required_status() {
             indent: 0,
             selection: Some(InlineListSelection::ToolApproval(true)),
             search_value: None,
+            ..Default::default()
         }],
         selected: Some(InlineListSelection::ToolApproval(true)),
         search: None,
         hotkeys: Vec::new(),
+        status: None,
     }));
 
     let rendered = session
@@ -218,7 +230,7 @@ fn set_primary_agent_command_updates_header_badge() {
 
     session.handle_command(InlineCommand::SetPrimaryAgent { name: None, color: None });
     let text = header_line_text(&mut session);
-    assert!(text.contains("Duck"));
+    assert!(text.contains("Build"));
     assert!(!text.contains("Reviewer"));
 }
 
@@ -264,10 +276,12 @@ fn non_permission_overlay_surfaces_generic_action_required_status() {
             indent: 0,
             selection: Some(InlineListSelection::ConfigAction("open".to_string())),
             search_value: None,
+            ..Default::default()
         }],
         selected: None,
         search: None,
         hotkeys: Vec::new(),
+        status: None,
     }));
 
     let rendered = session

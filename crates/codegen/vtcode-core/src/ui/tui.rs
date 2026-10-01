@@ -63,6 +63,7 @@ mod headless {
         ScrollLineDown,
         ScrollPageUp,
         ScrollPageDown,
+        JumpToLastChange,
         OpenFileInEditor(String),
         OpenUrl(String),
         LaunchEditor,
@@ -227,6 +228,17 @@ mod headless {
             _selected: Option<InlineListSelection>,
             _search: Option<InlineListSearchConfig>,
             _footer_hint: Option<String>,
+        ) {
+        }
+        pub fn show_list_modal_with_status(
+            &self,
+            _title: String,
+            _lines: Vec<String>,
+            _items: Vec<InlineListItem>,
+            _selected: Option<InlineListSelection>,
+            _search: Option<InlineListSearchConfig>,
+            _footer_hint: Option<String>,
+            _status: Option<vtcode_commons::ui_protocol::InlineStatus>,
         ) {
         }
         pub fn close_modal(&self) {

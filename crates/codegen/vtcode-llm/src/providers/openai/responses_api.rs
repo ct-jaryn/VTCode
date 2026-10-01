@@ -100,6 +100,17 @@ fn append_user_content_parts(content_parts: &mut Vec<Value>, message_content: &M
                         }
                     }
                     ContentPart::Image { data, mime_type, .. } => {
+                        // Providers accept only JPEG/PNG/GIF/WebP. Anything else
+                        // (notably SVG auto-attached from quoted paths in diffs)
+                        // fails the whole request with 400, so drop it here
+                        // instead of letting one bad part poison the turn.
+                        if !vtcode_commons::image::is_supported_image_mime_type(mime_type) {
+                            tracing::warn!(
+                                mime_type = %mime_type,
+                                "dropping unsupported image MIME type for Responses API"
+                            );
+                            continue;
+                        }
                         let image_url = {
                             let mut s = String::with_capacity(13 + mime_type.len() + data.len());
                             s.push_str("data:");
@@ -708,6 +719,28 @@ mod tests {
 
         let payload = build_standard_responses_payload(&request, true).expect("payload should build");
         assert_multimodal_tool_result(payload);
+    }
+
+    #[test]
+    fn standard_payload_drops_unsupported_svg_image_parts() {
+        // Regression: an SVG auto-attached from a quoted path in a WebMCP diff
+        // must not reach the wire — providers fail the whole request with 400
+        // `invalid_value` when any `input_image` carries an unsupported type.
+        let request = LLMRequest {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::user_with_parts(vec![
+                crate::provider::ContentPart::text("see the logo".to_string()),
+                crate::provider::ContentPart::image("PHN2Zz48L3N2Zz4=".to_string(), "image/svg+xml".to_string()),
+            ])]
+            .into(),
+            ..Default::default()
+        };
+
+        let payload = build_standard_responses_payload(&request, true).expect("payload should build");
+        let serialized = serde_json::to_string(&payload.input).expect("payload input should serialize");
+        assert!(!serialized.contains("image/svg+xml"), "SVG image must be dropped from the wire payload");
+        assert!(!serialized.contains("input_image"), "no image part should remain");
+        assert!(serialized.contains("see the logo"), "the text part must survive");
     }
 
     #[test]

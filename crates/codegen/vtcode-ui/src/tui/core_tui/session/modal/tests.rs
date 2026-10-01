@@ -16,6 +16,7 @@ fn base_item(title: &str) -> InlineListItem {
         indent: 0,
         selection: None,
         search_value: None,
+        ..Default::default()
     }
 }
 
@@ -36,7 +37,11 @@ fn sample_list_modal() -> ModalState {
     ];
 
     let list_state = ModalListState::new(items, None);
-    let search_state = ModalSearchState::from(InlineListSearchConfig { label: "Search".to_owned(), placeholder: None });
+    let search_state = ModalSearchState::from(InlineListSearchConfig {
+        label: "Search".to_owned(),
+        placeholder: None,
+        fuzzy: false,
+    });
 
     let mut modal = ModalState {
         title: "Test".to_owned(),
@@ -49,11 +54,13 @@ fn sample_list_modal() -> ModalState {
         restore_cursor: true,
         search: Some(search_state),
         is_help_modal: false,
+        status: None,
     };
 
-    if let Some(list) = modal.list.as_mut() {
-        let query = modal.search.as_ref().map(|state| state.query.clone()).unwrap_or_default();
-        list.apply_search(&query);
+    if let Some(list) = modal.list.as_mut()
+        && let Some(search) = modal.search.as_ref()
+    {
+        list.apply_search(&search.query, search.fuzzy);
     }
 
     modal
@@ -587,6 +594,7 @@ fn sample_list_modal_with_count(count: usize) -> ModalState {
         restore_cursor: true,
         search: None,
         is_help_modal: false,
+        status: None,
     }
 }
 
@@ -614,7 +622,7 @@ fn apply_search_retains_related_structure() {
 
     let mut state = ModalListState::new(vec![divider, header, matching, non_matching], None);
 
-    state.apply_search("general");
+    state.apply_search("general", false);
 
     let visible_titles: Vec<String> = state
         .visible_indices
@@ -635,9 +643,239 @@ fn apply_search_retains_related_structure() {
     assert_eq!(state.visible_selectable_count(), 2);
     assert_eq!(state.filter_query(), Some("general"));
 
-    state.apply_search("");
+    state.apply_search("", false);
     assert_eq!(state.visible_indices.len(), state.items.len());
     assert!(state.filter_query().is_none());
+}
+
+#[test]
+fn fuzzy_search_matches_subsequences_and_ranks_by_relevance() {
+    let subsequence_match = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:model_provider".to_owned())),
+        search_value: Some("model & provider choose the active provider".to_owned()),
+        ..base_item("Model & Provider")
+    };
+    let contiguous_match = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:mp_grid".to_owned())),
+        search_value: Some("mp grid".to_owned()),
+        ..base_item("MP Grid")
+    };
+    let non_matching = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:editor".to_owned())),
+        search_value: Some("editor".to_owned()),
+        ..base_item("Editor")
+    };
+
+    let mut state = ModalListState::new(vec![subsequence_match, contiguous_match, non_matching], None);
+
+    state.apply_search("mp", true);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    // "mp" is a contiguous match in "MP Grid" but only a gapped subsequence in
+    // "Model & Provider", so the stronger match ranks first.
+    assert_eq!(visible_titles, vec!["MP Grid".to_owned(), "Model & Provider".to_owned()]);
+}
+
+#[test]
+fn fuzzy_search_matching_header_includes_whole_group() {
+    let divider = InlineListItem {
+        title: ui::INLINE_USER_MESSAGE_DIVIDER_SYMBOL.repeat(3),
+        ..base_item("")
+    };
+    let header = InlineListItem {
+        search_value: Some("model & provider".to_owned()),
+        ..base_item("Model & Provider")
+    };
+    let provider_child = InlineListItem {
+        indent: 1,
+        selection: Some(InlineListSelection::ConfigAction("settings:set:provider".to_owned())),
+        search_value: Some("active provider".to_owned()),
+        ..base_item("Provider")
+    };
+    let response_child = InlineListItem {
+        indent: 1,
+        selection: Some(InlineListSelection::ConfigAction("settings:set:response".to_owned())),
+        search_value: Some("response behavior".to_owned()),
+        ..base_item("Response Behavior")
+    };
+    let other_header = InlineListItem {
+        selection: None,
+        search_value: Some("tools & integrations".to_owned()),
+        ..base_item("Tools & Integrations")
+    };
+
+    let mut state = ModalListState::new(vec![divider, header, provider_child, response_child, other_header], None);
+
+    // "mdl" only fuzzy-matches the "Model & Provider" header.
+    state.apply_search("mdl", true);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    let expected_divider = ui::INLINE_USER_MESSAGE_DIVIDER_SYMBOL.repeat(3);
+    assert_eq!(
+        visible_titles,
+        vec![
+            expected_divider,
+            "Model & Provider".to_owned(),
+            "Provider".to_owned(),
+            "Response Behavior".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn fuzzy_search_matching_child_shows_header_but_not_unmatched_siblings() {
+    let header = InlineListItem {
+        search_value: Some("model & provider".to_owned()),
+        ..base_item("Model & Provider")
+    };
+    let matching_child = InlineListItem {
+        indent: 1,
+        selection: Some(InlineListSelection::ConfigAction("settings:set:provider".to_owned())),
+        search_value: Some("active provider".to_owned()),
+        ..base_item("Provider")
+    };
+    let other_child = InlineListItem {
+        indent: 1,
+        selection: Some(InlineListSelection::ConfigAction("settings:set:response".to_owned())),
+        search_value: Some("response behavior".to_owned()),
+        ..base_item("Response Behavior")
+    };
+
+    let mut state = ModalListState::new(vec![header, matching_child, other_child], None);
+
+    state.apply_search("active", true);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    assert_eq!(visible_titles, vec!["Model & Provider".to_owned(), "Provider".to_owned()]);
+}
+
+#[test]
+fn exact_mode_unchanged_when_fuzzy_disabled() {
+    let subsequence_match = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:model_provider".to_owned())),
+        search_value: Some("model & provider".to_owned()),
+        ..base_item("Model & Provider")
+    };
+    let substring_match = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:mp_grid".to_owned())),
+        search_value: Some("mp grid".to_owned()),
+        ..base_item("MP Grid")
+    };
+
+    let mut state = ModalListState::new(vec![subsequence_match, substring_match], None);
+    state.apply_search("mdl", false);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    // Subsequence queries do not match without the fuzzy flag.
+    assert!(visible_titles.is_empty());
+
+    state.apply_search("grid", false);
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    assert_eq!(visible_titles, vec!["MP Grid".to_owned()]);
+}
+
+#[test]
+fn fuzzy_search_multi_term_requires_every_term_to_match() {
+    let active_provider = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:set:provider".to_owned())),
+        search_value: Some("active provider".to_owned()),
+        ..base_item("Provider")
+    };
+    let response_behavior = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:set:response".to_owned())),
+        search_value: Some("response behavior".to_owned()),
+        ..base_item("Response Behavior")
+    };
+
+    let mut state = ModalListState::new(vec![active_provider, response_behavior], None);
+    state.apply_search("act prv", true);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    // Every term must fuzzy-match: "act prv" covers only "active provider";
+    // "response behavior" fails the "act" term and is excluded.
+    assert_eq!(visible_titles, vec!["Provider".to_owned()]);
+}
+
+#[test]
+fn fuzzy_search_preserves_original_order_for_equal_scores() {
+    let first = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:first".to_owned())),
+        search_value: Some("group settings".to_owned()),
+        ..base_item("First")
+    };
+    let second = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:second".to_owned())),
+        search_value: Some("group settings".to_owned()),
+        ..base_item("Second")
+    };
+
+    let mut state = ModalListState::new(vec![first, second], None);
+    state.apply_search("grp", true);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    // Identical search values score identically; the stable sort must keep
+    // the curated order instead of shuffling equally relevant items.
+    assert_eq!(visible_titles, vec!["First".to_owned(), "Second".to_owned()]);
+
+    // Clearing the query in fuzzy mode restores every item.
+    state.apply_search("", true);
+    assert_eq!(state.visible_indices.len(), state.items.len());
+}
+
+#[test]
+fn fuzzy_search_attaches_divider_to_matching_singleton() {
+    let unmatched = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:alpha".to_owned())),
+        search_value: Some("alpha".to_owned()),
+        ..base_item("Alpha")
+    };
+    let divider = InlineListItem {
+        title: ui::INLINE_USER_MESSAGE_DIVIDER_SYMBOL.repeat(3),
+        ..base_item("")
+    };
+    let matched = InlineListItem {
+        selection: Some(InlineListSelection::ConfigAction("settings:open:beta".to_owned())),
+        search_value: Some("beta".to_owned()),
+        ..base_item("Beta")
+    };
+
+    let mut state = ModalListState::new(vec![unmatched, divider, matched], None);
+    state.apply_search("beta", true);
+
+    let visible_titles: Vec<String> = state
+        .visible_indices
+        .iter()
+        .map(|&idx| state.items[idx].title.clone())
+        .collect();
+    assert_eq!(visible_titles, vec![ui::INLINE_USER_MESSAGE_DIVIDER_SYMBOL.repeat(3), "Beta".to_owned()]);
 }
 
 #[test]
@@ -732,6 +970,7 @@ fn list_modal_space_no_longer_submits_config_action() {
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction("permissions.default:cycle".to_owned())),
                 search_value: None,
+                ..Default::default()
             }],
             None,
         )),
@@ -740,6 +979,7 @@ fn list_modal_space_no_longer_submits_config_action() {
         restore_cursor: true,
         search: None,
         is_help_modal: false,
+        status: None,
     };
 
     let key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
@@ -763,6 +1003,7 @@ fn list_modal_alt_d_is_swallowed_without_changing_density() {
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction("permissions.default:cycle".to_owned())),
                 search_value: None,
+                ..Default::default()
             }],
             None,
         )),
@@ -771,6 +1012,7 @@ fn list_modal_alt_d_is_swallowed_without_changing_density() {
         restore_cursor: true,
         search: None,
         is_help_modal: false,
+        status: None,
     };
 
     assert!(modal.list.as_ref().expect("config list should exist").compact_rows());
@@ -794,6 +1036,7 @@ fn subtitle_lists_default_to_compact_density() {
             indent: 0,
             selection: Some(InlineListSelection::Model(0)),
             search_value: Some("gpt-5".to_owned()),
+            ..Default::default()
         }],
         None,
     );
@@ -811,6 +1054,7 @@ fn single_line_lists_keep_compact_flag_cleared() {
             indent: 0,
             selection: Some(InlineListSelection::ToolApproval(true)),
             search_value: None,
+            ..Default::default()
         }],
         None,
     );
@@ -877,6 +1121,269 @@ fn list_modal_backtab_moves_backward() {
     assert_eq!(selection, Some(InlineListSelection::Model(0)));
 }
 
+fn searchless_approval_modal() -> ModalState {
+    fn option(title: &str, selection: InlineListSelection) -> InlineListItem {
+        InlineListItem {
+            title: title.to_owned(),
+            subtitle: None,
+            badge: None,
+            indent: 0,
+            selection: Some(selection),
+            search_value: None,
+            ..Default::default()
+        }
+    }
+    ModalState {
+        title: "Test".to_owned(),
+        lines: vec![],
+        footer_hint: None,
+        hotkeys: Vec::new(),
+        list: Some(ModalListState::new(
+            vec![
+                option("Approve once", InlineListSelection::Model(0)),
+                option("Allow for session", InlineListSelection::Model(1)),
+                InlineListItem {
+                    title: String::new(),
+                    subtitle: None,
+                    badge: None,
+                    indent: 0,
+                    selection: None,
+                    search_value: None,
+                    ..Default::default()
+                },
+                option("Deny once", InlineListSelection::Model(2)),
+            ],
+            None,
+        )),
+        secure_prompt: None,
+        restore_input: true,
+        restore_cursor: true,
+        search: None,
+        status: None,
+        is_help_modal: false,
+    }
+}
+
+#[test]
+fn digit_key_selects_nth_option_without_submitting() {
+    let mut modal = searchless_approval_modal();
+    let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+    let result = modal.handle_list_key_event(&key, ModalKeyModifiers::default());
+
+    // Two-step: highlight moves (Emit), Enter still confirms.
+    assert!(matches!(
+        result,
+        ModalListKeyResult::Emit(InlineEvent::Overlay(OverlayEvent::SelectionChanged(OverlaySelectionChange::List(
+            InlineListSelection::Model(1)
+        ))))
+    ));
+    let selection = modal.list.as_ref().and_then(|list| list.current_selection());
+    assert_eq!(selection, Some(InlineListSelection::Model(1)));
+}
+
+#[test]
+fn digit_key_skips_separator_row() {
+    let mut modal = searchless_approval_modal();
+    let key = KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE);
+    let result = modal.handle_list_key_event(&key, ModalKeyModifiers::default());
+
+    // The separator carries no number: 3 lands on Deny, not the gap.
+    assert!(matches!(
+        result,
+        ModalListKeyResult::Emit(InlineEvent::Overlay(OverlayEvent::SelectionChanged(OverlaySelectionChange::List(
+            InlineListSelection::Model(2)
+        ))))
+    ));
+    let selection = modal.list.as_ref().and_then(|list| list.current_selection());
+    assert_eq!(selection, Some(InlineListSelection::Model(2)));
+}
+
+#[test]
+fn digit_for_current_selection_redraws_without_leaking() {
+    let mut modal = searchless_approval_modal();
+    let key = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE);
+    let result = modal.handle_list_key_event(&key, ModalKeyModifiers::default());
+
+    // Already there: no selection change, but the keypress is still
+    // consumed — repeat presses must not fall through to the composer.
+    assert!(matches!(result, ModalListKeyResult::Redraw));
+    let selection = modal.list.as_ref().and_then(|list| list.current_selection());
+    assert_eq!(selection, Some(InlineListSelection::Model(0)));
+}
+
+#[test]
+fn out_of_range_and_zero_digits_are_swallowed() {
+    for digit in ['0', '9'] {
+        let mut modal = searchless_approval_modal();
+        let key = KeyEvent::new(KeyCode::Char(digit), KeyModifiers::NONE);
+        let result = modal.handle_list_key_event(&key, ModalKeyModifiers::default());
+
+        assert!(matches!(result, ModalListKeyResult::HandledNoRedraw), "digit {digit} must not leak");
+        let selection = modal.list.as_ref().and_then(|list| list.current_selection());
+        assert_eq!(selection, Some(InlineListSelection::Model(0)), "digit {digit} must not move selection");
+    }
+}
+
+#[test]
+fn digit_with_command_modifier_is_ignored() {
+    let mut modal = searchless_approval_modal();
+    let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+    let result = modal.handle_list_key_event(&key, ModalKeyModifiers { command: true, ..ModalKeyModifiers::default() });
+
+    assert!(matches!(result, ModalListKeyResult::NotHandled));
+    let selection = modal.list.as_ref().and_then(|list| list.current_selection());
+    assert_eq!(selection, Some(InlineListSelection::Model(0)));
+}
+
+#[test]
+fn digit_with_open_search_filters_instead_of_selecting() {
+    let mut modal = sample_list_modal();
+    let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+    let _ = modal.handle_list_key_event(&key, ModalKeyModifiers::default());
+
+    // Search owns digits while open: the query filters, selection is untouched.
+    assert_eq!(modal.search.as_ref().map(|search| search.query.as_str()), Some("2"));
+}
+
+#[test]
+fn numbered_shortcuts_gate_covers_empty_and_crowded_lists() {
+    let empty = ModalListState::new(Vec::new(), None);
+    assert!(!empty.numbered_shortcuts());
+
+    let nine: Vec<InlineListItem> = (0..9)
+        .map(|index| InlineListItem {
+            title: format!("Option {index}"),
+            subtitle: None,
+            badge: None,
+            indent: 0,
+            selection: Some(InlineListSelection::Model(index)),
+            search_value: None,
+            ..Default::default()
+        })
+        .collect();
+    let nine = ModalListState::new(nine, None);
+    assert!(nine.numbered_shortcuts());
+    assert_eq!(nine.shortcut_number(8), Some(9));
+
+    let mut ten = (0..10)
+        .map(|index| InlineListItem {
+            title: format!("Option {index}"),
+            subtitle: None,
+            badge: None,
+            indent: 0,
+            selection: Some(InlineListSelection::Model(index)),
+            search_value: None,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    ten.push(InlineListItem {
+        title: String::new(),
+        subtitle: None,
+        badge: None,
+        indent: 0,
+        selection: None,
+        search_value: None,
+        ..Default::default()
+    });
+    let ten = ModalListState::new(ten, None);
+    assert!(!ten.numbered_shortcuts(), "crowded lists offer no digits");
+}
+
+fn wizard_step_with_options(count: usize) -> WizardStep {
+    WizardStep {
+        title: "Q1".to_owned(),
+        question: "Pick".to_owned(),
+        items: (0..count)
+            .map(|index| InlineListItem {
+                title: format!("Choice {}", index + 1),
+                selection: Some(InlineListSelection::AskUserChoice {
+                    tab_id: "q1".to_owned(),
+                    choice_id: format!("c{index}"),
+                    text: None,
+                }),
+                ..base_item(&format!("Choice {}", index + 1))
+            })
+            .collect(),
+        completed: false,
+        answer: None,
+        allow_freeform: false,
+        freeform_label: None,
+        freeform_placeholder: None,
+        freeform_default: None,
+    }
+}
+
+#[test]
+fn wizard_numbered_shortcuts_require_multistep_searchless_capped_step() {
+    let multistep = WizardModalState::new(
+        "Pick".to_owned(),
+        vec![wizard_step_with_options(2)],
+        0,
+        None,
+        WizardModalMode::MultiStep,
+    );
+    assert!(multistep.numbered_shortcuts());
+
+    let crowded = WizardModalState::new(
+        "Pick".to_owned(),
+        vec![wizard_step_with_options(10)],
+        0,
+        None,
+        WizardModalMode::MultiStep,
+    );
+    assert!(!crowded.numbered_shortcuts(), "crowded steps offer no digits");
+
+    let tabbed = WizardModalState::new(
+        "Pick".to_owned(),
+        vec![wizard_step_with_options(2)],
+        0,
+        None,
+        WizardModalMode::TabbedList,
+    );
+    assert!(!tabbed.numbered_shortcuts(), "tabbed wizards navigate by tabs, not digits");
+
+    let searching = WizardModalState::new(
+        "Pick".to_owned(),
+        vec![wizard_step_with_options(2)],
+        0,
+        Some(InlineListSearchConfig {
+            label: "Search".to_owned(),
+            placeholder: None,
+            fuzzy: false,
+        }),
+        WizardModalMode::MultiStep,
+    );
+    assert!(!searching.numbered_shortcuts(), "digits filter while search is open");
+}
+
+#[test]
+fn wizard_crowded_step_swallows_digits_instead_of_submitting() {
+    let mut wizard = WizardModalState::new(
+        "Pick".to_owned(),
+        vec![wizard_step_with_options(10)],
+        0,
+        None,
+        WizardModalMode::MultiStep,
+    );
+    let result = wizard.handle_key_event(&make_key(KeyCode::Char('1')), ModalKeyModifiers::default());
+
+    assert!(matches!(result, ModalListKeyResult::HandledNoRedraw), "dead digits must not submit");
+}
+
+#[test]
+fn wizard_tabbed_list_leaves_digits_unbound() {
+    let mut wizard = WizardModalState::new(
+        "Pick".to_owned(),
+        vec![wizard_step_with_options(2)],
+        0,
+        None,
+        WizardModalMode::TabbedList,
+    );
+    let result = wizard.handle_key_event(&make_key(KeyCode::Char('1')), ModalKeyModifiers::default());
+
+    assert!(matches!(result, ModalListKeyResult::NotHandled));
+}
+
 #[test]
 fn list_modal_control_navigation_moves_selection() {
     let mut modal = sample_list_modal();
@@ -903,7 +1410,7 @@ fn list_search_preserves_selection_when_item_matches() {
     list.select_next();
 
     let previous = list.current_selection();
-    list.apply_search("other");
+    list.apply_search("other", false);
 
     assert_eq!(list.current_selection(), previous);
 }
@@ -914,7 +1421,7 @@ fn list_search_resets_selection_when_item_removed() {
     let list = modal.list.as_mut().expect("list state");
     list.select_next();
 
-    list.apply_search("general");
+    list.apply_search("general", false);
 
     assert_eq!(list.current_selection(), Some(InlineListSelection::Model(0)));
 }
@@ -948,4 +1455,55 @@ fn list_modal_page_navigation_respects_viewport() {
 
     let selection = modal.list.as_ref().and_then(|state| state.current_selection());
     assert_eq!(selection, Some(InlineListSelection::Model(0)));
+}
+
+#[test]
+fn apply_search_matches_title_and_description_without_search_value() {
+    let mut list = ModalListState::new(
+        vec![
+            InlineListItem {
+                title: "Tool Display Mode".to_string(),
+                subtitle: Some("expanded compact".to_string()),
+                badge: None,
+                indent: 0,
+                selection: Some(InlineListSelection::Model(0)),
+                search_value: None,
+                ..Default::default()
+            },
+            InlineListItem {
+                title: "Other".to_string(),
+                subtitle: Some("unrelated".to_string()),
+                badge: None,
+                indent: 0,
+                selection: Some(InlineListSelection::Model(1)),
+                search_value: None,
+                ..Default::default()
+            },
+        ],
+        None,
+    );
+    list.apply_search("display", false);
+    assert_eq!(list.visible_indices, vec![0]);
+    list.apply_search("compact", false);
+    assert_eq!(list.visible_indices, vec![0]);
+}
+
+#[test]
+fn apply_search_prefers_explicit_search_value_over_title() {
+    let mut list = ModalListState::new(
+        vec![InlineListItem {
+            title: "Hidden title terms".to_string(),
+            subtitle: None,
+            badge: None,
+            indent: 0,
+            selection: Some(InlineListSelection::Model(0)),
+            search_value: Some("only-this".to_string()),
+            ..Default::default()
+        }],
+        None,
+    );
+    list.apply_search("hidden", false);
+    assert!(list.visible_indices.is_empty(), "search_value is the sole corpus when set");
+    list.apply_search("only-this", false);
+    assert_eq!(list.visible_indices, vec![0]);
 }

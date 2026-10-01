@@ -124,6 +124,11 @@ create_compatibility_asset() {
         rm -f "$output"
         return 1
     fi
+    if [[ "$name" == *.tar.gz ]] && ! chmod +x "$output"; then
+        echo "could not make Unix compatibility asset executable: $name" >&2
+        rm -f "$output"
+        return 1
+    fi
     return 0
 }
 

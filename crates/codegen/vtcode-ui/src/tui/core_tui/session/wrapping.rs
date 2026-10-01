@@ -91,15 +91,16 @@ pub(crate) fn wrap_line_preserving_urls(line: Line<'static>, max_width: usize) -
         return vec![Line::default()];
     }
 
+    // Fast path: check spans without joining text (hotpath: the join was a
+    // per-row String alloc on every reflow).
+    if !line.spans.iter().any(|span| contains_preserved_token(span.content.as_ref())) {
+        return super::text_utils::wrap_line(line, max_width);
+    }
+
     let text: Cow<'_, str> = match line.spans.as_slice() {
         [span] => span.content.clone(),
         _ => Cow::Owned(line.spans.iter().map(|s| s.content.as_ref()).collect()),
     };
-
-    // No URLs - use standard wrapping (delegates to text_utils)
-    if !contains_preserved_token(&text) {
-        return super::text_utils::wrap_line(line, max_width);
-    }
 
     // Find all preserved tokens in the text
     let urls: Vec<_> = PRESERVED_TOKEN_PATTERN
@@ -151,6 +152,22 @@ fn wrap_mixed_content(
     let mut text_pos = 0usize;
     let source_spans = source_spans(&line);
     let fallback_style = line.spans.first().map(|span| span.style).unwrap_or_default();
+    // Blockquote (`│ `) and list hanging indents must survive wrapping so
+    // wrapped quote continuations keep their bar instead of degrading to
+    // bare spaces (or column 0 in this URL-aware path).
+    let continuation_prefix = super::text_utils::hanging_prefix_for_text(text);
+    let continuation_width = super::text_utils::display_width(&continuation_prefix);
+    let use_continuation_prefix =
+        !continuation_prefix.is_empty() && continuation_width > 0 && continuation_width < max_width;
+    let continuation_style = if continuation_prefix.contains('│') {
+        line.spans
+            .iter()
+            .find(|span| span.content.contains('│'))
+            .map(|span| span.style)
+            .unwrap_or(fallback_style)
+    } else {
+        fallback_style
+    };
 
     fn trim_trailing_wrap_whitespace(spans: &mut Vec<Span<'static>>) {
         while let Some(last) = spans.last_mut() {
@@ -166,6 +183,21 @@ fn wrap_mixed_content(
             break;
         }
     }
+
+    let ensure_prefix = |current_line: &mut Vec<Span<'static>>, current_width: &mut usize, result: &[Line<'static>]| {
+        if use_continuation_prefix && current_line.is_empty() && !result.is_empty() {
+            push_styled_span(current_line, &continuation_prefix, continuation_style);
+            *current_width = continuation_width;
+        }
+    };
+
+    let line_start_width = |result: &[Line<'static>]| -> usize {
+        if use_continuation_prefix && !result.is_empty() {
+            continuation_width
+        } else {
+            0
+        }
+    };
 
     let flush_line = |spans: &mut Vec<Span<'static>>, result: &mut Vec<Line<'static>>| {
         if spans.is_empty() {
@@ -186,6 +218,7 @@ fn wrap_mixed_content(
             let grapheme_start = token_start + offset;
             let grapheme_end = grapheme_start + grapheme.len();
             if grapheme_width == 0 {
+                ensure_prefix(current_line, current_width, result);
                 push_source_range(current_line, &source_spans, text, grapheme_start, grapheme_end, fallback_style);
                 continue;
             }
@@ -193,6 +226,7 @@ fn wrap_mixed_content(
                 flush_line(current_line, result);
                 *current_width = 0;
             }
+            ensure_prefix(current_line, current_width, result);
             push_source_range(current_line, &source_spans, text, grapheme_start, grapheme_end, fallback_style);
             *current_width += grapheme_width;
         }
@@ -227,17 +261,20 @@ fn wrap_mixed_content(
                 let token_end = token_start + token.len();
                 token_offset += token.len();
                 if token_width == 0 {
+                    ensure_prefix(current_line, current_width, result);
                     push_source_range(current_line, &source_spans, text, token_start, token_end, fallback_style);
                     continue;
                 }
 
                 let token_is_whitespace = token.chars().all(char::is_whitespace);
-                let has_content = *current_width > 0;
+                let line_start = line_start_width(result);
+                let has_content = *current_width > line_start;
 
                 if token_is_whitespace && !result.is_empty() && !has_content {
                     continue;
                 }
 
+                ensure_prefix(current_line, current_width, result);
                 if *current_width + token_width <= max_width {
                     push_source_range(current_line, &source_spans, text, token_start, token_end, fallback_style);
                     *current_width += token_width;
@@ -257,6 +294,7 @@ fn wrap_mixed_content(
                         flush_line(current_line, result);
                         *current_width = 0;
                     }
+                    ensure_prefix(current_line, current_width, result);
                     push_source_range(current_line, &source_spans, text, token_start, token_end, fallback_style);
                     *current_width += token_width;
                     continue;
@@ -292,6 +330,7 @@ fn wrap_mixed_content(
                 flush_line(&mut current_line, &mut result);
                 current_width = 0;
             }
+            ensure_prefix(&mut current_line, &mut current_width, &result);
             push_source_range(&mut current_line, &source_spans, text, *url_start, *url_end, fallback_style);
             current_width += url_width;
         } else {
@@ -459,5 +498,24 @@ mod tests {
                 (" now", after_style),
             ]
         );
+    }
+
+    #[test]
+    fn blockquote_mixed_content_keeps_bar_on_continuation() {
+        let line = Line::from(Span::raw("│ alpha beta https://x.io gamma delta epsilon zeta eta theta"));
+        let wrapped = wrap_line_preserving_urls(line, 20);
+        assert!(wrapped.len() > 1, "narrow width must wrap, got {wrapped:?}");
+        let rendered: Vec<String> = wrapped
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        for (idx, text) in rendered.iter().enumerate() {
+            assert!(
+                text.starts_with("│ "),
+                "blockquote continuation {idx} must keep bar, got {text:?} in {rendered:?}"
+            );
+        }
+        let joined = rendered.join(" ");
+        assert!(joined.contains("https://x.io"));
     }
 }

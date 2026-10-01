@@ -104,6 +104,149 @@ fn contains_verification_invocation(command: &str) -> bool {
         .is_some_and(|commands| commands.iter().any(|words| is_verification_invocation(words)))
 }
 
+/// Whether a command inspects search results that normally produce output.
+///
+/// Used only for progress accounting: an empty read-only search pipeline can
+/// exit successfully when its final filter masks the search's no-match status.
+/// Quiet/existence probes intentionally return no text and are excluded. This
+/// predicate grants no execution permissions and never verifies mutations.
+pub fn shell_command_is_output_search(args: &Value) -> bool {
+    let Some(command) = crate::tools::command_args::raw_command_text(args) else {
+        return false;
+    };
+    let Some(segments) = static_shell_command_words(&command) else {
+        return false;
+    };
+    let mut saw_search = false;
+    for words in &segments {
+        if !command_words_are_readonly(words) || is_verification_invocation(words) {
+            return false;
+        }
+        let words = crate::tools::command_args::command_words_after_environment_prefix(words);
+        if command_words_are_grep_search(words) {
+            if grep_words_request_quiet_output(words) {
+                return false;
+            }
+            saw_search = true;
+        }
+    }
+    saw_search
+}
+
+fn grep_words_request_quiet_output(words: &[String]) -> bool {
+    let is_rg = words
+        .first()
+        .and_then(|word| Path::new(word).file_name())
+        .is_some_and(|name| name == "rg");
+    let mut arguments = words.iter().skip(1);
+    let mut quiet = false;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--" => break,
+            "--quiet" | "--silent" => quiet = true,
+            "--no-quiet" if is_rg => quiet = false,
+            _ if argument.starts_with("--") => {
+                // Values can look like options, including patterns such as `-query`.
+                let takes_value = matches!(
+                    argument.as_str(),
+                    "--regexp"
+                        | "--file"
+                        | "--after-context"
+                        | "--before-context"
+                        | "--context"
+                        | "--max-count"
+                        | "--include"
+                        | "--exclude"
+                        | "--exclude-from"
+                        | "--exclude-dir"
+                        | "--label"
+                        | "--directories"
+                        | "--devices"
+                ) || (is_rg
+                    && matches!(
+                        argument.as_str(),
+                        "--glob"
+                            | "--iglob"
+                            | "--ignore-file"
+                            | "--pre-glob"
+                            | "--type"
+                            | "--type-not"
+                            | "--type-add"
+                            | "--type-clear"
+                            | "--replace"
+                            | "--encoding"
+                            | "--engine"
+                            | "--color"
+                            | "--colors"
+                            | "--threads"
+                            | "--max-depth"
+                            | "--max-columns"
+                            | "--max-filesize"
+                            | "--dfa-size-limit"
+                            | "--regex-size-limit"
+                            | "--context-separator"
+                            | "--field-context-separator"
+                            | "--field-match-separator"
+                            | "--hyperlink-format"
+                            | "--path-separator"
+                            | "--sort"
+                            | "--sortr"
+                            | "--generate"
+                    ));
+                if takes_value {
+                    arguments.next();
+                }
+            }
+            _ if argument.starts_with('-') => {
+                let mut flags = argument.chars().skip(1).peekable();
+                while let Some(flag) = flags.next() {
+                    if flag == 'q' {
+                        quiet = true;
+                    }
+                    let takes_value = matches!(flag, 'e' | 'f' | 'A' | 'B' | 'C' | 'm' | 'd')
+                        || (is_rg && matches!(flag, 'g' | 't' | 'T' | 'r' | 'E' | 'j' | 'M'))
+                        || (!is_rg && flag == 'D');
+                    if takes_value {
+                        if flags.peek().is_none() {
+                            arguments.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    quiet
+}
+
+/// Whether exit code 1 belongs to a standalone grep-style search.
+/// Compound commands, shell wrappers and redirected diagnostics cannot prove
+/// the search's no-match status, even when their visible output is empty.
+pub fn shell_command_is_standalone_grep_search(args: &Value) -> bool {
+    let Some(command) = crate::tools::command_args::raw_command_text(args) else {
+        return false;
+    };
+    let Some(segments) = static_shell_command_words(&command) else {
+        return false;
+    };
+    let [words] = segments.as_slice() else {
+        return false;
+    };
+    shell_words::split(&command).is_ok_and(|raw_words| raw_words == *words)
+        && command_words_are_readonly(words)
+        && command_words_are_grep_search(words)
+}
+
+fn command_words_are_grep_search(words: &[String]) -> bool {
+    let words = crate::tools::command_args::command_words_after_environment_prefix(words);
+    let program = words
+        .first()
+        .and_then(|word| Path::new(word).file_name())
+        .and_then(|name| name.to_str());
+    matches!(program, Some("rg" | "grep" | "egrep" | "fgrep"))
+}
+
 /// Detect a project-appropriate default verifier for autonomous recovery.
 ///
 /// Inspects well-known project markers under `workspace_root` and returns a
@@ -608,6 +751,92 @@ mod tests {
     }
 
     #[test]
+    fn output_search_recognizes_static_search_pipelines() {
+        for command in [
+            "rg --files --hidden -g '.markdownlint*'",
+            "rg --files --hidden | rg -i 'markdownlint' | sed -n '1,15p'",
+            "git ls-files | grep -i markdownlint | head -10",
+            "LANG=C /usr/bin/grep -n missing README.md",
+            "rg -- '-q' README.md",
+            "rg -e -query src | head -10",
+            "grep -ne-query README.md",
+            "rg --regexp --quiet src",
+            "rg -g '-q*' missing src",
+            "rg '-g-q*' missing src",
+            "rg -q --no-quiet missing src",
+        ] {
+            assert!(shell_command_is_output_search(&exec_command(command)), "{command}");
+        }
+        assert!(shell_command_is_output_search(&json!({"command": ["rg", "missing", "src"]})));
+    }
+
+    #[test]
+    fn output_search_excludes_quiet_probes_and_unproven_commands() {
+        for command in [
+            "rg -q pattern src",
+            "grep -nq pattern README.md",
+            "rg --quiet pattern src | head -10",
+            "grep --silent pattern README.md",
+            "rg -e -query -q src",
+            "grep -nqe-query README.md",
+            "rg --regexp --quiet --quiet src",
+            "rg -q --no-quiet -q missing src",
+            "echo 'rg missing'",
+            "cat empty.txt",
+            "cargo check | rg error",
+            "rg missing src; touch result.txt",
+            "rg missing $(pwd)",
+            "rg missing src > result.txt",
+            "rg --pre 'touch result.txt' missing src",
+        ] {
+            assert!(!shell_command_is_output_search(&exec_command(command)), "{command}");
+        }
+        assert!(!shell_command_is_output_search(&json!({})));
+    }
+
+    #[test]
+    fn output_search_distinguishes_separator_values_from_quiet_flags() {
+        for option in [
+            "--context-separator",
+            "--field-context-separator",
+            "--field-match-separator",
+        ] {
+            let command = format!("rg {option} -q missing src | head -10");
+            assert!(shell_command_is_output_search(&exec_command(&command)), "{command}");
+            let quiet_command = format!("rg {option} -q --quiet missing src | head -10");
+            assert!(!shell_command_is_output_search(&exec_command(&quiet_command)), "{quiet_command}");
+        }
+    }
+
+    #[test]
+    fn standalone_grep_search_preserves_exit_status_ownership() {
+        for command in [
+            "rg missing src",
+            "grep -q missing README.md",
+            "LANG=C /usr/bin/grep -n missing README.md",
+            "rg 'a|b' src",
+            "fgrep missing README.md",
+        ] {
+            assert!(shell_command_is_standalone_grep_search(&exec_command(command)), "{command}");
+        }
+        assert!(shell_command_is_standalone_grep_search(&json!({"command": ["rg", "missing", "src"]})));
+        for command in [
+            "rg missing src; false",
+            "rg missing src && false",
+            "rg missing src | grep other",
+            "! rg missing src",
+            "(rg missing src)",
+            "echo '/rg missing'; false",
+            "rg missing src 2>/dev/null",
+            "rg missing src 2>&1",
+            "rg missing $(pwd)",
+            "rg --pre 'false' missing src",
+        ] {
+            assert!(!shell_command_is_standalone_grep_search(&exec_command(command)), "{command}");
+        }
+    }
+
+    #[test]
     fn admitted_verification_attempt_allows_truncation_but_blocks_smuggled_mutations() {
         for command in [
             "cargo check --locked 2>&1 | head -c 4000",
@@ -721,7 +950,10 @@ mod tests {
             "git diff -oout",
             "git log --output=out",
             "git show --textconv",
-            "git -C /external/repo=alt status",
+            // `-C <dir> <read-only sub>` is an Inspection now (the redirect
+            // only changes which repository is read); config injection stays
+            // a Mutation.
+            "git -c core.fsmonitor=touch status",
             "find . -fprint output.txt",
             "find . -fprintf output.txt '%p'",
             "rg --hostname-bin sh pattern",

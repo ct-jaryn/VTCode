@@ -28,7 +28,7 @@ A reproducible-run envelope (`schema_version` 1):
 | `harness` / `harness_version` | Which VT Code produced the numbers. |
 | `provider` / `model` | The model route under test. |
 | `suite_path` / `suite_sha256` | Pins the exact task definitions to the metrics. |
-| `report` | Per-task and aggregate pass@k / pass^k, cost, duration, trace summaries. |
+| `report` | Per-task and aggregate pass@k / pass^k, cost, duration, trace summaries. Cost-efficiency fields (`cost_per_solve`, `mean_cost_per_attempt`, `mean_tokens_per_attempt`, `mean_turns_per_attempt`) appear once attempts are priced; they are `null` when any attempt has unknown pricing (unknown cost is not free) or nothing passed. The markdown report adds an `Efficiency: cost/solve $X · $Y per attempt · Z tokens · W turns` line on the same terms. |
 
 Publishing "verified on these models with these scores" means attaching this envelope plus the
 suite file; the SHA-256 digest ties the numbers to the tasks. Per-attempt traces (turn/tool/error

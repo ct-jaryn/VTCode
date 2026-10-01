@@ -88,7 +88,7 @@ pub(crate) fn deterministic_output_diagnosis(tool_name: &str, args: &Value, outp
         "The tool returned a failure-like result; the available evidence does not establish a more specific cause."
     };
     let next_action = if grep_no_match {
-        "Treat this as an empty search result and refine the query only if a match is still needed."
+        "Treat this as an empty search result within the queried scope. Search again only for a new scope or question; otherwise continue the task."
     } else if apply_patch_collision {
         "Call the `apply_patch` tool with `input` containing the patch (run `search_tools` first if it is deferred); do not run `apply_patch` via `exec_command`."
     } else if exit_code == Some(127) || command_not_found {
@@ -112,6 +112,20 @@ pub(crate) fn deterministic_error_diagnosis(error: &ToolExecutionError, failure_
         error.category.user_label(),
         error_message
     );
+    if error.patch_context_mismatch_path().is_some() {
+        return ToolFailureDiagnosis::new(
+            observed,
+            "The patch context or deletion lines do not match the current file exactly.",
+            "Use one fresh file read (1-200 lines) or single sed -n range of the affected path, then retry apply_patch with exact current context.",
+        );
+    }
+    if error.is_exec_session_not_found() {
+        return ToolFailureDiagnosis::new(
+            observed,
+            "The supplied exec session ID is absent from this runtime; this does not establish the command's outcome.",
+            "Recover the exact session ID from the original response. If completion is recorded, reuse its output. Rerun only if fresh execution is still needed.",
+        );
+    }
     let likely_cause = match error.category {
         ErrorCategory::Authentication => "The provider rejected the configured credentials or authentication state.",
         ErrorCategory::PermissionDenied | ErrorCategory::PolicyViolation | ErrorCategory::PlanningPolicyViolation => {
@@ -179,7 +193,9 @@ pub(super) fn is_policy_sensitive(category: ErrorCategory) -> bool {
 }
 
 pub(super) fn is_deterministic_only_error(error: &ToolExecutionError) -> bool {
-    is_safeguard_failure(error)
+    error.patch_failure.is_some()
+        || error.is_exec_session_not_found()
+        || is_safeguard_failure(error)
         || matches!(error.category, ErrorCategory::InvalidParameters | ErrorCategory::ToolNotFound)
 }
 

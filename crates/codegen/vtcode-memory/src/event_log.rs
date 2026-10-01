@@ -13,6 +13,9 @@ use vtcode_commons::VtCodePaths;
 use vtcode_exec_events::{EVENT_SCHEMA_VERSION, ThreadEvent, ThreadItemDetails, VersionedThreadEvent};
 
 use crate::error::SessionStoreError;
+
+/// Sidecar lock file flock-held while a session's event-log handles are open.
+pub(crate) const SESSION_LOCK_FILE: &str = "session.lock";
 use crate::manifest::{ManifestStore, PendingCapRewrite};
 use crate::session_dir;
 
@@ -313,6 +316,10 @@ struct SessionShared {
     state: Mutex<LogState>,
     eviction_lock: Mutex<()>,
     initialized: AtomicBool,
+    /// Exclusive flock on the session's `session.lock`, held for as long as
+    /// any handle to this session exists. Retention reads it as a liveness
+    /// signal so an open-but-idle session is never marked or evicted.
+    liveness_lock: Option<File>,
 }
 
 /// Return the process-wide shared state for one session's canonical event file.
@@ -347,9 +354,29 @@ fn shared_session(events_path: &Path, session_id: &str) -> Result<Arc<SessionSha
         state: Mutex::new(LogState::new(session_id)),
         eviction_lock: Mutex::new(()),
         initialized: AtomicBool::new(false),
+        liveness_lock: acquire_liveness_lock(events_path),
     });
     shared_by_path.insert(key, Arc::downgrade(&shared));
     Ok(shared)
+}
+
+/// Best-effort exclusive flock on the session's `session.lock`.
+///
+/// The lock is the liveness signal retention reads (`session_dir_is_live`): a
+/// held lock means a live process still has the session open. The crate has
+/// no logging surface and this is an advisory signal, not persistence, so a
+/// failure to create/open/lock degrades to unlocked (previous retention
+/// behavior) instead of failing the session open or swallowing a persistence
+/// error. The fd is released automatically when the shared handle drops.
+fn acquire_liveness_lock(events_path: &Path) -> Option<File> {
+    let dir = events_path.parent()?;
+    let lock_path = dir.join(SESSION_LOCK_FILE);
+    VtCodePaths::write_private_file_atomic_if_absent(&lock_path, b"").ok()?;
+    let file = std::fs::OpenOptions::new().read(true).write(true).open(&lock_path).ok()?;
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(_) => None,
+    }
 }
 
 /// Canonical append-only event log for a single session.

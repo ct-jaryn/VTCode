@@ -60,6 +60,12 @@ unicode-width    = { workspace = true }
 vtcode-commons   = { workspace = true }
 vtcode-diff      = { workspace = true, features = ["serde", "ratatui"] }
 vtcode-config    = { workspace = true }
+hotpath          = { workspace = true, optional = true }
+
+[features]
+default = []
+# hotpath profiling for TUI hot paths (render, reflow, input). Zero-cost when off.
+profiling = ["dep:hotpath", "hotpath/hotpath", "hotpath/hotpath-alloc"]
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard          = { workspace = true }
@@ -68,6 +74,7 @@ arboard          = { workspace = true }
 criterion = { workspace = true }
 insta = "1.39"
 serial_test = { workspace = true }
+tempfile = { workspace = true }
 
 [[bench]]
 name = "markdown_render"
@@ -76,6 +83,10 @@ harness = false
 [[bench]]
 name = "transcript"
 harness = false
+
+[[example]]
+name = "tui_hotpath"
+required-features = ["profiling"]
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 # vtcode-eval
 
-[Root AGENTS.md](../AGENTS.md) | Agent evaluation framework: pass@k / pass^k metrics, capability/regression evals, environment-based outcome verification.
+[Root AGENTS.md](../../../AGENTS.md) | Agent evaluation framework: pass@k / pass^k metrics, capability/regression evals, environment-based outcome verification.
 
 ## Module Groups
 
@@ -18,7 +18,7 @@
 
 - `lib.rs` re-exports the public facade: types from `task`/`suite`/`metric`/`test_quality`/`report`, `executor::{EvalExecutor, run_suite}`, and `trace_analyzer` summaries.
 - `run_suite_with_options` depends only on the `EvalExecutor` trait — no file I/O, config, or trust checks. It bounds concurrent attempts (default two), validates `attempts`/`k`, and sorts results by task then attempt before reporting.
-- The four `EvalCategory` strings (`Capability`, `Regression`) are the only valid split keys; `report` filters on `category.label()` serialization.
+- The two `EvalCategory` strings (`Capability`, `Regression`) are the only valid split keys; `report` filters on `category.label()` serialization.
 - `EvalSuite` is defined once in `suite.rs` and re-exported from `lib.rs`. Do not duplicate it in `task.rs`.
 
 ## Gotchas

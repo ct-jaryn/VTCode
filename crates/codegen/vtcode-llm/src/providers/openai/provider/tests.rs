@@ -321,6 +321,36 @@ fn without_responses_backend_capability_fields(mut payload: Value) -> Value {
     payload
 }
 
+fn without_explicit_breakpoints(mut payload: Value) -> Value {
+    if let Some(items) = payload.get_mut("input").and_then(Value::as_array_mut) {
+        for item in items {
+            if let Some(blocks) = item.get_mut("content").and_then(Value::as_array_mut) {
+                for block in blocks {
+                    if let Some(map) = block.as_object_mut() {
+                        map.remove("prompt_cache_breakpoint");
+                    }
+                }
+            }
+        }
+    }
+    payload
+}
+
+fn count_input_breakpoints(payload: &Value) -> usize {
+    payload
+        .get("input")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("content").and_then(Value::as_array))
+                .flat_map(|blocks| blocks.iter())
+                .filter(|block| block.get("prompt_cache_breakpoint").is_some())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 fn get_input_array(payload: &Value) -> &[Value] {
     payload
         .get("input")
@@ -586,14 +616,23 @@ fn api_key_and_chatgpt_subscription_share_responses_item_history_builder() {
         .expect("chatgpt payload should build");
 
     assert_eq!(
-        native_payload.get("input"),
-        chatgpt_payload.get("input"),
+        without_explicit_breakpoints(native_payload.clone()).get("input"),
+        without_explicit_breakpoints(chatgpt_payload.clone()).get("input"),
         "API-key and ChatGPT paths must share the same Responses item/history builder"
+    );
+    assert!(
+        count_input_breakpoints(&native_payload) > 0,
+        "native API-key requests keep explicit cache breakpoints"
+    );
+    assert_eq!(
+        count_input_breakpoints(&chatgpt_payload),
+        0,
+        "ChatGPT subscription backend rejects prompt_cache_breakpoint (400), so it must be omitted"
     );
     assert_eq!(native_payload.get("instructions"), chatgpt_payload.get("instructions"));
     assert_eq!(
-        without_responses_backend_fields(native_payload.clone()),
-        without_responses_backend_fields(chatgpt_payload.clone())
+        without_responses_backend_fields(without_explicit_breakpoints(native_payload.clone())),
+        without_responses_backend_fields(without_explicit_breakpoints(chatgpt_payload.clone()))
     );
 
     assert_absent(&native_payload, "previous_response_id");
@@ -662,8 +701,17 @@ fn openai_and_chatgpt_share_responses_payload_builder_except_backend() {
         .expect("chatgpt payload should build");
 
     assert_eq!(
-        without_responses_backend_capability_fields(native_payload),
-        without_responses_backend_capability_fields(chatgpt_payload)
+        without_explicit_breakpoints(without_responses_backend_capability_fields(native_payload.clone())),
+        without_explicit_breakpoints(without_responses_backend_capability_fields(chatgpt_payload.clone()))
+    );
+    assert!(
+        count_input_breakpoints(&native_payload) > 0,
+        "native API-key requests keep explicit cache breakpoints"
+    );
+    assert_eq!(
+        count_input_breakpoints(&chatgpt_payload),
+        0,
+        "ChatGPT subscription backend rejects prompt_cache_breakpoint (400), so it must be omitted"
     );
 }
 
@@ -2808,12 +2856,13 @@ fn supported_models_include_current_reasoning_models() {
     // Current reasoning models must be in the supported list.
     assert!(supported.contains(&"gpt-5.6-sol".to_string()));
     assert!(supported.contains(&models::openai::DEFAULT_MODEL.to_string()));
-    // Deprecated o-series models are removed from the picker but retained in
-    // REASONING_MODELS for backward-compat routing.
+    // Deprecated o-series models are removed from the picker and from
+    // REASONING_MODELS (the pruned catalog keeps only current generations).
+    // They remain as remap constants for DEPRECATED_MODEL_REMAPPINGS.
     assert!(!supported.contains(&models::openai::O3.to_string()));
     assert!(!supported.contains(&models::openai::O4_MINI.to_string()));
-    assert!(models::openai::REASONING_MODELS.contains(&models::openai::O3));
-    assert!(models::openai::REASONING_MODELS.contains(&models::openai::O4_MINI));
+    assert!(!models::openai::REASONING_MODELS.contains(&models::openai::O3));
+    assert!(!models::openai::REASONING_MODELS.contains(&models::openai::O4_MINI));
 }
 
 #[test]

@@ -61,7 +61,7 @@ pub(crate) fn remedy_hint_for_tool(tool_name: &str) -> &'static str {
         vtcode_core::config::constants::tools::APPLY_PATCH => {
             "Rebase the patch on current file contents and confirm edit approval before retrying."
         }
-        _ => "Adjust arguments, permissions, or approvals instead of retrying the identical call.",
+        _ => "Adjust arguments, policy, or approvals instead of retrying the identical call.",
     }
 }
 

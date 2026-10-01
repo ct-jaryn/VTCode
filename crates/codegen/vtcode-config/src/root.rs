@@ -228,7 +228,10 @@ pub struct UiFullscreenConfig {
     #[serde(default = "default_fullscreen_mouse_capture")]
     pub mouse_capture: bool,
 
-    /// Copy selected transcript text immediately when the mouse selection ends.
+    /// Copy selected transcript text immediately when the mouse selection ends
+    /// (click-drag or double-click word select).
+    /// When disabled, copy manually with Ctrl+C (transcript/input selection)
+    /// or Ctrl+O (last agent response).
     /// Can also be controlled via VTCODE_FULLSCREEN_COPY_ON_SELECT=0/1.
     #[serde(default = "default_fullscreen_copy_on_select")]
     pub copy_on_select: bool,
@@ -725,6 +728,22 @@ mod tests {
         assert!(fullscreen.mouse_capture);
         assert!(fullscreen.copy_on_select);
         assert_eq!(fullscreen.scroll_speed, 3);
+    }
+
+    #[test]
+    fn fullscreen_copy_on_select_parses_manual_mode() {
+        let manual: UiFullscreenConfig =
+            toml::from_str("copy_on_select = false").expect("manual copy mode should parse");
+        assert!(!manual.copy_on_select);
+        assert!(manual.mouse_capture);
+
+        let round_trip = toml::to_string(&manual).expect("manual copy mode serializes");
+        assert!(round_trip.contains("copy_on_select = false"));
+        assert!(
+            !toml::from_str::<UiFullscreenConfig>(&round_trip)
+                .expect("manual copy mode round trips")
+                .copy_on_select
+        );
     }
 
     #[test]

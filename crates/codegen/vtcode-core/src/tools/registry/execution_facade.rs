@@ -1071,6 +1071,7 @@ impl ToolRegistry {
             }
         }
 
+        let fresh_patch_read = self.consume_patch_recovery_read(&tool_name, args);
         let skip_loop_detection = self.should_skip_loop_detection_for_exec_continuation(&tool_name, args).await;
         if skip_loop_detection {
             trace!(
@@ -1093,7 +1094,7 @@ impl ToolRegistry {
         // (`is_verification_command` is bound once at preview-budget
         // resolution above; the stripped output-metadata field does not
         // affect shell classification.)
-        if readonly_classification && !is_verification_command && !skip_loop_detection {
+        if readonly_classification && !is_verification_command && !skip_loop_detection && !fresh_patch_read {
             let fast_reuse_max_age = Duration::from_secs(60);
             let fast_reused = self
                 .execution_history
@@ -1186,7 +1187,7 @@ impl ToolRegistry {
                 // the model to see "success" and keep retrying.
                 let hard_block = loop_result.repeat_count >= LOOP_HARD_BLOCK_REPEAT_COUNT;
 
-                if readonly_classification && !hard_block {
+                if readonly_classification && !hard_block && !fresh_patch_read {
                     let reuse_max_age = Duration::from_secs(120);
                     let reused = self
                         .execution_history
@@ -1321,7 +1322,7 @@ impl ToolRegistry {
 
         let gateway = self.policy_gateway.clone();
         let constrained_result = gateway.apply_policy_constraints(&tool_name, args).await;
-        let args = match constrained_result {
+        let mut args = match constrained_result {
             Ok(processed_args) => processed_args,
             Err(err) => {
                 let error = ToolExecutionError::with_original_error(
@@ -1579,6 +1580,17 @@ impl ToolRegistry {
             }
         }
 
+        // Preserve registered approval/sandbox wrappers. The nonce changes any
+        // wrapper cache key and only disables file caching; it grants no authority.
+        if fresh_patch_read
+            && !tool_intent::is_command_run_tool_call(&tool_name, &args)
+            && let Some(object) = args.as_object_mut()
+        {
+            object.insert(
+                crate::tools::file_ops::PATCH_READ_CACHE_NONCE.to_string(),
+                json!(uuid::Uuid::new_v4().to_string()),
+            );
+        }
         let exec_future = async {
             if is_mcp_tool {
                 let mcp_name = mcp_tool_name
@@ -1915,6 +1927,7 @@ impl ToolRegistry {
                     Some("tool_registry"),
                 )
                 .with_tool_call_context(&tool_name_owned, &args_for_recording);
+                self.grant_patch_recovery_read(&error).await;
                 let error_category = error.category;
                 if error.circuit_breaker_impact
                     && let Some(breaker) = shared_circuit_breaker.as_ref()

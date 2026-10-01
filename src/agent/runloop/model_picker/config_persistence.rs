@@ -8,9 +8,7 @@ use vtcode_core::utils::dot_config::update_model_preference;
 use super::ModelSelectionResult;
 
 fn synced_openai_service_tier(selection: &ModelSelectionResult) -> Option<vtcode_config::OpenAIServiceTier> {
-    (selection.provider_enum == Some(Provider::OpenAI) && selection.service_tier_supported)
-        .then_some(selection.service_tier)
-        .flatten()
+    selection.service_tier_supported.then_some(selection.service_tier).flatten()
 }
 
 pub(super) async fn persist_selection(
@@ -186,16 +184,24 @@ mod tests {
 
     #[test]
     fn synced_openai_service_tier_clears_stale_values_outside_supported_openai() {
-        let mut selected = selection(Some(Provider::Ollama), "ollama", "qwen3-coder");
-        selected.service_tier_supported = true;
-        selected.service_tier = Some(OpenAIServiceTier::Priority);
+        // Compat providers now share the canonical `provider.openai.service_tier`
+        // store: any selection whose picker flagged tier support persists it.
+        let mut compat = selection(Some(Provider::Ollama), "ollama", "qwen3-coder");
+        compat.service_tier_supported = true;
+        compat.service_tier = Some(OpenAIServiceTier::Priority);
 
-        assert_eq!(synced_openai_service_tier(&selected), None);
+        assert_eq!(synced_openai_service_tier(&compat), Some(OpenAIServiceTier::Priority));
 
         let mut unsupported_openai = selection(Some(Provider::OpenAI), "openai", "gpt-oss-20b");
         unsupported_openai.service_tier_supported = false;
         unsupported_openai.service_tier = Some(OpenAIServiceTier::Priority);
 
         assert_eq!(synced_openai_service_tier(&unsupported_openai), None);
+
+        let mut unsupported_native = selection(Some(Provider::Anthropic), "anthropic", "claude-sonnet-5");
+        unsupported_native.service_tier_supported = false;
+        unsupported_native.service_tier = Some(OpenAIServiceTier::Priority);
+
+        assert_eq!(synced_openai_service_tier(&unsupported_native), None);
     }
 }

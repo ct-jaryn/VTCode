@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use vtcode_commons::formatting::wrap_text_words;
+use vtcode_commons::formatting::wrap_shell_command_with_continuations;
 use vtcode_commons::preview::{
     format_hidden_lines_summary as shared_hidden_lines_summary, split_head_tail_preview_with_limit,
     summary_window as shared_summary_window,
@@ -13,7 +13,9 @@ use vtcode_ui::tui::app::InlineLinkRange;
 use vtcode_ui::tui::app::InlineSegment;
 
 use super::segments::{PtyLineStyles, line_to_segments};
-use crate::agent::runloop::unified::tool_summary_helpers::{preview_full_command, relativize_command_paths};
+use crate::agent::runloop::unified::tool_summary_helpers::{
+    RAN_COMMAND_CONTINUATION_WIDTH, RAN_COMMAND_FIRST_WIDTH, preview_full_command, relativize_command_paths,
+};
 
 const LIVE_PREVIEW_HEAD_LINES: usize = 3;
 const MAX_BUFFERED_TAIL_LINES: usize = 64;
@@ -315,18 +317,18 @@ fn normalize_command_prompt(command_prompt: Option<String>) -> Option<String> {
 }
 
 fn format_command_header_lines(command: &str, workspace_root: Option<&Path>) -> Vec<String> {
-    const FIRST_LINE_WIDTH: usize = 62;
-    const CONTINUATION_WIDTH: usize = 58;
-
     // Fold prefix-only `python3 -c "` / unclosed-quote scripts into readable
     // content first (same pipeline as `• Ran` summaries) so live PTY headers
     // do not echo a dangling prefix. The transcript must show the command in
     // full: unlike compact previews, live headers never head-truncate with
-    // `…` — TUI reflow owns viewport-aware wrapping, so every pipe segment
-    // (e.g. screenshot 2026-09-24 `| grep -v ".backup"`) survives.
+    // `…` — explicit `\` continuations own the wrapping (same operator-aware
+    // breaks as the summaries), so every pipe segment (e.g. screenshot
+    // 2026-09-24 `| grep -v ".backup"`) survives; TUI reflow owns only
+    // residual viewport overflow.
     let relative = relativize_command_paths(command, workspace_root);
     let preview = preview_full_command(&relative);
-    let wrapped = wrap_text_words(&preview, FIRST_LINE_WIDTH, CONTINUATION_WIDTH);
+    let wrapped =
+        wrap_shell_command_with_continuations(&preview, RAN_COMMAND_FIRST_WIDTH, RAN_COMMAND_CONTINUATION_WIDTH);
     if wrapped.is_empty() {
         return vec!["• Ran command".to_string()];
     }

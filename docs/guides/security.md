@@ -196,7 +196,7 @@ Three-tier approval system for tool execution:
 
 1. **Approve Once** - Single execution approval
 2. **Allow for Session** - Approved for current session only
-3. **Always Allow** - Permanently saved to tool policy
+3. **Always approve** - Permanently saved for this workspace
 
 #### Workspace Lifecycle Hook Approval
 
@@ -302,7 +302,7 @@ root = "/path/to/project"
 1. **Review Tool Approvals**
    - Review the generated `tool-policy.json` in the canonical user config directory regularly
    - Use "Approve Once" for unfamiliar operations
-   - Only use "Always Allow" for trusted tools
+   - Only use "Always approve" for trusted tools
 
 2. **Be Cautious with Untrusted Content**
    - Don't process code from unknown sources

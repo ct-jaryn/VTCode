@@ -5,6 +5,7 @@ pub const OPENAI_GPT_5_5: &str = "openai/gpt-5.5";
 pub const ANTHROPIC_CLAUDE_OPUS_5: &str = "anthropic/claude-opus-5";
 pub const ANTHROPIC_CLAUDE_OPUS_5_5: &str = "anthropic/claude-opus-5-5";
 pub const ANTHROPIC_CLAUDE_SONNET_5: &str = "anthropic/claude-sonnet-5";
+pub const ANTHROPIC_CLAUDE_SONNET_5_5: &str = "anthropic/claude-sonnet-5-5";
 pub const GOOGLE_GEMINI_3_6_FLASH: &str = "google/gemini-3.6-flash";
 pub const GOOGLE_GEMINI_3_7_FLASH: &str = "google/gemini-3.7-flash";
 pub const XAI_GROK_4_6: &str = "xai/grok-4.6";
@@ -21,6 +22,7 @@ pub const OPENAI_GPT_5_6_SOL: &str = "openai/gpt-5.6-sol";
 pub const OPENAI_GPT_5_6_TERRA: &str = "openai/gpt-5.6-terra";
 pub const OPENAI_GPT_6_ASTRA: &str = "openai/gpt-6-astra";
 pub const OPENAI_GPT_6_SOL: &str = "openai/gpt-6-sol";
+pub const OPENAI_GPT_6_1_SOL: &str = "openai/gpt-6.1-sol";
 pub const OPENAI_GPT_6_LUNA: &str = "openai/gpt-6-luna";
 pub const GOOGLE_GEMINI_3_8_FLASH: &str = "google/gemini-3.8-flash";
 pub const ANTHROPIC_CLAUDE_HAIKU_4_5_20251001: &str = "anthropic/claude-haiku-4-5-20251001";
@@ -37,6 +39,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     ANTHROPIC_CLAUDE_OPUS_5,
     ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_SONNET_5,
+    ANTHROPIC_CLAUDE_SONNET_5_5,
     ANTHROPIC_CLAUDE_HAIKU_4_5_20251001,
     ANTHROPIC_CLAUDE_FABLE_5_1,
     GOOGLE_GEMINI_3_6_FLASH,
@@ -57,6 +60,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     OPENAI_GPT_5_6_TERRA,
     OPENAI_GPT_6_ASTRA,
     OPENAI_GPT_6_SOL,
+    OPENAI_GPT_6_1_SOL,
     OPENAI_GPT_6_LUNA,
 ];
 
@@ -76,6 +80,7 @@ pub const REASONING_EFFORT_ROUTES: &[&str] = &[
     OPENAI_GPT_5_6_TERRA,
     OPENAI_GPT_6_ASTRA,
     OPENAI_GPT_6_SOL,
+    OPENAI_GPT_6_1_SOL,
     OPENAI_GPT_6_LUNA,
 ];
 
@@ -84,6 +89,7 @@ pub const THINKING_BUDGET_ROUTES: &[&str] = &[
     ANTHROPIC_CLAUDE_OPUS_5,
     ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_SONNET_5,
+    ANTHROPIC_CLAUDE_SONNET_5_5,
     ANTHROPIC_CLAUDE_FABLE_5_1,
     GOOGLE_GEMINI_3_6_FLASH,
     GOOGLE_GEMINI_3_7_FLASH,
@@ -100,6 +106,7 @@ pub const REASONING_MODELS: &[&str] = &[
     ANTHROPIC_CLAUDE_OPUS_5,
     ANTHROPIC_CLAUDE_OPUS_5_5,
     ANTHROPIC_CLAUDE_SONNET_5,
+    ANTHROPIC_CLAUDE_SONNET_5_5,
     ANTHROPIC_CLAUDE_FABLE_5_1,
     GOOGLE_GEMINI_3_8_FLASH,
     DEEPSEEK_FLASH,
@@ -117,6 +124,7 @@ pub const REASONING_MODELS: &[&str] = &[
     OPENAI_GPT_5_6_TERRA,
     OPENAI_GPT_6_ASTRA,
     OPENAI_GPT_6_SOL,
+    OPENAI_GPT_6_1_SOL,
     OPENAI_GPT_6_LUNA,
 ];
 

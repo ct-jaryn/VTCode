@@ -98,6 +98,7 @@ impl Session {
             input_status_right: None,
             copy_notification_until: None,
             copy_notification_failed: false,
+            copy_notification_chars: 0,
             drag_auto_scroll: None,
             input_compact_mode: false,
 
@@ -111,6 +112,7 @@ impl Session {
             transcript_clear_required: true,
             evicted_message_count: 0,
             pending_new_messages: 0,
+            last_change_line_idx: None,
             should_exit: false,
             last_interrupt_press: None,
             last_escape_press: None,
@@ -122,6 +124,9 @@ impl Session {
             transcript_width: 0,
             transcript_view_top: 0,
             areas: SessionAreas::default(),
+            sticky_prompt_target: None,
+            sticky_prompt_preview_cache: None,
+            leading_user_prompt_truncated: false,
             transcript_file_link_targets: Vec::new(),
             modal_link_targets: Vec::new(),
             hovered_transcript_file_link: None,
@@ -173,6 +178,8 @@ impl Session {
 
             // --- Background Activity ---
             background_activity_count: 0,
+            background_finished_count: 0,
+            background_indicator_hits: Vec::new(),
 
             // --- Keybinding store ---
             bindings: bindings.unwrap_or_default(),
@@ -188,9 +195,11 @@ impl Session {
 
             // --- Performance Caching ---
             header_lines_cache: None,
+            header_block_title_cache: None,
             header_height_cache: hashbrown::HashMap::new(),
             queued_inputs_preview_cache: None,
             subprocess_entries_preview_cache: None,
+            input_render_cache: None,
 
             // --- Terminal Title ---
             app_name,

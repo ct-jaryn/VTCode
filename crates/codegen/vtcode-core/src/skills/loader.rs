@@ -7,6 +7,7 @@ use crate::skills::container_validation::{
     ContainerSkillsValidator, ContainerValidationReport, ContainerValidationResult,
 };
 use crate::skills::discovery::{DiscoveryConfig, DiscoveryResult, SkillDiscovery};
+use crate::skills::locations::{MAX_DISCOVERY_DEPTH, MAX_DISCOVERY_DIRS, discovery_dir_skipped};
 use crate::skills::model::{SkillErrorInfo, SkillLoadOutcome, SkillMetadata, SkillScope};
 use crate::skills::system::{install_system_skills, system_cache_root_dir};
 use crate::skills::types::{Skill, SkillContext, SkillManifest};
@@ -461,8 +462,17 @@ fn walk_skills_dir(root: &SkillRoot, outcome: &mut SkillLoadOutcome, mode: WalkM
         return;
     }
 
-    let mut queue: VecDeque<PathBuf> = VecDeque::from([root_path]);
-    while let Some(dir) = queue.pop_front() {
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root_path, 0)]);
+    let mut dirs_visited: usize = 0;
+    while let Some((dir, depth)) = queue.pop_front() {
+        dirs_visited += 1;
+        if dirs_visited > MAX_DISCOVERY_DIRS {
+            warn!(
+                "skill discovery dir budget ({MAX_DISCOVERY_DIRS}) exhausted under {}; some skills may be missing",
+                root.path.display()
+            );
+            return;
+        }
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {
@@ -482,13 +492,14 @@ fn walk_skills_dir(root: &SkillRoot, outcome: &mut SkillLoadOutcome, mode: WalkM
                 None => continue,
             };
 
-            if file_name.starts_with('.') {
+            if file_name.starts_with('.') || discovery_dir_skipped(file_name) {
                 continue;
             }
 
             if path.is_dir() {
-                queue.push_back(path.clone());
-
+                // Plugin-consumed directories are units: a successful plugin
+                // load ends handling here so the walk never descends into
+                // plugin subdirectories looking for more skills.
                 if root.is_tool_root
                     && let Ok(Some(tool_meta)) = try_load_tool_from_dir(&path, root.scope)
                 {
@@ -504,6 +515,10 @@ fn walk_skills_dir(root: &SkillRoot, outcome: &mut SkillLoadOutcome, mode: WalkM
 
                 if try_ingest_plugin_skills(&path, root, outcome) {
                     continue;
+                }
+
+                if depth < MAX_DISCOVERY_DEPTH {
+                    queue.push_back((path.clone(), depth + 1));
                 }
             }
 
@@ -1305,6 +1320,104 @@ mod tests {
         clear_lightweight_skill_metadata_cache();
     }
 
+    #[test]
+    #[serial]
+    fn lightweight_discovery_skips_dependency_and_vcs_trees() {
+        clear_lightweight_skill_metadata_cache();
+
+        let codex_home = tempdir().expect("codex home");
+        let workspace = tempdir().expect("workspace");
+        let skills_root = workspace.path().join(".agents/skills");
+        let write_skill = |dir: &Path, name: &str| {
+            fs::create_dir_all(dir).expect("create skill dir");
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test skill {name}\n---\n# Body\n"),
+            )
+            .expect("write skill");
+        };
+        write_skill(&skills_root.join("visible-skill"), "visible-skill");
+        write_skill(&skills_root.join("node_modules/hidden-skill"), "hidden-skill");
+        write_skill(&skills_root.join(".git/hidden-git-skill"), "hidden-git-skill");
+
+        let config = SkillLoaderConfig {
+            codex_home: codex_home.path().to_path_buf(),
+            cwd: workspace.path().to_path_buf(),
+            project_root: Some(workspace.path().to_path_buf()),
+            include_bundled_system_skills: false,
+        };
+
+        let outcome = discover_skill_metadata_lightweight_hermetic(&config);
+        let names: Vec<&str> = outcome.skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert!(names.contains(&"visible-skill"), "expected visible skill, got {names:?}");
+        assert!(!names.contains(&"hidden-skill"), "node_modules must not be scanned, got {names:?}");
+        assert!(!names.contains(&"hidden-git-skill"), ".git must not be scanned, got {names:?}");
+
+        clear_lightweight_skill_metadata_cache();
+    }
+
+    #[test]
+    #[serial]
+    fn lightweight_discovery_loads_skill_with_renamed_directory() {
+        // Agent Skills client guide: directory-name mismatch warns but loads.
+        clear_lightweight_skill_metadata_cache();
+
+        let codex_home = tempdir().expect("codex home");
+        let workspace = tempdir().expect("workspace");
+        let skill_dir = workspace.path().join(".agents/skills/renamed-dir");
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: original-name\ndescription: renamed on install\n---\n# Body\n",
+        )
+        .expect("write skill");
+
+        let config = SkillLoaderConfig {
+            codex_home: codex_home.path().to_path_buf(),
+            cwd: workspace.path().to_path_buf(),
+            project_root: Some(workspace.path().to_path_buf()),
+            include_bundled_system_skills: false,
+        };
+
+        let outcome = discover_skill_metadata_lightweight_hermetic(&config);
+        assert!(outcome.skills.iter().any(|skill| skill.name == "original-name"), "renamed skill must still load",);
+
+        clear_lightweight_skill_metadata_cache();
+    }
+
+    #[test]
+    fn full_discovery_loads_skill_with_renamed_directory() {
+        // Full discovery goes through parse_skill_file (not just frontmatter),
+        // so this covers the warn-and-load path end to end.
+        let codex_home = tempdir().expect("codex home");
+        let workspace = tempdir().expect("workspace");
+        let skill_dir = workspace.path().join(".agents/skills/renamed-dir");
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: original-name\ndescription: renamed on install\n---\n# Body\n",
+        )
+        .expect("write skill");
+
+        let config = SkillLoaderConfig {
+            codex_home: codex_home.path().to_path_buf(),
+            cwd: workspace.path().to_path_buf(),
+            project_root: Some(workspace.path().to_path_buf()),
+            include_bundled_system_skills: false,
+        };
+
+        let outcome = load_skills_hermetic(&config);
+        assert!(
+            outcome.skills.iter().any(|skill| skill.name == "original-name"),
+            "renamed skill must still load in full mode",
+        );
+        assert!(
+            outcome.errors.is_empty(),
+            "renamed skill must not record a load error, got {:?}",
+            outcome.errors.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+        );
+    }
+
     #[tokio::test]
     async fn enhanced_loader_discovers_and_loads_built_in_command_skills() {
         let temp_dir = TempDir::new().expect("temp dir");
@@ -1669,19 +1782,26 @@ Steps here.
         let codex_home = tempdir().expect("codex home");
 
         let plugin_root = workspace.path().join(".agents/plugins/my-plugin");
-        fs::create_dir_all(plugin_root.join("skills/nested/deep")).expect("create nested dirs");
+        fs::create_dir_all(plugin_root.join("skills/nested/deep-nested")).expect("create nested dirs");
 
         fs::write(
             plugin_root.join("plugin.json"),
             r#"{
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-                "name": "my-plugin"
+                "name": "my-plugin",
+                "description": "Test native plugin",
+                "version": "1.0.0",
+                "abi_version": 1
             }"#,
         )
         .expect("write plugin.json");
+        // Presence (not loadability) is what discovery checks: a complete
+        // native plugin dir is consumed as one entry and never descended into.
+        let lib_name = crate::skills::native_plugin::PluginLoader::new().library_filename("my-plugin");
+        fs::write(plugin_root.join(&lib_name), b"").expect("write dummy plugin library");
 
         fs::write(
-            plugin_root.join("skills/nested/deep/SKILL.md"),
+            plugin_root.join("skills/nested/deep-nested/SKILL.md"),
             r#"---
 name: deep-nested
 description: Should not be discovered because it is not an immediate child of skills/.

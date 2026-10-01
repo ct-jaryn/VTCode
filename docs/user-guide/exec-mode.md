@@ -74,6 +74,8 @@ Completion is accepted only when:
 - all tracker steps are completed
 - every step-level `verify` command has passed
 
+One carve-out: purely informational or read-only requests (summarize, explain, compare, explore — no imperative action clause) end the run once answered, without forcing the tracker scaffold to completion.
+
 Verification commands run sequentially from the workspace root through the existing exec/sandbox stack. The first non-zero exit stops
 verification, records a harness event, and forces a fresh continuation turn with the failure summary.
 

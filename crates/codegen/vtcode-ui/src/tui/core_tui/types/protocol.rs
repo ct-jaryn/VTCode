@@ -8,6 +8,7 @@ use super::overlay::{ListOverlayRequest, ModalOverlayRequest, OverlayEvent, Over
 use super::selection::{InlineListItem, InlineListSearchConfig, InlineListSelection, SecurePromptConfig};
 use super::style::{InlineHeaderContext, InlineLinkRange, InlineSegment, InlineTextStyle, InlineTheme};
 use crate::tui::core_tui::session::config::AppearanceConfig;
+use crate::tui::options::FullscreenInteractionSettings;
 
 pub use vtcode_commons::ui_protocol::ActivityState;
 pub use vtcode_commons::ui_protocol::InlineMessageKind;
@@ -157,6 +158,9 @@ pub enum InlineCommand {
     SetAppearance {
         appearance: AppearanceConfig,
     },
+    SetFullscreenInteraction {
+        interaction: FullscreenInteractionSettings,
+    },
     SetVimModeEnabled(bool),
     SetQueuedInputs {
         entries: Vec<String>,
@@ -224,6 +228,7 @@ pub enum InlineEvent {
     ScrollLineDown,
     ScrollPageUp,
     ScrollPageDown,
+    JumpToLastChange,
     OpenFileInEditor(String),
     OpenUrl(String),
     LaunchEditor {
@@ -360,6 +365,10 @@ impl InlineHandle {
         self.send_command(InlineCommand::SetAppearance { appearance });
     }
 
+    pub fn set_fullscreen_interaction(&self, interaction: FullscreenInteractionSettings) {
+        self.send_command(InlineCommand::SetFullscreenInteraction { interaction });
+    }
+
     pub fn set_vim_mode_enabled(&self, enabled: bool) {
         self.send_command(InlineCommand::SetVimModeEnabled(enabled));
     }
@@ -457,6 +466,20 @@ impl InlineHandle {
         search: Option<InlineListSearchConfig>,
         footer_hint: Option<String>,
     ) {
+        self.show_list_modal_with_status(title, lines, items, selected, search, footer_hint, None);
+    }
+
+    /// Show a list modal with an optional status strip (last action feedback).
+    pub fn show_list_modal_with_status(
+        &self,
+        title: String,
+        lines: Vec<String>,
+        items: Vec<InlineListItem>,
+        selected: Option<InlineListSelection>,
+        search: Option<InlineListSearchConfig>,
+        footer_hint: Option<String>,
+        status: Option<crate::tui::core_tui::types::InlineStatus>,
+    ) {
         self.show_overlay(OverlayRequest::List(ListOverlayRequest {
             title,
             lines,
@@ -465,6 +488,7 @@ impl InlineHandle {
             search,
             footer_hint,
             hotkeys: Vec::new(),
+            status,
         }));
     }
 

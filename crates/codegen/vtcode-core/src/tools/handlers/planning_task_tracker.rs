@@ -7,10 +7,10 @@ use super::planning_workflow::{PlanningWorkflowState, sync_tracker_into_plan_fil
 use crate::config::constants::tools;
 use crate::tools::error_helpers::deserialize_tool_args;
 use crate::tools::handlers::task_tracking::{
-    TaskCounts, TaskItemInput, TaskStepMetadata, TaskTrackingStatus, TaskTreeNode, append_notes, append_notes_section,
-    append_task_step_metadata, compact_task_tree_view, is_bulk_sync_update, metadata_from_input,
-    normalize_optional_text, normalize_string_items, parse_marked_status_prefix, parse_status_prefix,
-    validate_action_index_fields, validate_update_shape,
+    TASK_ITEMS_DESCRIPTION, TaskCounts, TaskItemInput, TaskStepMetadata, TaskTrackingStatus, TaskTreeNode,
+    append_notes, append_notes_section, append_task_step_metadata, compact_task_tree_view, is_bulk_sync_update,
+    metadata_from_input, normalize_optional_text, normalize_string_items, parse_marked_status_prefix,
+    parse_status_prefix, validate_action_index_fields, validate_task_item_inputs, validate_update_shape,
 };
 use crate::tools::traits::Tool;
 use crate::utils::file_utils::{ensure_dir_exists, read_file_with_context, write_file_with_context};
@@ -435,6 +435,7 @@ fn parse_document_from_markdown(content: &str) -> Option<PlanTaskDocument> {
 }
 
 fn build_flat_create_lines(items: &[TaskItemInput]) -> Result<Vec<FlatTaskLine>> {
+    validate_task_item_inputs(items)?;
     items
         .iter()
         .filter_map(|raw| match raw {
@@ -533,7 +534,7 @@ pub(crate) fn planning_task_tracker_parameter_schema() -> Value {
                         }
                     ]
                 },
-                "description": "Initial task items (used with create). Leading 2-space indentation in description indicates nesting."
+                "description": format!("{TASK_ITEMS_DESCRIPTION} Leading 2-space indentation in description indicates nesting.")
             },
             "index_path": {
                 "type": "string",
@@ -1177,6 +1178,10 @@ mod tests {
         let schema = tool.parameter_schema().expect("planning task tracker schema");
 
         assert_eq!(schema["properties"]["index"]["minimum"], 1);
+        let items_description = schema["properties"]["items"]["description"].as_str().unwrap();
+        assert!(items_description.contains("Full checklist replacement"));
+        assert!(items_description.contains("never JSON-encoded strings"));
+        assert!(items_description.contains("2-space indentation"));
         assert_eq!(schema["properties"]["index_path"]["pattern"], "^[1-9][0-9]*(\\.[1-9][0-9]*)*$");
         assert!(
             schema["properties"]["index_path"]["description"]
@@ -1204,6 +1209,53 @@ mod tests {
         for args in invalid_cases {
             assert!(jsonschema::validate(&schema, &args).is_err(), "expected invalid args: {args}");
         }
+    }
+
+    #[tokio::test]
+    async fn bulk_update_rejects_encoded_commands_without_resetting_completed_steps() {
+        let (_temp_dir, _state, tool) = setup_planning_workflow().await;
+        tool.execute(json!({
+            "action": "create",
+            "title": "Preserve progress",
+            "items": [
+                {"description": "Update introduction", "status": "completed", "files": ["README.md"], "outcome": "Clear overview", "verify": ["review headings"]},
+                {"description": "Review links", "status": "blocked", "outcome": "Await network"}
+            ]
+        })).await.unwrap();
+        let tracker_path = _temp_dir.path().join(".vtcode/tasks/current_task.md");
+        let persisted_before = std::fs::read_to_string(&tracker_path).unwrap();
+        let before = tool.execute(json!({"action": "list"})).await.unwrap();
+
+        for (action, encoded) in [
+            ("update", r#"{"index_path":"1","status":"completed","outcome":"Done","verify":"review headings"}"#),
+            ("update", r#"  [x] {"index_path":"1","status":"completed"}"#),
+            ("create", r#"{"index":1,"status":"completed"}"#),
+        ] {
+            let error = tool
+                .execute(json!({
+                    "action": action,
+                    "title": "Incorrect replacement",
+                    "items": ["Replacement must not leak", encoded]
+                }))
+                .await
+                .expect_err("encoded updates must not replace the tracker");
+            assert!(error.to_string().contains("JSON-encoded task updates"));
+            assert!(
+                error
+                    .to_string()
+                    .contains(r#"{"action":"update","index_path":"1","status":"completed"}"#)
+            );
+            assert_eq!(tool.execute(json!({"action": "list"})).await.unwrap(), before);
+            assert_eq!(std::fs::read_to_string(&tracker_path).unwrap(), persisted_before);
+        }
+
+        tool.execute(json!({"action": "update", "index_path": "2", "status": "completed"}))
+            .await
+            .unwrap();
+        let after = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(after["checklist"]["completed"], 2);
+        assert_eq!(after["checklist"]["items"][0]["description"], "Update introduction");
+        assert_eq!(after["checklist"]["items"][0]["files"], json!(["README.md"]));
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::super::types::{
@@ -29,8 +29,7 @@ use super::{
 use crate::tui::config::constants::ui;
 use crate::tui::options::FullscreenInteractionSettings;
 
-const COPY_NOTIFICATION_DURATION: Duration = Duration::from_secs(5);
-const COPY_NOTIFICATION_TEXT: &str = "Copied to clipboard";
+const COPY_NOTIFICATION_DURATION: Duration = Duration::from_secs(2);
 const COPY_FAILURE_NOTIFICATION_TEXT: &str = "Copy failed";
 const ACTION_REQUIRED_STATUS_TEXT: &str = "Action required";
 const APPROVAL_REQUIRED_STATUS_TEXT: &str = "Approval required";
@@ -60,14 +59,15 @@ impl Session {
     }
 
     pub(crate) fn copy_input_selection_to_clipboard(&mut self) -> bool {
-        if self.input_manager.selected_text().is_none() {
+        let Some(selected) = self.input_manager.selected_text() else {
             return false;
-        }
+        };
+        let char_count = selected.chars().count();
 
         // Swallow the key even on hard failure so Ctrl+C never degrades into an
         // interrupt while the user is trying to copy a selection.
         if self.input_manager.copy_selected_text_to_clipboard() {
-            self.show_copy_notification();
+            self.show_copy_notification(char_count);
         } else {
             self.show_copy_failure_notification();
         }
@@ -79,8 +79,9 @@ impl Session {
             return;
         }
 
+        let char_count = text.chars().count();
         if MouseSelectionState::copy_to_clipboard(text) {
-            self.show_copy_notification();
+            self.show_copy_notification(char_count);
         } else {
             self.show_copy_failure_notification();
         }
@@ -162,7 +163,9 @@ impl Session {
     pub(crate) fn mark_dirty(&mut self) {
         self.render_state.request_redraw();
         self.header_lines_cache = None;
+        self.header_block_title_cache = None;
         self.header_height_cache.clear();
+        self.input_render_cache = None;
         self.queued_inputs_preview_cache = None;
         self.subprocess_entries_preview_cache = None;
     }
@@ -176,6 +179,7 @@ impl Session {
             Some(current) => Some(current.min(index)),
             None => Some(index),
         };
+        self.record_transcript_change(index);
         self.render_state.request_redraw();
         self.invalidate_transcript_viewport();
     }
@@ -183,7 +187,9 @@ impl Session {
     /// Invalidate only the header cache (e.g. when provider/model changes)
     pub(crate) fn invalidate_header_cache(&mut self) {
         self.header_lines_cache = None;
+        self.header_block_title_cache = None;
         self.header_height_cache.clear();
+        self.input_render_cache = None;
         self.render_state.request_redraw();
     }
 
@@ -215,6 +221,9 @@ impl Session {
     }
 
     pub(crate) fn set_transcript_area(&mut self, area: Option<Rect>) {
+        if self.areas.transcript() != area {
+            self.sticky_prompt_target = None;
+        }
         self.areas.set_transcript(area);
     }
 
@@ -283,6 +292,7 @@ impl Session {
             state.restore_input = enabled;
         }
         self.input_enabled = enabled && !self.has_active_overlay();
+        self.input_render_cache = None;
     }
 
     pub(crate) fn image_input_enabled(&self) -> bool {
@@ -295,6 +305,7 @@ impl Session {
 
     pub(crate) fn set_input_compact_mode(&mut self, enabled: bool) {
         self.input_compact_mode = enabled;
+        self.input_render_cache = None;
     }
 
     pub(crate) fn set_cursor_visible(&mut self, visible: bool) {
@@ -307,6 +318,7 @@ impl Session {
 
     pub(crate) fn invalidate_transcript_viewport(&mut self) {
         self.visible_lines_cache = None;
+        self.sticky_prompt_target = None;
     }
 
     pub(crate) fn request_transcript_clear(&mut self) {
@@ -349,6 +361,7 @@ impl Session {
             && Instant::now() >= until
         {
             self.copy_notification_until = None;
+            self.copy_notification_chars = 0;
             self.render_state.request_redraw();
         }
         if self.last_shimmer_active && !shimmer_active {
@@ -360,7 +373,8 @@ impl Session {
         }
     }
 
-    pub(crate) fn show_copy_notification(&mut self) {
+    pub(crate) fn show_copy_notification(&mut self, char_count: usize) {
+        self.copy_notification_chars = char_count;
         self.show_copy_result_notification(false);
     }
 
@@ -374,13 +388,18 @@ impl Session {
         self.render_state.request_redraw();
     }
 
-    pub(crate) fn copy_notification_text(&self) -> Option<&'static str> {
+    pub(crate) fn format_copy_notification(char_count: usize) -> String {
+        let unit = if char_count == 1 { "char" } else { "chars" };
+        format!("copied {char_count} {unit} to clipboard")
+    }
+
+    pub(crate) fn copy_notification_text(&self) -> Option<String> {
         self.copy_notification_until.filter(|until| Instant::now() < *until)?;
-        Some(if self.copy_notification_failed {
-            COPY_FAILURE_NOTIFICATION_TEXT
+        if self.copy_notification_failed {
+            Some(COPY_FAILURE_NOTIFICATION_TEXT.to_string())
         } else {
-            COPY_NOTIFICATION_TEXT
-        })
+            Some(Self::format_copy_notification(self.copy_notification_chars))
+        }
     }
 
     fn overlay_attention_status_text(&self) -> Option<&'static str> {
@@ -504,19 +523,56 @@ impl Session {
         }
     }
 
+    /// Retained finished agents/processes (completed, failed, stopped, exited).
+    pub(crate) fn set_background_finished_count(&mut self, count: usize) {
+        if self.background_finished_count != count {
+            self.background_finished_count = count;
+            self.mark_dirty();
+        }
+    }
+
     pub(crate) fn has_background_activity(&self) -> bool {
         self.background_activity_count > 0
     }
 
+    pub(crate) fn has_background_history(&self) -> bool {
+        self.background_finished_count > 0
+    }
+
+    pub(crate) fn set_background_indicator_hits(&mut self, hits: Vec<Rect>) {
+        if self.background_indicator_hits != hits {
+            self.background_indicator_hits = hits;
+            self.mark_dirty();
+        }
+    }
+
+    pub(crate) fn background_indicator_hits(&self) -> &[Rect] {
+        &self.background_indicator_hits
+    }
+
+    pub(crate) fn background_indicator_contains(&self, column: u16, row: u16) -> bool {
+        let pos = Position { x: column, y: row };
+        self.background_indicator_hits.iter().any(|area| area.contains(pos))
+    }
+
     /// Input-status indicator while background tasks run. The wording contains
     /// a shimmer needle (`running `) so [`status_requires_shimmer`] animates it
-    /// through the shared loading path.
+    /// through the shared loading path. When nothing is live but finished
+    /// history remains, show a finished summary instead so the indicator stays
+    /// openable.
     pub(crate) fn background_activity_status_text(&self) -> Option<String> {
-        self.has_background_activity().then(|| {
-            format!(
+        if self.has_background_activity() {
+            return Some(format!(
                 "Running {} background task{}...",
                 self.background_activity_count,
                 if self.background_activity_count == 1 { "" } else { "s" }
+            ));
+        }
+        self.has_background_history().then(|| {
+            format!(
+                "{} agent{} finished",
+                self.background_finished_count,
+                if self.background_finished_count == 1 { "" } else { "s" }
             )
         })
     }
@@ -585,12 +641,47 @@ impl Session {
 
     /// Mark a specific line as dirty to optimize reflow scans
     pub(crate) fn mark_line_dirty(&mut self, index: usize) {
+        self.sticky_prompt_target = None;
         let index = self.reflow_dirty_index(index);
         self.first_dirty_line = match self.first_dirty_line {
             Some(current) => Some(current.min(index)),
             None => Some(index),
         };
+        self.record_transcript_change(index);
         self.mark_dirty();
+    }
+
+    /// Record a transcript modification for Jump to last change.
+    ///
+    /// `line_idx` is the post-reflow logical line index. Minimal tracking:
+    /// only the most recent index is kept; streaming chunks to the same line
+    /// simply overwrite it.
+    pub(crate) fn record_transcript_change(&mut self, line_idx: usize) {
+        self.last_change_line_idx = Some(line_idx);
+        self.clamp_tracked_change();
+    }
+
+    /// Shift the tracked change index after front-eviction. Drops the target
+    /// when it pointed into the evicted prefix.
+    pub(crate) fn shift_tracked_change_after_eviction(&mut self, remove_count: usize) {
+        if remove_count == 0 {
+            return;
+        }
+        if let Some(idx) = self.last_change_line_idx {
+            self.last_change_line_idx = idx.checked_sub(remove_count);
+        }
+        self.clamp_tracked_change();
+    }
+
+    /// Keep the tracked index inside the live line range, clearing it when the
+    /// transcript is empty. Single source of truth for every tracking writer.
+    fn clamp_tracked_change(&mut self) {
+        let len = self.lines.len();
+        self.last_change_line_idx = match self.last_change_line_idx {
+            Some(_) if len == 0 => None,
+            Some(idx) if idx >= len => Some(len - 1),
+            other => other,
+        };
     }
 
     fn reflow_dirty_index(&mut self, index: usize) -> usize {
@@ -631,9 +722,11 @@ impl Session {
     /// Clear the screen and reset scroll
     pub(crate) fn clear_screen(&mut self) {
         self.lines.clear();
+        self.leading_user_prompt_truncated = false;
         self.collapsed_pastes.clear();
         self.thinking_runs.clear();
         self.user_scrolled = false;
+        self.last_change_line_idx = None;
         self.scroll_manager.set_offset(0);
         self.invalidate_transcript_cache();
         self.invalidate_scroll_metrics();
@@ -766,6 +859,7 @@ impl Session {
             is_help_modal: request.is_help_modal,
             restore_input: true,
             restore_cursor: true,
+            status: None,
         };
         if state.secure_prompt.is_none() {
             self.input_enabled = false;
@@ -780,7 +874,7 @@ impl Session {
         let mut list_state = ModalListState::new(request.items, request.selected.clone());
         let search_state = request.search.map(ModalSearchState::from);
         if let Some(search) = &search_state {
-            list_state.apply_search_with_preference(&search.query, request.selected);
+            list_state.apply_search_with_preference(&search.query, request.selected, search.fuzzy);
         }
         if anchor_to_bottom {
             list_state.select_last();
@@ -797,6 +891,7 @@ impl Session {
             restore_input: true,
             restore_cursor: true,
             is_help_modal: false,
+            status: request.status,
         };
         self.input_enabled = false;
         self.cursor_visible = false;
@@ -849,6 +944,7 @@ impl Session {
         if self.scroll_manager.offset() != previous_offset {
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             // Content moves down on screen; shift selection to match.
             self.mouse_selection.adjust_for_scroll(1);
         }
@@ -862,6 +958,7 @@ impl Session {
         if self.scroll_manager.offset() != previous_offset {
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             // Content moves up on screen; shift selection to match.
             self.mouse_selection.adjust_for_scroll(-1);
         }
@@ -877,6 +974,7 @@ impl Session {
             let actual_delta = self.scroll_manager.offset() - previous_offset;
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             self.mouse_selection.adjust_for_scroll(actual_delta as i32);
         }
     }
@@ -891,6 +989,7 @@ impl Session {
             let actual_delta = previous_offset - self.scroll_manager.offset();
             self.user_scrolled = self.scroll_manager.offset() != 0;
             self.visible_lines_cache = None;
+            self.sticky_prompt_target = None;
             self.mouse_selection.adjust_for_scroll(-(actual_delta as i32));
         }
     }
@@ -928,6 +1027,7 @@ impl Session {
 
         // Invalidate visible lines cache if offset actually changed
         if self.scroll_manager.offset() != previous_offset {
+            self.user_scrolled = self.scroll_manager.offset() != 0;
             self.invalidate_transcript_viewport();
             // Compute actual row delta for selection adjustment.
             // Inverted model: increasing offset → content moves down → positive row delta.
@@ -965,9 +1065,14 @@ impl Session {
         self.scroll_manager.max_offset()
     }
 
-    /// Enforce scroll bounds after viewport changes
+    /// Enforce scroll bounds after viewport changes.
+    /// Clamps against last-known metrics only — never forces a reflow. The next
+    /// `ensure_scroll_metrics` (on render) recomputes and clamps again.
     pub(crate) fn enforce_scroll_bounds(&mut self) {
-        let max_offset = self.current_max_scroll_offset();
+        if !self.scroll_manager.metrics_valid() {
+            return;
+        }
+        let max_offset = self.scroll_manager.max_offset();
         if self.scroll_manager.offset() > max_offset {
             self.scroll_manager.set_offset(max_offset);
         }
@@ -1013,10 +1118,14 @@ impl Session {
     /// When the viewport is at the bottom (offset 0), new content naturally stays
     /// in view without adjustment. Only when the user has scrolled up (offset > 0)
     /// do we adjust the offset to prevent the view from drifting.
+    ///
+    /// Bottom-follow returns immediately so appends never force a reflow.
     pub(crate) fn adjust_scroll_after_change(&mut self, previous_max_offset: usize) {
+        if self.scroll_manager.offset() == 0 {
+            return;
+        }
         let new_max_offset = self.current_max_scroll_offset();
-
-        if self.scroll_manager.offset() > 0 && new_max_offset > previous_max_offset {
+        if new_max_offset > previous_max_offset {
             // Keep content position stable when the user has scrolled away from bottom
             use std::cmp::min;
             let current_offset = self.scroll_manager.offset();

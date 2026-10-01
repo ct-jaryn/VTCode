@@ -14,7 +14,6 @@ pub(super) enum BottomPanelKind {
     HistoryPicker,
     SlashPalette,
     TaskPanel,
-    LocalAgents,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,14 +65,11 @@ pub(super) fn resolve_bottom_panel_spec(
         Some(TransientSurface::TaskPanel) => {
             panel_from_split(session, split_context, BottomPanelKind::TaskPanel, split_inline_task_panel_area)
         }
-        Some(TransientSurface::LocalAgents) => panel_from_split(
-            session,
-            split_context,
-            BottomPanelKind::LocalAgents,
-            render::split_inline_local_agents_area,
-        ),
         Some(
-            TransientSurface::FloatingOverlay | TransientSurface::DiffPreview | TransientSurface::ToolOutputViewer,
+            TransientSurface::FloatingOverlay
+            | TransientSurface::DiffPreview
+            | TransientSurface::ToolOutputViewer
+            | TransientSurface::LocalAgents,
         )
         | None => None,
     };

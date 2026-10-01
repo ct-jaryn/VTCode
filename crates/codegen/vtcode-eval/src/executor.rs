@@ -126,7 +126,7 @@ pub async fn run_suite_with_options(
             .collect();
         for result in &run_results {
             duration_secs += result.duration_secs;
-            if let Some(cost) = result.cost_usd.filter(|value| value.is_finite() && *value >= 0.0) {
+            if let Some(cost) = crate::report::priced_cost(result.cost_usd) {
                 all_cost_usd += cost;
                 known_cost_runs = known_cost_runs.saturating_add(1);
             } else {
@@ -152,6 +152,8 @@ pub async fn run_suite_with_options(
         .map(|r| r.metric.clone())
         .collect();
 
+    let efficiency = crate::report::CostEfficiency::from_runs(results.iter().map(|(_, _, result)| result));
+
     Ok(EvalReport {
         generated_at: chrono::Utc::now().to_rfc3339(),
         suites: vec![SuiteReport {
@@ -165,6 +167,10 @@ pub async fn run_suite_with_options(
             unpriced_runs,
             duration_secs,
             trace_summary,
+            mean_cost_per_attempt: efficiency.mean_cost_per_attempt,
+            cost_per_solve: efficiency.cost_per_solve,
+            mean_tokens_per_attempt: efficiency.mean_tokens_per_attempt,
+            mean_turns_per_attempt: efficiency.mean_turns_per_attempt,
         }],
     })
 }

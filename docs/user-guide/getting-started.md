@@ -46,6 +46,7 @@ Choose one of the supported LLM providers:
 
 -   **Anthropic**: `export ANTHROPIC_API_KEY=your_key_here`
     -   Get from [Anthropic Console](https://console.anthropic.com/)
+    -   Curated models: `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-fable-5`, `claude-fable-5-1`, `claude-opus-5`, and `claude-opus-5-5`; see the [Anthropic provider guide](../providers/PROVIDER_GUIDES.md#anthropic)
 
 -   **Meta AI**: `export MODEL_API_KEY=your_key_here` or `export META_API_KEY=your_key_here`
     -   Get from the [Meta AI developer documentation](https://dev.meta.ai/docs/llms.txt)

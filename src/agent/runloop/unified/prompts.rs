@@ -10,12 +10,13 @@ use vtcode_core::prompts::system::{
 
 /// Seed system prompt used on the interactive critical path before full
 /// workspace prompt composition finishes after the first UI frame.
+/// Missing config follows `SystemPromptMode::default()` (Minimal).
 pub(crate) fn fallback_base_system_prompt(vt_cfg: Option<&vtcode_core::config::VTCodeConfig>) -> &'static str {
-    match vt_cfg.map(|cfg| cfg.agent.system_prompt_mode) {
-        Some(SystemPromptMode::Minimal) => minimal_system_prompt(),
-        Some(SystemPromptMode::Lightweight) => default_lightweight_prompt(),
-        Some(SystemPromptMode::Specialized) => specialized_system_prompt(),
-        _ => default_system_prompt(),
+    match vt_cfg.map(|cfg| cfg.agent.system_prompt_mode).unwrap_or_default() {
+        SystemPromptMode::Minimal => minimal_system_prompt(),
+        SystemPromptMode::Lightweight => default_lightweight_prompt(),
+        SystemPromptMode::Specialized => specialized_system_prompt(),
+        SystemPromptMode::Default => default_system_prompt(),
     }
 }
 
@@ -174,8 +175,18 @@ mod tests {
     use vtcode_core::config::types::SystemPromptMode;
 
     #[test]
-    fn test_fallback_base_system_prompt_defaults_to_default() {
-        assert_eq!(fallback_base_system_prompt(None), default_system_prompt());
+    fn test_fallback_base_system_prompt_defaults_to_enum_default() {
+        // Missing config must follow SystemPromptMode::default() (Minimal).
+        assert_eq!(SystemPromptMode::default(), SystemPromptMode::Minimal);
+        assert_eq!(fallback_base_system_prompt(None), minimal_system_prompt());
+    }
+
+    #[test]
+    fn test_fallback_base_system_prompt_uses_explicit_default_mode() {
+        let mut config = VTCodeConfig::default();
+        config.agent.system_prompt_mode = SystemPromptMode::Default;
+
+        assert_eq!(fallback_base_system_prompt(Some(&config)), default_system_prompt());
     }
 
     #[test]

@@ -74,6 +74,7 @@ mod reflow;
 pub(crate) mod reverse_search;
 mod spinner;
 mod state;
+mod sticky_prompt;
 pub mod terminal_capabilities;
 pub(crate) mod terminal_title;
 #[cfg(test)]
@@ -234,6 +235,7 @@ pub struct Session {
     /// Transient "copied"/"copy failed" confirmation shown in the input status row.
     copy_notification_until: Option<Instant>,
     copy_notification_failed: bool,
+    copy_notification_chars: usize,
     input_compact_mode: bool,
 
     // --- UI State ---
@@ -250,6 +252,9 @@ pub struct Session {
     /// Number of new transcript lines that arrived while the user was scrolled
     /// away from the live bottom edge.
     pub(crate) pending_new_messages: usize,
+    /// Most recent transcript line index that was created or revised.
+    /// Backs the minimal Jump-to-last-change navigation (`Ctrl+End`).
+    pub(crate) last_change_line_idx: Option<usize>,
     should_exit: bool,
     /// Timestamp of the last Ctrl+C press for double-press exit detection.
     pub(crate) last_interrupt_press: Option<Instant>,
@@ -269,6 +274,9 @@ pub struct Session {
     pub(crate) transcript_width: u16,
     pub(crate) transcript_view_top: usize,
     areas: SessionAreas,
+    sticky_prompt_target: Option<sticky_prompt::StickyPromptTarget>,
+    sticky_prompt_preview_cache: Option<sticky_prompt::StickyPromptPreviewCache>,
+    leading_user_prompt_truncated: bool,
     transcript_file_link_targets: Vec<TranscriptFileLinkTarget>,
     modal_link_targets: Vec<TranscriptFileLinkTarget>,
     hovered_transcript_file_link: Option<usize>,
@@ -326,6 +334,11 @@ pub struct Session {
     /// global loading shimmer so background work is visible without opening
     /// the drawer; it never feeds the turn-busy guards.
     pub(crate) background_activity_count: usize,
+    /// Retained finished background rows (completed/failed/stopped/exited).
+    pub(crate) background_finished_count: usize,
+    /// Absolute hit rects for clickable background-indicator spans on the
+    /// input status line (activity text and the `{key} background` hint only).
+    pub(crate) background_indicator_hits: Vec<Rect>,
 
     // --- Keybinding store ---
     bindings: BindingStore,
@@ -341,10 +354,14 @@ pub struct Session {
     pub(crate) fullscreen: FullscreenSessionState,
 
     // --- Performance Caching ---
-    header_lines_cache: Option<Vec<Line<'static>>>,
+    header_lines_cache: Option<Arc<Vec<Line<'static>>>>,
+    header_block_title_cache: Option<Line<'static>>,
     header_height_cache: hashbrown::HashMap<u16, u16>,
     pub(crate) queued_inputs_preview_cache: Option<Vec<String>>,
     subprocess_entries_preview_cache: Option<Vec<String>>,
+    /// Fingerprint of the last `build_input_render` inputs (width, height,
+    /// content_hash, cursor, compact, suggested) plus the built result.
+    input_render_cache: Option<(u16, u16, u64, usize, bool, bool, input::InputRender)>,
 
     // --- Terminal Title ---
     /// Product/app name used in terminal title branding

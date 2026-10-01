@@ -116,12 +116,13 @@ async fn refresh_runtime_counters(ctx: &mut StatusRefreshContext<'_>, state: &mu
         let entries = controller.status_entries().await;
         crate::agent::runloop::ui::sync_active_subagent_badges(ctx.header_context, ctx.handle, &entries);
         let delegated_count = entries.iter().filter(|entry| !entry.status.is_terminal()).count();
-        // Keep this predicate in sync with `visible_background_local_agents` in
-        // `session_setup/ui/local_agents.rs`: Starting/Running always count;
-        // Error counts only while still desired so a failed task stays visible
-        // until dismissed. Freshness comes from the background refresh loop
-        // (`refresh_local_agents` every ~2s), so read cached entries here to
-        // avoid duplicate exec-session snapshots on the status cadence.
+        // Live-work count only (status line "Running N background tasks...").
+        // Intentionally NOT the same predicate as `visible_background_local_agents`:
+        // the expanded window retains finished rows, while the status indicator
+        // counts work still in flight. Freshness comes from the background
+        // refresh loop (`refresh_local_agents` every ~2s), so read cached
+        // entries here to avoid duplicate exec-session snapshots on the status
+        // cadence.
         let background_count = controller
             .background_status_entries()
             .await

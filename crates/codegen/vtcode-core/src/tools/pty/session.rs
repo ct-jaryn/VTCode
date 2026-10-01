@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -16,6 +16,88 @@ use super::scrollback::PtyScrollback;
 
 /// Maximum time to wait for reader thread to finish (ms)
 const READER_THREAD_TIMEOUT_MS: u64 = 5000;
+
+/// Maximum time to poll `try_wait` after kill before escalating (ms).
+/// `Child::wait` is unbounded and can stall the close path forever; kill +
+/// bounded poll must never hang the runloop.
+const CHILD_REAP_TIMEOUT_MS: u64 = 2000;
+
+/// Second-phase poll budget after SIGKILL escalation (ms).
+const CHILD_REAP_ESCALATED_TIMEOUT_MS: u64 = 1000;
+
+/// Poll `try_wait` until the child exits or `budget` expires.
+/// Never calls `Child::wait`. Returns whether the child was observed exited.
+fn reap_child_poll(child: &mut Box<dyn Child + Send>, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) | Err(_) => {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+/// Re-send SIGKILL to the process group (when known) and the direct child.
+fn escalate_child_kill(child: &mut Box<dyn Child + Send>, child_pid: Option<u32>) {
+    if let Some(pid) = child_pid {
+        let _ = vtcode_bash_runner::kill_process_group_by_pid(pid);
+        let _ = vtcode_bash_runner::kill_process_group(pid);
+    }
+    let _ = child.kill();
+}
+
+/// Two-phase reap: poll, escalate SIGKILL if still live, poll again.
+/// Never calls `Child::wait`. Returns whether the child was observed exited.
+/// A false return means the child is still live after both budgets (unkillable
+/// or stuck in uninterruptible sleep); callers must still release capacity.
+///
+/// Platform note: escalation uses `kill_process_group_by_pid` /
+/// `kill_process_group` / `child.kill()`. Process-group kill is exercised on
+/// Unix (`#[cfg(unix)]` tests in `force_terminate_reaps_live_pty_child`);
+/// Windows uses `child.kill()` only — group semantics are not covered by those
+/// tests and remain unverified on Windows CI.
+fn reap_child_bounded(child: &mut Box<dyn Child + Send>, child_pid: Option<u32>) -> bool {
+    if reap_child_poll(child, Duration::from_millis(CHILD_REAP_TIMEOUT_MS)) {
+        return true;
+    }
+    warn!("PTY child did not exit within reap timeout; escalating SIGKILL");
+    escalate_child_kill(child, child_pid);
+    if reap_child_poll(child, Duration::from_millis(CHILD_REAP_ESCALATED_TIMEOUT_MS)) {
+        return true;
+    }
+    warn!("PTY child did not exit within escalated reap timeout");
+    false
+}
+
+/// Join the PTY reader thread without blocking past `READER_THREAD_TIMEOUT_MS`.
+/// Shared by `close_session` and `Drop` so neither path can hang on `join`.
+pub(super) fn join_reader_thread_bounded(reader_thread: JoinHandle<()>) {
+    let join_result = std::thread::spawn(move || {
+        let start = Instant::now();
+        let timeout = Duration::from_millis(READER_THREAD_TIMEOUT_MS);
+        loop {
+            if reader_thread.is_finished() {
+                let _ = reader_thread.join();
+                break;
+            }
+            if start.elapsed() > timeout {
+                warn!("PTY reader thread did not finish within timeout");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })
+    .join();
+
+    if join_result.is_err() {
+        warn!("PTY reader thread cleanup panicked");
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct CommandEchoState {
@@ -215,7 +297,7 @@ impl PtySessionHandle {
         }
 
         if child_running {
-            let _ = child.wait();
+            reap_child_bounded(&mut child, self.child_pid);
         }
     }
 
@@ -244,7 +326,7 @@ impl PtySessionHandle {
             let _ = child.kill();
         }
         if child_running {
-            let _ = child.wait();
+            reap_child_bounded(&mut child, self.child_pid);
         }
     }
 }
@@ -266,15 +348,18 @@ impl Drop for PtySessionHandle {
         // Kill child process and its process group using graceful termination.
         // Match the robust termination behavior from codex-rs/utils/pty PR 12688
         // which ensures descendants from interactive shells/REPLs do not survive.
+        // Reap after kill so Drop-only paths (close timeout, map remove) cannot
+        // leave a zombie; previously Drop never called try_wait.
         {
             let mut child = self.child.lock();
-            match child.try_wait() {
+            let child_running = match child.try_wait() {
                 Ok(Some(_)) => {
                     // The direct child may have exited while a descendant
                     // still owns the PTY descriptors.
                     if let Some(pid) = self.child_pid {
                         let _ = vtcode_bash_runner::kill_process_group(pid);
                     }
+                    false
                 }
                 Ok(None) | Err(_) => {
                     if let Some(pid) = self.child_pid {
@@ -284,7 +369,11 @@ impl Drop for PtySessionHandle {
                     } else {
                         let _ = child.kill();
                     }
+                    true
                 }
+            };
+            if child_running {
+                reap_child_bounded(&mut child, self.child_pid);
             }
         }
 
@@ -292,27 +381,7 @@ impl Drop for PtySessionHandle {
         {
             let mut thread_guard = self.reader_thread.lock();
             if let Some(reader_thread) = thread_guard.take() {
-                // Use timeout to prevent infinite hang in Drop
-                let join_result = std::thread::spawn(move || {
-                    let start = std::time::Instant::now();
-                    let timeout = Duration::from_millis(READER_THREAD_TIMEOUT_MS);
-                    loop {
-                        if reader_thread.is_finished() {
-                            let _ = reader_thread.join();
-                            break;
-                        }
-                        if start.elapsed() > timeout {
-                            warn!("PTY reader thread did not finish within timeout");
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                })
-                .join();
-
-                if join_result.is_err() {
-                    warn!("PTY reader thread cleanup panicked");
-                }
+                join_reader_thread_bounded(reader_thread);
             }
         }
     }

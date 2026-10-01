@@ -62,16 +62,22 @@ fn test_markdown_blockquote_prefix() {
     let markdown = "> Quote line\n> Second line\n";
     let lines = render_markdown(markdown);
     let text_lines = lines_to_text(&lines);
+    assert!(text_lines.iter().any(|line| line.contains("Quote line")));
+    assert!(text_lines.iter().any(|line| line.contains("Second line")));
     assert!(
-        text_lines
-            .iter()
-            .any(|line| line.starts_with("│ ") && line.contains("Quote line"))
+        !text_lines.iter().any(|line| line.contains('│') || line.contains('|')),
+        "blockquote must not render a leading bar, got {text_lines:?}"
     );
-    assert!(
-        text_lines
-            .iter()
-            .any(|line| line.starts_with("│ ") && line.contains("Second line"))
-    );
+    for line in &lines {
+        for segment in &line.segments {
+            if segment.text.contains("Quote line") || segment.text.contains("Second line") {
+                assert!(
+                    segment.style.get_effects().contains(anstyle::Effects::ITALIC),
+                    "blockquote text must be italic, got {segment:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

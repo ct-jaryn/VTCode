@@ -143,6 +143,21 @@ pub fn logo_accent_color() -> RgbColor {
     ACTIVE.read().definition.palette.logo_accent
 }
 
+/// Contrast ratio of a style's foreground against the active theme background.
+///
+/// Returns `None` when the style carries no RGB foreground (unset, ANSI16, or
+/// ANSI256 are not theme-relative). Consumers that build their own styled
+/// surfaces — for example the CLI exit postamble — use this to prove the
+/// surface meets the configured WCAG minimum (`get_minimum_contrast`, 4.5:1 by
+/// default) instead of shipping hand-picked colors.
+pub fn style_contrast_ratio(style: &Style) -> Option<f32> {
+    let Color::Rgb(foreground) = style.get_fg_color()? else {
+        return None;
+    };
+    let background = ACTIVE.read().definition.palette.background;
+    Some(contrast_ratio(RgbColor(foreground.r(), foreground.g(), foreground.b()), background))
+}
+
 /// Resolve a requested theme to a valid built-in identifier or the default.
 pub fn resolve_theme(preferred: Option<String>) -> String {
     preferred

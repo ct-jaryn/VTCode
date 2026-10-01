@@ -106,6 +106,13 @@ model_id_table! {
         display: "GPT-6 Sol",
         description: "Cost-efficient high-end model in the GPT-6 series for demanding professional work",
     },
+    GPT61Sol {
+        provider: OpenAI,
+        id: models::openai::GPT_6_1_SOL,
+        parse: [models::openai::GPT_6_1_SOL],
+        display: "GPT-6.1 Sol",
+        description: "Near-Astra performance for complex coding, computer use, and professional work at a lower cost",
+    },
     GPT6Luna {
         provider: OpenAI,
         id: models::openai::GPT_6_LUNA,
@@ -155,6 +162,13 @@ model_id_table! {
         parse: [models::CLAUDE_SONNET_5],
         display: "Claude Sonnet 5",
         description: "Anthropic's best combination of speed and intelligence with adaptive thinking on by default, 1M context, and new tokenizer",
+    },
+    ClaudeSonnet55 {
+        provider: Anthropic,
+        id: models::CLAUDE_SONNET_5_5,
+        parse: [models::CLAUDE_SONNET_5_5],
+        display: "Claude Sonnet 5.5",
+        description: "Latest Anthropic Sonnet with the best combination of speed and intelligence, adaptive thinking on by default, 1M context, 128K output, and `between_tools` as the lowest thinking setting",
     },
     ClaudeFable5 {
         provider: Anthropic,
@@ -301,6 +315,13 @@ model_id_table! {
         display: "Claude Sonnet 5 (Merge Gateway)",
         description: "Anthropic Claude Sonnet 5 accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
+    MergeGatewayAnthropicClaudeSonnet55 {
+        provider: MergeGateway,
+        id: models::merge_gateway::ANTHROPIC_CLAUDE_SONNET_5_5,
+        parse: [models::merge_gateway::ANTHROPIC_CLAUDE_SONNET_5_5],
+        display: "Claude Sonnet 5.5 (Merge Gateway)",
+        description: "Anthropic Claude Sonnet 5.5 accessed through Merge Gateway's OpenAI-compatible endpoint",
+    },
     MergeGatewayDeepseekFlash {
         provider: MergeGateway,
         id: models::merge_gateway::DEEPSEEK_FLASH,
@@ -405,6 +426,13 @@ model_id_table! {
         parse: [models::merge_gateway::OPENAI_GPT_6_SOL],
         display: "GPT-6 Sol (Merge Gateway)",
         description: "OpenAI GPT-6 Sol accessed through Merge Gateway's OpenAI-compatible endpoint",
+    },
+    MergeGatewayOpenAIGpt61Sol {
+        provider: MergeGateway,
+        id: models::merge_gateway::OPENAI_GPT_6_1_SOL,
+        parse: [models::merge_gateway::OPENAI_GPT_6_1_SOL],
+        display: "GPT-6.1 Sol (Merge Gateway)",
+        description: "OpenAI GPT-6.1 Sol accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
     MergeGatewayOpenAIGpt6Luna {
         provider: MergeGateway,
@@ -807,10 +835,12 @@ mod tests {
                 ModelId::MergeGatewayAnthropicClaudeOpus5
                     | ModelId::MergeGatewayAnthropicClaudeOpus55
                     | ModelId::MergeGatewayAnthropicClaudeSonnet5
+                    | ModelId::MergeGatewayAnthropicClaudeSonnet55
                     | ModelId::MergeGatewayGoogleGemini38Flash
                     | ModelId::MergeGatewayMetaMuseSpark13
                     | ModelId::MergeGatewayOpenAIGpt6Astra
                     | ModelId::MergeGatewayOpenAIGpt6Sol
+                    | ModelId::MergeGatewayOpenAIGpt61Sol
                     | ModelId::MergeGatewayOpenAIGpt6Luna
                     | ModelId::MergeGatewayDeepseekFlash
             )

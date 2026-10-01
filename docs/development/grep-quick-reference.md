@@ -209,6 +209,10 @@ What do you want to find?
 | `rg "needle" .` on a huge tree | `rg --glob "src/**/*.ts" "needle" .` | Narrow scope |
 | `rg -C 50 "needle"` | `rg -C 3 "needle"` | Keep nearby output small |
 | Large codebase searches | `rg -t rust "needle"` | Use a type filter where possible |
+| Repeat an empty search with cosmetic flag changes | Search again only for a new scope or question | Empty results are evidence; an empty pipeline still counts toward navigation convergence even if its final filter exits 0 |
+
+Quiet probes (`-q`, `--quiet`) are excluded from empty-output accounting. Option
+values such as the pattern in `rg -e -query src` are not quiet flags.
 
 ## See Also
 
@@ -217,3 +221,11 @@ What do you want to find?
   section.
 - System prompt: agent instructions for grep usage
 - ripgrep docs: https://github.com/BurntSushi/ripgrep
+
+## Edit after inspection
+
+| Situation | Tool call |
+| --- | --- |
+| Authorized edit | Call `apply_patch` directly with `{"input":"*** Begin Patch\n...\n*** End Patch\n"}`; `patch` is an alias. Never run it through the shell. |
+| Context mismatch | One fresh range per affected path per turn, such as `exec_command` with `{"cmd":"sed -n '1,100p' src/example.rs"}`; copy exact current context. |
+| Path read cap reached | A typed patch context mismatch permits that one bounded fresh read; repeated failures cannot replenish it. Other limits and permission checks still apply. |

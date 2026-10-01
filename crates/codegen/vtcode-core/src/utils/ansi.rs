@@ -24,6 +24,7 @@ use unicode_width::UnicodeWidthStr;
 use url::Url;
 use vtcode_commons::color_policy::{self, ColorOutputPolicySource};
 use vtcode_commons::diff_paths::looks_like_diff_content;
+use vtcode_commons::formatting::{RAN_COMMAND_CONTINUATION_WIDTH, RAN_COMMAND_FIRST_WIDTH};
 use vtcode_commons::tool_types::CompactStr;
 use vtcode_commons::ui_protocol::{CompactActivityMetadata, ToolOutputId};
 use vtcode_commons::{parse_editor_target, resolve_editor_path};
@@ -119,6 +120,14 @@ pub struct AnsiRenderer {
     compact_command_group: Option<CompactActivityMetadata>,
     next_compact_group_id: u64,
     pending_tool_output_anchor: Option<ToolOutputId>,
+    /// Capture id for the next exec-session expand notice. Set by the tool
+    /// output handler after recording the complete session capture; consumed
+    /// when the bounded body emits its `click to expand` row.
+    session_expand_anchor: Option<ToolOutputId>,
+    /// Force the next stream body onto the exec-session dim/expand path.
+    /// Needed for `unified_exec` follow-ups: the tool name alone cannot tell a
+    /// session poll from a command launch.
+    session_body: bool,
 }
 
 impl AnsiRenderer {
@@ -165,6 +174,8 @@ impl AnsiRenderer {
             compact_command_group: None,
             next_compact_group_id: 0,
             pending_tool_output_anchor: None,
+            session_expand_anchor: None,
+            session_body: false,
         }
     }
 
@@ -192,6 +203,29 @@ impl AnsiRenderer {
     /// completions are interleaved.
     pub fn set_next_tool_output_anchor(&mut self, id: ToolOutputId) {
         self.pending_tool_output_anchor = Some(id);
+    }
+
+    /// Remember which capture a forthcoming exec-session expand notice should
+    /// open. Unlike [`Self::set_next_tool_output_anchor`] this survives body
+    /// lines and is consumed only when the notice is emitted.
+    pub fn set_session_expand_anchor(&mut self, id: ToolOutputId) {
+        self.session_expand_anchor = Some(id);
+    }
+
+    /// Take the pending session expand anchor, if any.
+    pub fn take_session_expand_anchor(&mut self) -> Option<ToolOutputId> {
+        self.session_expand_anchor.take()
+    }
+
+    /// Mark the upcoming stream body as an exec-session stdin/stdout capture
+    /// (dim + expand), even when the tool name alone would look like a launch.
+    pub fn set_session_body(&mut self, session_body: bool) {
+        self.session_body = session_body;
+    }
+
+    /// Whether the upcoming stream body should use the exec-session path.
+    pub fn session_body_active(&self) -> bool {
+        self.session_body
     }
 
     /// Check if the last line rendered was empty
@@ -336,7 +370,23 @@ impl AnsiRenderer {
     ) -> Result<()> {
         let command = command.into();
         if !self.supports_inline_ui() {
-            return self.line(MessageStyle::Info, &format!("• Ran {command}"));
+            // Plain-text fallback (no inline UI): wrap long commands with
+            // explicit `\` continuations and `│` gutters so a chained
+            // `git add … && git commit …` stays readable instead of terminal
+            // word-wrap without a continuation marker.
+            let wrapped = vtcode_commons::formatting::wrap_shell_command_with_continuations(
+                &command,
+                RAN_COMMAND_FIRST_WIDTH,
+                RAN_COMMAND_CONTINUATION_WIDTH,
+            );
+            if wrapped.is_empty() {
+                return self.line(MessageStyle::Info, "• Ran command");
+            }
+            self.line(MessageStyle::Info, &format!("• Ran {}", wrapped[0]))?;
+            for segment in wrapped.iter().skip(1) {
+                self.line(MessageStyle::Info, &format!("  │ {segment}"))?;
+            }
+            return Ok(());
         }
 
         let (activity, replaces_previous) =
@@ -497,8 +547,22 @@ impl AnsiRenderer {
         search: Option<InlineListSearchConfig>,
         footer_hint: Option<String>,
     ) {
+        self.show_list_modal_with_status(title, lines, items, selected, search, footer_hint, None);
+    }
+
+    /// Show a list modal with an optional status strip (last action feedback).
+    pub fn show_list_modal_with_status(
+        &mut self,
+        title: &str,
+        lines: Vec<String>,
+        items: Vec<InlineListItem>,
+        selected: Option<InlineListSelection>,
+        search: Option<InlineListSearchConfig>,
+        footer_hint: Option<String>,
+        status: Option<vtcode_commons::ui_protocol::InlineStatus>,
+    ) {
         if let Some(sink) = &self.sink {
-            sink.show_list_modal_with_footer(title.into(), lines, items, selected, search, footer_hint);
+            sink.show_list_modal_with_status(title.into(), lines, items, selected, search, footer_hint, status);
         }
     }
 
@@ -1148,6 +1212,14 @@ impl InlineSink {
             resolved.effects |= Effects::ITALIC;
         }
 
+        if added.contains(RatModifier::UNDERLINED) {
+            resolved.effects |= Effects::UNDERLINE;
+        }
+
+        if added.contains(RatModifier::DIM) {
+            resolved.effects |= Effects::DIMMED;
+        }
+
         resolved
     }
 
@@ -1387,7 +1459,7 @@ impl InlineSink {
         self.handle.show_list_modal(title, lines, items, selected, search);
     }
 
-    fn show_list_modal_with_footer(
+    fn show_list_modal_with_status(
         &self,
         title: String,
         lines: Vec<String>,
@@ -1395,9 +1467,10 @@ impl InlineSink {
         selected: Option<InlineListSelection>,
         search: Option<InlineListSearchConfig>,
         footer_hint: Option<String>,
+        status: Option<vtcode_commons::ui_protocol::InlineStatus>,
     ) {
         self.handle
-            .show_list_modal_with_footer(title, lines, items, selected, search, footer_hint);
+            .show_list_modal_with_status(title, lines, items, selected, search, footer_hint, status);
     }
 
     fn show_secure_prompt_modal(&self, title: String, lines: Vec<String>, prompt_label: String) {
@@ -1612,7 +1685,15 @@ impl InlineSink {
                 combined_plain.push_str(&plain);
             }
 
-            self.handle.append_line(kind, combined_segments);
+            // A captured tool-output id must survive even on Tool/User lines
+            // (expand notices are ToolDetail): the combined append keeps the
+            // one-entry-per-call layout while `append_tool_output_line` binds
+            // the row to its viewer capture.
+            if let Some(id) = tool_output_id {
+                self.handle.append_tool_output_line(id, kind, combined_segments);
+            } else {
+                self.handle.append_line(kind, combined_segments);
+            }
             if record_transcript {
                 transcript::append(&combined_plain);
             }
@@ -1770,6 +1851,37 @@ mod tests {
         assert_eq!(segments[0].style.color, Some(AnsiColorEnum::Ansi(AnsiColor::Red)));
         assert_eq!(segments[1].text, " plain");
         assert_eq!(segments[1].style.color, None);
+    }
+
+    #[test]
+    fn convert_plain_lines_maps_underline_and_dim_effects() {
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let sink = InlineSink::new(InlineHandle::new_for_tests(sender), SyntaxHighlightingConfig::default());
+        let fallback = InlineTextStyle {
+            color: None,
+            bg_color: None,
+            effects: Effects::DIMMED,
+        };
+
+        // Expand notices underline their click target with SGR 4; the effect
+        // must survive into the segment or TUI hit-region detection (which
+        // scans for UNDERLINED) cannot see it.
+        let (converted, _plain) = sink.convert_plain_lines("… +2 lines · \u{1b}[4mclick to expand\u{1b}[0m", &fallback);
+        let segments = &converted[0];
+        let action = segments
+            .iter()
+            .find(|segment| segment.text.contains("click to expand"))
+            .expect("action segment");
+        assert!(
+            action.style.effects.contains(Effects::UNDERLINE),
+            "underline must survive ANSI→segment conversion: {:?}",
+            action.style
+        );
+        assert!(
+            action.style.effects.contains(Effects::DIMMED),
+            "fallback dim must remain on the action: {:?}",
+            action.style
+        );
     }
 
     #[test]
@@ -2121,6 +2233,8 @@ mod tests {
             compact_command_group: None,
             next_compact_group_id: 0,
             pending_tool_output_anchor: None,
+            session_expand_anchor: None,
+            session_body: false,
         };
 
         // This should not create an extra empty line after "line 2"

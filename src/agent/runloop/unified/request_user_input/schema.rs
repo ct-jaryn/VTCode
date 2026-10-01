@@ -53,7 +53,7 @@ pub(super) struct NormalizedRequestUserInput {
 }
 
 pub(super) fn normalize_request_user_input_args(args: &Value) -> Result<NormalizedRequestUserInput> {
-    let parsed: RequestUserInputArgs = serde_json::from_value(args.clone())?;
+    let parsed = RequestUserInputArgs::deserialize(args)?;
     validate_questions(&parsed.questions)?;
     Ok(NormalizedRequestUserInput {
         args: parsed,

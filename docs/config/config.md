@@ -573,7 +573,7 @@ scroll_speed = 3
 ```
 
 - `mouse_capture` keeps mouse events inside VT Code for click-to-expand, click-to-position, link activation, and wheel scrolling. Set it to `false` when you want the terminal's native text selection while keeping fullscreen rendering.
-- `copy_on_select` controls whether text selected inside VT Code is copied automatically on mouse release.
+- `copy_on_select` controls whether text selected inside VT Code is copied automatically when the mouse selection ends (click-drag or double-click word select). Set it to `false` to copy manually instead: `Ctrl+C` copies a transcript or composer selection, and `Ctrl+O` copies the last agent response. The option is also editable from `/config` → **Interface & Terminal**.
 - `scroll_speed` multiplies mouse-wheel scrolling from `1` to `20`. It only affects wheel accumulation; page-based keyboard navigation is unchanged.
 
 VT Code also honors these environment variables for default fullscreen behavior:

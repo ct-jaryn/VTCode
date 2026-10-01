@@ -8,6 +8,12 @@ use crate::agent::runloop::text_tools::parse_args::{
 use crate::agent::runloop::text_tools::parser::{ParseResult, ParsedToolCall, TextualToolParser};
 
 const MAX_TAGGED_NESTING_DEPTH: usize = 256;
+const TOOL_TAG: &str = "<tool_call>";
+const TOOL_TAG_CLOSE: &str = "</tool_call>";
+const ARG_KEY_TAG: &str = "<arg_key>";
+const ARG_VALUE_TAG: &str = "<arg_value>";
+const ARG_KEY_CLOSE: &str = "</arg_key>";
+const ARG_VALUE_CLOSE: &str = "</arg_value>";
 
 #[cfg_attr(feature = "profiling", hotpath::measure)]
 pub(super) fn parse_tagged_tool_call(text: &str) -> Option<(String, Value)> {
@@ -17,30 +23,43 @@ pub(super) fn parse_tagged_tool_call(text: &str) -> Option<(String, Value)> {
 }
 
 fn parse_standard_tagged_tool_call(text: &str) -> Option<(String, Value)> {
-    const TOOL_TAG: &str = "<tool_call>";
-    const TOOL_TAG_CLOSE: &str = "</tool_call>";
-    const ARG_KEY_TAG: &str = "<arg_key>";
-    const ARG_VALUE_TAG: &str = "<arg_value>";
-    const ARG_KEY_CLOSE: &str = "</arg_key>";
-    const ARG_VALUE_CLOSE: &str = "</arg_value>";
+    // Scan unfenced candidates: a mid-prose mention of the tag (or a fenced
+    // documentation example) must not bind. Keep trying later occurrences when
+    // the name after a match is not a clean tool identifier.
+    let mut search_from = 0usize;
+    loop {
+        let start = super::code_fence::find_unfenced_from(text, TOOL_TAG, search_from)?;
+        let rest_initial = &text[start + TOOL_TAG.len()..];
 
-    let start = text.find(TOOL_TAG)?;
-    let rest_initial = &text[start + TOOL_TAG.len()..];
+        // Find the end of the tool name. It ends at:
+        // 1. The first '<' (start of next tag)
+        // 2. The first '{' (start of JSON arguments)
+        // 3. The first whitespace (separator for key=value arguments)
+        // 4. The end of the string
+        let name_end = rest_initial
+            .find(|c: char| c == '<' || c == '{' || c.is_whitespace())
+            .unwrap_or(rest_initial.len());
 
-    // Find the end of the tool name. It ends at:
-    // 1. The first '<' (start of next tag)
-    // 2. The first '{' (start of JSON arguments)
-    // 3. The first whitespace (separator for key=value arguments)
-    // 4. The end of the string
-    let name_end = rest_initial
-        .find(|c: char| c == '<' || c == '{' || c.is_whitespace())
-        .unwrap_or(rest_initial.len());
+        let name = rest_initial[..name_end].trim().to_string();
+        if name.is_empty() || !super::canonical::is_clean_tool_name(&name) {
+            // Documentation mention or prose fragment — try the next tag.
+            search_from = start + TOOL_TAG.len();
+            continue;
+        }
 
-    let name = rest_initial[..name_end].trim().to_string();
-    if name.is_empty() {
-        return None;
+        if let Some(parsed) = finish_parse_standard_tagged_tool_call(rest_initial, name_end, name) {
+            return Some(parsed);
+        }
+        // Clean name but payload failed to parse — try the next tag.
+        search_from = start + TOOL_TAG.len();
     }
+}
 
+fn finish_parse_standard_tagged_tool_call(
+    rest_initial: &str,
+    name_end: usize,
+    name: String,
+) -> Option<(String, Value)> {
     let mut rest = &rest_initial[name_end..];
     let mut object = Map::new();
     let mut indexed_values: BTreeMap<String, BTreeMap<usize, Value>> = BTreeMap::new();

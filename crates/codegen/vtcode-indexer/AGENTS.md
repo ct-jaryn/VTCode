@@ -1,6 +1,6 @@
 # vtcode-indexer
 
-[Root AGENTS.md](../AGENTS.md) | Lightweight workspace file indexer with Markdown-backed persistence.
+[Root AGENTS.md](../../../AGENTS.md) | Lightweight workspace file indexer with Markdown-backed persistence.
 
 ## Key Types
 

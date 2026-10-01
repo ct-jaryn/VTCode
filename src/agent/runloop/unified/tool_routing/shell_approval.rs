@@ -113,7 +113,7 @@ fn segment_readonly_pattern(segment: &[String], scope_signature: &str) -> Option
     // generic pattern.  This prevents e.g. `find /tmp` from creating a broad
     // `shell-pattern:find` family key when the specific find-pattern rejected
     // the absolute-path argument.
-    if matches!(program, Some("find" | "sed")) {
+    if matches!(program, Some("find" | "sed" | "awk")) {
         return None;
     }
     learned_readonly_path_pattern(segment, scope_signature)
@@ -279,11 +279,14 @@ pub(super) fn tool_display_labels(tool_name: &str, tool_args: Option<&Value>) ->
 
 /// Build a conservative family/pattern learning key for safe shell commands.
 ///
-/// Currently matches safe read-only command families such as `find <subdir>`
-/// and `sed -n <range> <path>` invocations that:
+/// Currently matches safe read-only command families such as `find <subdir>`,
+/// `sed -n <range> <path>`, and write-free `awk <program> <path>` invocations
+/// that:
 /// - contain no destructive options,
 /// - are a single simple command (no `&&`, `||`, `;`, `|`, nested shells, etc.
-///   — gated via [`extract_shell_approval_command_prefix_words`]),
+///   — `find`/`sed`/generic via [`extract_shell_approval_command_prefix_words`];
+///   `awk` via quote-aware `split_command_words_on_operators` + tree-sitter
+///   `parse_shell_commands` because `NR>=a && NR<=b` carries `&&` inside quotes),
 /// - target a non-absolute, non-traversal, workspace-relative path.
 ///
 /// Scope (sandbox + additional permissions) is baked into the key so a
@@ -293,21 +296,34 @@ fn learned_shell_pattern(tool_name: &str, tool_args: Option<&Value>) -> Option<L
     // Use the *prefix* extractor which already rejects compound commands and
     // nested shell invocations — a broader pattern key must never be trained
     // by commands like `find src && rm -rf target` or `bash -c '...'`.
-    let command_words = extract_shell_approval_command_prefix_words(tool_name, tool_args)?;
+    let prefix_words = extract_shell_approval_command_prefix_words(tool_name, tool_args);
 
-    // Specific command patterns first: find, sed.
-    // These have tighter path-validation rules (e.g. reject absolute paths,
-    // directory traversal, and destructive flags).
+    // Specific command patterns first: find, sed, awk.
+    // `find`/`sed` use prefix-gated words; `awk` uses its own quote-aware
+    // extraction below. All have tighter path-validation rules (e.g. reject
+    // absolute paths, directory traversal, and destructive flags).
     let raw_command_text = extract_shell_raw_command_text(tool_name, tool_args);
-    if let Some(pattern) = learned_find_pattern(&command_words, &scope_signature, raw_command_text.as_deref()) {
-        return Some(pattern);
+    if let Some(command_words) = prefix_words.as_ref() {
+        if let Some(pattern) = learned_find_pattern(command_words, &scope_signature, raw_command_text.as_deref()) {
+            return Some(pattern);
+        }
+        if let Some(pattern) = learned_sed_print_pattern(command_words, &scope_signature) {
+            return Some(pattern);
+        }
     }
-    if let Some(pattern) = learned_sed_print_pattern(&command_words, &scope_signature) {
+    // `awk 'NR>=a && NR<=b {...}'` carries `&&` inside single quotes, which the
+    // naive substring gate in the prefix extractor misreads as a compound
+    // command. Fetch awk words via the non-gating extractor and prove
+    // single-command shape with the tree-sitter parser inside the pattern fn.
+    if let Some(words) = extract_shell_approval_command_words(tool_name, tool_args)
+        && let Some(pattern) = learned_awk_read_pattern(&words, &scope_signature, raw_command_text.as_deref())
+    {
         return Some(pattern);
     }
     // Generic read-only path-read pattern as fallback for commands without
-    // specific pattern rules (e.g. ls, grep, wc).  If find/sed had specific
+    // specific pattern rules (e.g. ls, grep, wc).  If find/sed/awk had specific
     // rules that rejected this invocation, no generic pattern is attached.
+    let command_words = prefix_words?;
     segment_readonly_pattern(&command_words, &scope_signature)
 }
 
@@ -428,6 +444,111 @@ fn learned_sed_print_pattern(command_words: &[String], scope_signature: &str) ->
     Some(LearnedPattern {
         key: format!("shell-pattern:sed -n <range> {family}|{scope_signature}"),
         label: format!("safe `sed -n` reads under `{family}`"),
+    })
+}
+
+/// Family key for write-free `awk <program> <path>` reads (e.g.
+/// `awk 'NR>=895 && NR<=935 {print NR": "$0}' src/file.rs`).
+///
+/// `awk` stays in the generic mutating-command denylist because its program
+/// text can write (`print > file`), pipe (`print | "cmd"`), execute
+/// (`system()`), indirect-call (`@func()`), or load code (`@include`/`@load`),
+/// and its options can edit in place (`-i`) or load programs (`-f`/`-l`).
+/// This pattern is only attached when the authoritative read-only classifier
+/// (`vtcode_core::tools::tool_intent::is_readonly_command_session_command`,
+/// backed by `command_args::has_unsafe_awk_options`) proves the invocation
+/// write-free, so the family key (which intentionally ignores the exact `NR`
+/// range/program text, mirroring `sed -n <range>`) can never promote a
+/// mutating `awk` shape. The `-v`/`-F`/`--assign`/`--field-separator` skipping
+/// below mirrors `has_unsafe_awk_options`; keep them in sync. All file args
+/// must share one workspace-relative top-level family;
+/// absolute/traversal/multi-family reads get no pattern and stay exact-only.
+fn learned_awk_read_pattern(
+    command_words: &[String],
+    scope_signature: &str,
+    raw_command_text: Option<&str>,
+) -> Option<LearnedPattern> {
+    if command_words.first().map(String::as_str) != Some("awk") {
+        return None;
+    }
+    let raw = raw_command_text?;
+    if vtcode_core::tools::command_args::contains_dynamic_shell_syntax(raw) {
+        return None;
+    }
+    {
+        let args = serde_json::json!({"action": "run", "command": raw});
+        if !vtcode_core::tools::tool_intent::is_readonly_command_session_command(&args) {
+            return None;
+        }
+    }
+    // Quote-aware single-command gate: `&&`/`||`/`|`/`;` inside single quotes
+    // (the common `NR>=a && NR<=b` shape) must not count as a compound.
+    // `split_command_words_on_operators` only splits standalone operator words
+    // produced by quote-respecting `shell_words::split`, and the tree-sitter
+    // parser proves the raw string is one simple command.
+    {
+        let segments = split_command_words_on_operators(command_words)?;
+        if segments.len() != 1 {
+            return None;
+        }
+    }
+    if let Ok(parsed) = vtcode_core::command_safety::shell_parser::parse_shell_commands(raw) {
+        if parsed.len() != 1 {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    let mut index = 1;
+    let mut options_ended = false;
+    while index < command_words.len() {
+        let word = command_words[index].as_str();
+        if !options_ended && word == "--" {
+            options_ended = true;
+            index += 1;
+            continue;
+        }
+        if !options_ended && word.starts_with('-') && word.len() > 1 {
+            if word == "-v" || word == "--assign" || word == "-F" || word == "--field-separator" {
+                index += 2;
+                continue;
+            }
+            if word.starts_with("-v")
+                || word.starts_with("--assign=")
+                || word.starts_with("-F")
+                || word.starts_with("--field-separator=")
+            {
+                index += 1;
+                continue;
+            }
+            return None;
+        }
+        break;
+    }
+
+    let _program = command_words.get(index)?;
+    let files = command_words.get(index + 1..)?;
+    if files.is_empty() {
+        return None;
+    }
+
+    let mut family: Option<String> = None;
+    for file in files {
+        let current = normalize_workspace_file_family(file)?;
+        if let Some(existing) = &family {
+            if existing != &current {
+                return None;
+            }
+        } else {
+            family = Some(current);
+        }
+    }
+    let family = family?;
+
+    Some(LearnedPattern {
+        key: format!("shell-pattern:awk {family}|{scope_signature}"),
+        label: format!("safe `awk` reads under `{family}`"),
     })
 }
 
@@ -595,6 +716,85 @@ mod tests {
         assert!(pattern_for("sed -i 's/a/b/' src/lib.rs").is_none());
         assert!(pattern_for("sed -n '1,10d' src/lib.rs").is_none());
         assert!(pattern_for("sed -n '1,10p' ../src/lib.rs").is_none());
+    }
+
+    #[test]
+    fn awk_range_print_under_workspace_path_yields_pattern_key() {
+        let pattern = pattern_for("awk 'NR>=895 && NR<=935 {print NR\": \"$0}' src/agent/runloop/orchestration.rs")
+            .expect("pattern");
+
+        assert!(pattern.key.starts_with("shell-pattern:awk src|sandbox_permissions="));
+        assert_eq!(pattern.label, "safe `awk` reads under `src`");
+    }
+
+    #[test]
+    fn awk_with_data_options_yields_same_family_key() {
+        let plain = pattern_for("awk 'NR>=40 && NR<=140' README.md").expect("pattern");
+        let field_sep = pattern_for("awk -F: '{print $1}' README.md").expect("pattern");
+        let var_assign = pattern_for("awk -v limit=10 'NR<=limit' README.md").expect("pattern");
+
+        for pattern in [&plain, &field_sep, &var_assign] {
+            assert!(pattern.key.starts_with("shell-pattern:awk README.md|sandbox_permissions="));
+        }
+        assert_eq!(plain.key.split('|').next(), field_sep.key.split('|').next());
+        assert_eq!(plain.key.split('|').next(), var_assign.key.split('|').next());
+    }
+
+    #[test]
+    fn awk_mutating_shapes_have_no_pattern() {
+        for command in [
+            "awk '{print > \"out.txt\"}' README.md",
+            "awk '{print >> \"out.txt\"}' README.md",
+            "awk '{print | \"sort\"}' README.md",
+            "awk 'BEGIN{system(\"touch out\")}' README.md",
+            "awk -i inplace '{print}' README.md",
+            "awk -f program.awk README.md",
+            "awk '@include \"x.awk\"' README.md",
+            "awk '@load \"ext\"' README.md",
+            "awk -v f=system 'BEGIN{@f(\"id\")}' README.md",
+            "awk 'BEGIN{@s(\"id\")}' README.md",
+            "awk -l injail '{print}' README.md",
+            "awk '$3>100' README.md",
+            "awk '/error|warning/' README.md",
+            "awk 'NR>=1' README.md > out.txt",
+            "awk -F:",
+            "awk",
+        ] {
+            assert!(pattern_for(command).is_none(), "mutating awk must not learn: {command}");
+        }
+    }
+
+    #[test]
+    fn awk_dynamic_syntax_has_no_pattern() {
+        for command in [
+            "awk 'NR>=1' src/file.txt $(whoami)",
+            "awk 'NR>=1' src/file.txt `whoami`",
+            "awk 'NR>=1' src/*.rs",
+            "awk 'NR>=1' src/file.txt; echo hi",
+        ] {
+            assert!(pattern_for(command).is_none(), "dynamic awk must not learn: {command}");
+        }
+    }
+
+    #[test]
+    fn awk_multi_family_and_stdin_have_no_pattern() {
+        assert!(pattern_for("awk 'NR>=1' src/a.rs docs/b.md").is_none());
+        assert!(pattern_for("awk 'NR>=1' src/a.rs src/../other/b.rs").is_none());
+        assert!(pattern_for("awk '{print $1}' -").is_none());
+        assert!(pattern_for("awk 'NR>=1'").is_none());
+    }
+
+    #[test]
+    fn awk_absolute_and_traversal_paths_have_no_pattern() {
+        assert!(pattern_for("awk 'NR>=1 && NR<=5' /tmp/file.txt").is_none());
+        assert!(pattern_for("awk 'NR>=1 && NR<=5' ../src/lib.rs").is_none());
+        assert!(pattern_for("awk 'NR>=1 && NR<=5' src/../other/file.txt").is_none());
+    }
+
+    #[test]
+    fn awk_compound_commands_have_no_pattern() {
+        assert!(pattern_for("awk 'NR>=1' src/file.txt && rm -rf target").is_none());
+        assert!(pattern_for("awk 'NR>=1' src/file.txt | xargs rm").is_none());
     }
 
     #[test]
@@ -771,6 +971,56 @@ mod tests {
             "default",
         );
         assert!(destructive.pattern.is_none(), "destructive find must not carry pattern");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn three_safe_awk_invocations_promote_pattern_to_auto_approve() {
+        use vtcode_core::tools::ApprovalRecorder;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "vtcode_awk_pattern_promote_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let recorder = ApprovalRecorder::new(temp_dir.clone());
+
+        // Three different (but equally safe) `awk ... src/...` approvals with
+        // distinct `NR` ranges — the exact shape that previously re-prompted.
+        for command in [
+            "awk 'NR>=895 && NR<=935 {print NR\": \"$0}' src/agent/runloop/orchestration.rs",
+            "awk 'NR>=40 && NR<=140' src/lib.rs",
+            "awk -F: '{print $1}' src/main.rs",
+        ] {
+            let target =
+                approval_learning_target("exec_command", Some(&json!({"action":"run","command":command})), "default");
+            super::super::approval_cache::record_approval_blocking(&recorder, &target, true).await;
+        }
+
+        // A *new* safe `awk ... src/...` range should auto-approve via the
+        // family key even though its exact form was never seen before.
+        let new_target = approval_learning_target(
+            "exec_command",
+            Some(&json!({"action":"run","command":"awk 'NR>=1 && NR<=5' src/other.rs"})),
+            "default",
+        );
+        let pattern = new_target.pattern.as_ref().expect("pattern attached");
+        assert!(recorder.should_auto_approve(&pattern.key).await);
+        assert_eq!(recorder.get_approval_count(&new_target.approval_key).await, 0);
+
+        // Mutating `awk` MUST NOT inherit the family pattern.
+        let destructive = approval_learning_target(
+            "exec_command",
+            Some(&json!({"action":"run","command":"awk '{print > \"out.txt\"}' src/other.rs"})),
+            "default",
+        );
+        assert!(destructive.pattern.is_none(), "destructive awk must not carry pattern");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -39,6 +39,7 @@ mod optimization_facade;
 mod output_processing;
 mod pack;
 mod pack_impls;
+mod patch_recovery;
 mod planning_workflow_checks;
 mod planning_workflow_facade;
 mod policy;
@@ -154,6 +155,7 @@ pub struct ToolRegistry {
     mcp_reverse_index: Arc<tokio::sync::RwLock<FxHashMap<String, String>>>,
     timeout_policy: Arc<parking_lot::RwLock<ToolTimeoutPolicy>>,
     execution_history: ToolExecutionHistory,
+    patch_recovery_reads: Arc<Mutex<patch_recovery::PatchRecoveryReads>>,
     harness_context: HarnessContext,
 
     // Mutable runtime state wrapped for concurrent access
@@ -182,14 +184,6 @@ pub struct ToolRegistry {
     tool_call_counter: Arc<std::sync::atomic::AtomicU64>,
     /// Total PTY poll iterations (for monitoring CPU usage)
     pty_poll_counter: Arc<std::sync::atomic::AtomicU64>,
-    /// Provider-visible preview bytes emitted this turn. Reset at each turn
-    /// start by `begin_turn_preview_window()`; enforced in
-    /// `output_processing::process_tool_output` against the planning-aware
-    /// `turn_preview_budget_bytes`. Small verifier-sized payloads use a
-    /// separate bounded reserve, reset with the same window.
-    turn_preview_bytes: Arc<std::sync::atomic::AtomicUsize>,
-    /// Small payload bytes admitted outside the regular preview budget.
-    turn_tiny_preview_bytes: Arc<std::sync::atomic::AtomicUsize>,
     /// Canonical `.vtcode/plans` directory, resolved once per registry for
     /// the planning-mode hot path (`is_plan_file_operation`).
     canonical_plans_dir: Arc<std::sync::OnceLock<std::path::PathBuf>>,

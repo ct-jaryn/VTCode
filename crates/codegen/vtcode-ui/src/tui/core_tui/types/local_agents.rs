@@ -52,4 +52,12 @@ impl LocalAgentEntry {
             LocalAgentKind::ExecSession => self.status == "running",
         }
     }
+
+    /// Non-live history row used for expanded-window header counts.
+    /// Live work is [`Self::is_loading`]; everything retained that is not live
+    /// counts as finished for the `N running · M finished` summary.
+    #[must_use]
+    pub(crate) fn is_finished(&self) -> bool {
+        !self.is_loading()
+    }
 }

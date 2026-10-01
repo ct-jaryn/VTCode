@@ -74,7 +74,7 @@ All VT Code crates require Rust 1.98.1 or later due to dependencies (ratatui 0.3
 | Feature | Status | Dependencies | Notes |
 |---------|--------|--------------|-------|
 | Keychain (Keyring) | Yes | Security Framework | Native macOS keychain |
-| Desktop Notifications | Yes | `mac-notification-sys` | Native NSUserNotification |
+| Desktop Notifications | Yes | `mac-notification-sys` | Native NSUserNotification; sent via the Finder bundle (`com.apple.finder`) to avoid the Apple Events automation permission prompt |
 | PTY Sessions | Yes | `libc` | Full Unix PTY support |
 | File Permissions | Yes | `libc` | Unix permission model |
 | Signal Handling | Yes | `signal-hook` | POSIX signals |

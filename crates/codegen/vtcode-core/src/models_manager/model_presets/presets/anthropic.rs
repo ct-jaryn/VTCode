@@ -6,6 +6,44 @@ use crate::config::types::ReasoningEffortLevel;
 pub(crate) fn anthropic_presets() -> Vec<ModelPreset> {
     vec![
         ModelPreset {
+            id: "claude-sonnet-5-5".to_string(),
+            model: "claude-sonnet-5-5".to_string(),
+            display_name: "Claude Sonnet 5.5".to_string(),
+            description:
+                "The best combination of speed and intelligence with adaptive thinking on by default, 1M context, 128K output, and between_tools as the lowest thinking setting"
+                    .to_string(),
+            provider: Provider::Anthropic,
+            default_reasoning_effort: ReasoningEffortLevel::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::Low,
+                    description: "Fast adaptive effort".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::Medium,
+                    description: "Balanced adaptive effort".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::High,
+                    description: "Default adaptive effort".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::XHigh,
+                    description: "Extended capability for the hardest coding and agentic tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffortLevel::Max,
+                    description: "Maximum adaptive effort for intelligence-demanding tasks"
+                        .to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            context_window: Some(1_000_000),
+        },
+        ModelPreset {
             id: "claude-sonnet-5".to_string(),
             model: "claude-sonnet-5".to_string(),
             display_name: "Claude Sonnet 5".to_string(),

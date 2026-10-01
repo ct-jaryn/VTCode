@@ -1,3 +1,5 @@
+use crate::agent::runloop::ui_list;
+use crate::agent::runloop::ui_list::Tone;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -267,6 +269,7 @@ where
             selected: Some(InlineListSelection::FileConflictReload),
             search: None,
             hotkeys: Vec::new(),
+            status: None,
         }),
         ctrl_c_state,
         ctrl_c_notify,
@@ -327,32 +330,38 @@ where
 
 fn conflict_resolution_items(can_show_diff: bool) -> Vec<InlineListItem> {
     let mut items = Vec::with_capacity(if can_show_diff { 3 } else { 2 });
-    items.push(InlineListItem {
-        title: "Reload from disk".to_string(),
-        subtitle: Some("Discard pending agent changes and continue from the external version.".to_string()),
-        badge: None,
-        indent: 0,
-        selection: Some(InlineListSelection::FileConflictReload),
-        search_value: Some("reload disk external version".to_string()),
-    });
+    items.push(
+        ui_list::action(
+            "Reload from disk",
+            "Discard pending agent changes and continue from the external version.".to_string(),
+            None,
+            Tone::Neutral,
+            Some(InlineListSelection::FileConflictReload),
+        )
+        .with_search_value("reload disk external version".to_string()),
+    );
     if can_show_diff {
-        items.push(InlineListItem {
-            title: "View unified diff".to_string(),
-            subtitle: Some("Review external changes against the agent's intended write.".to_string()),
-            badge: None,
-            indent: 0,
-            selection: Some(InlineListSelection::FileConflictViewDiff),
-            search_value: Some("diff compare review changes".to_string()),
-        });
+        items.push(
+            ui_list::action(
+                "View unified diff",
+                "Review external changes against the agent's intended write.".to_string(),
+                None,
+                Tone::Neutral,
+                Some(InlineListSelection::FileConflictViewDiff),
+            )
+            .with_search_value("diff compare review changes".to_string()),
+        );
     }
-    items.push(InlineListItem {
-        title: "Abort".to_string(),
-        subtitle: Some("Cancel this write and leave disk unchanged.".to_string()),
-        badge: None,
-        indent: 0,
-        selection: Some(InlineListSelection::FileConflictAbort),
-        search_value: Some("abort cancel stop".to_string()),
-    });
+    items.push(
+        ui_list::action(
+            "Abort",
+            "Cancel this write and leave disk unchanged.".to_string(),
+            None,
+            Tone::Neutral,
+            Some(InlineListSelection::FileConflictAbort),
+        )
+        .with_search_value("abort cancel stop".to_string()),
+    );
     items
 }
 

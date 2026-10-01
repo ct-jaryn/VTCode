@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::sync::Arc;
 
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -34,7 +35,7 @@ fn format_model_summary_label(model: &str) -> String {
 
 fn primary_agent_header_label(name: Option<&str>) -> String {
     let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
-        return "Duck".to_string();
+        return "Build".to_string();
     };
     format_model_summary_label(name)
 }
@@ -54,9 +55,9 @@ fn line_is_empty(spans: &[Span<'static>]) -> bool {
 }
 
 impl Session {
-    pub(crate) fn header_lines(&mut self) -> Vec<Line<'static>> {
+    pub(crate) fn header_lines(&mut self) -> Arc<Vec<Line<'static>>> {
         if let Some(cached) = &self.header_lines_cache {
-            return cached.clone();
+            return Arc::clone(cached);
         }
 
         let lines = if self.appearance.hide_header {
@@ -64,8 +65,19 @@ impl Session {
         } else {
             vec![self.header_compact_line()]
         };
-        self.header_lines_cache = Some(lines.clone());
-        lines
+        let arc = Arc::new(lines);
+        self.header_lines_cache = Some(Arc::clone(&arc));
+        arc
+    }
+
+    /// Cached border-block title (rebuilt only when the header cache drops).
+    pub(crate) fn header_block_title_cached(&mut self) -> Line<'static> {
+        if let Some(title) = &self.header_block_title_cache {
+            return title.clone();
+        }
+        let title = self.header_block_title();
+        self.header_block_title_cache = Some(title.clone());
+        title
     }
 
     pub(crate) fn header_height_from_lines(&mut self, width: u16, lines: &[Line<'static>]) -> u16 {
@@ -117,7 +129,7 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn header_height_for_width(&mut self, width: u16) -> u16 {
         let lines = self.header_lines();
-        self.header_height_from_lines(width, &lines)
+        self.header_height_from_lines(width, lines.as_slice())
     }
 
     fn header_block_title(&self) -> Line<'static> {
@@ -656,7 +668,7 @@ impl Session {
         style
     }
 
-    fn header_primary_style(&self) -> Style {
+    pub(crate) fn header_primary_style(&self) -> Style {
         let mut style = self.styles.default_style().add_modifier(Modifier::DIM);
         if let Some(primary) = self.theme.primary.or(self.theme.foreground) {
             style = style.fg(ratatui_color_from_ansi(primary));

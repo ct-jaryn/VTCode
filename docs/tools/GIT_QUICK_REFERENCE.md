@@ -49,12 +49,16 @@ git checkout -p              # Interactive restoration
 
 ### Stash
 ```bash
-git stash list               # Show stashed changes
-git stash show               # Show latest stash
-git stash pop                # Apply and remove stash
-git stash apply              # Apply without removing
-git stash drop               # Delete stash
+git stash list               # Show stashed changes (read-only)
+git stash show               # Show latest stash (read-only)
+git stash push               # Save current work (write, approval-gated)
+git stash pop                # Apply and remove stash (write, approval-gated)
+git stash apply              # Apply without removing (write, approval-gated)
+git stash drop               # Delete stash (write, approval-gated)
 ```
+
+Bare `git stash` is rejected (it means `git stash push`); only
+`stash list` / `stash show` are read-only.
 
 ##   Blocked Operations
 
@@ -114,11 +118,11 @@ git log --oneline -5         # Recent commits
 
 ### Working with Stash
 ```bash
-git stash                    # Save current work
+git stash push               # Save current work (bare `git stash` is rejected)
 git checkout hotfix          # Switch branch
 # ... do work ...
 git checkout main            # Back to main
-git stash pop                # Restore work
+git stash pop                # Restore work (write, approval-gated)
 ```
 
 ### Exploring History

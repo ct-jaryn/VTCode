@@ -124,7 +124,7 @@ let model = "gpt-5-mini";
 
 ## 7. Documentation Location
 
-All `.md` documentation files go in `docs/`. The only exceptions in repository root are approved governance files (`README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `CHANGELOG.md`).
+All `.md` documentation files go in `docs/`. The only exceptions in repository root are approved governance files (`README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `CHANGELOG.md`).
 
 Within `docs/`, top-level `docs/*.md` is reserved for stable entrypoint docs. New one-off implementation notes, phase reports, and fix summaries must go to a domain folder (for example `docs/features/`) or archive path (for example `docs/archive/`).
 

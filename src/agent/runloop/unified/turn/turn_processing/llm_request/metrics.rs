@@ -205,9 +205,19 @@ pub(super) struct TokenBudgetBreakdown<'a> {
     pub on_wire_tools: usize,
     pub client_local_deferral: bool,
     pub tool_free_recovery: bool,
+    /// True when this is the session's first assembled LLM request.
+    pub first_call: bool,
+}
+
+impl TokenBudgetBreakdown<'_> {
+    /// Per-call harness tax before the task prompt (instructions + tool schemas).
+    pub(super) fn fixed_overhead_tokens(&self) -> usize {
+        self.system_prompt_tokens.saturating_add(self.tool_schema_tokens)
+    }
 }
 
 pub(super) fn emit_token_budget_breakdown(ctx: &TurnProcessingContext<'_>, breakdown: TokenBudgetBreakdown<'_>) {
+    let fixed_overhead_tokens = breakdown.fixed_overhead_tokens();
     tracing::info!(
         target: "vtcode.turn.metrics",
         metric = "token_budget_breakdown",
@@ -221,6 +231,8 @@ pub(super) fn emit_token_budget_breakdown(ctx: &TurnProcessingContext<'_>, break
         on_wire_tools = breakdown.on_wire_tools,
         client_local_deferral = breakdown.client_local_deferral,
         tool_free_recovery = breakdown.tool_free_recovery,
+        first_call = breakdown.first_call,
+        fixed_overhead_tokens,
         "turn metric"
     );
 
@@ -235,6 +247,8 @@ pub(super) fn emit_token_budget_breakdown(ctx: &TurnProcessingContext<'_>, break
         on_wire_tools: usize,
         client_local_deferral: bool,
         tool_free_recovery: bool,
+        first_call: bool,
+        fixed_overhead_tokens: usize,
         ts: i64,
     }
 
@@ -248,6 +262,8 @@ pub(super) fn emit_token_budget_breakdown(ctx: &TurnProcessingContext<'_>, break
         on_wire_tools: breakdown.on_wire_tools,
         client_local_deferral: breakdown.client_local_deferral,
         tool_free_recovery: breakdown.tool_free_recovery,
+        first_call: breakdown.first_call,
+        fixed_overhead_tokens,
         ts: chrono::Utc::now().timestamp(),
     });
 }

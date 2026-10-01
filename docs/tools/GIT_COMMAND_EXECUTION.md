@@ -17,9 +17,9 @@ The vtcode agent now supports comprehensive git command execution with a three-t
 - `git log` - Show commit history
 - `git show` - Show objects
 - `git diff` - Show changes between commits
-- `git branch` - List/manage branches
-- `git tag` - List/manage tags
-- `git remote` - Manage remote repositories
+- `git branch` - List branches (bare/flag-only forms; `--set-upstream-to`, `--unset-upstream`, `--edit-description`, and rename/copy mutators are write operations)
+- `git tag` - List tags (bare/flag-only forms; creating, deleting, or forcing a tag is a write operation)
+- `git remote` - List remotes (`add`/`remove`/`set-url` are write operations)
 
 #### Object Inspection
 - `git ls-tree` - List tree object contents
@@ -32,13 +32,17 @@ The vtcode agent now supports comprehensive git command execution with a three-t
 - `git config` - Get configuration values (read-only)
 
 #### Stash Operations
-- `git stash list` - List stashed changes
-- `git stash show` - Show stash contents
-- `git stash pop` - Apply and remove stash
-- `git stash apply` - Apply stash without removing
-- `git stash drop` - Delete stash
-- `git stash clear` - Delete all stashes
-- `git stash create` - Create new stash
+- `git stash list` - List stashed changes (read-only)
+- `git stash show` - Show stash contents (read-only)
+- `git stash pop` - Apply and remove stash (write operation, Tier 2)
+- `git stash apply` - Apply stash without removing (write operation, Tier 2)
+- `git stash drop` - Delete stash (write operation, Tier 2)
+- `git stash clear` - Delete all stashes (write operation, Tier 3)
+- `git stash create` - Create new stash (write operation, Tier 2)
+
+Bare `git stash` is `git stash push` (a write operation), and flag-only push
+forms (`-k`, `-u`, `-a`, `-p`, `-m`) carry no operand, so only the explicit
+`list`/`show` forms are read-only.
 
 ### Tier 2: Safe Write Operations (With Validation)
 
@@ -159,7 +163,9 @@ git filter-branch
 - Symlink escapes are detected and prevented
 
 ### Shell Injection Prevention
-- Suspicious shell metacharacters (`;`, `|`, `&`) are blocked in arguments
+- Destructive redirection and dynamic-expansion syntax are rejected; safe
+  pipelines and `;`/`&&` chains of independently read-only commands are
+  allowed (plan mode admits them)
 - Only safe subcommands and flags are accepted
 
 ### Destructive Operation Prevention
@@ -169,7 +175,9 @@ git filter-branch
 
 ## Configuration
 
-Git execution is validated in the execution policy module: `crates/codegen/vtcode-core/src/execpolicy/mod.rs`
+Plan-mode read-only admission is classified in
+`crates/codegen/vtcode-core/src/tools/tool_intent/readonly.rs`; the exec
+policy validator lives in `crates/codegen/vtcode-core/src/exec_policy/`
 
 To modify allowed operations:
 1. Edit `validate_git()` function

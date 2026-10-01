@@ -272,7 +272,8 @@ pub struct ResponsesCompactionOptions {
 pub struct CodingAgentSettings {
     /// Optimize for long context by hoisting the largest user message.
     /// Hoisting reorders earlier turns, so the Anthropic builder skips it on
-    /// preserved-thinking models (Claude Opus 5.5, Claude Fable 5.1).
+    /// preserved-thinking models (Claude Sonnet 5.5, Claude Opus 5.5, Claude
+    /// Fable 5.1).
     pub(crate) long_context_optimization: bool,
 }
 

@@ -19,6 +19,8 @@ const TOOL_REQUEST_USER_INPUT: &str = tools::REQUEST_USER_INPUT;
 const TOOL_TASK_TRACKER: &str = tools::TASK_TRACKER;
 const TOOL_START_PLANNING: &str = tools::START_PLANNING;
 
+const OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE: &str = "- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.";
+
 /// Shared cross-turn resume pointer (invariant #22). The hint body itself stays
 /// transient via `append_transient_turn_notes`; tool guidance only advertises
 /// that a turn-start `Exec session resume:` note carries the live ids so a
@@ -37,7 +39,7 @@ const START_PLANNING_GUIDANCE_LINE: &str = "- For demanding, ambiguous, or multi
 /// must be >= 1`); checklist-level `index: 0` completion exists only outside
 /// planning, so neither line advertises it.
 const PLANNING_TASK_TRACKER_COMPACT_LINE: &str = "- Keep blockers and verification open in `task_tracker`; updates use positive indices or index_path, and index 0 is invalid while planning.";
-const PLANNING_TASK_TRACKER_INDEX_LINE: &str = "- Use `task_tracker` action=update with positive flat indices or positive hierarchical index_path values (index 0 is invalid while planning), and use items for bulk updates.";
+const PLANNING_TASK_TRACKER_INDEX_LINE: &str = "- Use `task_tracker` action=update with positive flat indices or positive hierarchical index_path values (index 0 is invalid while planning), and use items only for full checklist replacement with descriptions and statuses, never JSON-encoded updates.";
 
 /// Documentation density is independent of the tools a session may execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +89,7 @@ pub fn generate_tool_guidelines_with_capabilities(
             }
             let has = |name: &str| available_tools.iter().any(|tool| tool == name);
             let mut lines = vec!["\n\n## Active Tools".to_owned()];
+            lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_owned());
             if let Some(mode) = capability_mode_line(capability_level, has(TOOL_EXEC_COMMAND), has(TOOL_APPLY_PATCH)) {
                 lines.push(mode.to_owned());
             }
@@ -111,7 +114,7 @@ pub fn generate_tool_guidelines_with_capabilities(
             }
             if has(TOOL_WRITE_STDIN) {
                 lines.push(format!(
-                    "- `write_stdin` needs an active `session_id`; repeat the wait after an in-progress deadline{CROSS_TURN_RESUME_HINT_CLAUSE}"
+                    "- `write_stdin`: use returned `session_id`; if missing, recover prior output; repeat waits after in-progress deadlines{CROSS_TURN_RESUME_HINT_CLAUSE}"
                 ));
             }
             // Safeguard, verification, wait-instead-of-poll, and spool/preview
@@ -161,6 +164,7 @@ pub fn generate_tool_guidelines_for_profile(
     let has_start_planning = available_tools.iter().any(|tool| tool == TOOL_START_PLANNING);
 
     let mut lines = Vec::new();
+    lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_string());
     if let Some(mode_line) = capability_mode_line(capability_level, has_exec, has_apply_patch) {
         lines.push(mode_line.to_string());
     }
@@ -188,6 +192,12 @@ pub fn generate_tool_guidelines_for_profile(
         // prompt keeps only the outcome rule so wording cannot drift from
         // enforcement.
         lines.push("- Run verifiers standalone or as a pure `&&` chain so the exit status is visible; a verifier piped only into `head` or `tail` counts as standalone, while results behind other pipes, `;`, or `||` stay unverified.".to_string());
+        // Low-effort models sometimes report a change as done without
+        // exercising it: require a real check (tests, type-checker, build,
+        // or the changed command itself). A syntax-only check, or a check
+        // command that failed to start, does not count. Applies to Sonnet
+        // 5.5 at `low` effort and any route where verification is skipped.
+        lines.push("- Run a real check that exercises the change; syntax-only or failed-to-start checks do not count. Install missing deps via the project's package manager, never sudo; if no check can run, say which and why.".to_string());
         // Tool-latency tail is dominated by full builds (observed p90 ~18s):
         // verify incrementally first. Kept tool-agnostic: fast checks exist
         // in every stack (`cargo check`, `tsc --noEmit`, `pytest --collect-only`).
@@ -196,11 +206,11 @@ pub fn generate_tool_guidelines_for_profile(
     // Tool-failure diagnosis, waiting on returned `next_wait_args` instead of
     // polling, the safeguard rule, the verification outcome rule (report
     // completion only after a check you ran), and spool paging with
-    // `preview_budget_exhausted` handling each have one home in Runtime
+    // per-result preview bounds each have one home in Runtime
     // Guidance, which every profile includes; do not restate them here.
     if has_stdin {
         lines.push(format!(
-            "- `write_stdin`: reuse the existing `session_id` of an active exec session; `spool_complete: false` marks readable partial output; an exited pending spool arrives on a later wait{CROSS_TURN_RESUME_HINT_CLAUSE}"
+            "- `write_stdin`: use the existing `session_id`; if missing, recover prior output; rerun only for fresh results. `spool_complete: false` is partial; wait for exited pending spools{CROSS_TURN_RESUME_HINT_CLAUSE}"
         ));
     }
     if has_search {
@@ -442,6 +452,7 @@ fn generate_runtime_tool_guidelines_for_profile(
     let has_task_tracker = available_tools.iter().any(|tool| matches!(tool.as_str(), TOOL_TASK_TRACKER));
 
     let mut lines = vec!["- Planning workflow active: stay within the read-safe tool list.".to_string()];
+    lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_string());
     lines.push("- Monitor the available planning tool-loop budget; stop research when the plan is specified or the limit is near, then synthesize one compact decision-ready plan from existing evidence.".to_string());
     lines.push("- Every implementation step in the final plan must name a concrete repository target and include a concrete verification command or observable check.".to_string());
     lines.push("- When the plan is ready, emit only one `<proposed_plan>` block; do not repeat planning policy text or add surrounding prose.".to_string());
@@ -682,10 +693,12 @@ mod tests {
         // or the shared contract and must not be restated by tool sections.
         let markers = [
             "never claim a check passed",
-            "diagnose it and change approach",
-            "rather than polling",
-            "small ranges",
-            "preview_budget_exhausted",
+            "Diagnose failures; change approach",
+            "Use returned `next_wait_args`",
+            "Treat empty searches as evidence",
+            "Check optional tools once",
+            "small non-overlapping ranges",
+            "accumulated output never exhausts tool access",
             "additional_permissions",
             "bypass safeguards",
             "Delegate only sizeable",
@@ -742,7 +755,7 @@ mod tests {
         );
         assert_eq!(
             minimal,
-            "\n\n## Active Tools\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files."
+            "\n\n## Active Tools\n- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files."
         );
         let default = generate_tool_guidelines_with_capabilities(
             &tools,
@@ -753,7 +766,7 @@ mod tests {
         );
         assert_eq!(
             default,
-            "\n\n## Active Tools\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files.\n- Batch independent read-only calls; use bounded `read_file` ranges, order dependencies, serialize mutations; narrow the range on `line_truncated`."
+            "\n\n## Active Tools\n- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files.\n- Batch independent read-only calls; use bounded `read_file` ranges, order dependencies, serialize mutations; narrow the range on `line_truncated`."
         );
     }
 
@@ -869,7 +882,7 @@ mod tests {
         assert!(guidelines.contains(&format!("\n{PLANNING_TASK_TRACKER_INDEX_LINE}")));
         assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("positive flat indices"));
         assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("(index 0 is invalid while planning)"));
-        assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("use items for bulk updates"));
+        assert!(PLANNING_TASK_TRACKER_INDEX_LINE.contains("full checklist replacement"));
         // The planning sidecar rejects index 0, so no planning line may present
         // it as a valid checklist-completion index.
         for line in [PLANNING_TASK_TRACKER_INDEX_LINE, PLANNING_TASK_TRACKER_COMPACT_LINE] {
@@ -907,6 +920,8 @@ mod tests {
         let default_guidance = generate_tool_guidelines_for_profile(&tools, None, ResolvedShellPromptProfile::UnixLike);
         assert!(default_guidance.contains("`Exec session resume:`"));
         assert!(default_guidance.contains("prior turn ended mid-run"));
+        assert!(default_guidance.contains("if missing, recover prior output"));
+        assert!(default_guidance.contains("rerun only for fresh results"));
 
         let minimal = generate_tool_guidelines_with_capabilities(
             &tools,
@@ -917,6 +932,7 @@ mod tests {
         );
         assert!(minimal.contains("`Exec session resume:`"));
         assert!(minimal.contains("prior turn ended mid-run"));
+        assert!(minimal.contains("if missing, recover prior output"));
     }
 
     #[test]
@@ -1090,7 +1106,10 @@ mod tests {
         // The batching, bounded-diff, and verifier-discipline guardrails are
         // intentionally part of the compact shared prompt. Raised from 500 so
         // the verifier rule can state its reason (a visible exit status).
-        assert!(approx_tokens < 520, "got ~{approx_tokens} tokens");
+        // Raised to 580 for the Sonnet 5.5 low-effort real-check rule
+        // (syntax-only/failed-to-start do not count; project package manager,
+        // never sudo; state which check was skipped and why).
+        assert!(approx_tokens < 580, "got ~{approx_tokens} tokens");
     }
 
     #[test]
@@ -1204,6 +1223,19 @@ mod tests {
             ResolvedShellPromptProfile::UnixLike,
         );
         assert!(!without.contains("start_planning"));
+    }
+
+    #[test]
+    fn markdown_validation_is_optional_in_planning_and_execution() {
+        let tools = vec![TOOL_EXEC_COMMAND.to_string(), TOOL_READ_FILE.to_string()];
+        for planning in [false, true] {
+            let guidance =
+                generate_runtime_tool_guidelines_for_profile(&tools, planning, ResolvedShellPromptProfile::UnixLike);
+            assert_eq!(guidance.matches(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE).count(), 1);
+            assert!(guidance.contains("report skipped"));
+            assert!(guidance.contains("without installing tools"));
+            assert!(guidance.contains("Lint errors remain failures"));
+        }
     }
 
     #[test]

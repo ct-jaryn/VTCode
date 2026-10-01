@@ -18,6 +18,7 @@ use std::sync::Arc;
 use vtcode_commons::reasoning::ReasoningEffortLevel;
 use vtcode_core::config::build_session_affinity_prompt_cache_key;
 use vtcode_core::config::constants::llm_generation;
+use vtcode_core::config::models::{Provider, ProviderModelSupport};
 use vtcode_core::config::{ToolDisplayMode, ToolOutputMode};
 use vtcode_core::core::agent::harness_kernel::{
     HarnessRequestPlanInput, build_harness_request_plan, stable_system_prefix_hash,
@@ -123,8 +124,8 @@ fn keep_latest_collapsed_tool_output_notice(messages: &mut Vec<uni::Message>) {
 fn append_collapsed_tool_output_notice(ctx: &mut TurnProcessingContext<'_>) {
     let output_mode = ctx.vt_cfg.map(|config| config.ui.tool_output_mode);
     // Copies already sent are never removed or moved: on models that bind
-    // replayed thinking to the exact prior prefix (Claude Opus 5.5, Claude
-    // Fable 5.1) and for every prompt cache, deleting an earlier copy edits a
+    // replayed thinking to the exact prior prefix (Claude Sonnet 5.5, Claude
+    // Opus 5.5, Claude Fable 5.1) and for every prompt cache, deleting an
     // prefix that later turns were produced against. Earlier turns' copies are
     // cleared by the provider (`clear_at`) or collapsed to one copy per
     // request on other routes; see `keep_latest_collapsed_tool_output_notice`.
@@ -156,14 +157,13 @@ pub(super) async fn build_turn_request(
     let mut prompt_output = assemble_prompt(ctx, PromptAssemblyInput { turn: turn_snapshot }).await?;
 
     let sampling_overrides = ctx.provider_client.sampling_overrides(request_model);
-    let reasoning_effort = if !turn_snapshot.tool_free_recovery {
-        sampling_overrides
-            .reasoning_effort
-            .or(turn_snapshot.active_primary_agent.reasoning_effort)
-            .or_else(|| ctx.vt_cfg.map(|cfg| cfg.agent.reasoning_effort))
-    } else {
-        None
-    };
+    // Keep the same reasoning effort during tool-free recovery. OpenAI docs:
+    // changing `reasoning.effort` rewrites model-side instructions and busts
+    // the cached prefix even when tools and history are unchanged.
+    let reasoning_effort = sampling_overrides
+        .reasoning_effort
+        .or(turn_snapshot.active_primary_agent.reasoning_effort)
+        .or_else(|| ctx.vt_cfg.map(|cfg| cfg.agent.reasoning_effort));
     let reasoning_effort = reasoning_effort
         .and_then(|requested| {
             vtcode_core::llm::reasoning_effort::ReasoningEffortMapper::resolve_or_omit(
@@ -246,7 +246,13 @@ pub(super) async fn build_turn_request(
         &turn_snapshot.openai_prompt_cache_key_mode,
         ctx.session_stats.prompt_cache_lineage_id(),
     );
-    let selected_tools = if use_out_of_band_copilot_tools || turn_snapshot.tool_free_recovery {
+    // Keep tool definitions on the wire during tool-free recovery so the
+    // rendered prefix stays cache-stable. OpenAI guidance: disable tool use
+    // with `tool_choice: "none"` rather than removing definitions. Merge
+    // Gateway omits only the choice field (Bedrock rejects `tool_choice=none`).
+    // Client-local deferral still filters the wire set so recovery and
+    // tool-enabled turns share the same ordered catalog.
+    let selected_tools = if use_out_of_band_copilot_tools {
         None
     } else if turn_snapshot.client_local_tool_deferral {
         client_local_wire_tools(prompt_output.tool_snapshot.snapshot.clone())
@@ -298,9 +304,13 @@ pub(super) async fn build_turn_request(
     );
     let stable_prefix_hash = request_envelope.prefix_hash();
     let tool_catalog_hash = request_envelope.catalog_hash();
-    let prefix_change_reason =
-        ctx.session_stats
-            .record_prompt_cache_fingerprint(request_model, stable_prefix_hash, tool_catalog_hash);
+    let prefix_change_reason = ctx.session_stats.record_prompt_cache_fingerprint_with_context(
+        request_model,
+        stable_prefix_hash,
+        tool_catalog_hash,
+        Some(ordered_wire_tools.len()),
+        turn_snapshot.recovery_reason.as_deref(),
+    );
     // Model-change advisory: prompt caches are unique per model, so a
     // mid-session switch rebuilds the cache at full input cost even when the
     // rest of the prefix is unchanged.
@@ -334,11 +344,29 @@ pub(super) async fn build_turn_request(
     // request of the turn, and every later turn, replays the same prefix.
     persist_turn_few_shot_context(ctx.working_history, few_shot_context);
     persist_turn_editor_context(ctx.working_history, ctx.context_manager.request_editor_context_block());
-    let continuation_messages = Arc::new(
-        ctx.context_manager
-            .normalize_history_for_request(ctx.working_history)
-            .into_owned(),
-    );
+    let mut normalized_history = ctx
+        .context_manager
+        .normalize_history_for_request(ctx.working_history)
+        .into_owned();
+    // Local stand-in for Anthropic `clear_tool_uses` when the wire will not
+    // carry native context edits. Request-only: durable history is untouched.
+    if let Some(vt_cfg) = ctx.vt_cfg
+        && vtcode_core::core::agent::state::should_apply_local_tool_result_clearing(
+            &turn_snapshot.provider_name,
+            turn_snapshot.capabilities.context_edits,
+            vt_cfg.agent.harness.tool_result_clearing.enabled,
+        )
+    {
+        let clearing = &vt_cfg.agent.harness.tool_result_clearing;
+        normalized_history = vtcode_core::core::agent::state::clear_old_tool_results(
+            &normalized_history,
+            clearing.trigger_tokens,
+            clearing.keep_tool_uses,
+            clearing.clear_at_least_tokens,
+            clearing.clear_tool_inputs,
+        );
+    }
+    let continuation_messages = Arc::new(normalized_history);
     let (prepared_request_messages, previous_response_id) = prepare_responses_request_history(
         ctx.session_stats,
         &turn_snapshot.provider_name,
@@ -373,7 +401,7 @@ pub(super) async fn build_turn_request(
             turn_scoped_system_messages,
         );
     }
-    let request_plan = build_harness_request_plan(HarnessRequestPlanInput {
+    let mut request_plan = build_harness_request_plan(HarnessRequestPlanInput {
         messages: request_messages,
         system_prompt: request_envelope.system_prompt(),
         tools: (!request_envelope.ordered_tools().is_empty()).then(|| request_envelope.ordered_tools()),
@@ -411,6 +439,32 @@ pub(super) async fn build_turn_request(
         system_prompt_prefix_hash: Some(stable_prefix_hash),
     });
 
+    // Canonical `provider.openai.service_tier` applies to any OpenAI-compatible
+    // route that advertises support (native OpenAI honors it via provider
+    // default; compat gateways forward `request.service_tier`). Custom
+    // providers with an OpenAI api_format ride the same path, except for
+    // `ultrafast`, which is native-OpenAI-only and never forwarded. Ultrafast
+    // is US/global only; the backend rejects EU-routed requests.
+    if let Some(cfg) = ctx.vt_cfg
+        && let Some(tier) = cfg.provider.openai.service_tier
+    {
+        let builtin_supported = turn_snapshot
+            .provider_name
+            .parse::<Provider>()
+            .map(|provider| provider.supports_service_tier_value(&turn_snapshot.active_model, tier))
+            .unwrap_or(false);
+        let custom_openai = tier != vtcode_config::OpenAIServiceTier::Ultrafast
+            && cfg.custom_provider(&turn_snapshot.provider_name).is_some_and(|custom| {
+                !matches!(
+                    custom.resolved_profile(&turn_snapshot.active_model).api_format,
+                    Some(vtcode_core::config::core::CustomProviderApiFormat::AnthropicMessages)
+                )
+            });
+        if builtin_supported || custom_openai {
+            request_plan.request.service_tier = Some(tier.as_str().to_string());
+        }
+    }
+
     // Phase 1.2 observability: record how the assembled first-request prefix is
     // spent across system prompt, tool schemas, and message history, using the
     // real on-wire request payload. Cache read/write/miss are already surfaced
@@ -444,8 +498,18 @@ pub(super) async fn build_turn_request(
             on_wire_tools,
             client_local_deferral: turn_snapshot.client_local_tool_deferral,
             tool_free_recovery: turn_snapshot.tool_free_recovery,
+            first_call: ctx.session_stats.first_call_composition().is_none(),
         },
     );
+    // Capture the first assembled request so the exit summary can surface the
+    // per-call harness tax (HarnessTax-style initial-context breakdown).
+    ctx.session_stats
+        .record_first_call_composition(crate::agent::runloop::unified::state::FirstCallComposition {
+            system_prompt_tokens,
+            tool_schema_tokens,
+            message_history_tokens,
+            on_wire_tools,
+        });
 
     Ok(TurnRequestBuildResult {
         request: request_plan.request,
@@ -536,7 +600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_request_omits_tools_and_disables_tool_choice() {
+    async fn recovery_request_keeps_tools_for_cache_and_disables_tool_choice() {
         let mut backing = TestTurnProcessingBacking::new(4).await;
         backing.select_primary_agent_from_specs(&[vtcode_config::builtin_primary_build_agent()], "build");
         backing
@@ -590,9 +654,18 @@ mod tests {
             .expect("recovery request should build");
 
         assert_eq!(normal_built.request.reasoning_effort, Some(ReasoningEffortLevel::High));
-        assert!(built.request.reasoning_effort.is_none());
-        assert!(!built.has_tools);
-        assert!(built.request.tools.is_none());
+        // Recovery keeps the same reasoning effort so the provider prefix
+        // stays cache-stable (OpenAI: changing effort rewrites instructions).
+        assert_eq!(built.request.reasoning_effort, Some(ReasoningEffortLevel::High));
+        // Tool definitions stay on the wire so the provider prefix matches
+        // tool-enabled turns; only the choice is disabled.
+        assert!(built.has_tools);
+        assert!(built.request.tools.as_ref().is_some_and(|tools| !tools.is_empty()));
+        assert_eq!(
+            request_tool_names(&built.request),
+            request_tool_names(&normal_built.request),
+            "recovery must keep the same ordered tool catalog as the prior turn"
+        );
         assert!(matches!(built.request.tool_choice, Some(uni::ToolChoice::None)));
         assert_eq!(built.request.max_tokens, Some(320));
 
@@ -601,6 +674,38 @@ mod tests {
         assert!(system_prompt.contains("do_not_request_more_tools: true"));
         assert!(system_prompt.contains("recovery_reason: loop detector"));
         assert!(!system_prompt.contains("<budget:token_budget>"));
+    }
+
+    #[tokio::test]
+    async fn recovery_prompt_reason_is_frozen_across_reason_updates() {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        backing.select_primary_agent_from_specs(&[vtcode_config::builtin_primary_build_agent()], "build");
+        backing
+            .add_tool_definition(ToolDefinition::function(
+                "code_search".to_string(),
+                "Search project files".to_string(),
+                json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+            ))
+            .await;
+
+        let mut ctx = backing.turn_processing_context();
+        ctx.activate_recovery("loop detector");
+
+        let first = capture_turn_request_snapshot(&mut ctx, "noop-model", true);
+        // A later telemetry reason must not rewrite the frozen prompt block.
+        ctx.harness_state.recovery_reason = Some("blocked tool-call fuse tripped".to_string());
+        let second = capture_turn_request_snapshot(&mut ctx, "noop-model", true);
+
+        assert_eq!(
+            first.recovery_reason.as_deref(),
+            Some("loop detector"),
+            "prompt reason must reflect the activation"
+        );
+        assert_eq!(
+            second.recovery_reason.as_deref(),
+            Some("loop detector"),
+            "prompt reason must stay frozen while the activation is live"
+        );
     }
 
     #[tokio::test]
@@ -884,6 +989,40 @@ mod tests {
             .expect("clean request should build");
 
         assert!(Arc::ptr_eq(&built.request.messages, &built.continuation_messages));
+    }
+
+    #[tokio::test]
+    async fn first_call_composition_captures_on_first_build_only() {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        let mut ctx = backing.turn_processing_context();
+        ctx.working_history.push(uni::Message::user("hello".to_string()));
+
+        assert!(ctx.session_stats.first_call_composition().is_none());
+        let snapshot = capture_turn_request_snapshot(&mut ctx, "noop-model", false);
+        build_turn_request(&mut ctx, 1, "noop-model", &snapshot, Some(320), None, false)
+            .await
+            .expect("first request should build");
+
+        let first = ctx
+            .session_stats
+            .first_call_composition()
+            .expect("first build must capture composition");
+        assert!(first.fixed_overhead_tokens() > 0, "first build must record a non-zero harness tax");
+        // `first_call` is defined as "composition not yet captured", so the
+        // first build is the only one that can observe it as true.
+        let first_call_flag = ctx.session_stats.first_call_composition().is_none();
+        assert!(!first_call_flag, "composition is already captured after the first build");
+
+        ctx.working_history.push(uni::Message::user("again".to_string()));
+        let snapshot = capture_turn_request_snapshot(&mut ctx, "noop-model", false);
+        build_turn_request(&mut ctx, 2, "noop-model", &snapshot, Some(320), None, false)
+            .await
+            .expect("second request should build");
+        assert_eq!(
+            ctx.session_stats.first_call_composition(),
+            Some(first),
+            "later builds must not overwrite the first-call snapshot"
+        );
     }
 
     #[tokio::test]
@@ -1560,7 +1699,7 @@ mod tests {
                     "trigger": { "type": "input_tokens", "value": 120000 },
                     "keep": { "type": "tool_uses", "value": 5 },
                     "clear_at_least": { "type": "input_tokens", "value": 40000 },
-                    "clear_tool_inputs": false,
+                    "clear_tool_inputs": true,
                     "exclude_tools": ["memory"],
                 }, {
                     "type": "compact_20260112",

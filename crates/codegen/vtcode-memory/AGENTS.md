@@ -4,17 +4,18 @@
 
 ## Conventions
 
-- `events.jsonl` is canonical; `derived/` and `index/` are regenerated views — never persist session history elsewhere. `query::write_session_memory_view` is the live producer for `derived/memory.json` (envelope-compatible shape); `session_memory_facts` reads it (batch memory extraction depends on both).
+- `events.jsonl` is canonical; `derived/` and `index/` are regenerated views — never persist session history elsewhere. `query::write_session_memory_view` is the live producer for `derived/memory.json` (envelope-compatible shape); `session_memory_facts` reads it (batch memory extraction depends on both); `migration.rs` backfills legacy history/trajectory stores, `manifest.rs` owns cap-rewrite intent records.
 - `progress.rs` hosts the `GoalTracker` state machine and compaction-safe `ProgressLedger` view.
 - Append-only: do not mutate historical events; new facts go through `append`.
 - Off the hot path: never read the log back into agent context; use derived queries for revert/compaction/analytics.
 - Public API uses `anyhow::Result<T>` + `.context()`; no `unwrap`/`expect` in non-test code.
 - Keep ordinary appends buffered; flush at turn boundaries, reads, cap rewrites, and close.
 - Return persistence errors to callers; do not silently discard cap-enforcement failures.
-- Retention may remove only validated direct child session directories; preserve active manifests and reject manifest-controlled paths or symlink entries.
+- Retention may remove only validated direct child session directories; preserve live active manifests and reject manifest-controlled paths or symlink entries. `mark_abandoned_active_sessions` flips idle `active` manifests past `max_age_days` to `completed` so crashed threads can be reclaimed (`max_age_days == 0` disables the sweep).
 - `event_log.rs`: turn-lifecycle state machine is `LogState::apply_lifecycle_event` (single impl shared by `append` and `scan` via `LifecycleKind`). Serialization+rollback is `LogState::serialize_event`. Cap eviction planning is `LogState::plan_cap_eviction` (I/O stays in `enforce_event_cap`). Do not duplicate these state transitions inline.
 - Session event bytes are synced before derived metadata; publish the turn index before the manifest, leave the pending cap-rewrite marker until both are durable, and rescan when metadata is malformed, inconsistent, or offsets exceed the canonical log.
 - Session directories are `0700` and session files are `0600`; preserve the symlink-safe `vtcode-commons` filesystem primitives.
+- `session.lock` is flock-held for the lifetime of a session's event-log handles (`event_log::acquire_liveness_lock`, best-effort: degrade to unlocked, never fail the open). `retention::session_dir_is_live` treats a held lock as a live session and skips marking/eviction; a missing or acquirable lock file means reclaimable. Never add another session-file deletion path that skips this check.
 - `query::search_memory` uses BM25 (`k1=1.2`, `b=0.75`) with deterministic chunk-id ties and only the documented mild timestamp recency multiplier; invalidate the manifest LRU when atomic manifests change.
 - `pack.rs` audit packs: SHA-256 manifests of the whole session dir; `audit-pack.json` excludes itself from walks, entry paths are traversal-validated (`SessionStoreError::InvalidPack`), and verification reports post-pack additions as informational `unaccounted`, not failures.
 - Cap eviction invokes its summary hook before replacing `events.jsonl`; a failed summary keeps the canonical events intact.
@@ -26,5 +27,4 @@
 
 ## Testing
 
-- Use `cargo nextest run -p vtcode-memory` and cover ordering, reopen/index reconstruction, retention, and write boundaries.
-- Index rebuild reads the versioned envelope and `event.type`, with targeted full-shape validation for lifecycle events so malformed records cannot create phantom turns; broader decoding belongs to turn reconstruction.
+- Use `cargo nextest run -p vtcode-memory` covering ordering, reopen/index reconstruction, retention, and write boundaries; index rebuild reads the versioned envelope and `event.type`, with targeted full-shape validation for lifecycle events so malformed records cannot create phantom turns — broader decoding belongs to turn reconstruction.

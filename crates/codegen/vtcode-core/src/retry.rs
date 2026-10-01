@@ -125,6 +125,14 @@ impl RetryPolicyCoreExt for RetryPolicy {
     }
 
     fn decision_for_tool_execution_error(&self, error: &ToolExecutionError, attempt_index: u32) -> RetryDecision {
+        if error.patch_failure.is_some() {
+            return RetryDecision {
+                category: error.category,
+                retryable: false,
+                delay: None,
+                retry_after: None,
+            };
+        }
         if detect_misconfiguration(error.category, &tool_execution_text(error)).is_some() {
             return misconfiguration_decision(error.category, error.retry_after());
         }
@@ -156,6 +164,9 @@ impl RetryPolicyCoreExt for RetryPolicy {
         attempt_index: u32,
         tool_name: Option<&str>,
     ) -> ToolExecutionError {
+        if error.patch_failure.is_some() {
+            return error;
+        }
         if let Some(guidance) = detect_misconfiguration(error.category, &tool_execution_text(&error)) {
             let decision = misconfiguration_decision(error.category, error.retry_after());
             let mut guided = error.with_retry_decision(decision);

@@ -184,6 +184,21 @@ mod tests {
         assert!(joined.contains("package-lock"), "got: {joined:?}");
         assert!(joined.contains("\"\\.backup\""), "final pipe arg must survive, got: {joined:?}");
         assert_eq!(joined.matches('|').count(), 6, "pattern pipes + shell pipes must survive: {joined:?}");
+        // Proper shell-aware wrapping: the quoted pattern holds spaces but
+        // must stay on the first line, never split mid-quote, and every
+        // segment must fit its 62/58 budget plus the `• Ran` / `  │ ` prefix.
+        assert!(
+            rendered[0].contains("\"@vinhnx/vtcode|npm install -g||npx @vinhnx\""),
+            "quoted pattern must stay atomic on the first line, got: {rendered:?}"
+        );
+        for (index, line) in rendered.iter().enumerate() {
+            let (body, budget) = if index == 0 {
+                (line.strip_prefix("• Ran ").expect("header prefix"), 62)
+            } else {
+                (line.strip_prefix("  │ ").expect("continuation prefix"), 58)
+            };
+            assert!(body.chars().count() <= budget, "line {index} exceeds its {budget}-char budget: {line:?}");
+        }
     }
 
     #[test]

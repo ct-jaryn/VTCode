@@ -871,7 +871,12 @@ pub struct ToolResultClearingConfig {
     pub keep_tool_uses: u32,
     #[serde(default = "default_tool_result_clearing_clear_at_least_tokens")]
     pub clear_at_least_tokens: u64,
-    #[serde(default)]
+    /// Replace paired `tool_calls[].function.arguments` for stubbed results.
+    /// Leaving inputs in place keeps full `apply_patch`/`write_file` bodies on
+    /// every request after the result was already reclaimed. Defaults to
+    /// `true`; set `false` to opt out. Bare `#[serde(default)]` on a `bool`
+    /// is `false`, so this field names its default fn explicitly.
+    #[serde(default = "default_tool_result_clearing_clear_tool_inputs")]
     pub clear_tool_inputs: bool,
 }
 
@@ -882,7 +887,7 @@ impl Default for ToolResultClearingConfig {
             trigger_tokens: default_tool_result_clearing_trigger_tokens(),
             keep_tool_uses: default_tool_result_clearing_keep_tool_uses(),
             clear_at_least_tokens: default_tool_result_clearing_clear_at_least_tokens(),
-            clear_tool_inputs: false,
+            clear_tool_inputs: default_tool_result_clearing_clear_tool_inputs(),
         }
     }
 }
@@ -1323,17 +1328,24 @@ const fn default_tool_result_clearing_enabled() -> bool {
 
 #[inline]
 const fn default_tool_result_clearing_trigger_tokens() -> u64 {
-    100_000
+    // 40k: research/audit turns were observed at ~1M input tokens/turn with
+    // the old 100k trigger — tool results piled up long before any clearing.
+    40_000
 }
 
 #[inline]
 const fn default_tool_result_clearing_keep_tool_uses() -> u32 {
-    3
+    2
 }
 
 #[inline]
 const fn default_tool_result_clearing_clear_at_least_tokens() -> u64 {
     30_000
+}
+
+#[inline]
+const fn default_tool_result_clearing_clear_tool_inputs() -> bool {
+    true
 }
 
 #[inline]
@@ -2200,10 +2212,39 @@ budget_warning_threshold = 0.5
         let clearing = config.harness.tool_result_clearing;
 
         assert!(clearing.enabled);
-        assert_eq!(clearing.trigger_tokens, 100_000);
-        assert_eq!(clearing.keep_tool_uses, 3);
+        assert_eq!(clearing.trigger_tokens, 40_000);
+        assert_eq!(clearing.keep_tool_uses, 2);
         assert_eq!(clearing.clear_at_least_tokens, 30_000);
-        assert!(!clearing.clear_tool_inputs);
+        assert!(clearing.clear_tool_inputs);
+    }
+
+    #[test]
+    fn test_tool_result_clearing_missing_key_defaults_clear_tool_inputs_true() {
+        let parsed: AgentHarnessConfig = toml::from_str(
+            r#"
+                [tool_result_clearing]
+                enabled = true
+                trigger_tokens = 40000
+                keep_tool_uses = 2
+                clear_at_least_tokens = 30000
+            "#,
+        )
+        .expect("valid harness config");
+
+        assert!(parsed.tool_result_clearing.clear_tool_inputs);
+    }
+
+    #[test]
+    fn test_tool_result_clearing_explicit_false_opts_out_of_input_clearing() {
+        let parsed: AgentHarnessConfig = toml::from_str(
+            r#"
+                [tool_result_clearing]
+                clear_tool_inputs = false
+            "#,
+        )
+        .expect("valid harness config");
+
+        assert!(!parsed.tool_result_clearing.clear_tool_inputs);
     }
 
     #[test]

@@ -312,14 +312,17 @@ impl ModelId {
                 | ModelId::MergeGatewayGoogleGemini38Flash
                 | ModelId::GPT6Astra
                 | ModelId::GPT6Sol
+                | ModelId::GPT61Sol
                 | ModelId::GPT56Sol
                 | ModelId::MergeGatewayOpenAIGpt56Sol
                 | ModelId::MergeGatewayOpenAIGpt56Terra
                 | ModelId::MergeGatewayOpenAIGpt56Luna
                 | ModelId::MergeGatewayOpenAIGpt6Astra
                 | ModelId::MergeGatewayOpenAIGpt6Sol
+                | ModelId::MergeGatewayOpenAIGpt61Sol
                 | ModelId::MergeGatewayOpenAIGpt6Luna
                 | ModelId::ClaudeSonnet5
+                | ModelId::ClaudeSonnet55
                 | ModelId::ClaudeFable5
                 | ModelId::ClaudeFable51
                 | ModelId::ClaudeOpus5
@@ -387,10 +390,12 @@ impl ModelId {
             // Gemini generations
             // OpenAI generations
             ModelId::GPT6Astra | ModelId::GPT6Sol | ModelId::GPT6Luna => "6",
+            ModelId::GPT61Sol => "6.1",
             ModelId::GPT56Sol | ModelId::GPT56Terra | ModelId::GPT56Luna => "5.6",
             ModelId::OpenAIGptOss20b | ModelId::OpenAIGptOss120b => "5",
             // Anthropic generations
             ModelId::ClaudeSonnet5 => "5",
+            ModelId::ClaudeSonnet55 => "5.5",
             ModelId::ClaudeFable5 => "5",
             ModelId::ClaudeFable51 => "5.1",
             ModelId::ClaudeOpus5 => "5",
@@ -446,6 +451,7 @@ impl ModelId {
             ModelId::MergeGatewayAnthropicClaudeOpus5 => "5",
             ModelId::MergeGatewayAnthropicClaudeOpus55 => "5.5",
             ModelId::MergeGatewayAnthropicClaudeSonnet5 => "5",
+            ModelId::MergeGatewayAnthropicClaudeSonnet55 => "5.5",
             ModelId::MergeGatewayAnthropicClaudeFable51 => "5.1",
             ModelId::MergeGatewayAnthropicClaudeHaiku4520251001 => "4.5",
             ModelId::MergeGatewayMinimaxH3 => "H3",
@@ -458,6 +464,7 @@ impl ModelId {
             ModelId::MergeGatewayOpenAIGpt6Astra
             | ModelId::MergeGatewayOpenAIGpt6Sol
             | ModelId::MergeGatewayOpenAIGpt6Luna => "6",
+            ModelId::MergeGatewayOpenAIGpt61Sol => "6.1",
             // Vercel AI Gateway models
             ModelId::VercelAnthropicClaudeSonnet5 => "5",
             ModelId::VercelAnthropicClaudeOpus5 => "5",
@@ -480,6 +487,7 @@ impl ModelId {
             self,
             ModelId::GPT6Astra
                 | ModelId::GPT6Sol
+                | ModelId::GPT61Sol
                 | ModelId::GPT6Luna
                 | ModelId::GPT56Sol
                 | ModelId::GPT56Terra

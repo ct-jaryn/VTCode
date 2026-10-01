@@ -1,6 +1,6 @@
 # vtcode-bash-runner
 
-[Root AGENTS.md](../AGENTS.md) | Cross-platform command runner with workspace-safe operations.
+[Root AGENTS.md](../../../AGENTS.md) | Cross-platform command runner with workspace-safe operations.
 
 ## Modules
 

@@ -4,7 +4,7 @@ This document describes VT Code's current Agent Skills behavior.
 
 ## Implemented Behavior
 
-- Strict `SKILL.md` frontmatter parsing
+- Strict `SKILL.md` authoring validation, lenient loading (spec client guide)
 - Repository discovery through ancestor `.agents/skills` directories
 - User discovery from `~/.agents/skills`
 - Admin discovery from `/etc/codex/skills`
@@ -13,6 +13,8 @@ This document describes VT Code's current Agent Skills behavior.
 - Disabled-skill filtering from `~/.codex/config.toml`
 
 ## Supported `SKILL.md` Fields
+
+Spec fields (per https://agentskills.io/specification.md):
 
 Required:
 
@@ -24,10 +26,14 @@ Optional:
 - `license`
 - `compatibility`
 - `metadata`
-- `allowed-tools`
-- `disable-model-invocation`
+- `allowed-tools` (experimental per the spec)
 
-Any other frontmatter key is rejected during parsing and validation.
+Client extensions (parsed for cross-client compatibility, not part of the spec):
+
+- `argument-hint` (slash-command style argument hint; non-string YAML values are coerced to a string)
+- `disable-model-invocation` (hides the skill from the model-facing catalog; explicit activation still works)
+
+Any other frontmatter key warns during parsing (forward-compatible, value ignored) and fails `vtcode skills validate`.
 
 ## Validation Rules
 
@@ -49,7 +55,17 @@ Any other frontmatter key is rejected during parsing and validation.
 
 - `license`: maximum 512 characters
 - `compatibility`: 1 to 500 characters if present
-- `allowed-tools`: normalized to a space-delimited string and limited to 16 tools
+- `allowed-tools`: space-delimited string (spec) or YAML list (Claude Code convention), normalized to a space-delimited string and limited to 16 tools
+- `metadata`: string-to-string map per the spec; the engine additionally accepts arrays and nested maps so real-world skills keep loading
+- `argument-hint`: slash-command style argument hint; non-string YAML values are coerced to a string
+
+### Loading leniency (spec client guide)
+
+Strict validation above applies to authoring (`vtcode skills validate`). At load time the engine is lenient per the spec's client guide:
+
+- directory-name mismatch warns and loads anyway
+- malformed description colons fall back to block-scalar parsing
+- missing/empty `description` or unparseable YAML still skips the skill (the description is the routing signal)
 
 ## Discovery Precedence
 
@@ -58,6 +74,8 @@ Any other frontmatter key is rejected during parsing and validation.
 3. `~/.agents/skills`
 4. `/etc/codex/skills`
 5. Bundled system skills
+
+Same-name collisions resolve by precedence (first discovery wins) with a startup warning naming the shadowed skill. Walks skip `.git`/`.hg`/`.svn`/`node_modules`/`target`, stop past 10 levels, and stop after 2000 directories per root. Plugin-consumed directories load as one entry and are never descended into.
 
 ## Deliberate Non-Support
 

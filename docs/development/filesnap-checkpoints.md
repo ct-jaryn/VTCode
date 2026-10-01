@@ -11,7 +11,7 @@ A new prompt clears redo. Esc cancels the selector. The action picker also
 offers conversation-only and code-only restoration.
 
 Wait for the agent to finish before restoring. If a restore is interrupted, run
-`/rewind-recover` before continuing. `/rewind-recover` is pending-only: it
+`/rewind` again before continuing. `/rewind` auto-recovers a pending restore: it
 resumes the interrupted restore and fails closed when nothing is pending,
 never touching the redo stack. Recovery is journaled before file writes;
 conversation changes follow successful file restoration. New combined history

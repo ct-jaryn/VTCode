@@ -26,11 +26,16 @@ fn truncate_for_log(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect()
 }
 
+/// Whether the payload carries a tier eligible for the strip-and-retry
+/// fallback. The `flex_` name is historical (built for flex first): any
+/// user-selectable tier can be rejected per model, account, or project
+/// policy, and omitting it resolves to the project default.
 fn payload_uses_flex_service_tier(payload: &Value) -> bool {
-    payload
-        .get("service_tier")
-        .and_then(Value::as_str)
-        .is_some_and(|value| value.eq_ignore_ascii_case("flex"))
+    payload.get("service_tier").and_then(Value::as_str).is_some_and(|value| {
+        value.eq_ignore_ascii_case("flex")
+            || value.eq_ignore_ascii_case("ultrafast")
+            || value.eq_ignore_ascii_case("priority")
+    })
 }
 
 fn payload_without_service_tier(payload: &Value) -> Value {

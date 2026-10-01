@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 use vtcode_commons::ui_protocol::ActivityState;
 use vtcode_config::loader::SimpleConfigWatcher;
@@ -19,29 +19,26 @@ use vtcode_core::llm::provider::MessageRole;
 use vtcode_core::session::SessionId;
 use vtcode_core::utils::ansi::MessageStyle;
 use vtcode_core::utils::session_archive;
-use vtcode_core::utils::session_archive::{SessionMessage, SessionProgressArgs};
+use vtcode_core::utils::session_archive::SessionMessage;
 use vtcode_ui::tui::app::ArchivedPromptEntry;
 
-use super::super::{CancelGuard, RECENT_MESSAGE_LIMIT, TerminalCleanupGuard, extract_idle_config};
+use super::super::{CancelGuard, TerminalCleanupGuard};
 use super::archive::{create_session_archive, refresh_runtime_debug_context_for_next_session, workspace_archive_label};
-use super::blocked_handoff::{
-    SessionCheckpointOutcome, persist_session_checkpoint, write_blocked_handoff_after_checkpoint,
-};
+use super::blocked_handoff::write_blocked_handoff_after_checkpoint;
 use super::handoff::{
     append_approved_plan_execution_input, apply_primary_agent_tool_policy_overrides,
-    build_approved_plan_execution_prompt, select_approved_plan_execution_agent,
+    build_approved_plan_execution_prompt, report_plan_approval_selection_failure, select_approved_plan_execution_agent,
 };
-use super::metrics::{
-    TurnExecutionMetrics, capture_code_change_snapshot, emit_turn_execution_metrics, estimate_history_bytes,
-};
+use super::metrics::{capture_code_change_snapshot, estimate_history_bytes};
 use super::plan_seed::load_active_plan_seed;
 use super::support::{
     ExecutionSummaryStatus, RefusedTurnRollback, append_transient_turn_notes, approved_plan_execution_summary,
     build_unrelated_dirty_worktree_note, build_withdrawn_turn_changes_note, checkpoint_session_archive_start,
-    force_reload_workspace_config_for_execution, format_workspace_relative_paths, latest_assistant_result_text,
-    prepare_resume_bootstrap_without_archive, prompt_startup_planning_workflow, remove_transient_system_notes,
-    take_pending_resumed_user_prompt,
+    checkpoint_unavailable_notice, force_reload_workspace_config_for_execution, format_workspace_relative_paths,
+    latest_assistant_result_text, prepare_resume_bootstrap_without_archive, prompt_startup_planning_workflow,
+    remove_transient_system_notes, take_pending_resumed_user_prompt,
 };
+use super::turn_tail::{TurnPersistenceTail, complete_turn_persistence_tail};
 use crate::agent::runloop::ResumeSession;
 use crate::agent::runloop::git::{compute_session_code_change_delta, normalize_workspace_path};
 use crate::agent::runloop::model_picker::ModelPickerState;
@@ -72,7 +69,17 @@ use crate::agent::runloop::unified::turn::turn_loop_helpers::{
 use crate::agent::runloop::unified::workspace_links::LinkedDirectory;
 use crate::updater::{InlineUpdateOutcome, display_update_notice, run_inline_update_prompt};
 
-const BACKGROUND_COMPLETION_CONTINUATION_PROMPT: &str = "Review the authoritative background subprocess completion notice and continue the user's request. Do not poll or wait for those completed tasks.";
+/// Stable opening shared with `is_internal_harness_follow_up`, which keys the
+/// quiet path off this constant instead of a duplicated literal.
+pub(crate) const BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX: &str =
+    "Review the authoritative background subprocess completion notice";
+
+fn background_completion_continuation_prompt() -> String {
+    format!(
+        "{BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX} and continue the user's request. \
+         Do not poll or wait for those completed tasks."
+    )
+}
 
 fn persist_primary_agent(
     session_archive: &mut Option<session_archive::SessionArchive>,
@@ -80,6 +87,95 @@ fn persist_primary_agent(
 ) {
     if let Some(archive) = session_archive.as_mut() {
         archive.set_primary_agent(active_primary_agent.active().name());
+    }
+}
+
+/// Persist the turn tail when approved-plan agent selection fails.
+///
+/// Selection failure must stay recoverable (no hard session abort). The
+/// iteration may already have produced history (plan-approval handoff after a
+/// finished turn), so metrics/checkpoint run before `continue` instead of being
+/// skipped until the next successful turn.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "turn-tail context is a flat bag of loop locals"
+)]
+async fn record_plan_selection_failure_tail(
+    runtime: &mut AgentRuntime,
+    session_archive: &mut Option<session_archive::SessionArchive>,
+    session_stats: &SessionStats,
+    loaded_skills: &std::sync::Arc<tokio::sync::RwLock<hashbrown::HashMap<String, vtcode_core::skills::types::Skill>>>,
+    next_checkpoint_turn: usize,
+    workspace: &std::path::Path,
+    session_id: &str,
+    vt_cfg: Option<&VTCodeConfig>,
+    timeout_secs: u64,
+) {
+    complete_turn_persistence_tail(TurnPersistenceTail {
+        outcome: "aborted",
+        history_snapshot_bytes: 0,
+        timeout_secs,
+        elapsed_ms: 0,
+        blocked_turn: false,
+        turn_diagnostics: None,
+        runtime,
+        session_archive,
+        next_checkpoint_turn,
+        session_stats,
+        loaded_skills,
+        workspace,
+        session_id,
+        vt_cfg,
+    })
+    .await;
+}
+
+/// Startup planning entry: select the plan primary agent and refresh the
+/// header so prompt/tools match Plan mode (not just the ActivityState).
+async fn apply_startup_plan_agent_selection(
+    active_primary_agent: &mut vtcode_core::primary_agent::ActivePrimaryAgentState,
+    tool_registry: &vtcode_core::tools::registry::ToolRegistry,
+    config: &vtcode_core::config::types::AgentConfig,
+    handle: &vtcode_ui::tui::app::InlineHandle,
+) {
+    use crate::agent::runloop::unified::planning_workflow_state::{PLAN_PRIMARY_AGENT_NAME, apply_plan_agent_header};
+    use crate::agent::runloop::unified::turn::primary_agent_runtime::{
+        builtin_primary_agent_specs, load_primary_agent_specs,
+    };
+
+    if active_primary_agent
+        .active()
+        .identity
+        .name
+        .eq_ignore_ascii_case(PLAN_PRIMARY_AGENT_NAME)
+    {
+        apply_plan_agent_header(handle);
+        return;
+    }
+    let specs = match load_primary_agent_specs(tool_registry, &config.workspace).await {
+        Ok(specs) if !specs.is_empty() => specs,
+        _ => builtin_primary_agent_specs(),
+    };
+    match active_primary_agent.select_from_specs(&specs, PLAN_PRIMARY_AGENT_NAME) {
+        Ok(active) => {
+            let display = active.display_name.clone();
+            let color = active.color.clone().filter(|c| !c.trim().is_empty());
+            handle.set_primary_agent(Some(display), color);
+            tracing::info!(
+                target: "vtcode.planning_workflow",
+                switch_path = "startup_plan_entry",
+                "Selected plan primary agent at startup planning entry"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "vtcode.planning_workflow",
+                switch_path = "startup_plan_entry",
+                error = %err,
+                "Startup planning entry could not select plan primary agent; header will still show Plan"
+            );
+            apply_plan_agent_header(handle);
+        }
     }
 }
 
@@ -138,8 +234,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
     let mut config = config.clone();
     let mut session_skip_confirmations = skip_confirmations;
     let mut resume_state = resume;
-    let mut _consecutive_idle_cycles = 0;
-    let mut last_activity_time: Option<Instant> = None;
     let mut config_watcher = SimpleConfigWatcher::new_with_user_config_paths(config.workspace.clone());
     config_watcher.set_check_interval(15);
     config_watcher.set_debounce_duration(500);
@@ -147,7 +241,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         config_watcher.set_last_known_config(initial_config.clone());
     }
     let mut vt_cfg = initial_vt_cfg.or_else(|| config_watcher.load_config());
-    let mut idle_config = extract_idle_config(vt_cfg.as_ref());
     let mut pending_session_start_trigger = None;
     let mut next_session_primary_agent: Option<String> = None;
 
@@ -646,7 +739,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 true,
             )
             .await;
+            apply_startup_plan_agent_selection(&mut active_primary_agent, &tool_registry, &config, &handle).await;
             harness_try!(render_planning_workflow_next_step_hint(&mut renderer));
+            // No researching indicator here: startup entry has no request yet.
         } else if planning_entry_source.requires_startup_prompt() && resume_ref.is_none() {
             let should_enter = harness_try!(
                 prompt_startup_planning_workflow(&handle, &mut session, &ctrl_c_state, &ctrl_c_notify).await
@@ -664,7 +759,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     true,
                 )
                 .await;
+                apply_startup_plan_agent_selection(&mut active_primary_agent, &tool_registry, &config, &handle).await;
                 harness_try!(render_planning_workflow_next_step_hint(&mut renderer));
+                // No researching indicator here: no request exists yet.
             }
         }
         let mut linked_directories: Vec<LinkedDirectory> = Vec::with_capacity(4);
@@ -787,15 +884,38 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         .map(|cfg| cfg.default_primary_agent.as_str())
                         .filter(|name| !name.trim().is_empty());
                     let current_agent = active_primary_agent.active().name().to_string();
-                    let execution_agent = select_approved_plan_execution_agent(
+                    // Selection failure must stay recoverable so an approved
+                    // plan is not lost to a hard session abort.
+                    let execution_agent = match select_approved_plan_execution_agent(
                         &mut active_primary_agent,
                         &tool_registry,
                         &config.workspace,
                         Some(current_agent.as_str()),
                         configured_default,
                     )
-                    .await;
-                    let execution_agent = harness_try!(execution_agent);
+                    .await
+                    {
+                        Ok(agent) => agent,
+                        Err(err) => {
+                            let msg = report_plan_approval_selection_failure(&current_agent, &err);
+                            harness_try!(renderer.line(MessageStyle::Error, &msg));
+                            pending_approved_plan_execution_input = false;
+                            let session_id = tool_registry.harness_context_snapshot().session_id;
+                            record_plan_selection_failure_tail(
+                                &mut runtime,
+                                &mut session_archive,
+                                &session_stats,
+                                &loaded_skills,
+                                next_checkpoint_turn,
+                                config.workspace.as_path(),
+                                &session_id,
+                                vt_cfg.as_ref(),
+                                harness_config.max_tool_wall_clock_secs,
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
                     if current_agent != execution_agent {
                         harness_try!(renderer.line(
                             MessageStyle::Info,
@@ -846,7 +966,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     !queued_inputs.is_empty() || !session.events.is_empty(),
                     runtime.has_pending_follow_up_inputs(),
                 ) {
-                    match runtime.try_queue_follow_up_input(BACKGROUND_COMPLETION_CONTINUATION_PROMPT.to_string()) {
+                    match runtime.try_queue_follow_up_input(background_completion_continuation_prompt()) {
                         Ok(()) => pending_background_completions.mark_continuation_queued(),
                         Err(error) => tracing::warn!(%error, "Unable to queue background completion continuation"),
                     }
@@ -1116,12 +1236,12 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             .as_ref()
                             .map(|cfg| cfg.default_primary_agent.as_str())
                             .filter(|name| !name.trim().is_empty());
-                        let requested_agent = Some(target.agent_name());
+                        let requested_agent = target.agent_name();
                         let resolved_execution_agent = match select_approved_plan_execution_agent(
                             &mut active_primary_agent,
                             &tool_registry,
                             &config.workspace,
-                            requested_agent,
+                            Some(requested_agent),
                             configured_default,
                         )
                         .await
@@ -1145,15 +1265,41 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     false,
                                 )
                                 .await;
+                                let session_id = tool_registry.harness_context_snapshot().session_id;
+                                record_plan_selection_failure_tail(
+                                    &mut runtime,
+                                    &mut session_archive,
+                                    &session_stats,
+                                    &loaded_skills,
+                                    next_checkpoint_turn,
+                                    config.workspace.as_path(),
+                                    &session_id,
+                                    vt_cfg.as_ref(),
+                                    harness_config.max_tool_wall_clock_secs,
+                                )
+                                .await;
                                 continue;
                             }
                             Err(err) => {
-                                tracing::error!(error = %err, "approved-plan execution agent selection failed");
-                                session_end_reason = SessionEndReason::Error;
-                                break;
+                                let msg = report_plan_approval_selection_failure(requested_agent, &err);
+                                harness_try!(renderer.line(MessageStyle::Error, &msg));
+                                let session_id = tool_registry.harness_context_snapshot().session_id;
+                                record_plan_selection_failure_tail(
+                                    &mut runtime,
+                                    &mut session_archive,
+                                    &session_stats,
+                                    &loaded_skills,
+                                    next_checkpoint_turn,
+                                    config.workspace.as_path(),
+                                    &session_id,
+                                    vt_cfg.as_ref(),
+                                    harness_config.max_tool_wall_clock_secs,
+                                )
+                                .await;
+                                continue;
                             }
                         };
-                        if requested_agent != Some(resolved_execution_agent.as_str()) {
+                        if requested_agent != resolved_execution_agent.as_str() {
                             tracing::warn!(
                                 requested_agent = ?requested_agent,
                                 resolved_agent = ?resolved_execution_agent,
@@ -1291,10 +1437,8 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         Ok(lease) => lease,
                         Err(err) => {
                             tracing::warn!(error = %err, "Checkpoint unavailable; prompt retained in input");
-                            let _ = renderer.line(
-                                MessageStyle::Error,
-                                &format!("Prompt not sent; checkpoint unavailable: {err:#}"),
-                            );
+                            let message = checkpoint_unavailable_notice(&format!("{err:#}"));
+                            let _ = renderer.line(MessageStyle::Info, message);
                             // The prompt message was already appended to history by the
                             // interaction loop (or the approved-plan handoff). Remove it
                             // so a retry does not duplicate, and restore the text.
@@ -1381,6 +1525,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     } else {
                         effective_max_tool_calls_for_turn(harness_config.max_tool_calls_per_turn, planning_active)
                     };
+                    tool_registry.begin_patch_recovery_turn();
                     let mut harness_state = HarnessTurnState::new(
                         TurnRunId(turn_run_id.0.clone()),
                         TurnId(turn_id.clone()),
@@ -1609,66 +1754,197 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 // `InteractionLoopContext`, which is unavailable here because the
                 // plan-confirmation popup is rendered inside the turn loop rather
                 // than the inline interaction loop.
+                //
+                // Plan *entry* (`start_planning` confirmation) also lands here via
+                // `pending_primary_agent = "plan"`. That destination is the plan
+                // agent itself, not an approved-plan execution agent, so it uses
+                // direct selection instead of the write-capable resolver.
                 let requested_agent_for_handoff = plan_execution_target
                     .map(|target| target.agent_name().to_owned())
                     .or(switch_primary_agent);
                 if let Some(requested_agent) = requested_agent_for_handoff {
-                    let configured_default = vt_cfg
-                        .as_ref()
-                        .map(|cfg| cfg.default_primary_agent.as_str())
-                        .filter(|name| !name.trim().is_empty());
-                    let execution_agent = select_approved_plan_execution_agent(
-                        &mut active_primary_agent,
-                        &tool_registry,
-                        &config.workspace,
-                        Some(requested_agent.as_str()),
-                        configured_default,
-                    )
-                    .await;
-                    let execution_agent = harness_try!(execution_agent);
-                    if execution_agent != requested_agent {
-                        tracing::warn!(
-                            requested_agent = %requested_agent,
-                            resolved_agent = %execution_agent,
-                            "Approved plan requested a non-executable primary agent; using a write-capable agent"
+                    let plan_entry =
+                        crate::agent::runloop::unified::turn::turn_loop::is_plan_entry_handoff(&requested_agent)
+                            && plan_execution_target.is_none();
+                    if plan_entry {
+                        use crate::agent::runloop::unified::planning_workflow_state::PLAN_PRIMARY_AGENT_NAME;
+                        use crate::agent::runloop::unified::turn::primary_agent_runtime::{
+                            builtin_primary_agent_specs, load_primary_agent_specs,
+                        };
+                        let specs = match load_primary_agent_specs(&tool_registry, &config.workspace).await {
+                            Ok(specs) if !specs.is_empty() => specs,
+                            _ => builtin_primary_agent_specs(),
+                        };
+                        match active_primary_agent.select_from_specs(&specs, PLAN_PRIMARY_AGENT_NAME) {
+                            Ok(active) => {
+                                let agent_display = active.display_name.clone();
+                                let color = active.color.clone().filter(|c| !c.trim().is_empty());
+                                apply_primary_agent_tool_policy_overrides(
+                                    &tool_registry,
+                                    active_primary_agent.active(),
+                                )
+                                .await;
+                                sync_primary_agent_permissions(&mut vt_cfg, active_primary_agent.active());
+                                let mut runtime_sync = PrimaryAgentRuntimeSyncContext {
+                                    config: &config,
+                                    vt_cfg: vt_cfg.as_ref(),
+                                    thread_id: &turn_run_id.0,
+                                    active_primary_agent: active_primary_agent.active(),
+                                    lifecycle_hooks: &mut lifecycle_hooks,
+                                    async_mcp_manager: async_mcp_manager.as_ref(),
+                                    tool_registry: &mut tool_registry,
+                                    tools: &tools,
+                                    tool_catalog: &tool_catalog,
+                                    mcp_catalog_initialized: &mut mcp_catalog_initialized,
+                                    pending_mcp_refresh: &mut pending_mcp_refresh,
+                                    provider_client: &*provider_client,
+                                };
+                                if let Err(err) = sync_primary_agent_runtime(&mut runtime_sync).await {
+                                    tracing::error!(
+                                        target: "vtcode.planning_workflow",
+                                        switch_path = "plan_entry",
+                                        requested_agent = %requested_agent,
+                                        resolved_agent = %agent_display,
+                                        error = %err,
+                                        "Plan-entry runtime sync failed; header will still show Plan and planning stays active"
+                                    );
+                                    harness_try!(renderer.line(
+                                        MessageStyle::Warning,
+                                        &format!("Plan mode is active, but runtime sync failed: {err}"),
+                                    ));
+                                }
+                                handle.set_primary_agent(Some(agent_display), color);
+                                tracing::info!(
+                                    target: "vtcode.planning_workflow",
+                                    switch_path = "plan_entry",
+                                    "Switched primary agent to plan after confirmed planning entry"
+                                );
+                                persist_primary_agent(&mut session_archive, &active_primary_agent);
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    target: "vtcode.planning_workflow",
+                                    switch_path = "plan_entry",
+                                    requested_agent = %requested_agent,
+                                    error = %err,
+                                    "Could not select plan primary agent after planning entry; planning stays active"
+                                );
+                                harness_try!(renderer.line(
+                                    MessageStyle::Warning,
+                                    &format!("Could not select plan primary agent after planning entry: {err}"),
+                                ));
+                            }
+                        }
+                    } else {
+                        let configured_default = vt_cfg
+                            .as_ref()
+                            .map(|cfg| cfg.default_primary_agent.as_str())
+                            .filter(|name| !name.trim().is_empty());
+                        // Selection failure must stay recoverable: the plan is
+                        // already approved, so aborting the session here would
+                        // leave a half-switched state with no retry path. Run
+                        // the turn-persistence tail before `continue` so a
+                        // finished turn is checkpointed here, not deferred.
+                        let execution_agent = match select_approved_plan_execution_agent(
+                            &mut active_primary_agent,
+                            &tool_registry,
+                            &config.workspace,
+                            Some(requested_agent.as_str()),
+                            configured_default,
+                        )
+                        .await
+                        {
+                            Ok(agent) => agent,
+                            Err(err) => {
+                                let msg = report_plan_approval_selection_failure(&requested_agent, &err);
+                                harness_try!(renderer.line(MessageStyle::Error, &msg));
+                                // This site runs after the turn's work. Persist
+                                // the real turn tail before abandoning the
+                                // iteration so the just-finished turn is
+                                // checkpointed (not deferred to the next turn).
+                                persist_primary_agent(&mut session_archive, &active_primary_agent);
+                                complete_turn_persistence_tail(TurnPersistenceTail {
+                                    outcome: "aborted",
+                                    history_snapshot_bytes,
+                                    timeout_secs: harness_config.max_tool_wall_clock_secs,
+                                    elapsed_ms: turn_elapsed.as_millis(),
+                                    blocked_turn: false,
+                                    turn_diagnostics: Some(turn_diagnostics),
+                                    runtime: &mut runtime,
+                                    session_archive: &mut session_archive,
+                                    next_checkpoint_turn,
+                                    session_stats: &session_stats,
+                                    loaded_skills: &loaded_skills,
+                                    workspace: config.workspace.as_path(),
+                                    session_id: &harness_snapshot.session_id,
+                                    vt_cfg: vt_cfg.as_ref(),
+                                })
+                                .await;
+                                continue;
+                            }
+                        };
+                        if execution_agent != requested_agent {
+                            tracing::warn!(
+                                target: "vtcode.planning_workflow",
+                                switch_path = "plan_approval",
+                                requested_agent = %requested_agent,
+                                resolved_agent = %execution_agent,
+                                "Approved plan requested a non-executable primary agent; using a write-capable agent"
+                            );
+                            harness_try!(renderer.line(
+                                MessageStyle::Info,
+                                &format!(
+                                    "Approved plan requires a write-capable agent; switching to {}.",
+                                    execution_agent
+                                ),
+                            ));
+                        }
+                        // The approval choice, rather than the destination agent
+                        // name, owns confirmation policy. This keeps a manual
+                        // Execute/Switch Build handoff prompting even if an
+                        // earlier agent or fallback happens to be named `auto`.
+                        session_skip_confirmations = plan_skip_confirmations;
+                        handle.set_skip_confirmations(session_skip_confirmations);
+                        sync_primary_agent_permissions(&mut vt_cfg, active_primary_agent.active());
+                        apply_primary_agent_tool_policy_overrides(&tool_registry, active_primary_agent.active()).await;
+                        let mut runtime_sync = PrimaryAgentRuntimeSyncContext {
+                            config: &config,
+                            vt_cfg: vt_cfg.as_ref(),
+                            thread_id: &turn_run_id.0,
+                            active_primary_agent: active_primary_agent.active(),
+                            lifecycle_hooks: &mut lifecycle_hooks,
+                            async_mcp_manager: async_mcp_manager.as_ref(),
+                            tool_registry: &mut tool_registry,
+                            tools: &tools,
+                            tool_catalog: &tool_catalog,
+                            mcp_catalog_initialized: &mut mcp_catalog_initialized,
+                            pending_mcp_refresh: &mut pending_mcp_refresh,
+                            provider_client: &*provider_client,
+                        };
+                        if let Err(err) = sync_primary_agent_runtime(&mut runtime_sync).await {
+                            tracing::error!(
+                                target: "vtcode.planning_workflow",
+                                switch_path = "plan_approval",
+                                agent = %execution_agent,
+                                error = %err,
+                                "Approved-plan runtime sync failed; plan remains approved and can be retried"
+                            );
+                            harness_try!(renderer.line(
+                                MessageStyle::Error,
+                                &format!("Approved plan is ready, but mode switch failed: {err}"),
+                            ));
+                        }
+                        let agent_display = active_primary_agent.active().display_name.clone();
+                        let color = active_primary_agent.active().color.clone().filter(|c| !c.trim().is_empty());
+                        handle.set_primary_agent(Some(agent_display), color);
+                        tracing::info!(
+                            target: "vtcode.planning_workflow",
+                            switch_path = "plan_approval",
+                            agent = %execution_agent,
+                            "Switched primary agent after plan approval"
                         );
-                        harness_try!(renderer.line(
-                            MessageStyle::Info,
-                            &format!("Approved plan requires a write-capable agent; switching to {}.", execution_agent),
-                        ));
+                        persist_primary_agent(&mut session_archive, &active_primary_agent);
                     }
-                    // The approval choice, rather than the destination agent
-                    // name, owns confirmation policy. This keeps a manual
-                    // Execute/Switch Build handoff prompting even if an
-                    // earlier agent or fallback happens to be named `auto`.
-                    session_skip_confirmations = plan_skip_confirmations;
-                    handle.set_skip_confirmations(session_skip_confirmations);
-                    sync_primary_agent_permissions(&mut vt_cfg, active_primary_agent.active());
-                    apply_primary_agent_tool_policy_overrides(&tool_registry, active_primary_agent.active()).await;
-                    let mut runtime_sync = PrimaryAgentRuntimeSyncContext {
-                        config: &config,
-                        vt_cfg: vt_cfg.as_ref(),
-                        thread_id: &turn_run_id.0,
-                        active_primary_agent: active_primary_agent.active(),
-                        lifecycle_hooks: &mut lifecycle_hooks,
-                        async_mcp_manager: async_mcp_manager.as_ref(),
-                        tool_registry: &mut tool_registry,
-                        tools: &tools,
-                        tool_catalog: &tool_catalog,
-                        mcp_catalog_initialized: &mut mcp_catalog_initialized,
-                        pending_mcp_refresh: &mut pending_mcp_refresh,
-                        provider_client: &*provider_client,
-                    };
-                    harness_try!(sync_primary_agent_runtime(&mut runtime_sync).await);
-                    let display = active_primary_agent.active().display_name.clone();
-                    let color = active_primary_agent.active().color.clone().filter(|c| !c.trim().is_empty());
-                    handle.set_primary_agent(Some(display), color);
-                    tracing::info!(
-                        target: "vtcode.planning_workflow",
-                        agent = %execution_agent,
-                        "Switched primary agent after plan approval"
-                    );
-                    persist_primary_agent(&mut session_archive, &active_primary_agent);
                 }
                 if plan_approved_execution_pending && !has_primary_agent_switch {
                     session_skip_confirmations = plan_skip_confirmations;
@@ -1757,12 +2033,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         ),
                     );
                 }
-                emit_turn_execution_metrics(TurnExecutionMetrics {
-                    attempts_made: 1,
-                    retry_count: 0,
-                    history_snapshot_bytes,
-                    timeout_secs: harness_config.max_tool_wall_clock_secs,
-                    elapsed_ms: turn_elapsed.as_millis(),
+                vtcode_core::tools::cache::FILE_CACHE.check_pressure_and_evict().await;
+                tool_result_cache.write().await.check_pressure_and_evict();
+                let blocked_turn = matches!(&outcome_result, RunLoopTurnLoopResult::Blocked { .. });
+                persist_primary_agent(&mut session_archive, &active_primary_agent);
+                let checkpoint_outcome = complete_turn_persistence_tail(TurnPersistenceTail {
                     outcome: match &outcome_result {
                         RunLoopTurnLoopResult::Completed { .. } => "completed",
                         RunLoopTurnLoopResult::Aborted => "aborted",
@@ -1770,73 +2045,21 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         RunLoopTurnLoopResult::Exit => "exit",
                         RunLoopTurnLoopResult::Blocked { .. } => "blocked",
                     },
-                });
-
-                last_activity_time = Some(Instant::now());
-                vtcode_core::tools::cache::FILE_CACHE.check_pressure_and_evict().await;
-                tool_result_cache.write().await.check_pressure_and_evict();
-                let blocked_turn = matches!(&outcome_result, RunLoopTurnLoopResult::Blocked { .. });
-                let mut checkpoint_outcome = SessionCheckpointOutcome::without_archive(blocked_turn);
-                persist_primary_agent(&mut session_archive, &active_primary_agent);
-                if let Some(archive) = session_archive.as_ref() {
-                    let messages: Vec<SessionMessage> =
-                        runtime.state.messages.iter().map(SessionMessage::from).collect();
-                    let mut recent_messages: Vec<SessionMessage> = runtime
-                        .state
-                        .messages
-                        .iter()
-                        .rev()
-                        .take(RECENT_MESSAGE_LIMIT)
-                        .map(SessionMessage::from)
-                        .collect();
-                    recent_messages.reverse();
-
-                    let progress_turn = next_checkpoint_turn.saturating_sub(1).max(1);
-                    let distinct_tools = session_stats.sorted_tools();
-                    let skill_names: Vec<String> = loaded_skills.read().await.keys().cloned().collect();
-                    let checkpoint_args = SessionProgressArgs {
-                        total_messages: runtime.state.messages.len(),
-                        distinct_tools,
-                        messages,
-                        recent_messages,
-                        turn_number: progress_turn,
-                        token_usage: None,
-                        max_context_tokens: None,
-                        loaded_skills: Some(skill_names),
-                        turn_diagnostics: Some(turn_diagnostics),
-                    };
-                    checkpoint_outcome = persist_session_checkpoint(archive, checkpoint_args, blocked_turn).await;
-                }
-                let steering_update = {
-                    let (_, steering) = runtime.split_mut();
-                    if checkpoint_outcome.history_checkpoint_succeeded() {
-                        steering.acknowledge_durable_follow_up_intents();
-                    } else if session_archive.is_none() || checkpoint_outcome.history_persistence_disabled() {
-                        steering.release_in_flight_follow_up_intents_without_persistence();
-                    }
-                    vtcode_core::compaction::memory_envelope::SessionMemoryEnvelopeUpdate {
-                        pending_intents: Some(steering.pending_follow_up_intents_snapshot()),
-                        applied_intent_ids: steering.applied_follow_up_intent_ids().iter().cloned().collect(),
-                        ..Default::default()
-                    }
-                };
-                if let Err(err) =
-                    crate::agent::runloop::unified::turn::compaction::refresh_session_memory_envelope_async(
-                        config.workspace.as_path(),
-                        &harness_snapshot.session_id,
-                        vt_cfg.as_ref(),
-                        &runtime.state.messages,
-                        &session_stats,
-                        Some(&steering_update),
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        error = %err,
-                        session_id = %harness_snapshot.session_id,
-                        "Failed to refresh session memory envelope after turn"
-                    );
-                }
+                    history_snapshot_bytes,
+                    timeout_secs: harness_config.max_tool_wall_clock_secs,
+                    elapsed_ms: turn_elapsed.as_millis(),
+                    blocked_turn,
+                    turn_diagnostics: Some(turn_diagnostics),
+                    runtime: &mut runtime,
+                    session_archive: &mut session_archive,
+                    next_checkpoint_turn,
+                    session_stats: &session_stats,
+                    loaded_skills: &loaded_skills,
+                    workspace: config.workspace.as_path(),
+                    session_id: &harness_snapshot.session_id,
+                    vt_cfg: vt_cfg.as_ref(),
+                })
+                .await;
                 // Tracker-aware outer auto-continue after checkpoint/persistence:
                 // incomplete tracker work + recoverable turn end → queue the next
                 // turn instead of nudging the user. Verification blocks keep their
@@ -1951,13 +2174,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     session_stats.record_plan_continuation_turn_with_limit(max_turns);
                                     std::sync::Arc::make_mut(&mut runtime.state.messages)
                                         .push(vtcode_core::llm::provider::Message::system(directive));
-                                    let _ = renderer.line(
-                                        MessageStyle::Info,
-                                        &format!(
-                                            "[i] Plan-mode auto-continue turn {}/{}: planning still active.",
-                                            session_stats.plan_continuation_turns(),
-                                            max_turns
-                                        ),
+                                    // Queued auto-continue stays quiet: the next turn starts
+                                    // immediately, so a TUI info line is noise. Exhausted /
+                                    // queue-full paths below still inform the user.
+                                    tracing::debug!(
+                                        plan_turn = session_stats.plan_continuation_turns(),
+                                        max_turns,
+                                        "Queued plan-mode auto-continue without TUI echo"
                                     );
                                     true
                                 }
@@ -1993,11 +2216,21 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         }
                     } else if should_queue {
                         let incomplete = incomplete.unwrap_or_default();
-                        let follow_up = tracker_continue::tracker_continue_follow_up(&incomplete);
-                        let directive = tracker_continue::tracker_continue_directive(
-                            tracker_continue::TRACKER_AUTO_CONTINUE_DIRECTIVE_LABEL,
-                            &incomplete,
-                        );
+                        let (follow_up, directive) = if incomplete.is_empty() {
+                            let reason = blocked_reason.unwrap_or("recoverable block");
+                            (
+                                tracker_continue::recoverable_blocked_continue_follow_up(reason),
+                                tracker_continue::recoverable_blocked_auto_continue_directive(reason),
+                            )
+                        } else {
+                            (
+                                tracker_continue::tracker_continue_follow_up(&incomplete),
+                                tracker_continue::tracker_continue_directive(
+                                    tracker_continue::TRACKER_AUTO_CONTINUE_DIRECTIVE_LABEL,
+                                    &incomplete,
+                                ),
+                            )
+                        };
                         let budget_remaining = session_stats.tracker_continuation_turns() < max_turns;
                         let queued = budget_remaining
                             && match runtime.try_queue_follow_up_input(follow_up) {
@@ -2005,14 +2238,16 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     session_stats.record_tracker_continuation_turn_with_limit(max_turns);
                                     std::sync::Arc::make_mut(&mut runtime.state.messages)
                                         .push(vtcode_core::llm::provider::Message::system(directive));
-                                    let _ = renderer.line(
-                                        MessageStyle::Info,
-                                        &format!(
-                                            "[i] Tracker auto-continue turn {}/{}: {} incomplete step(s) remain.",
-                                            session_stats.tracker_continuation_turns(),
-                                            max_turns,
-                                            incomplete.len()
-                                        ),
+                                    // Queued auto-continue stays quiet: the next turn starts
+                                    // immediately, so a TUI info line is noise (notably the
+                                    // plan-accept → build handoff with pending tracker
+                                    // steps). Exhausted / queue-full paths below still
+                                    // inform the user.
+                                    tracing::debug!(
+                                        tracker_turn = session_stats.tracker_continuation_turns(),
+                                        max_turns,
+                                        incomplete = incomplete.len(),
+                                        "Queued tracker auto-continue without TUI echo"
                                     );
                                     true
                                 }
@@ -2020,7 +2255,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                                     tracing::warn!(%err, "Tracker auto-continue queue full; falling through to turn end");
                                     let _ = renderer.line(
                                         MessageStyle::Info,
-                                        "[i] Tracker auto-continue could not resume automatically; incomplete tracker steps remain. Type `continue` to resume remaining steps.",
+                                        if incomplete.is_empty() {
+                                            "[i] Blocked-end auto-continue could not resume automatically. Type `continue` to retry the request."
+                                        } else {
+                                            "[i] Tracker auto-continue could not resume automatically; incomplete tracker steps remain. Type `continue` to resume remaining steps."
+                                        },
                                     );
                                     tracker_auto_continue_exhausted = true;
                                     false
@@ -2035,7 +2274,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         if !budget_remaining {
                             let _ = renderer.line(
                                 MessageStyle::Info,
-                                "[i] Tracker auto-continue budget exhausted; incomplete tracker steps remain. Type `continue` to resume remaining steps.",
+                                if incomplete.is_empty() {
+                                    "[i] Blocked-end auto-continue budget exhausted. Type `continue` to retry the request."
+                                } else {
+                                    "[i] Tracker auto-continue budget exhausted; incomplete tracker steps remain. Type `continue` to resume remaining steps."
+                                },
                             );
                             tracker_auto_continue_exhausted = true;
                         }
@@ -2357,6 +2600,31 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 return Err(error);
             }
         }
+        // Empty shells (0 turns, terminal) are not worth keeping: they pollute
+        // `.vtcode/sessions/` and hide real sessions. Runs on every close path
+        // (including NewSession / resume continues) after `emitter.finish()`
+        // has dropped the liveness lock. Best-effort; retention catches strays.
+        if let Err(error) = vtcode_memory::evict_zero_turn_completed_store(&config.workspace, &turn_run_id.0) {
+            tracing::debug!(target: "vtcode.harness", error = %error, "zero-turn session store cleanup failed");
+        }
+        // Bound the finished session's rewind pins so completed threads cannot
+        // keep their full turn history protected for the snapshot age window.
+        // A fully-checked task tracker is archived so it cannot leak into the
+        // next session's memory envelope.
+        {
+            let session_id = tool_registry.harness_context_snapshot().session_id;
+            if let Some(manager) = checkpoint_manager.as_ref()
+                && let Err(error) = manager.complete_session_navigation(&session_id).await
+            {
+                tracing::debug!(%error, "checkpoint navigation trim failed after thread completion");
+            }
+            if let Err(error) = vtcode_core::core::agent::harness_artifacts::archive_completed_current_task(
+                &config.workspace,
+                &session_id,
+            ) {
+                tracing::debug!(%error, "completed task tracker archive failed after thread completion");
+            }
+        }
         agent_touched_paths.extend(context_manager.tracked_instruction_activity_paths());
         // Skip persistent memory on interrupt-exits (it makes LLM API calls which
         // delay shutdown significantly). For normal exits, wait up to 5 s for
@@ -2410,10 +2678,43 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
 
         // Capture the response before finalization shuts down the inline TUI
         // and clears its screen. The owned copy remains available for the
-        // plain stdout postamble after terminal restoration.
+        // plain stdout postamble after terminal restoration. On interrupt
+        // exits (Exit/Cancelled) the postamble suppresses this dump and
+        // prints a concise notice instead (see postamble::render_exit_postamble).
         let final_response = latest_assistant_result_text(&runtime.state.messages);
         if matches!(session_end_reason, SessionEndReason::NewSession) {
             next_session_primary_agent = Some(active_primary_agent.active().name().to_owned());
+        }
+        // Best-effort backstop: a Ctrl+C exit from idle (no turn running) can
+        // leave exec/PTY sessions alive because turn-level cancellation never
+        // ran. Terminate them before teardown so no child outlives the TUI.
+        if matches!(session_end_reason, SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::Error)
+            && let Err(error) = tool_registry.terminate_all_exec_sessions_async().await
+        {
+            tracing::warn!(%error, "failed to terminate exec sessions during session exit");
+        }
+        // Capture the end-of-session worktree state before teardown: finalize
+        // does not touch the worktree, so the snapshot is equivalent, and
+        // taking it here keeps the restore → summary window free of git
+        // subprocess work (the tty is already cooked and echoing by then).
+        let end_code_changes = capture_code_change_snapshot(&config.workspace, "end").await;
+        let code_change_delta =
+            compute_session_code_change_delta(start_code_changes.as_ref(), end_code_changes.as_ref());
+        // The config-reload check is polling bookkeeping that only matters for
+        // a continuing session; keep it ahead of teardown so nothing sits
+        // between the terminal restore and the exit summary.
+        if config_watcher.should_reload() {
+            if let Some(reloaded) = config_watcher.load_config() {
+                vt_cfg = Some(reloaded);
+                crate::agent::agents::apply_live_reload_overrides(vt_cfg.as_mut(), &config);
+                tracing::debug!("Configuration reloaded during idle period");
+            }
+            if let Some(error) = config_watcher.take_reload_error() {
+                renderer.line(
+                    MessageStyle::Warning,
+                    &format!("Configuration reload rejected; keeping the last valid configuration: {error}"),
+                )?;
+            }
         }
         let finalization_output = match finalize_session(
             &mut renderer,
@@ -2449,7 +2750,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 if let Some(reloaded) = config_watcher.load_config() {
                     vt_cfg = Some(reloaded);
                     crate::agent::agents::apply_live_reload_overrides(vt_cfg.as_mut(), &config);
-                    idle_config = extract_idle_config(vt_cfg.as_ref());
                     tracing::debug!("Configuration reloaded due to file changes");
                 }
                 if let Some(error) = config_watcher.take_reload_error() {
@@ -2463,45 +2763,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             refresh_runtime_debug_context_for_next_session(config.workspace.as_path(), None).await?;
             resume_state = None;
             pending_session_start_trigger = Some(SessionStartTrigger::NewSession);
-            _consecutive_idle_cycles = 0;
             continue;
         }
-        if config_watcher.should_reload() {
-            if let Some(reloaded) = config_watcher.load_config() {
-                vt_cfg = Some(reloaded);
-                crate::agent::agents::apply_live_reload_overrides(vt_cfg.as_mut(), &config);
-                idle_config = extract_idle_config(vt_cfg.as_ref());
-                tracing::debug!("Configuration reloaded during idle period");
-            }
-            if let Some(error) = config_watcher.take_reload_error() {
-                renderer.line(
-                    MessageStyle::Warning,
-                    &format!("Configuration reload rejected; keeping the last valid configuration: {error}"),
-                )?;
-            }
-        }
-        if idle_config.enabled
-            && let Some(last_activity) = last_activity_time
-        {
-            let idle_duration = last_activity.elapsed().as_millis() as u64;
-            if idle_duration >= idle_config.timeout_ms {
-                _consecutive_idle_cycles += 1;
-                if idle_config.backoff_ms > 0 {
-                    if _consecutive_idle_cycles >= idle_config.max_cycles {
-                        sleep(Duration::from_millis(idle_config.backoff_ms * 2)).await;
-                        _consecutive_idle_cycles = 0;
-                    } else {
-                        sleep(Duration::from_millis(idle_config.backoff_ms)).await;
-                    }
-                }
-            } else {
-                _consecutive_idle_cycles = 0;
-            }
-        }
 
-        let end_code_changes = capture_code_change_snapshot(&config.workspace, "end").await;
-        let code_change_delta =
-            compute_session_code_change_delta(start_code_changes.as_ref(), end_code_changes.as_ref());
         let finalization_succeeded = finalization_output.is_some();
         let resume_identifier = finalization_output
             .as_ref()
@@ -2531,6 +2795,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             let _ = vtcode_ui::tui::panic_hook::restore_tui();
         }
         let session_total_usage = session_stats.total_usage();
+        // Shut down background work before the postamble so no late task can
+        // write after the terminal is restored and the summary is printed.
+        if let Some(controller) = tool_registry.subagent_controller() {
+            controller.signal_shutdown().await;
+        }
         print_exit_summary(ExitData {
             app_name: "VT Code",
             version: env!("CARGO_PKG_VERSION"),
@@ -2549,10 +2818,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             final_response: final_response.as_deref(),
             resume_identifier,
             budget_limit: session_stats.budget_limit(),
+            total_cost_usd: session_stats.total_cost_usd(),
+            end_reason_label: session_end_reason.as_str(),
+            first_call_composition: session_stats.first_call_composition(),
+            session_end_reason,
         });
-        if let Some(controller) = tool_registry.subagent_controller() {
-            controller.signal_shutdown().await;
-        }
         if matches!(session_end_reason, SessionEndReason::Error) {
             return Err(anyhow::anyhow!(
                 "{}",

@@ -1,3 +1,5 @@
+use crate::agent::runloop::ui_list;
+use crate::agent::runloop::ui_list::Tone;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -316,6 +318,22 @@ fn shell_command_preview_lines(tool_name: &str, tool_args: Option<&Value>) -> Op
     (!command.is_empty()).then(|| command.lines().map(str::to_string).collect())
 }
 
+/// Sandbox posture row for shell approvals (`Environment: ...`), mirroring
+/// the reference approval UX. Labels describe the *requested* posture only —
+/// the execution boundary enforces the policy — so `UseDefault` never
+/// claims a sandbox this layer cannot verify. `None` for non-shell tools,
+/// which have no shell execution environment to review.
+fn shell_environment_row(tool_name: &str, tool_args: Option<&Value>) -> Option<String> {
+    let args = shell_run_args(tool_name, tool_args)?;
+    let posture = match parse_shell_sandbox_permissions(args) {
+        CoreSandboxPermissions::UseDefault => "default policy",
+        CoreSandboxPermissions::WithAdditionalPermissions => "default policy + extra grants",
+        CoreSandboxPermissions::RequireEscalated => "escalated privileges",
+        CoreSandboxPermissions::BypassSandbox => "no sandbox",
+    };
+    Some(format!("Environment: {posture}"))
+}
+
 /// Full, untruncated URL for web-fetch approval modals. The modal description
 /// must show the exact fetch target (not just the domain) so approval is
 /// informed. No truncation is applied here; modal wrapping handles width.
@@ -338,12 +356,10 @@ fn web_fetch_approval_url(tool_name: &str, tool_args: Option<&Value>) -> Option<
         .map(ToOwned::to_owned)
 }
 
-/// Max logical rows shown for the approved command block; longer commands
-/// collapse behind an overflow count so the popup fits its viewport budget.
+/// Max logical command lines shown in the approval modal; longer scripts
+/// collapse their middle lines behind an explicit omission count so the
+/// popup fits its 8-row viewport while head and tail stay reviewable.
 const MAX_COMMAND_PREVIEW_LINES: usize = 8;
-/// Max chars per command line. Middle truncation preserves both the executable
-/// prefix and trailing flags/destinations that can materially change behavior.
-const MAX_COMMAND_LINE_CHARS: usize = 120;
 /// Max chars for persistent-approval display labels embedded in option
 /// subtitles; the dedicated command block carries the reviewable invocation.
 const MAX_APPROVAL_LABEL_CHARS: usize = 60;
@@ -352,34 +368,55 @@ const MAX_CONTEXT_LINE_CHARS: usize = 160;
 const MAX_RISK_LINE_CHARS: usize = 32;
 
 fn format_command_preview_line(line: &str) -> String {
-    format!("`{}`", vtcode_commons::formatting::truncate_middle(line, MAX_COMMAND_LINE_CHARS))
+    // Same control-char mapping as `truncate_middle`: a lone `\r` survives
+    // `str::lines` and could otherwise hide a suffix at render time.
+    // No length cap: per-line truncation splits shell tokens and quoted
+    // script bodies (screenshot 2026-09-27 `awk 'NR==FNR ...'`), defeating
+    // review; modal wrapping owns viewport width.
+    let sanitized: String = line.chars().map(|c| if matches!(c, '\r' | '\t') { ' ' } else { c }).collect();
+    format!("`{sanitized}`")
 }
 
-/// Format command lines as bounded head + tail evidence. Keeping the tail is
-/// required for informed approval because destructive flags and destinations
-/// commonly occur at the end of an invocation.
+/// Full command lines for the approval modal. Shown lines are never
+/// truncated, so the quote-aware `shell_syntax_segments` highlighter (fed
+/// by the tree-sitter-bash safety pipeline) sees intact tokens. The first
+/// row carries a `$ ` shell marker (rendered dimmed by the modal) so the
+/// block reads as a command to execute. Only the row count is bounded:
+/// beyond `MAX_COMMAND_PREVIEW_LINES` the middle collapses behind an
+/// explicit omission count, keeping head and tail reviewable inside the
+/// modal viewport. Mirrors `preview_full_command` for transcript `• Ran`
+/// headers (821a9c35a) and the untruncated web-fetch URL (99cc2fdfe).
 fn format_command_preview_lines(command_lines: Vec<String>) -> Vec<String> {
-    if command_lines.len() <= MAX_COMMAND_PREVIEW_LINES {
-        return command_lines.iter().map(|line| format_command_preview_line(line)).collect();
+    let visible: Vec<String> = command_lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format_command_preview_line(line))
+        .collect();
+    if visible.len() <= MAX_COMMAND_PREVIEW_LINES {
+        let mut preview = visible;
+        prefix_shell_marker(preview.first_mut());
+        return preview;
     }
     const HEAD_LINES: usize = 5;
     const TAIL_LINES: usize = 2;
-    let hidden = command_lines.len().saturating_sub(HEAD_LINES + TAIL_LINES);
+    let hidden = visible.len().saturating_sub(HEAD_LINES + TAIL_LINES);
     let mut preview = Vec::with_capacity(MAX_COMMAND_PREVIEW_LINES);
-    preview.extend(
-        command_lines
-            .iter()
-            .take(HEAD_LINES)
-            .map(|line| format_command_preview_line(line)),
-    );
+    preview.extend(visible.iter().take(HEAD_LINES).cloned());
     preview.push(format!("… +{hidden} more lines (full command runs on approval)"));
-    preview.extend(
-        command_lines
-            .iter()
-            .skip(command_lines.len().saturating_sub(TAIL_LINES))
-            .map(|line| format_command_preview_line(line)),
-    );
+    preview.extend(visible.iter().skip(visible.len().saturating_sub(TAIL_LINES)).cloned());
+    prefix_shell_marker(preview.first_mut());
     preview
+}
+
+/// Prefix the first preview row with the `$ ` shell marker, inside the
+/// backtick code fence so the modal renderer keeps highlighting the body.
+/// Index-free: rows that do not open with a backtick are left untouched.
+fn prefix_shell_marker(first_row: Option<&mut String>) {
+    if let Some(row) = first_row
+        && let Some(body) = row.strip_prefix('`')
+    {
+        *row = format!("`$ {body}");
+    }
 }
 
 /// Friendly label for the agent's goal in the permission popup. The modal
@@ -497,10 +534,20 @@ fn tool_args_diff_preview(tool_name: &str, tool_args: Option<&Value>) -> Option<
     Some(preview)
 }
 
+/// Overlay title for the approval popup. Shell commands ask the plain
+/// question directly; every other tool keeps the generic title.
+fn tool_permission_title(has_command_preview: bool) -> &'static str {
+    if has_command_preview {
+        "Would you like to run the following command?"
+    } else {
+        "Tool Permission Required"
+    }
+}
+
 /// Intro rows for the approval popup, written as plain permission language.
-/// Shell commands get a dedicated command block below, so their truncated
-/// action summary is omitted. Other tools reuse the human-friendly action
-/// summary directly in the intro sentence.
+/// Shell commands need no intro sentence: the overlay title already asks
+/// the question and the command block follows. Other tools reuse the
+/// human-friendly action summary directly in the intro sentence.
 fn tool_permission_header_lines(
     tool_name: &str,
     display_name: &str,
@@ -509,7 +556,7 @@ fn tool_permission_header_lines(
 ) -> Vec<String> {
     let mut lines = Vec::new();
     if has_command_preview {
-        lines.push("The agent wants to run a shell command and needs your approval.".to_string());
+        // Title carries the question; fall through to the source row only.
     } else if !display_name.trim().is_empty() {
         let trimmed = display_name.trim();
         // `describe_tool_action` prefixes MCP tools with "MCP " (e.g. "MCP Search
@@ -589,33 +636,34 @@ fn build_tool_permission_options(
     prompt_kind: ToolPermissionPromptKind,
     persistent_approval_target: Option<&PersistentApprovalTarget>,
 ) -> Vec<vtcode_ui::tui::app::InlineListItem> {
-    use vtcode_ui::tui::app::{InlineListItem, InlineListSelection};
+    use vtcode_ui::tui::app::InlineListSelection;
 
     let mut options = vec![
-        InlineListItem {
-            title: "Approve Once".to_string(),
-            subtitle: Some("Allow this time only".to_string()),
-            badge: None,
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApproval(true)),
-            search_value: Some("approve yes allow once y 1".to_string()),
-        },
-        InlineListItem {
-            title: if prompt_kind == ToolPermissionPromptKind::Mcp {
-                "Approve this session".to_string()
+        ui_list::action(
+            "Approve Once",
+            "Allow this time only",
+            None,
+            Tone::Neutral,
+            Some(InlineListSelection::ToolApproval(true)),
+        )
+        .with_search_value("approve yes allow once y 1".to_string()),
+        // Scope badge is load-bearing: "Always" rows persist, "Session" does not.
+        ui_list::action(
+            if prompt_kind == ToolPermissionPromptKind::Mcp {
+                "Approve this session"
             } else {
-                "Allow for Session".to_string()
+                "Allow for Session"
             },
-            subtitle: if prompt_kind == ToolPermissionPromptKind::Mcp {
-                Some("Remember for this session".to_string())
+            if prompt_kind == ToolPermissionPromptKind::Mcp {
+                "Remember for this session"
             } else {
-                Some("For the current session".to_string())
+                "For the current session"
             },
-            badge: Some("Session".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApprovalSession),
-            search_value: Some("session temporary temp 2".to_string()),
-        },
+            Some("Session".to_string()),
+            Tone::Neutral,
+            Some(InlineListSelection::ToolApprovalSession),
+        )
+        .with_search_value("session temporary temp 2".to_string()),
     ];
 
     if let Some(target) = persistent_approval_target {
@@ -623,61 +671,64 @@ fn build_tool_permission_options(
             PersistentApprovalTarget::ToolLevel => "this tool".to_string(),
             PersistentApprovalTarget::ExactInvocation { display_label }
             | PersistentApprovalTarget::PrefixRule { display_label, .. } => {
-                vtcode_commons::modal_hints::truncate_modal_text(display_label, MAX_APPROVAL_LABEL_CHARS)
+                // Middle-truncation keeps both the executable prefix and the
+                // trailing flags/destinations that can change what is
+                // remembered — head-truncation would hide the dangerous
+                // suffix behind the option-row budget.
+                vtcode_commons::formatting::truncate_middle(display_label, MAX_APPROVAL_LABEL_CHARS)
             }
         };
         let subtitle = format!("Remember {short_label} in this workspace");
-        options.push(InlineListItem {
-            title: "Always approve and save to policy cache".to_string(),
-            subtitle: Some(subtitle),
-            badge: Some("Permanent".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApprovalPermanent),
-            search_value: Some("always permanent forever save 3".to_string()),
-        });
+        options.push(
+            ui_list::action(
+                "Always approve",
+                subtitle,
+                Some("Permanent".to_string()),
+                Tone::Neutral,
+                Some(InlineListSelection::ToolApprovalPermanent),
+            )
+            .with_search_value("always permanent forever save 3".to_string()),
+        );
     }
 
-    options.push(InlineListItem {
-        title: "".to_string(),
-        subtitle: None,
-        badge: None,
-        indent: 0,
-        selection: None,
-        search_value: None,
-    });
+    options.push(ui_list::group_divider());
 
-    options.push(InlineListItem {
-        title: if prompt_kind == ToolPermissionPromptKind::Mcp {
-            "Cancel".to_string()
-        } else {
-            "Deny Once".to_string()
-        },
-        subtitle: if prompt_kind == ToolPermissionPromptKind::Mcp {
-            Some("Cancel this tool call".to_string())
-        } else {
-            Some("Ask again next time".to_string())
-        },
-        badge: None,
-        indent: 0,
-        selection: Some(InlineListSelection::ToolApprovalDenyOnce),
-        search_value: Some(if prompt_kind == ToolPermissionPromptKind::Mcp {
+    options.push(
+        ui_list::action(
+            if prompt_kind == ToolPermissionPromptKind::Mcp {
+                "Cancel"
+            } else {
+                "Deny Once"
+            },
+            if prompt_kind == ToolPermissionPromptKind::Mcp {
+                "Cancel this tool call"
+            } else {
+                "Ask again next time"
+            },
+            None,
+            Tone::Neutral,
+            Some(InlineListSelection::ToolApprovalDenyOnce),
+        )
+        .with_search_value(if prompt_kind == ToolPermissionPromptKind::Mcp {
             "cancel stop reject decline 4".to_string()
         } else {
             "deny no reject once temporary 4".to_string()
         }),
-    });
+    );
 
     if matches!(persistent_approval_target, Some(PersistentApprovalTarget::ToolLevel))
         && prompt_kind != ToolPermissionPromptKind::Mcp
     {
-        options.push(InlineListItem {
-            title: "Always Deny".to_string(),
-            subtitle: Some("Block this tool until policy is changed".to_string()),
-            badge: Some("Persistent".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApproval(false)),
-            search_value: Some("deny no reject cancel never always 5".to_string()),
-        });
+        options.push(
+            ui_list::action(
+                "Always Deny",
+                "Block this tool until policy is changed",
+                Some("Persistent".to_string()),
+                Tone::Neutral,
+                Some(InlineListSelection::ToolApproval(false)),
+            )
+            .with_search_value("deny no reject cancel never always 5".to_string()),
+        );
     }
 
     options
@@ -718,12 +769,17 @@ pub(super) async fn prompt_tool_permission<S: UiSession + ?Sized>(
     }
     let prompt_kind = tool_permission_prompt_kind(tool_name);
     let command_preview = shell_command_preview_lines(tool_name, tool_args);
+    let has_command_preview = command_preview.is_some();
     let diff_preview = command_preview
         .is_none()
         .then(|| tool_args_diff_preview(tool_name, tool_args))
         .flatten();
     let mut description_lines =
-        tool_permission_header_lines(tool_name, display_name, command_preview.is_some(), source_thread_label);
+        tool_permission_header_lines(tool_name, display_name, has_command_preview, source_thread_label);
+
+    if has_command_preview && let Some(environment_row) = shell_environment_row(tool_name, tool_args) {
+        description_lines.push(environment_row);
+    }
 
     if let Some(url) = web_fetch_approval_url(tool_name, tool_args) {
         let url_line = format!("URL: {url}");
@@ -783,14 +839,15 @@ pub(super) async fn prompt_tool_permission<S: UiSession + ?Sized>(
         handle,
         session,
         TransientRequest::List(ListOverlayRequest {
-            title: "Tool Permission Required".to_string(),
+            title: tool_permission_title(has_command_preview).to_string(),
             lines: description_lines,
             footer_hint: Some(navigation_hint),
             items: options,
             selected: Some(default_selection),
             search: None,
             hotkeys,
-        }),
+    status: None,
+}),
         ctrl_c_state,
         ctrl_c_notify,
         |submission| match submission {
@@ -844,7 +901,7 @@ pub(super) async fn prompt_policy_denied_tool<S: UiSession + ?Sized>(
     ctrl_c_notify: &Arc<Notify>,
     session: &mut S,
 ) -> Result<HitlDecision> {
-    use vtcode_ui::tui::app::{InlineListItem, InlineListSelection};
+    use vtcode_ui::tui::app::InlineListSelection;
 
     let mut description_lines = vec![
         format!("Tool: {tool_name}"),
@@ -875,30 +932,23 @@ pub(super) async fn prompt_policy_denied_tool<S: UiSession + ?Sized>(
     description_lines.push(choose_handling_line("this run"));
 
     let options = vec![
-        InlineListItem {
-            title: "Enable tool".to_string(),
-            subtitle: Some("Allow and continue execution".to_string()),
-            badge: Some("Fix Policy".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApprovalEnable),
-            search_value: Some("enable allow fix policy continue yes 1".to_string()),
-        },
-        InlineListItem {
-            title: "".to_string(),
-            subtitle: None,
-            badge: None,
-            indent: 0,
-            selection: None,
-            search_value: None,
-        },
-        InlineListItem {
-            title: "Deny Once".to_string(),
-            subtitle: Some("Ask again next time".to_string()),
-            badge: None,
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApprovalDenyOnce),
-            search_value: Some("deny no reject skip once 2".to_string()),
-        },
+        ui_list::action(
+            "Enable tool",
+            "Allow and continue execution",
+            None,
+            Tone::Neutral,
+            Some(InlineListSelection::ToolApprovalEnable),
+        )
+        .with_search_value("enable allow fix policy continue yes 1".to_string()),
+        ui_list::group_divider(),
+        ui_list::action(
+            "Deny Once",
+            "Ask again next time",
+            None,
+            Tone::Neutral,
+            Some(InlineListSelection::ToolApprovalDenyOnce),
+        )
+        .with_search_value("deny no reject skip once 2".to_string()),
     ];
 
     let navigation_hint = APPROVAL_NAVIGATE_DENY.to_string();
@@ -911,6 +961,7 @@ pub(super) async fn prompt_policy_denied_tool<S: UiSession + ?Sized>(
         selected: None,
         search: None,
         hotkeys: Vec::new(),
+        status: None,
     };
 
     let overlay = TransientRequest::List(request);
@@ -943,8 +994,8 @@ mod tests {
         extract_shell_approval_justification, extract_shell_approval_scope_signature, extract_shell_command_text,
         extract_shell_persistent_approval_prefix_rule, format_command_preview_lines, lowercase_first_action,
         push_capped_context_line, render_shell_persistent_approval_prefix_entry, shell_allows_persistent_decisions,
-        shell_command_preview_lines, shell_permission_cache_suffix, tool_permission_header_lines,
-        tool_permission_prompt_kind, truncate_arg_preview,
+        shell_command_preview_lines, shell_environment_row, shell_permission_cache_suffix,
+        tool_permission_header_lines, tool_permission_prompt_kind, tool_permission_title, truncate_arg_preview,
     };
     use crate::agent::runloop::unified::tool_routing::shell_approval::PersistentApprovalTarget;
 
@@ -1235,6 +1286,27 @@ mod tests {
     }
 
     #[test]
+    fn always_rows_carry_permanence_badges() {
+        let items = build_tool_permission_options(
+            ToolPermissionPromptKind::Standard,
+            Some(&PersistentApprovalTarget::ToolLevel),
+        );
+        let badge_for = |title: &str| {
+            items
+                .iter()
+                .find(|item| item.title == title)
+                .unwrap_or_else(|| panic!("{title} row must exist"))
+                .badge
+                .clone()
+        };
+        assert_eq!(badge_for("Always approve").as_deref(), Some("Permanent"));
+        assert_eq!(badge_for("Always Deny").as_deref(), Some("Persistent"));
+        assert_eq!(badge_for("Allow for Session").as_deref(), Some("Session"));
+        assert_eq!(badge_for("Approve Once"), None, "one-shot rows must not claim permanence");
+        assert_eq!(badge_for("Deny Once"), None);
+    }
+
+    #[test]
     fn shell_prompt_offers_policy_cache_option_for_exact_invocation() {
         let titles = build_tool_permission_options(
             ToolPermissionPromptKind::Standard,
@@ -1245,14 +1317,26 @@ mod tests {
         .into_iter()
         .map(|item| item.title)
         .collect::<Vec<_>>();
-        assert!(titles.iter().any(|title| title == "Always approve and save to policy cache"));
+        assert!(titles.iter().any(|title| title == "Always approve"));
         assert!(!titles.iter().any(|title| title == "Always Deny"));
     }
 
     #[test]
-    fn shell_header_uses_permission_intro_without_tool_jargon() {
+    fn shell_header_omits_intro_because_title_asks_the_question() {
         let lines = tool_permission_header_lines("exec_command", "python3 -c 'truncated…'", true, None);
-        assert_eq!(lines, vec!["The agent wants to run a shell command and needs your approval."]);
+        assert!(lines.is_empty(), "shell intro lives in the overlay title, got: {lines:?}");
+    }
+
+    #[test]
+    fn shell_header_keeps_source_row_without_intro() {
+        let lines = tool_permission_header_lines("exec_command", "cargo test", true, Some("agent-1"));
+        assert_eq!(lines, vec!["Requested from: agent-1"]);
+    }
+
+    #[test]
+    fn permission_title_asks_the_question_only_for_shell_commands() {
+        assert_eq!(tool_permission_title(true), "Would you like to run the following command?");
+        assert_eq!(tool_permission_title(false), "Tool Permission Required");
     }
 
     #[test]
@@ -1385,17 +1469,21 @@ mod tests {
 
     #[test]
     fn permanent_option_subtitle_truncates_long_command_label() {
-        let long_label = format!("command `python3 -c '{}'`", "y".repeat(200));
+        // Asymmetric head/tail: middle-truncation must keep the executable
+        // prefix AND the dangerous destination suffix.
+        let long_label = format!("command `python3 {}` --output ../../critical.txt", "x".repeat(200));
         let items = build_tool_permission_options(
             ToolPermissionPromptKind::Standard,
             Some(&PersistentApprovalTarget::ExactInvocation { display_label: long_label }),
         );
         let permanent = items
             .iter()
-            .find(|item| item.title == "Always approve and save to policy cache")
+            .find(|item| item.title == "Always approve")
             .expect("permanent option");
         let subtitle = permanent.subtitle.as_deref().expect("subtitle");
         assert!(subtitle.contains('…'), "long label should be truncated, got: {subtitle}");
+        assert!(subtitle.contains("python3"), "executable prefix missing from {subtitle:?}");
+        assert!(subtitle.contains("../../critical.txt"), "dangerous suffix missing from {subtitle:?}");
         assert!(subtitle.chars().count() <= "Remember  in this workspace".len() + super::MAX_APPROVAL_LABEL_CHARS + 8);
     }
 
@@ -1407,25 +1495,105 @@ mod tests {
         assert_ne!(first, second);
         assert!(first[0].contains("report.txt"), "tail missing from {first:?}");
         assert!(second[0].contains("../../critical.txt"), "dangerous tail missing from {second:?}");
-        assert!(first[0].contains('…') && second[0].contains('…'));
+        assert!(
+            !first[0].contains('…') && !second[0].contains('…'),
+            "full command must not truncate: {first:?} {second:?}"
+        );
+        assert!(
+            first[0].starts_with("`$ ") && second[0].starts_with("`$ "),
+            "first row carries the shell marker: {first:?} {second:?}"
+        );
     }
 
     #[test]
     fn command_preview_preserves_short_unicode_command() {
         let preview = format_command_preview_lines(vec!["printf 'xin chào 世界'".to_string()]);
-        assert_eq!(preview, vec!["`printf 'xin chào 世界'`"]);
+        assert_eq!(preview, vec!["`$ printf 'xin chào 世界'`"]);
     }
 
     #[test]
-    fn multiline_command_preview_keeps_head_tail_and_omission_count() {
-        let lines = (1..=12).map(|line| format!("line {line}")).collect();
+    fn command_preview_shows_long_single_line_in_full_without_truncation() {
+        // Screenshot 2026-09-27: `awk 'NR==FNR ...'` was middle-truncated in
+        // the HITL modal, hiding the script body under review.
+        let command = "awk 'NR==FNR {if ($0 ~ /^#+ /) {h=$0; sub(/^#+ /, \"\", h); gsub(/ +$/, \"\", h)}}' README.md README.md; echo 'anchor-check exit=$?'";
+        let preview = format_command_preview_lines(vec![command.to_string()]);
+        assert_eq!(preview.len(), 1);
+        assert!(preview[0].starts_with("`$ awk"), "got: {:?}", preview[0]);
+        assert!(!preview[0].contains('…'), "got: {:?}", preview[0]);
+        for fragment in ["awk", "NR==FNR", "/^#+ /", "README.md", "anchor-check"] {
+            assert!(preview[0].contains(fragment), "missing {fragment:?} in {:?}", preview[0]);
+        }
+    }
+
+    #[test]
+    fn multiline_command_preview_collapses_middle_but_keeps_full_lines() {
+        // Viewport budget: 12 logical lines collapse to 5 head + marker +
+        // 2 tail, but every shown line is complete. Each line exceeds the
+        // old 120-char truncation cap, locking in no per-line truncation.
+        let lines: Vec<String> = (1..=12).map(|line| format!("line {line} {}", "x".repeat(150))).collect();
         let preview = format_command_preview_lines(lines);
         assert_eq!(preview.len(), 8);
-        assert_eq!(preview[0], "`line 1`");
-        assert_eq!(preview[4], "`line 5`");
+        assert_eq!(preview[0], format!("`$ line 1 {}`", "x".repeat(150)));
+        assert_eq!(preview[4], format!("`line 5 {}`", "x".repeat(150)));
         assert_eq!(preview[5], "… +5 more lines (full command runs on approval)");
-        assert_eq!(preview[6], "`line 11`");
-        assert_eq!(preview[7], "`line 12`");
+        assert_eq!(preview[6], format!("`line 11 {}`", "x".repeat(150)));
+        assert_eq!(preview[7], format!("`line 12 {}`", "x".repeat(150)));
+    }
+
+    #[test]
+    fn command_preview_neutralizes_carriage_return_and_tab() {
+        // A lone `\r` survives `str::lines`; without sanitization the
+        // terminal could hide the suffix of the preview row under review.
+        let preview = format_command_preview_lines(vec!["echo ok\r\trm -rf /tmp/review-target".to_string()]);
+        assert_eq!(preview.len(), 1);
+        assert!(
+            preview[0].chars().all(|c| c != '\r' && c != '\t'),
+            "control chars must be neutralized, got: {preview:?}"
+        );
+        assert!(preview[0].contains("rm -rf /tmp/review-target"), "suffix must stay visible: {preview:?}");
+    }
+
+    #[test]
+    fn command_preview_skips_blank_lines_to_save_viewport_rows() {
+        let preview = format_command_preview_lines(vec![
+            "echo alpha".to_string(),
+            "   ".to_string(),
+            String::new(),
+            "echo beta".to_string(),
+        ]);
+        assert_eq!(preview, vec!["`$ echo alpha`", "`echo beta`"]);
+    }
+
+    #[test]
+    fn shell_environment_row_reports_requested_posture() {
+        let run = |extra: serde_json::Value| {
+            let mut args = serde_json::Map::new();
+            args.insert("action".to_string(), json!("run"));
+            args.insert("command".to_string(), json!("cargo check --locked"));
+            if let serde_json::Value::Object(map) = extra {
+                args.extend(map);
+            }
+            shell_environment_row(tools::UNIFIED_EXEC, Some(&serde_json::Value::Object(args)))
+        };
+        assert_eq!(run(json!({})).as_deref(), Some("Environment: default policy"));
+        assert_eq!(
+            run(json!({"sandbox_permissions": "require_escalated"})).as_deref(),
+            Some("Environment: escalated privileges")
+        );
+        assert_eq!(run(json!({"sandbox_permissions": "bypass_sandbox"})).as_deref(), Some("Environment: no sandbox"));
+        assert_eq!(
+            run(json!({"additional_permissions": {"fs_write": ["/tmp/demo.txt"]}})).as_deref(),
+            Some("Environment: default policy + extra grants")
+        );
+    }
+
+    #[test]
+    fn shell_environment_row_is_absent_for_non_shell_tools() {
+        assert!(
+            shell_environment_row(tools::UNIFIED_EXEC, Some(&json!({"action": "poll", "session_id": "run-1"})))
+                .is_none()
+        );
+        assert!(shell_environment_row("edit_file", Some(&json!({"path": "src/main.rs"}))).is_none());
     }
 
     #[test]

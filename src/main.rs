@@ -23,6 +23,20 @@
     clippy::cast_possible_wrap,
     reason = "CLI startup and compatibility modules retain established builder, parser, and best-effort I/O patterns while they are migrated incrementally."
 )]
+// Suppress the cosmetic ld64 warning on macOS: the dev/test `__eh_frame`
+// section exceeds ld64's 16 MiB compact-unwind limit, so ld falls back to
+// DWARF unwind tables and warns (rust-lang/rust#159105). This lint can only
+// be controlled at the root of a linked crate — enabling it here covers both
+// the `vtcode` binary and its unit-test harness. Do NOT instead pass
+// `-Wl,-no_compact_unwind`: that flag breaks panic unwinding binary-wide
+// (`failed to initiate panic, error 5` / SIGABRT, rust-lang/rust#156812).
+#![cfg_attr(
+    target_os = "macos",
+    allow(
+        linker_messages,
+        reason = "ld64's __eh_frame-too-large warning is informational in dev builds; release builds use panic=abort + strip. See build.rs."
+    )
+)]
 #![recursion_limit = "256"]
 
 use anyhow::{Context, Result};

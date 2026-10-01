@@ -132,6 +132,48 @@ pub(super) fn effective_max_tool_calls_for_approved_plan_execution(configured_li
     }
 }
 
+/// Remaining tool-call / tool-loop floor after a mid-turn Build↔Plan switch.
+///
+/// Mode floors (`max(limit, 120)`) only help when the turn is still empty. If
+/// Build already consumed most of the cap and the workflow auto-switches to
+/// Plan (or back to implementation), the new mode must get a full floor of
+/// *remaining* headroom from now — not a cap that is already nearly spent.
+pub(super) fn apply_mode_switch_remaining_tool_call_floor(
+    max_tool_calls: &mut usize,
+    used_tool_calls: usize,
+    planning_active: bool,
+) {
+    if *max_tool_calls == 0 {
+        return;
+    }
+    let floor = if planning_active {
+        PLANNING_WORKFLOW_MIN_TOOL_CALLS_PER_TURN
+    } else {
+        APPROVED_PLAN_MIN_TOOL_CALLS_PER_TURN
+    };
+    *max_tool_calls = (*max_tool_calls).max(used_tool_calls.saturating_add(floor));
+}
+
+/// Same remaining-headroom rule for tool-loop iterations (`step_count` is
+/// loops already taken this turn).
+pub(super) fn apply_mode_switch_remaining_tool_loop_floor(
+    current_max_tool_loops: &mut usize,
+    step_count: usize,
+    planning_active: bool,
+) {
+    if *current_max_tool_loops == UNLIMITED_TOOL_LOOPS {
+        return;
+    }
+    let floor = if planning_active {
+        PLANNING_WORKFLOW_MIN_TOOL_LOOPS
+    } else {
+        // Implementation after a plan still needs a full research-sized
+        // runway for edits + verification in the same turn.
+        PLANNING_WORKFLOW_MIN_TOOL_LOOPS.max(DEFAULT_MAX_TOOL_LOOPS)
+    };
+    *current_max_tool_loops = (*current_max_tool_loops).max(step_count.saturating_add(floor));
+}
+
 /// Detects a stale recovery status response that incorrectly carries the
 /// planning turn's tool-disabled state into the fresh approved-plan execution
 /// turn. This is intentionally narrow: ordinary blocker explanations remain
@@ -195,7 +237,8 @@ fn clamp_tool_loop_increment(
     requested_increment.min(per_prompt_limit).min(remaining)
 }
 
-/// Increment a full-auto run grants itself when it hits the tool-loop limit:
+/// Increment a full-auto run (or a session-preauthorized interactive run)
+/// grants itself when it hits the tool-loop limit:
 /// the same maximum one manual approval may add, clamped to the remaining
 /// headroom below the hard cap. Pure so the grant arithmetic stays unit
 /// tested without standing up an interactive session.
@@ -213,31 +256,80 @@ fn auto_tool_loop_grant_increment(current_limit: usize, hard_cap: usize, plannin
     clamp_tool_loop_increment(per_prompt_limit, current_limit, hard_cap, planning_active)
 }
 
-/// Apply one tool-loop limit increase shared by the full-auto grant path and
-/// the manual prompt path. Only the user-facing wording records whether a
-/// human approved the increase; the event kind and continuation semantics
-/// are identical.
+/// How a tool-loop increase is authorized at a limit hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolLoopGrantSource {
+    /// Full-auto policy with `auto_grant_tool_limits` on.
+    FullAuto,
+    /// Interactive session where the user already granted once.
+    SessionPreauthorized,
+    /// Manual HITL approval (or denial handled by the caller).
+    Manual,
+}
+
+impl ToolLoopGrantSource {
+    /// Whether this source skips the HITL modal and grants the max increment.
+    fn is_automatic(self) -> bool {
+        matches!(self, Self::FullAuto | Self::SessionPreauthorized)
+    }
+}
+
+/// Pure grant-policy decision at a tool-loop limit hit.
+///
+/// Full-auto always auto-grants. Otherwise the first interactive hit prompts;
+/// once the session latch is set by a successful grant, later hits auto-grant
+/// the maximum increment without a modal.
+fn tool_loop_grant_source(full_auto_grants_enabled: bool, session_preauthorized: bool) -> ToolLoopGrantSource {
+    if full_auto_grants_enabled {
+        ToolLoopGrantSource::FullAuto
+    } else if session_preauthorized {
+        ToolLoopGrantSource::SessionPreauthorized
+    } else {
+        ToolLoopGrantSource::Manual
+    }
+}
+
+/// Apply one tool-loop limit increase shared by the full-auto grant path,
+/// the session-preauthorized path, and the manual prompt path. Only the
+/// user-facing wording records who authorized the increase; the event kind
+/// and continuation semantics are identical.
+///
+/// A successful manual grant latches session-preauthorized auto-grants for
+/// later limit hits in this process session. Denial never reaches this
+/// function, so it cannot latch.
 fn apply_tool_loop_grant(
     ctx: &mut TurnLoopContext<'_>,
     current_max_tool_loops: &mut usize,
     increment: usize,
     requested_increment: usize,
     hard_cap: usize,
-    auto_granted: bool,
+    grant_source: ToolLoopGrantSource,
 ) -> Result<ToolLoopLimitAction> {
+    if grant_source == ToolLoopGrantSource::Manual {
+        ctx.session_stats.mark_tool_loop_grant_preauthorized();
+    }
     let previous_max_tool_loops = *current_max_tool_loops;
     *current_max_tool_loops = (*current_max_tool_loops).saturating_add(increment);
     let agent_name = ctx.active_primary_agent.active().name();
-    let event_message = if auto_granted {
-        format!(
-            "Full-auto auto-granted +{} tool loops to current agent {} (limit {}); continuing this turn and reusing existing tool outputs.",
-            increment, agent_name, *current_max_tool_loops,
-        )
-    } else {
-        format!(
-            "Current agent {} granted +{} tool loops (limit {}); continuing this turn and reusing existing tool outputs.",
-            agent_name, increment, *current_max_tool_loops,
-        )
+    let event_message = match grant_source {
+        ToolLoopGrantSource::FullAuto => {
+            format!(
+                "Full-auto auto-granted +{} tool loops to current agent {} (limit {}); continuing this turn and reusing existing tool outputs.",
+                increment, agent_name, *current_max_tool_loops,
+            )
+        }
+        ToolLoopGrantSource::SessionPreauthorized => {
+            format!(
+                "Auto-granted +{} tool loops to current agent {} (limit {}); earlier grant this session preauthorized further increases. Continuing this turn and reusing existing tool outputs.",
+                increment, agent_name, *current_max_tool_loops,
+            )
+        }
+        ToolLoopGrantSource::Manual => {
+            format!(
+                "Current agent {} granted +{} tool loops (limit {}); continuing this turn and reusing existing tool outputs.",
+                agent_name, increment, *current_max_tool_loops,
+            )
+        }
     };
     if let Some(emitter) = ctx.harness_emitter
         && let Err(error) = emitter.emit(harness_event(
@@ -251,23 +343,33 @@ fn apply_tool_loop_grant(
         tracing::debug!(error = %error, "Failed to emit tool-loop grant event");
     }
     tracing::info!(
-        auto_granted,
+        grant_source = ?grant_source,
         "Updated tool loop limit: turn={} (was {}), session tool-call limit remains unchanged",
         *current_max_tool_loops,
         previous_max_tool_loops,
     );
-    let status_message = if auto_granted {
-        format!(
-            "Full-auto auto-granted +{} tool loops (limit {}, cap {})",
-            increment, *current_max_tool_loops, hard_cap,
-        )
-    } else if requested_increment != increment {
-        format!(
-            "Tool loop limit increased to {} (+{}, requested +{}, cap {})",
-            *current_max_tool_loops, increment, requested_increment, hard_cap,
-        )
-    } else {
-        format!("Tool loop limit increased to {} (+{}, cap {})", *current_max_tool_loops, increment, hard_cap,)
+    let status_message = match grant_source {
+        ToolLoopGrantSource::FullAuto => {
+            format!(
+                "Full-auto auto-granted +{} tool loops (limit {}, cap {})",
+                increment, *current_max_tool_loops, hard_cap,
+            )
+        }
+        ToolLoopGrantSource::SessionPreauthorized => {
+            format!(
+                "Auto-granted +{} tool loops (limit {}, cap {}); earlier grant this session preauthorized further increases",
+                increment, *current_max_tool_loops, hard_cap,
+            )
+        }
+        ToolLoopGrantSource::Manual if requested_increment != increment => {
+            format!(
+                "Tool loop limit increased to {} (+{}, requested +{}, cap {})",
+                *current_max_tool_loops, increment, requested_increment, hard_cap,
+            )
+        }
+        ToolLoopGrantSource::Manual => {
+            format!("Tool loop limit increased to {} (+{}, cap {})", *current_max_tool_loops, increment, hard_cap,)
+        }
     };
     display_status(ctx.renderer, &status_message)?;
     Ok(ToolLoopLimitAction::ContinueLoop)
@@ -454,6 +556,11 @@ fn queue_follow_up_input(
 /// the in-flight queue and stays in the pending snapshot until the post-turn
 /// history checkpoint acknowledges it, preserving the crash-recovery
 /// contract.
+///
+/// Harness-generated continuations (tracker/plan auto-continue, background
+/// completion, verification recovery) stay quiet: the full internal prompt is
+/// model-facing, so echoing it to the transcript is TUI noise. Only genuine
+/// user steering gets a `Steered into active turn` status line.
 fn apply_pending_follow_ups_mid_turn(
     renderer: &mut vtcode_core::utils::ansi::AnsiRenderer,
     runtime_steering: &mut vtcode_core::core::agent::runtime::RuntimeSteering,
@@ -462,9 +569,98 @@ fn apply_pending_follow_ups_mid_turn(
     for intent in runtime_steering.drain_follow_up_intents_to_in_flight() {
         let (intent_id, input) = intent.into_parts();
         push_steered_user_message(working_history, &intent_id, &input);
+        if is_internal_harness_follow_up(&input) {
+            tracing::debug!("Applied internal harness follow-up mid-turn without TUI echo");
+            continue;
+        }
         display_status(renderer, &format!("Steered into active turn: {input}"))?;
     }
     Ok(())
+}
+
+/// True for machine-generated continuation prompts that must not echo to the
+/// TUI. Matches the stable openings of every harness-queued follow-up so a
+/// reworded tail cannot reintroduce transcript noise.
+pub(crate) fn is_internal_harness_follow_up(input: &str) -> bool {
+    use crate::agent::runloop::unified::turn::session_loop::{
+        BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX, VERIFICATION_AUTO_RECOVERY_PREFIX,
+    };
+    use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
+        PLAN_MODE_AUTO_CONTINUE_MARKER, RECOVERABLE_BLOCKED_CONTINUE_FOLLOW_UP_PREFIX,
+        TRACKER_CONTINUE_FOLLOW_UP_PREFIX,
+    };
+
+    input.starts_with(TRACKER_CONTINUE_FOLLOW_UP_PREFIX)
+        || input.starts_with(PLAN_MODE_AUTO_CONTINUE_MARKER)
+        || input.starts_with(RECOVERABLE_BLOCKED_CONTINUE_FOLLOW_UP_PREFIX)
+        || input.starts_with(BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX)
+        || input.starts_with(VERIFICATION_AUTO_RECOVERY_PREFIX)
+}
+
+const FRESH_TURN_TOOL_GUIDANCE: &str = "Fresh turn: the previous turn's preview budget and tool-free recovery restrictions have expired. Tools are available subject to this turn's catalog, planning mode, safety, verification, and permission checks. Older recovery messages do not disable tools in this turn. If earlier file contents were cleared, recover the needed context with a targeted read or small spool range before editing; do not repeat broad inspections.";
+
+fn is_turn_scoped_tool_restriction(text: &str) -> bool {
+    // Inspect the runtime-owned instruction, not bounded evidence that a
+    // planning synthesis directive may append beneath it.
+    let instruction = text.lines().next().unwrap_or_default().trim().to_ascii_lowercase();
+    if instruction.starts_with("tool preview budget exhausted;")
+        || instruction.starts_with("planning recovery: the proposed plan was rejected.")
+    {
+        return true;
+    }
+    let recovery_family = [
+        "recovery:",
+        "planning recovery:",
+        "planning recovery synthesis:",
+        "planning navigation produced",
+        "planning tool preview budget exhausted",
+        "planning research completed",
+        "navigation loop detected",
+        "repeated low-signal navigation calls",
+        "diverse low-signal navigation reached",
+        "turn balancer detected repeated low-signal tool churn",
+        "tool loop budget exhausted",
+        "tool-call budget exhausted for this turn",
+        "tool wall-clock budget exhausted for this turn",
+        "tool follow-up failed.",
+        "model returned no answer after tool activity.",
+        "model follow-up failed after tool activity.",
+    ]
+    .iter()
+    .any(|prefix| instruction.starts_with(prefix));
+    recovery_family
+        && (instruction.contains("tools are disabled")
+            || instruction.contains("tools disabled")
+            || instruction.contains("do not emit tool calls"))
+}
+
+/// Supersede expired recovery guidance without rewriting replayed history.
+/// Only call at a fresh turn boundary, never during an active recovery pass.
+pub(super) fn restore_fresh_turn_tool_guidance(history: &mut Vec<uni::Message>, recovery_active: bool) {
+    if recovery_active {
+        return;
+    }
+    // A newer restoration supersedes every older restriction. Search only
+    // back to that boundary so later turns neither duplicate the instruction
+    // nor scan all of the session's old recovery history.
+    let has_expired_restriction = history
+        .iter()
+        .rev()
+        .filter(|message| message.role == uni::MessageRole::System)
+        .find_map(|message| {
+            let text = message.content.as_text();
+            if text == FRESH_TURN_TOOL_GUIDANCE {
+                Some(false)
+            } else if is_turn_scoped_tool_restriction(&text) {
+                Some(true)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false);
+    if has_expired_restriction {
+        history.push(uni::Message::system(FRESH_TURN_TOOL_GUIDANCE.to_owned()));
+    }
 }
 
 /// Append a steered user message tagged with its intent id so restart
@@ -666,10 +862,11 @@ pub(super) async fn maybe_handle_tool_loop_limit(
         return Ok(ToolLoopLimitAction::BreakLoop);
     }
 
-    let prompt_result = if full_auto_loop_grants_enabled(
-        ctx.full_auto,
-        super::turn_loop::effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
-    ) {
+    let grant_source = tool_loop_grant_source(
+        full_auto_loop_grants_enabled(ctx.full_auto, super::turn_loop::effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg)),
+        ctx.session_stats.tool_loop_grant_preauthorized(),
+    );
+    let prompt_result = if grant_source.is_automatic() {
         let increment = auto_tool_loop_grant_increment(*current_max_tool_loops, hard_cap, planning_active);
         if increment == 0 {
             emit_loop_hard_cap_break_metric(
@@ -686,7 +883,7 @@ pub(super) async fn maybe_handle_tool_loop_limit(
             )?;
             return Ok(ToolLoopLimitAction::BreakLoop);
         }
-        return apply_tool_loop_grant(ctx, current_max_tool_loops, increment, increment, hard_cap, true);
+        return apply_tool_loop_grant(ctx, current_max_tool_loops, increment, increment, hard_cap, grant_source);
     } else {
         crate::agent::runloop::unified::tool_routing::prompt_tool_loop_limit_increase(
             ctx.handle,
@@ -718,7 +915,14 @@ pub(super) async fn maybe_handle_tool_loop_limit(
                 )?;
                 return Ok(ToolLoopLimitAction::BreakLoop);
             }
-            apply_tool_loop_grant(ctx, current_max_tool_loops, increment, requested_increment, hard_cap, false)
+            apply_tool_loop_grant(
+                ctx,
+                current_max_tool_loops,
+                increment,
+                requested_increment,
+                hard_cap,
+                ToolLoopGrantSource::Manual,
+            )
         }
         _ => {
             display_status(
@@ -737,11 +941,13 @@ pub(super) async fn maybe_handle_tool_loop_limit(
 #[cfg(test)]
 mod tests {
     use super::{
-        TOOL_LOOP_LIMIT_RECOVERY_REASON, UNLIMITED_TOOL_LOOPS, arm_tool_loop_synthesis_recovery,
-        auto_tool_loop_grant_increment, clamp_tool_loop_increment,
+        TOOL_LOOP_LIMIT_RECOVERY_REASON, ToolLoopGrantSource, UNLIMITED_TOOL_LOOPS,
+        apply_mode_switch_remaining_tool_call_floor, apply_mode_switch_remaining_tool_loop_floor,
+        arm_tool_loop_synthesis_recovery, auto_tool_loop_grant_increment, clamp_tool_loop_increment,
         effective_max_tool_calls_for_approved_plan_execution, effective_max_tool_calls_for_turn, extract_turn_config,
-        handle_steering_messages, initial_tool_loop_limit, is_stale_approved_plan_pause_response,
-        resolve_safety_tool_call_limits, resolve_tool_loop_limit, tool_loop_hard_cap,
+        handle_steering_messages, initial_tool_loop_limit, is_internal_harness_follow_up,
+        is_stale_approved_plan_pause_response, resolve_safety_tool_call_limits, resolve_tool_loop_limit,
+        tool_loop_grant_source, tool_loop_hard_cap,
     };
     use crate::agent::runloop::unified::planning_workflow::{
         PlanningIntent, detect_enter_planning_intent, detect_planning_intent,
@@ -750,6 +956,7 @@ mod tests {
     use crate::agent::runloop::unified::turn::context::TurnLoopResult;
     use crate::agent::runloop::unified::turn::turn_processing::test_support::TestTurnProcessingBacking;
     use std::time::Duration;
+    use vtcode_core::config::constants::tool_limits::PLANNING_WORKFLOW_MIN_TOOL_LOOPS;
     use vtcode_core::config::loader::VTCodeConfig;
     use vtcode_core::core::agent::steering::SteeringMessage;
     use vtcode_core::llm::provider::MessageRole;
@@ -901,6 +1108,37 @@ mod tests {
     }
 
     #[test]
+    fn tool_loop_grant_source_prefers_full_auto_then_session_latch() {
+        assert_eq!(
+            tool_loop_grant_source(true, false),
+            ToolLoopGrantSource::FullAuto,
+            "full-auto wins even before any interactive grant"
+        );
+        assert_eq!(
+            tool_loop_grant_source(true, true),
+            ToolLoopGrantSource::FullAuto,
+            "full-auto wording stays full-auto after an interactive grant"
+        );
+        assert_eq!(
+            tool_loop_grant_source(false, true),
+            ToolLoopGrantSource::SessionPreauthorized,
+            "after the first successful grant later hits auto-grant without a prompt"
+        );
+        assert_eq!(
+            tool_loop_grant_source(false, false),
+            ToolLoopGrantSource::Manual,
+            "first interactive hit (and any denial retry) still prompts"
+        );
+
+        // Only Manual opens the HITL modal; the other two auto-grant max +N
+        // via `auto_tool_loop_grant_increment` (already covered above).
+        assert!(!tool_loop_grant_source(false, false).is_automatic());
+        assert!(tool_loop_grant_source(false, true).is_automatic());
+        assert!(tool_loop_grant_source(true, false).is_automatic());
+        assert!(tool_loop_grant_source(true, true).is_automatic());
+    }
+
+    #[test]
     fn extract_turn_config_applies_planning_workflow_loop_floor() {
         for (configured_limit, expected_limit) in [(20, 60), (40, 60), (60, 60), (80, 80)] {
             let mut cfg = VTCodeConfig::default();
@@ -961,6 +1199,36 @@ mod tests {
     }
 
     #[test]
+    fn mode_switch_grants_remaining_tool_call_floor() {
+        // Build already spent most of a 120-cap; Plan entry must not inherit
+        // the leftover 20-call budget.
+        let mut max = 120usize;
+        apply_mode_switch_remaining_tool_call_floor(&mut max, 110, true);
+        assert_eq!(max, 110 + 120);
+        // Cap already larger than used+floor is preserved.
+        let mut max = 400usize;
+        apply_mode_switch_remaining_tool_call_floor(&mut max, 10, true);
+        assert_eq!(max, 400);
+        // Unlimited stays unlimited.
+        let mut max = 0usize;
+        apply_mode_switch_remaining_tool_call_floor(&mut max, 10, true);
+        assert_eq!(max, 0);
+    }
+
+    #[test]
+    fn mode_switch_grants_remaining_tool_loop_floor() {
+        let mut loops = 60usize;
+        apply_mode_switch_remaining_tool_loop_floor(&mut loops, 55, true);
+        assert_eq!(loops, 55 + PLANNING_WORKFLOW_MIN_TOOL_LOOPS);
+        let mut loops = 200usize;
+        apply_mode_switch_remaining_tool_loop_floor(&mut loops, 10, true);
+        assert_eq!(loops, 200);
+        let mut loops = usize::MAX;
+        apply_mode_switch_remaining_tool_loop_floor(&mut loops, 10, true);
+        assert_eq!(loops, usize::MAX);
+    }
+
+    #[test]
     fn approved_plan_execution_gets_a_fresh_implementation_budget() {
         assert_eq!(effective_max_tool_calls_for_approved_plan_execution(32), 120);
         assert_eq!(effective_max_tool_calls_for_approved_plan_execution(160), 160);
@@ -1007,6 +1275,117 @@ mod tests {
         assert!(!is_stale_approved_plan_pause_response(
             "Implementation is paused while I wait for the user to clarify the API contract."
         ));
+    }
+
+    #[test]
+    fn fresh_turn_supersedes_expired_recovery_without_changing_history() {
+        use vtcode_core::llm::provider::Message;
+
+        let restriction = "Recovery: two assistant batches attempted inspection after the tool preview budget was exhausted. Tools are disabled for this pass.";
+        let mut history = vec![
+            Message::system(restriction.to_owned()),
+            Message::assistant("All six steps remain blocked".to_owned()),
+            Message::user("Continue the approved plan".to_owned()),
+        ];
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].content.as_text(), restriction);
+        assert_eq!(history[3].role, MessageRole::System);
+        let fresh = history[3].content.as_text();
+        assert!(fresh.contains("restrictions have expired"));
+        assert!(fresh.contains("permission checks"));
+        assert!(fresh.contains("targeted read or small spool range"));
+
+        history.push(Message::user("Continue the next step".to_owned()));
+        let restored_len = history.len();
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), restored_len, "already superseded restrictions must not duplicate guidance");
+        history.push(Message::system(TOOL_LOOP_LIMIT_RECOVERY_REASON.to_owned()));
+        history.push(Message::user("Retry after the new recovery".to_owned()));
+        super::restore_fresh_turn_tool_guidance(&mut history, true);
+        assert_eq!(history.len(), restored_len + 2, "active recovery still takes precedence");
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), restored_len + 3, "a newer restriction needs one new restoration");
+        super::restore_fresh_turn_tool_guidance(&mut history, false);
+        assert_eq!(history.len(), restored_len + 3);
+
+        let mut active = vec![Message::system(restriction.to_owned())];
+        super::restore_fresh_turn_tool_guidance(&mut active, true);
+        assert_eq!(active.len(), 1, "current recovery must still disable tools");
+
+        let mut policy = vec![Message::system(
+            "exec_command is denied by permission policy".to_owned(),
+        )];
+        super::restore_fresh_turn_tool_guidance(&mut policy, false);
+        assert_eq!(policy.len(), 1, "permission restrictions must not be superseded");
+
+        let mut user_text = vec![Message::user(restriction.to_owned())];
+        super::restore_fresh_turn_tool_guidance(&mut user_text, false);
+        assert_eq!(user_text.len(), 1, "user text is not a harness recovery event");
+
+        let mut quoted_evidence = vec![Message::system(
+            "Planning recovery synthesis: gather evidence.\n<bounded_recovery_evidence>tools are disabled</bounded_recovery_evidence>".to_owned(),
+        )];
+        super::restore_fresh_turn_tool_guidance(&mut quoted_evidence, false);
+        assert_eq!(quoted_evidence.len(), 1, "quoted evidence must not become a runtime restriction");
+    }
+
+    #[test]
+    fn fresh_turn_restores_generated_budget_and_post_tool_recovery_directives() {
+        use crate::agent::runloop::unified::run_loop_context::{ToolBudgetExhaustion, ToolWallClockExhaustion};
+        use crate::agent::runloop::unified::turn::turn_loop::{
+            POST_TOOL_RECOVERY_REASON, POST_TOOL_RECOVERY_REASON_PLAN_MODE,
+            RECOVERY_TOOL_CALL_RETRY_DIRECTIVE_PLAN_MODE,
+        };
+        use vtcode_core::llm::provider::Message;
+
+        for directive in [
+            TOOL_LOOP_LIMIT_RECOVERY_REASON.to_owned(),
+            ToolBudgetExhaustion { used: 4, max: 4, remaining: 0 }.synthesis_directive_message(),
+            ToolWallClockExhaustion { max_secs: 600 }.synthesis_directive_message(),
+            POST_TOOL_RECOVERY_REASON.to_owned(),
+            POST_TOOL_RECOVERY_REASON_PLAN_MODE.to_owned(),
+            RECOVERY_TOOL_CALL_RETRY_DIRECTIVE_PLAN_MODE.to_owned(),
+            crate::agent::runloop::unified::planning_workflow::build_plan_repair_directive("Invalid plan"),
+        ] {
+            let mut history = vec![Message::system(directive.clone())];
+            super::restore_fresh_turn_tool_guidance(&mut history, false);
+            assert_eq!(history.len(), 2, "must restore production directive: {directive}");
+            assert_eq!(history[0].content.as_text(), directive);
+            super::restore_fresh_turn_tool_guidance(&mut history, false);
+            assert_eq!(history.len(), 2);
+        }
+    }
+
+    #[test]
+    fn internal_harness_follow_ups_stay_quiet_while_user_steering_echoes() {
+        use crate::agent::runloop::unified::turn::session_loop::{
+            BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX, VERIFICATION_AUTO_RECOVERY_PREFIX,
+        };
+        use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
+            PLAN_MODE_AUTO_CONTINUE_MARKER, RECOVERABLE_BLOCKED_CONTINUE_FOLLOW_UP_PREFIX,
+            TRACKER_CONTINUE_FOLLOW_UP_PREFIX,
+        };
+
+        assert!(is_internal_harness_follow_up(
+            format!("{TRACKER_CONTINUE_FOLLOW_UP_PREFIX} #1 do X. This follow-up is the harness resuming the work.")
+                .as_str()
+        ));
+        assert!(is_internal_harness_follow_up(
+            format!("{PLAN_MODE_AUTO_CONTINUE_MARKER} no validated persisted plan is ready for approval yet.").as_str()
+        ));
+        assert!(is_internal_harness_follow_up(
+            format!("{RECOVERABLE_BLOCKED_CONTINUE_FOLLOW_UP_PREFIX} Turn ended with a recovery fallback.").as_str()
+        ));
+        assert!(is_internal_harness_follow_up(
+            format!("{BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX} and continue.").as_str()
+        ));
+        assert!(is_internal_harness_follow_up(
+            format!("{VERIFICATION_AUTO_RECOVERY_PREFIX} Verification is still pending.").as_str()
+        ));
+        assert!(!is_internal_harness_follow_up("leftover"));
+        assert!(!is_internal_harness_follow_up("please keep going with the build"));
     }
 
     #[test]

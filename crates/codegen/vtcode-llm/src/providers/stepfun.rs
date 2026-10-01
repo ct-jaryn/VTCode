@@ -362,14 +362,18 @@ impl StepFunProvider {
             payload["reasoning"] = json!({"effort": effort});
         }
 
-        if let Some(tools) = &request.tools
-            && !matches!(request.tool_choice, Some(ToolChoice::None))
-        {
+        // Keep tool definitions on the wire even when tools are disabled so the
+        // rendered prefix stays cache-stable. StepFun accepts only
+        // `tool_choice: "auto"`, so omit the choice field for ToolChoice::None
+        // instead of removing the catalog (OpenAI caching guidance).
+        if let Some(tools) = &request.tools {
             let serialized = serialize_tools(tools);
             if !serialized.is_empty() {
                 payload["tools"] = Value::Array(serialized);
-                // StepFun currently accepts only the string "auto".
-                payload["tool_choice"] = json!("auto");
+                if !matches!(request.tool_choice, Some(ToolChoice::None)) {
+                    // StepFun currently accepts only the string "auto".
+                    payload["tool_choice"] = json!("auto");
+                }
             }
         }
 
@@ -1199,6 +1203,27 @@ mod tests {
         assert_eq!(tool["description"], "Get the weather");
         assert!(tool.get("function").is_none(), "Responses tools are flat, not nested");
         assert_eq!(payload["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn payload_keeps_tools_but_omits_choice_for_tool_choice_none() {
+        let payload = build_payload(&LLMRequest {
+            model: models::stepfun::STEP_3_7_FLASH.to_string(),
+            messages: vec![Message::user("hello".to_string())].into(),
+            tools: Some(Arc::new(vec![ToolDefinition::function(
+                "get_weather".to_string(),
+                "Get the weather".to_string(),
+                json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}),
+            )])),
+            tool_choice: Some(crate::provider::ToolChoice::None),
+            ..Default::default()
+        });
+
+        assert!(payload.get("tools").is_some(), "tool definitions stay on the wire for cache stability");
+        assert!(
+            payload.get("tool_choice").is_none(),
+            "StepFun accepts only tool_choice=auto, so none must omit the field"
+        );
     }
 
     #[test]

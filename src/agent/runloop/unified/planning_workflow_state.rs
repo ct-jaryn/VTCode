@@ -60,6 +60,14 @@ pub(crate) struct PlanningWorkflowSessionState {
     fallback_primary_agent: Option<String>,
     /// Telemetry identity for the latest unresolved plan approval request.
     pending_approval: Option<PendingPlanApproval>,
+    /// Deferred full switch to the plan primary agent after a mid-turn
+    /// `start_planning` entry. Must not end the current turn: research is
+    /// supposed to continue in the entry turn. Always consumed at turn end
+    /// (`take_plan_entry_agent_switch`); applied at the turn boundary unless
+    /// a stronger handoff owns it. Applies on Blocked turns too — plan mode
+    /// often blocks tools in the entry turn, and discarding would leave the
+    /// execution agent selected while planning stays active.
+    plan_entry_agent_switch_pending: bool,
 }
 
 /// Maximum number of pseudo-tool-call-markup re-prompts per planning session.
@@ -96,6 +104,7 @@ impl PlanningWorkflowSessionState {
         self.previous_primary_agent = None;
         self.fallback_primary_agent = None;
         self.pending_approval = None;
+        self.plan_entry_agent_switch_pending = false;
     }
 
     pub(crate) fn exit(&mut self) {
@@ -110,6 +119,7 @@ impl PlanningWorkflowSessionState {
         self.previous_primary_agent = None;
         self.fallback_primary_agent = None;
         self.pending_approval = None;
+        self.plan_entry_agent_switch_pending = false;
     }
 
     /// Leave Planning after the artifact/tracker handoff while retaining the
@@ -263,12 +273,48 @@ impl PlanningWorkflowSessionState {
         !self.is_budget_exhausted() && !self.is_recovery_exhausted() && !self.is_interview_denied()
     }
 
+    /// Queue a full switch to the plan primary agent for after the current
+    /// turn completes. Mid-turn entry must keep the turn alive so research can
+    /// continue; `ToolPipelineOutcome::pending_primary_agent` would become
+    /// `SwitchPrimaryAgent` and break the turn before any research runs.
+    pub(crate) fn queue_plan_entry_agent_switch(&mut self) {
+        self.plan_entry_agent_switch_pending = true;
+    }
+
+    /// Take the deferred plan-entry agent switch. Returns true once per
+    /// queued entry so the turn-loop can attach it to `TurnLoopOutcome`
+    /// after final-response validation.
+    pub(crate) fn take_plan_entry_agent_switch(&mut self) -> bool {
+        std::mem::take(&mut self.plan_entry_agent_switch_pending)
+    }
+
     pub(crate) fn set_previous_primary_agent(&mut self, agent: Option<String>) {
         self.previous_primary_agent = agent.filter(|name| !name.trim().is_empty());
     }
 
+    pub(crate) fn previous_primary_agent(&self) -> Option<&str> {
+        self.previous_primary_agent.as_deref()
+    }
+
     pub(crate) fn set_fallback_primary_agent(&mut self, agent: Option<String>) {
         self.fallback_primary_agent = agent.filter(|name| !name.trim().is_empty());
+    }
+
+    pub(crate) fn fallback_primary_agent(&self) -> Option<&str> {
+        self.fallback_primary_agent.as_deref()
+    }
+
+    /// Execution agent to restore when planning is cancelled without an
+    /// approved-plan handoff. Prefers the agent that was active before
+    /// planning began, then the configured default. The plan agent itself is
+    /// never a restore target: `/plan off` must land on an execution agent,
+    /// not hand back the read-only planner (reachable when planning was
+    /// toggled while the plan agent was already active).
+    pub(crate) fn restore_agent_after_planning(&self) -> Option<&str> {
+        let not_plan = |name: &str| !name.eq_ignore_ascii_case(PLAN_PRIMARY_AGENT_NAME);
+        self.previous_primary_agent()
+            .filter(|name| not_plan(name))
+            .or_else(|| self.fallback_primary_agent().filter(|name| not_plan(name)))
     }
 
     pub(crate) fn mark_plan_approval_pending(&mut self, thread_id: String, turn_id: String) {
@@ -282,22 +328,63 @@ impl PlanningWorkflowSessionState {
 
 pub(crate) const PLANNING_WORKFLOW_REVIEW_AND_EXECUTE_HINT: &str = "Planning workflow is active. Continue refining the plan; approval controls appear only after a validated draft is persisted.";
 pub(crate) const PLANNING_WORKFLOW_SHORT_CONFIRMATION_HINT: &str = "Planning workflow: type `implement` (or `yes`/`continue`/`go`/`start`) to execute, or say `keep planning` to revise.";
-pub(crate) const PLANNING_WORKFLOW_KEEP_PLANNING_HINT: &str =
-    "To keep planning, say `keep planning` and describe what to revise.";
-pub(crate) const PLANNING_WORKFLOW_MANUAL_SWITCH_FALLBACK_HINT: &str =
-    "If the persisted plan is not shown automatically, type `implement` to present it for approval.";
 pub(crate) const PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT: &str =
     "Planning workflow remains active: no approval-ready plan was produced. Keep planning and describe what to revise.";
 
-pub(crate) fn short_confirmation_hint_with_fallback() -> String {
-    format!("{PLANNING_WORKFLOW_SHORT_CONFIRMATION_HINT} {PLANNING_WORKFLOW_MANUAL_SWITCH_FALLBACK_HINT}")
+/// Confirmation verb line for planning stop paths (2-line diagnostic contract).
+pub(crate) fn short_confirmation_hint() -> &'static str {
+    PLANNING_WORKFLOW_SHORT_CONFIRMATION_HINT
 }
 
 pub(crate) fn render_planning_workflow_next_step_hint(renderer: &mut AnsiRenderer) -> Result<()> {
+    // Strict 2-line cap: status + one action (R1).
     renderer.line(MessageStyle::Info, PLANNING_WORKFLOW_REVIEW_AND_EXECUTE_HINT)?;
-    renderer.line(MessageStyle::Info, PLANNING_WORKFLOW_KEEP_PLANNING_HINT)?;
-    renderer.line(MessageStyle::Info, PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT)?;
+    renderer.line(MessageStyle::Info, PLANNING_WORKFLOW_SHORT_CONFIRMATION_HINT)?;
     Ok(())
+}
+
+/// Promote to the Planning stage and render the researching transcript row.
+///
+/// Called once per planning turn when work is live (turn start, mid-turn
+/// planning entry). Mode entry alone stays `Idle` so the footer never shows
+/// `Planning...` before the user has typed a request.
+pub(crate) fn mark_planning_turn_started(renderer: &mut AnsiRenderer, handle: &InlineHandle) {
+    handle.set_activity_state(ActivityState::Planning);
+    handle.force_redraw();
+    if let Err(err) = crate::agent::runloop::unified::tool_summary::render_planning_progress_indicator(
+        renderer,
+        crate::agent::runloop::unified::tool_summary::PLANNING_RESEARCHING_INDICATOR,
+    ) {
+        tracing::warn!("failed to render planning progress indicator: {}", err);
+    }
+}
+
+/// Canonical plan-agent display identity used when planning entry cannot
+/// mutate `ActivePrimaryAgentState` yet (mid-turn `start_planning`). Matches
+/// the built-in plan primary agent name and color so the header badge agrees
+/// with the post-turn modes handoff.
+pub(crate) const PLAN_PRIMARY_AGENT_NAME: &str = "plan";
+
+/// Refresh the session header badge to the plan agent so the user sees Plan
+/// mode as soon as planning is confirmed, not only after the turn ends.
+pub(crate) fn apply_plan_agent_header(handle: &InlineHandle) {
+    let color = vtcode_config::constants::ui::AGENT_COLOR_PLAN.to_string();
+    handle.set_primary_agent(Some(PLAN_PRIMARY_AGENT_NAME.to_string()), Some(color));
+}
+
+/// Refresh the session header badge to an arbitrary primary agent. Used for
+/// execution restore after planning and for selected plan agents that carry a
+/// custom display name.
+pub(crate) fn apply_agent_header(handle: &InlineHandle, name: &str, color: Option<String>) {
+    let color = color.filter(|c| !c.trim().is_empty());
+    handle.set_primary_agent(Some(name.to_string()), color);
+}
+
+/// Header display name to apply when planning ends. Prefer the restore target
+/// when present; otherwise fall back to the active agent so a Plan badge cannot
+/// stick after a no-op restore.
+pub(crate) fn plan_exit_header_name<'a>(restore: Option<&'a str>, active_display: &'a str) -> &'a str {
+    restore.map(str::trim).filter(|name| !name.is_empty()).unwrap_or(active_display)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,7 +421,14 @@ pub(crate) async fn transition_to_planning_workflow(
     plan_session.enter(entry_source);
     plan_session.set_previous_primary_agent(previous_primary_agent);
     plan_session.set_fallback_primary_agent(fallback_primary_agent);
-    handle.set_activity_state(ActivityState::Planning);
+    // Stay Idle until the first planning turn actually starts. Setting
+    // Planning here would show "Planning..." in the footer before the user
+    // has typed anything, and the researching transcript row below would
+    // claim research started with no request. `run_turn_loop` promotes to
+    // the Planning stage and renders the researching indicator once per
+    // planning turn; mid-turn entry (`start_planning`) promotes explicitly
+    // because its turn is already running.
+    handle.set_activity_state(ActivityState::Idle);
     handle.force_redraw();
 }
 
@@ -405,6 +499,93 @@ mod tests {
         state.enter(PlanningEntrySource::UserRequest);
         assert_eq!(state.interview_cycles_completed(), 0);
         assert!(!state.last_interview_cancelled());
+    }
+
+    #[test]
+    fn restore_agent_after_planning_prefers_previous_then_fallback() {
+        let mut state = PlanningWorkflowSessionState::default();
+        state.enter(PlanningEntrySource::AgentSuggestion);
+        state.set_previous_primary_agent(Some("build".to_string()));
+        state.set_fallback_primary_agent(Some("auto".to_string()));
+        assert_eq!(state.restore_agent_after_planning(), Some("build"));
+
+        state.set_previous_primary_agent(None);
+        assert_eq!(state.restore_agent_after_planning(), Some("auto"));
+
+        state.set_fallback_primary_agent(None);
+        assert_eq!(state.restore_agent_after_planning(), None);
+    }
+
+    #[test]
+    fn restore_agent_after_planning_never_returns_plan_agent() {
+        let mut state = PlanningWorkflowSessionState::default();
+        state.enter(PlanningEntrySource::UserRequest);
+        // `/plan on` while the plan agent was already active records "plan" as
+        // previous; restoring must fall through to the execution fallback
+        // instead of re-selecting the read-only planner.
+        state.set_previous_primary_agent(Some("plan".to_string()));
+        state.set_fallback_primary_agent(Some("build".to_string()));
+        assert_eq!(state.restore_agent_after_planning(), Some("build"));
+
+        state.set_fallback_primary_agent(Some("plan".to_string()));
+        assert_eq!(state.restore_agent_after_planning(), None);
+    }
+
+    #[test]
+    fn exit_clears_restore_agent_targets() {
+        let mut state = PlanningWorkflowSessionState::default();
+        state.enter(PlanningEntrySource::UserRequest);
+        state.set_previous_primary_agent(Some("build".to_string()));
+        state.set_fallback_primary_agent(Some("auto".to_string()));
+
+        state.exit();
+        assert_eq!(state.restore_agent_after_planning(), None);
+    }
+
+    #[test]
+    fn plan_exit_header_name_falls_back_to_active_display() {
+        use super::plan_exit_header_name;
+
+        assert_eq!(plan_exit_header_name(Some("build"), "auto"), "build");
+        assert_eq!(plan_exit_header_name(Some("  "), "auto"), "auto");
+        assert_eq!(plan_exit_header_name(None, "build"), "build");
+    }
+
+    #[test]
+    fn plan_entry_agent_switch_is_deferred_and_consumed_once() {
+        let mut state = PlanningWorkflowSessionState::default();
+        state.enter(PlanningEntrySource::AgentSuggestion);
+        assert!(!state.take_plan_entry_agent_switch());
+
+        // Mid-turn start_planning queues the switch without ending the turn.
+        state.queue_plan_entry_agent_switch();
+        assert!(state.take_plan_entry_agent_switch());
+        // Consumed once: a second take must not re-trigger SwitchPrimaryAgent.
+        assert!(!state.take_plan_entry_agent_switch());
+    }
+
+    #[test]
+    fn plan_entry_agent_switch_cleared_on_enter_and_exit() {
+        let mut state = PlanningWorkflowSessionState::default();
+        state.queue_plan_entry_agent_switch();
+        state.enter(PlanningEntrySource::AgentSuggestion);
+        assert!(!state.take_plan_entry_agent_switch(), "enter must clear a stale deferred switch");
+
+        state.queue_plan_entry_agent_switch();
+        state.exit();
+        assert!(!state.take_plan_entry_agent_switch(), "exit must clear the deferred plan-agent switch");
+    }
+
+    #[test]
+    fn take_plan_entry_agent_switch_always_consumes_even_when_not_applied() {
+        // Stronger handoffs discard the deferred switch at the turn boundary,
+        // but the take itself must still clear the flag so a later turn cannot
+        // fire a stale plan-agent switch mid-implementation.
+        let mut state = PlanningWorkflowSessionState::default();
+        state.enter(PlanningEntrySource::AgentSuggestion);
+        state.queue_plan_entry_agent_switch();
+        assert!(state.take_plan_entry_agent_switch());
+        assert!(!state.take_plan_entry_agent_switch());
     }
 
     #[test]

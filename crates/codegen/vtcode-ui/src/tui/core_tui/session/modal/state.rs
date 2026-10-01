@@ -1,9 +1,9 @@
 use crate::tui::config::constants::ui;
-use crate::tui::ui::search::{exact_terms_match, normalize_query};
+use crate::tui::ui::search::{FuzzyQuery, exact_terms_match, normalize_query};
 use crate::tui::ui::tui::types::{
-    InlineEvent, InlineListItem, InlineListSearchConfig, InlineListSelection, OverlayEvent, OverlayHotkey,
-    OverlayHotkeyAction, OverlayHotkeyKey, OverlaySelectionChange, OverlaySubmission, SecurePromptConfig,
-    WizardModalMode, WizardStep,
+    InlineEvent, InlineItemKind, InlineListItem, InlineListSearchConfig, InlineListSelection, InlineStatus, InlineTone,
+    OverlayEvent, OverlayHotkey, OverlayHotkeyAction, OverlayHotkeyKey, OverlaySelectionChange, OverlaySubmission,
+    SecurePromptConfig, WizardModalMode, WizardStep,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
@@ -14,6 +14,8 @@ pub struct ModalState {
     pub(crate) title: String,
     pub(crate) lines: Vec<String>,
     pub(crate) footer_hint: Option<String>,
+    /// Latest apply/save/cancel feedback shown as a toned status strip.
+    pub(crate) status: Option<InlineStatus>,
     pub(crate) hotkeys: Vec<OverlayHotkey>,
     pub(crate) list: Option<ModalListState>,
     pub(crate) secure_prompt: Option<SecurePromptConfig>,
@@ -93,7 +95,9 @@ enum ModalListDensityBehavior {
     FixedComfortable,
 }
 
-const CONFIG_LIST_NAVIGATION_HINT: &str = "Navigation: ↑/↓ select • Space/Enter apply • ←/→ change value • Esc close";
+fn config_list_navigation_hint() -> String {
+    crate::design::keys::list_hint()
+}
 
 #[derive(Clone)]
 pub struct ModalListItem {
@@ -104,6 +108,9 @@ pub struct ModalListItem {
     pub(crate) selection: Option<InlineListSelection>,
     search_value: Option<String>,
     pub(crate) is_divider: bool,
+    pub(crate) value: Option<String>,
+    pub(crate) badge_tone: InlineTone,
+    pub(crate) kind: InlineItemKind,
 }
 
 #[derive(Clone)]
@@ -111,6 +118,7 @@ pub struct ModalSearchState {
     pub(crate) label: String,
     pub(crate) placeholder: Option<String>,
     pub(crate) query: String,
+    pub(crate) fuzzy: bool,
 }
 
 impl From<InlineListSearchConfig> for ModalSearchState {
@@ -119,6 +127,7 @@ impl From<InlineListSearchConfig> for ModalSearchState {
             label: config.label,
             placeholder: config.placeholder,
             query: String::new(),
+            fuzzy: config.fuzzy,
         }
     }
 }
@@ -186,7 +195,7 @@ impl ModalState {
                 KeyCode::Char(ch) if !modifiers.control && !modifiers.alt && !modifiers.command => {
                     let previous = list.current_selection();
                     search.push_char(ch);
-                    list.apply_search(&search.query);
+                    list.apply_search(&search.query, search.fuzzy);
                     if let Some(event) = selection_change_event(list, previous) {
                         return ModalListKeyResult::Emit(event);
                     }
@@ -195,7 +204,7 @@ impl ModalState {
                 KeyCode::Backspace => {
                     if search.backspace() {
                         let previous = list.current_selection();
-                        list.apply_search(&search.query);
+                        list.apply_search(&search.query, search.fuzzy);
                         if let Some(event) = selection_change_event(list, previous) {
                             return ModalListKeyResult::Emit(event);
                         }
@@ -206,7 +215,7 @@ impl ModalState {
                 KeyCode::Delete => {
                     if search.clear() {
                         let previous = list.current_selection();
-                        list.apply_search(&search.query);
+                        list.apply_search(&search.query, search.fuzzy);
                         if let Some(event) = selection_change_event(list, previous) {
                             return ModalListKeyResult::Emit(event);
                         }
@@ -216,7 +225,7 @@ impl ModalState {
                 }
                 KeyCode::Esc if search.clear() => {
                     let previous = list.current_selection();
-                    list.apply_search(&search.query);
+                    list.apply_search(&search.query, search.fuzzy);
                     if let Some(event) = selection_change_event(list, previous) {
                         return ModalListKeyResult::Emit(event);
                     }
@@ -232,6 +241,30 @@ impl ModalState {
             // swallow the legacy toggle chord so it never leaks into the
             // composer behind the modal.
             KeyCode::Char('d') | KeyCode::Char('D') if modifiers.alt => ModalListKeyResult::HandledNoRedraw,
+            // Numbered shortcuts (1-9) for search-less modals: two-step
+            // select, Enter confirms. The search block above already consumed
+            // character keys while a search box is open, so reaching here
+            // with a digit means no search is active; the guard restates it
+            // for robustness. Every digit outcome is consumed so shortcuts
+            // never leak into the composer behind the modal.
+            KeyCode::Char(ch)
+                if !modifiers.control && !modifiers.alt && !modifiers.command && self.search.is_none() =>
+            {
+                if !ch.is_ascii_digit() {
+                    ModalListKeyResult::NotHandled
+                } else if matches!(ch, '1'..='9')
+                    && list.numbered_shortcuts()
+                    && list.select_nth_selectable((ch as u8 - b'1') as usize)
+                {
+                    if let Some(event) = selection_change_event(list, previous_selection) {
+                        ModalListKeyResult::Emit(event)
+                    } else {
+                        ModalListKeyResult::Redraw
+                    }
+                } else {
+                    ModalListKeyResult::HandledNoRedraw
+                }
+            }
             KeyCode::Up => {
                 if modifiers.command {
                     list.select_first();
@@ -485,18 +518,37 @@ fn map_config_selection_for_arrow(selection: &InlineListSelection, is_left: bool
 }
 
 impl ModalListItem {
+    /// Group-header rows get bold titles and a blank gap above. Explicit
+    /// `Hint` rows are dimmed notes and must not be treated as headers.
     pub(crate) fn is_header(&self) -> bool {
-        self.selection.is_none() && !self.is_divider
+        !self.is_divider && self.selection.is_none() && self.kind != InlineItemKind::Hint
+    }
+
+    /// Dimmed note row (non-selectable, not a group header).
+    pub(crate) fn is_hint(&self) -> bool {
+        !self.is_divider && self.kind == InlineItemKind::Hint
+    }
+
+    /// Lowercased match corpus: caller `search_value` when present, else
+    /// title + subtitle so labels and descriptions stay searchable.
+    fn search_haystack(&self) -> std::borrow::Cow<'_, str> {
+        if let Some(value) = self.search_value.as_deref() {
+            return std::borrow::Cow::Borrowed(value);
+        }
+        let mut parts = vec![self.title.as_str()];
+        if let Some(subtitle) = self.subtitle.as_deref() {
+            parts.push(subtitle);
+        }
+        std::borrow::Cow::Owned(normalize_query(&parts.join(" ")))
     }
 
     fn matches(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
         }
-        let Some(value) = self.search_value.as_ref() else {
-            return false;
-        };
-        exact_terms_match(query, value)
+        // `search_value` is already lowercased at construction; avoid
+        // re-normalizing a query or allocating a filter per row.
+        exact_terms_match(query, &self.search_haystack())
     }
 }
 
@@ -532,6 +584,9 @@ impl ModalListState {
                     selection: item.selection,
                     search_value,
                     is_divider,
+                    value: item.value,
+                    badge_tone: item.badge_tone,
+                    kind: item.kind,
                 }
             })
             .collect();
@@ -706,6 +761,39 @@ impl ModalListState {
         false
     }
 
+    /// Max numbered shortcut: digit keys 1-9 jump to the nth visible option.
+    pub(super) const MAX_NUMBERED_SHORTCUT: usize = 9;
+
+    /// Whether digit shortcuts are offered for this list: a scannable number
+    /// of visible selectable options. Key routing ANDs the modal search
+    /// state (digits filter while a search box is open); render callers
+    /// pass their own search knowledge — one shared count gate so the two
+    /// sides can never disagree.
+    pub(super) fn numbered_shortcuts(&self) -> bool {
+        let count = self.visible_selectable_count();
+        count > 0 && count <= Self::MAX_NUMBERED_SHORTCUT
+    }
+
+    /// 1-based shortcut number for a visible row: its position among visible
+    /// selectable options, skipping dividers and other non-selectable rows.
+    /// Returns `None` unless the whole list qualifies (`numbered_shortcuts`),
+    /// so crowded lists never show dead numbers. Mirrors
+    /// `select_nth_selectable` so badges and digit keys agree.
+    pub(super) fn shortcut_number(&self, visible_pos: usize) -> Option<usize> {
+        if !self.numbered_shortcuts() {
+            return None;
+        }
+        let &item_index = self.visible_indices.get(visible_pos)?;
+        self.items.get(item_index)?.selection.as_ref()?;
+        let ordinal = self
+            .visible_indices
+            .iter()
+            .take(visible_pos + 1)
+            .filter(|&&idx| self.items.get(idx).is_some_and(|item| item.selection.is_some()))
+            .count();
+        (ordinal <= Self::MAX_NUMBERED_SHORTCUT).then_some(ordinal)
+    }
+
     fn page_up(&mut self) {
         let step = self.page_step();
         if step == 0 {
@@ -777,12 +865,17 @@ impl ModalListState {
         };
     }
 
-    pub(crate) fn apply_search(&mut self, query: &str) {
+    pub(crate) fn apply_search(&mut self, query: &str, fuzzy: bool) {
         let preferred = self.current_selection();
-        self.apply_search_with_preference(query, preferred);
+        self.apply_search_with_preference(query, preferred, fuzzy);
     }
 
-    pub(crate) fn apply_search_with_preference(&mut self, query: &str, preferred: Option<InlineListSelection>) {
+    pub(crate) fn apply_search_with_preference(
+        &mut self,
+        query: &str,
+        preferred: Option<InlineListSelection>,
+        fuzzy: bool,
+    ) {
         let trimmed = query.trim();
         if trimmed.is_empty() {
             if self.filter_query.is_none() {
@@ -811,6 +904,16 @@ impl ModalListState {
             .filter(|term| !term.is_empty())
             .map(|term| term.to_owned())
             .collect::<Vec<_>>();
+
+        if fuzzy {
+            let mut fuzzy_query = FuzzyQuery::new(&normalized_query);
+            self.visible_indices = self.fuzzy_visible_indices(&mut fuzzy_query);
+            self.filter_terms = terms;
+            self.filter_query = Some(trimmed.to_owned());
+            self.select_initial(preferred);
+            return;
+        }
+
         let mut indices = Vec::new();
         let mut pending_divider: Option<usize> = None;
         let mut current_header: Option<usize> = None;
@@ -859,6 +962,109 @@ impl ModalListState {
         self.filter_terms = terms;
         self.filter_query = Some(trimmed.to_owned());
         self.select_initial(preferred);
+    }
+
+    /// Fuzzy filter with relevance ranking. Items are grouped into
+    /// divider/header/children blocks (selectables without a preceding header
+    /// rank individually); blocks are ordered by their best fuzzy score while
+    /// a matching header keeps its whole group, preserving curated order
+    /// within blocks.
+    fn fuzzy_visible_indices(&self, query: &mut FuzzyQuery) -> Vec<usize> {
+        /// One child item of a header block: list index plus its fuzzy score
+        /// (`None` when the item does not match the query).
+        struct ScoredIndex {
+            index: usize,
+            score: Option<u32>,
+        }
+
+        /// A divider/header/children run ranked as one unit; a matching header
+        /// keeps all of its children, otherwise only matching children show.
+        struct FuzzySearchBlock {
+            divider_index: Option<usize>,
+            header_index: Option<usize>,
+            header_score: Option<u32>,
+            child_scores: Vec<ScoredIndex>,
+        }
+
+        impl FuzzySearchBlock {
+            fn best_score(&self) -> Option<u32> {
+                self.header_score
+                    .into_iter()
+                    .chain(self.child_scores.iter().filter_map(|child| child.score))
+                    .max()
+            }
+        }
+
+        let mut blocks: Vec<FuzzySearchBlock> = Vec::new();
+        let mut open_block: Option<FuzzySearchBlock> = None;
+        let mut pending_divider: Option<usize> = None;
+
+        for (index, item) in self.items.iter().enumerate() {
+            if item.is_divider {
+                if let Some(block) = open_block.take() {
+                    blocks.push(block);
+                }
+                pending_divider = Some(index);
+                continue;
+            }
+
+            let haystack = item.search_haystack();
+            let score = query.score(&haystack);
+
+            if item.is_header() {
+                if let Some(block) = open_block.take() {
+                    blocks.push(block);
+                }
+                open_block = Some(FuzzySearchBlock {
+                    divider_index: pending_divider.take(),
+                    header_index: Some(index),
+                    header_score: score,
+                    child_scores: Vec::new(),
+                });
+                continue;
+            }
+
+            match open_block.as_mut() {
+                // Selectables directly after a header belong to its block.
+                Some(block) if block.header_index.is_some() => {
+                    block.child_scores.push(ScoredIndex { index, score });
+                }
+                _ => {
+                    if let Some(block) = open_block.take() {
+                        blocks.push(block);
+                    }
+                    open_block = Some(FuzzySearchBlock {
+                        divider_index: pending_divider.take(),
+                        header_index: None,
+                        header_score: None,
+                        child_scores: vec![ScoredIndex { index, score }],
+                    });
+                }
+            }
+        }
+        if let Some(block) = open_block.take() {
+            blocks.push(block);
+        }
+
+        blocks.retain(|block| block.best_score().is_some());
+        blocks.sort_by_key(|block| std::cmp::Reverse(block.best_score()));
+
+        let mut indices = Vec::new();
+        for block in blocks {
+            if let Some(divider_index) = block.divider_index {
+                indices.push(divider_index);
+            }
+            if let Some(header_index) = block.header_index {
+                indices.push(header_index);
+            }
+            let header_matched = block.header_score.is_some();
+            for child in block.child_scores {
+                if header_matched || child.score.is_some() {
+                    indices.push(child.index);
+                }
+            }
+        }
+        indices
     }
 
     fn select_initial(&mut self, preferred: Option<InlineListSelection>) {
@@ -919,17 +1125,22 @@ impl ModalListState {
             return None;
         }
         match self.density_behavior {
-            ModalListDensityBehavior::FixedComfortable => Some(CONFIG_LIST_NAVIGATION_HINT.to_owned()),
+            ModalListDensityBehavior::FixedComfortable => Some(config_list_navigation_hint()),
             ModalListDensityBehavior::Adjustable => footer_hint.filter(|hint| !hint.is_empty()).map(ToOwned::to_owned),
         }
     }
 
-    pub(crate) fn summary_line_rows(&self, footer_hint: Option<&str>) -> usize {
-        if self.filter_active() || self.has_non_filter_summary(footer_hint) {
-            1
-        } else {
-            0
+    /// Summary rows above the list: filter/keyboard hint, plus one extra row
+    /// when a status strip is shown (`has_status`).
+    pub(crate) fn summary_line_rows(&self, footer_hint: Option<&str>, has_status: bool) -> usize {
+        let mut rows = 0;
+        if has_status {
+            rows += 1;
         }
+        if self.filter_active() || self.has_non_filter_summary(footer_hint) {
+            rows += 1;
+        }
+        rows
     }
 
     fn has_non_filter_summary(&self, footer_hint: Option<&str>) -> bool {
@@ -946,6 +1157,20 @@ impl ModalListState {
 }
 
 impl WizardModalState {
+    /// Whether digit shortcuts submit the current step's option: MultiStep
+    /// wizards only, no search box, and a scannable option count.
+    /// TabbedList navigates by tabs, so its digits stay unbound — and the
+    /// badge renderer uses this same gate, so unbound digits never show
+    /// dead numbers.
+    pub(crate) fn numbered_shortcuts(&self) -> bool {
+        self.mode == WizardModalMode::MultiStep
+            && self.search.is_none()
+            && self
+                .steps
+                .get(self.current_step)
+                .is_some_and(|step| step.list.numbered_shortcuts())
+    }
+
     /// Create a new wizard modal state from wizard steps
     pub(crate) fn new(
         title: String,
@@ -1066,19 +1291,19 @@ impl WizardModalState {
             match key.code {
                 KeyCode::Char(ch) if !modifiers.control && !modifiers.alt && !modifiers.command => {
                     search.push_char(ch);
-                    step.list.apply_search(&search.query);
+                    step.list.apply_search(&search.query, search.fuzzy);
                     return ModalListKeyResult::Redraw;
                 }
                 KeyCode::Backspace => {
                     if search.backspace() {
-                        step.list.apply_search(&search.query);
+                        step.list.apply_search(&search.query, search.fuzzy);
                         return ModalListKeyResult::Redraw;
                     }
                     return ModalListKeyResult::HandledNoRedraw;
                 }
                 KeyCode::Delete => {
                     if search.clear() {
-                        step.list.apply_search(&search.query);
+                        step.list.apply_search(&search.query, search.fuzzy);
                         return ModalListKeyResult::Redraw;
                     }
                     return ModalListKeyResult::HandledNoRedraw;
@@ -1086,13 +1311,13 @@ impl WizardModalState {
                 KeyCode::Tab => {
                     if let Some(best_match) = step.list.get_best_matching_item(&search.query) {
                         search.query = best_match;
-                        step.list.apply_search(&search.query);
+                        step.list.apply_search(&search.query, search.fuzzy);
                         return ModalListKeyResult::Redraw;
                     }
                     return ModalListKeyResult::HandledNoRedraw;
                 }
                 KeyCode::Esc if search.clear() => {
-                    step.list.apply_search(&search.query);
+                    step.list.apply_search(&search.query, search.fuzzy);
                     return ModalListKeyResult::Redraw;
                 }
                 _ => {}
@@ -1108,8 +1333,11 @@ impl WizardModalState {
             && ch.is_ascii_digit()
             && ch != '0'
         {
+            // Same scannability gate as plain modals: crowded steps offer
+            // no digits rather than dead ones.
             let target_index = ch.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
-            if let Some(step) = self.steps.get_mut(self.current_step)
+            if self.numbered_shortcuts()
+                && let Some(step) = self.steps.get_mut(self.current_step)
                 && step.list.select_nth_selectable(target_index)
             {
                 return self.submit_current_selection();

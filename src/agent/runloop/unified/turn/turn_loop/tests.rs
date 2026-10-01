@@ -246,8 +246,40 @@ fn approved_plan_handoff_bypasses_final_response_guard() {
     let approved_handoff = TurnLoopResult::Completed { plan_approved_execution_pending: true };
     let ordinary_completion = TurnLoopResult::Completed { plan_approved_execution_pending: false };
 
-    assert!(!completed_turn_requires_final_response(&approved_handoff));
-    assert!(completed_turn_requires_final_response(&ordinary_completion));
+    assert!(!completed_turn_requires_final_response(&approved_handoff, true));
+    assert!(!completed_turn_requires_final_response(&approved_handoff, false));
+    assert!(completed_turn_requires_final_response(&ordinary_completion, false));
+    // Plan-entry handoff completes with `plan_approved_execution_pending: false`
+    // but is still a control-flow turn: the tool result is its terminal output.
+    assert!(!completed_turn_requires_final_response(&ordinary_completion, true));
+}
+
+#[test]
+fn plan_entry_handoff_is_not_approved_plan_execution() {
+    use super::is_plan_entry_handoff;
+
+    assert!(is_plan_entry_handoff("plan"));
+    assert!(is_plan_entry_handoff("Plan"));
+    assert!(!is_plan_entry_handoff("build"));
+    assert!(!is_plan_entry_handoff("auto"));
+}
+
+#[test]
+fn deferred_plan_entry_switch_counts_as_primary_agent_handoff() {
+    use super::is_primary_agent_handoff;
+    use crate::agent::runloop::unified::planning_workflow::{PlanExecutionContext, PlanExecutionTarget};
+
+    let none: Option<String> = None;
+    let plan = Some("plan".to_string());
+    let target = PlanExecutionTarget::build(PlanExecutionContext::Current, false);
+    assert!(is_primary_agent_handoff(&plan, &None, false));
+    assert!(
+        is_primary_agent_handoff(&none, &None, true),
+        "deferred plan entry must exempt the final-response guard"
+    );
+    assert!(!is_primary_agent_handoff(&none, &None, false));
+    // A stronger handoff already owns the boundary even without the switch.
+    assert!(is_primary_agent_handoff(&none, &Some(target), false));
 }
 
 #[test]
@@ -1961,7 +1993,7 @@ async fn exhausted_previews_pending_verification_done_claim_is_blocked() {
 }
 
 #[tokio::test]
-async fn planning_preview_exhaustion_synthesizes_tool_free_plan_and_handoffs_for_approval() {
+async fn legacy_preview_marker_keeps_planning_tools_available_for_approval() {
     #[derive(Debug, Clone, Copy)]
     struct RequestObservation {
         has_tools: bool,
@@ -2070,11 +2102,8 @@ Synthesize the approval-ready plan from evidence gathered before preview exhaust
         observations: observations.clone(),
     }));
 
-    // Seed the authoritative marker that the registry emits after a previous
-    // preview crossed the planning budget. The run-loop still performs one
-    // ordinary tool turn, then the balancer must notice the preserved state,
-    // arm one tool-free synthesis pass, and hand the corrected plan to the
-    // approval boundary.
+    // A legacy marker may survive replay, but must not remove tools from
+    // either request or prevent an ordinary plan from reaching approval.
     let prior_marker = json!({
         "tool": tool_names::EXEC_COMMAND,
         "preview_budget_exhausted": true,
@@ -2097,11 +2126,11 @@ Synthesize the approval-ready plan from evidence gathered before preview exhaust
     ];
     let outcome = run_turn_loop(&mut history, backing.turn_loop_context())
         .await
-        .expect("preview exhaustion should converge on plan synthesis");
+        .expect("legacy diagnostics should not prevent plan approval");
 
     assert!(
         matches!(outcome.result, TurnLoopResult::Completed { plan_approved_execution_pending: true }),
-        "preview exhaustion should reach the approval handoff, got {:?}",
+        "ordinary planning should reach the approval handoff, got {:?}",
         outcome.result
     );
     assert_eq!(requests.load(Ordering::SeqCst), 2, "exhaustion must not cause another inspection or recovery loop");
@@ -2109,17 +2138,15 @@ Synthesize the approval-ready plan from evidence gathered before preview exhaust
     assert_eq!(observations.len(), 2);
     assert!(observations[0].has_tools, "the initial planning request must retain the read tool");
     assert!(!observations[0].tool_choice_none, "the initial request must not be forced tool-free");
-    assert!(!observations[1].has_tools, "the synthesis request must omit tool definitions: {observations:?}");
+    assert!(observations[1].has_tools, "legacy exhaustion must not remove tools: {observations:?}");
     assert!(
-        observations[1].tool_choice_none,
-        "the synthesis request must set tool choice to none: {observations:?}"
+        !observations[1].tool_choice_none,
+        "legacy exhaustion must not force tool-free synthesis: {observations:?}"
     );
     assert!(outcome.turn_diagnostics.model_visible_tool_preview_budget_exhausted);
     assert!(outcome.turn_diagnostics.suppressed_tool_previews >= 1);
-    assert!(history.iter().any(|message| {
-        message.role == uni::MessageRole::System
-            && message.content.as_text().contains("preview budget exhausted")
-            && message.content.as_text().contains("Valid examples")
+    assert!(!history.iter().any(|message| {
+        message.role == uni::MessageRole::System && message.content.as_text().contains("preview budget exhausted")
     }));
     let plans_dir = backing.workspace_path().join(".vtcode").join("plans");
     let persisted_plan = fs::read_dir(&plans_dir)

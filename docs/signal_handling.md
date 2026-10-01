@@ -95,7 +95,9 @@ A dedicated thread handles SIGTERM as an emergency fallback. This is necessary b
 SIGINT is deliberately NOT handled in this thread because:
 - The TUI runs in raw mode where Ctrl+C is delivered as a key event, not a Unix signal
 - The async signal handler in `session_setup/signal.rs` owns the Ctrl+C state machine
-- Handling SIGINT in both places caused a "split-brain race" where the thread would call `restore_tui()` + `process::exit(130)` while the async handler hadn't finished shutting down
+- Handling SIGINT in both places caused a "split-brain race" where the thread would call `restore_tui()` + `process::exit` while the async handler hadn't finished shutting down
+
+It restores the terminal, prints a one-line notice, and exits with status 143 (128 + SIGTERM, the standard supervisor-kill code).
 
 ### 4. Exit Command Handling
 

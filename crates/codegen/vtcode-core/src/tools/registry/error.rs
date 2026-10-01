@@ -7,12 +7,21 @@ use vtcode_commons::ErrorCategory;
 use crate::retry::{RetryDecision, RetryPolicy, RetryPolicyCoreExt};
 use crate::tools::tool_intent::is_command_tool;
 
+const EXEC_SESSION_NOT_FOUND_CODE: &str = "exec_session_not_found";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolErrorDebugContext {
     pub surface: Option<String>,
     pub attempt: Option<u32>,
     pub invocation_id: Option<String>,
     pub metadata: Vec<(String, String)>,
+}
+
+/// Typed patch diagnostics, independent of words quoted from source files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PatchFailure {
+    ContextMismatch { path: String, evidence: String },
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +40,8 @@ pub struct ToolExecutionError {
     pub rollback_performed: bool,
     pub debug_context: Option<ToolErrorDebugContext>,
     pub original_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_failure: Option<PatchFailure>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +109,7 @@ impl ToolExecutionError {
             rollback_performed: false,
             debug_context: None,
             original_error: None,
+            patch_failure: None,
         }
     }
 
@@ -126,6 +138,71 @@ impl ToolExecutionError {
         let tool_name = tool_name.into();
         // Classify exactly once into the canonical category; the wire-visible
         // `error_type` is derived from it inside `from_category`.
+        if let Some(session_error) = error.downcast_ref::<crate::tools::exec_session::ExecSessionNotFound>() {
+            let mut structured =
+                Self::from_category(tool_name, ErrorCategory::ResourceNotFound, session_error.to_string())
+                    .with_debug_metadata("failure_code", EXEC_SESSION_NOT_FOUND_CODE);
+            structured.original_error =
+                Some(vtcode_commons::formatting::head_tail_truncate(&format!("{error:#}"), 640, " ... ").0);
+            structured.partial_state_possible = partial_state_possible;
+            structured.rollback_performed = rollback_performed;
+            structured.recovery_suggestions = vec![Cow::Borrowed(
+                "Recover the exact session ID from the original response. Reuse recorded completion output; rerun only if fresh execution is still needed.",
+            )];
+            if let Some(surface) = surface {
+                structured = structured.with_surface(surface);
+            }
+            return structured;
+        }
+        if let Some(patch_error) = error.downcast_ref::<crate::tools::editing::PatchError>() {
+            use crate::tools::editing::PatchError;
+            let category = match patch_error {
+                PatchError::InvalidPath { .. } => ErrorCategory::PolicyViolation,
+                PatchError::MissingFile { .. } => ErrorCategory::ResourceNotFound,
+                PatchError::EmptyInput
+                | PatchError::NoOperations
+                | PatchError::InvalidFormat(_)
+                | PatchError::InvalidHunk { .. } => ErrorCategory::InvalidParameters,
+                PatchError::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                    ErrorCategory::PermissionDenied
+                }
+                _ => ErrorCategory::ExecutionError,
+            };
+            let mut structured = Self::from_category(tool_name.clone(), category, patch_error.to_string());
+            structured.original_error =
+                Some(vtcode_commons::formatting::head_tail_truncate(&format!("{error:#}"), 640, " ... ").0);
+            structured.patch_failure = Some(match patch_error.context_mismatch() {
+                Some((path, evidence)) => PatchFailure::ContextMismatch {
+                    path: path.to_string(),
+                    evidence: vtcode_commons::formatting::head_tail_truncate(evidence, 320, " ... ").0,
+                },
+                None => PatchFailure::Other,
+            });
+            if let Some(path) = structured.patch_context_mismatch_path() {
+                structured.message =
+                    format!("Patch context mismatch in '{path}': context/deletion lines must match exactly.");
+                structured.recovery_suggestions = vec![Cow::Borrowed(
+                    "Read the affected path once with a file read limit of 1-200 lines or a single sed -n range, then retry apply_patch with exact current context. One fresh recovery read per path per turn can pass the path cap; other limits still apply.",
+                )];
+            } else if category == ErrorCategory::InvalidParameters {
+                structured.recovery_suggestions = vec![Cow::Borrowed(
+                    crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION,
+                )];
+            } else {
+                structured.recovery_suggestions = vec![Cow::Borrowed(
+                    "Resolve the reported patch target or filesystem error before retrying; retain permission and workspace boundaries.",
+                )];
+            }
+            structured.retryable = false;
+            structured.is_recoverable =
+                !matches!(category, ErrorCategory::PolicyViolation | ErrorCategory::PermissionDenied);
+            structured.circuit_breaker_impact = false;
+            structured = apply_explicit_error_state(structured, tool_name.as_str(), error);
+            if let Some(surface) = surface {
+                structured = structured.with_surface(surface);
+            }
+            return structured;
+        }
         let category = vtcode_commons::classify_anyhow_error(error);
         let mut structured = Self::from_category(tool_name.clone(), category, error.to_string());
         structured.original_error = Some(format!("{error:#}"));
@@ -138,6 +215,26 @@ impl ToolExecutionError {
             structured = structured.with_surface(surface);
         }
         structured
+    }
+
+    #[must_use]
+    pub fn patch_context_mismatch_path(&self) -> Option<&str> {
+        match &self.patch_failure {
+            Some(PatchFailure::ContextMismatch { path, .. }) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Whether a typed runtime lookup failed, independent of quoted text.
+    #[must_use]
+    pub fn is_exec_session_not_found(&self) -> bool {
+        self.category == ErrorCategory::ResourceNotFound
+            && self.debug_context.as_ref().is_some_and(|context| {
+                context
+                    .metadata
+                    .iter()
+                    .any(|(key, value)| key == "failure_code" && value == EXEC_SESSION_NOT_FOUND_CODE)
+            })
     }
 
     #[must_use]
@@ -355,6 +452,7 @@ impl ToolExecutionError {
                 "rollback_performed": self.rollback_performed,
                 "debug_context": self.debug_context,
                 "original_error": self.original_error,
+                "patch_failure": self.patch_failure,
             }
         })
     }
@@ -538,6 +636,27 @@ mod tests {
         let structured = ToolExecutionError::from_anyhow("grep_search", &err, 0, false, false, None);
         assert_eq!(structured.category, ErrorCategory::RateLimit);
         assert_eq!(structured.error_type, ToolErrorType::from(structured.category));
+    }
+
+    #[test]
+    fn missing_exec_session_classification_survives_context_and_round_trip() {
+        let source = Error::new(crate::tools::exec_session::ExecSessionNotFound { session_id: "run-missing".into() })
+            .context("quoted diagnostic: permission denied in vtcode.toml");
+        let structured = ToolExecutionError::from_anyhow("write_stdin", &source, 0, false, false, Some("registry"));
+        assert_eq!(structured.category, ErrorCategory::ResourceNotFound);
+        assert!(structured.is_exec_session_not_found());
+        assert!(!structured.retryable);
+        assert!(!structured.circuit_breaker_impact);
+        assert_eq!(structured.debug_context.as_ref().unwrap().surface.as_deref(), Some("registry"));
+        assert!(structured.message.contains("reuse its output"));
+        assert!(!structured.message.contains("re-run the command instead of waiting"));
+        let decoded = ToolExecutionError::from_error_payload(&structured.to_json_value()).unwrap();
+        assert!(decoded.is_exec_session_not_found());
+
+        let lookalike = anyhow!("exec session 'run-missing' not found: permission denied");
+        let untyped = ToolExecutionError::from_anyhow("write_stdin", &lookalike, 0, false, false, None);
+        assert_eq!(untyped.category, ErrorCategory::PermissionDenied);
+        assert!(!untyped.is_exec_session_not_found());
     }
 
     #[test]

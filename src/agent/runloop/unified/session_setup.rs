@@ -24,7 +24,7 @@ pub(crate) use init::session_mcp_config;
 pub(crate) use init::{complete_session_registry, hydrate_session_runtime, initialize_session_critical};
 pub(crate) use session_mode::active_primary_agent_from_specs_for_mode;
 pub(crate) use shell::initialize_session_shell;
-pub(crate) use signal::spawn_signal_handler;
+pub(crate) use signal::{mark_exit_postamble_armed, spawn_signal_handler};
 pub(crate) use types::SessionState;
 pub(crate) use ui::{
     SessionUiLaunchOptions, apply_ide_context_snapshot, apply_post_hydration_ui, initialize_session_ui,

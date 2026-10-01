@@ -595,7 +595,9 @@ async fn harness_terminal_runs_retain_completed_sessions_until_close() -> Result
         .to_string();
     assert_eq!(response["exit_code"], 0);
     assert_eq!(response["output"].as_str(), Some("vtcode-terminal"));
-    assert_eq!(active_pty_sessions.load(Ordering::Relaxed), 1);
+    // A completed command releases its foreground-PTY count immediately; the
+    // retention contract applies to the session record, not the live count.
+    assert_eq!(active_pty_sessions.load(Ordering::Relaxed), 0);
     assert_eq!(registry.harness_exec_session_completed(&session_id).await?, Some(0));
 
     registry.close_harness_exec_session(&session_id).await?;
@@ -929,6 +931,54 @@ async fn command_session_inspect_accepts_compact_session_alias() -> Result<()> {
     assert!(response["output"].is_string());
     assert!(response.get("session_id").is_some());
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_session_inspect_rejects_missing_session_without_waiting() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        registry.execute_harness_command_session(json!({
+            "action": "inspect",
+            "session_id": "run-missing",
+            "yield_time_ms": 5000,
+        })),
+    )
+    .await
+    .expect("missing session must fail before the five-second yield");
+    let source = result.expect_err("missing session must not look like successful empty output");
+    let error = ToolExecutionError::from_anyhow(tools::UNIFIED_EXEC, &source, 0, false, false, None);
+    assert!(error.is_exec_session_not_found());
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn command_session_inspect_distinguishes_empty_and_closed_sessions() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry
+        .exec_sessions
+        .create_pipe_session(
+            "run-empty".into(),
+            vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+            temp_dir.path().to_path_buf(),
+            Default::default(),
+        )
+        .await?;
+    let args = json!({"action": "inspect", "s": "run-empty", "yield_time_ms": 0});
+    let empty = registry.execute_harness_command_session(args.clone()).await?;
+    assert_eq!(empty["success"], true);
+    assert_eq!(empty["output"], "");
+    registry.close_exec_session("run-empty").await?;
+    let source = registry
+        .execute_harness_command_session(args)
+        .await
+        .expect_err("closed session is unavailable");
+    let error = ToolExecutionError::from_anyhow(tools::UNIFIED_EXEC, &source, 0, false, false, None);
+    assert!(error.is_exec_session_not_found());
     Ok(())
 }
 
@@ -2383,5 +2433,123 @@ async fn code_search_executes_with_policy_capped_max_results() -> Result<()> {
     assert_eq!(response["filters"]["max_results"], json!(1));
     assert_eq!(response["returned"], json!(1));
     assert_eq!(response["results"].as_array().map(Vec::len), Some(1));
+    Ok(())
+}
+
+#[tokio::test]
+async fn apply_patch_payload_correction_is_concrete_and_preserves_aliases() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    for args in [json!({}), json!({"input": 42}), json!({"patch": []}), json!(null)] {
+        let error = registry
+            .preflight_validate_call(tools::APPLY_PATCH, &args)
+            .expect_err("invalid payload");
+        let message = error.to_string();
+        assert!(message.contains(r#"{"input":"*** Begin Patch\n"#), "{message}");
+        assert!(message.contains("retry once"), "{message}");
+        assert!(!temp_dir.path().join("created.txt").exists());
+    }
+    for (index, field) in ["input", "patch"].into_iter().enumerate() {
+        let patch = format!("*** Begin Patch\n*** Add File: created{index}.txt\n+payload{index}\n*** End Patch\n");
+        let outcome = registry
+            .execute_public_tool_request(ToolExecutionRequest::new(tools::APPLY_PATCH, json!({field: patch})))
+            .await;
+        assert!(outcome.is_success(), "{outcome:?}");
+        let output = outcome.output.expect("patch result");
+        assert!(output["diff"].as_array().is_some_and(|diff| !diff.is_empty()));
+        assert!(output["modified_files"].as_array().is_some_and(|paths| paths.len() == 1));
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join(format!("created{index}.txt")))?,
+            format!("payload{index}\n")
+        );
+    }
+    registry.enable_planning();
+    let denied = registry
+        .execute_public_tool_request(ToolExecutionRequest::new(
+            tools::APPLY_PATCH,
+            json!({"input":"*** Begin Patch\n*** Add File: denied.txt\n+no\n*** End Patch\n"}),
+        ))
+        .await;
+    assert!(!denied.is_success());
+    assert!(!temp_dir.path().join("denied.txt").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn apply_patch_shell_invocations_are_rejected_before_process_creation() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    let executable = temp_dir.path().join("apply_patch");
+    let marker = temp_dir.path().join("launched");
+    fs::write(&executable, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+    }
+    for name in [
+        "apply_patch".to_string(),
+        "'apply_patch'".to_string(),
+        "applypatch".to_string(),
+        "./applypatch".to_string(),
+        format!("'{}'", executable.display()),
+    ] {
+        let args = json!({"cmd":format!("{name} <<'PATCH'\n*** Begin Patch\n*** End Patch\nPATCH"), "workdir":temp_dir.path(), "yield_time_ms":1000});
+        let error = registry
+            .preflight_validate_call(tools::EXEC_COMMAND, &args)
+            .expect_err("shell patch rejected");
+        assert!(error.to_string().contains("apply_patch is a tool"));
+        assert!(error.to_string().contains(r#"{"input":"*** Begin Patch\n"#));
+        let outcome = registry
+            .execute_public_tool_request(ToolExecutionRequest::new(tools::EXEC_COMMAND, args))
+            .await;
+        assert!(!outcome.is_success(), "shell rejection must happen before launch");
+        assert!(!marker.exists(), "no process may launch");
+    }
+    registry.preflight_validate_call(tools::EXEC_COMMAND, &json!({"cmd":"printf '%s' apply_patch"}))?;
+    registry.preflight_validate_call(tools::EXEC_COMMAND, &json!({"cmd":"rg apply_patch src"}))?;
+    assert!(registry.exec_sessions.list_sessions().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn apply_patch_context_diagnostics_ignore_quoted_configuration_and_bound_evidence() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    fs::write(temp_dir.path().join("guide.md"), "actual content\n")?;
+    for quoted in [
+        "vtcode.toml",
+        "provider openai authentication API key credentials",
+        "permission denied sandbox",
+        &"vtcode.toml ".repeat(100),
+    ] {
+        let patch = format!("*** Begin Patch\n*** Update File: guide.md\n@@\n-{quoted}\n+fixed\n*** End Patch\n");
+        let outcome = registry
+            .execute_public_tool_request(ToolExecutionRequest::new(tools::APPLY_PATCH, json!({"input":patch})))
+            .await;
+        let error = outcome.error.expect("mismatch must fail");
+        assert_eq!(error.patch_context_mismatch_path(), Some("guide.md"));
+        assert_eq!(error.category, vtcode_commons::ErrorCategory::ExecutionError);
+        assert!(error.is_recoverable);
+        assert!(!error.retryable);
+        assert!(error.recovery_suggestions[0].contains("file read limit of 1-200"));
+        assert!(!error.recovery_suggestions[0].contains("configuration"));
+        let wire = error.to_json_value();
+        let evidence = wire["error"]["patch_failure"]["ContextMismatch"]["evidence"]
+            .as_str()
+            .expect("bounded mismatch evidence");
+        assert!(evidence.chars().count() <= 320);
+        assert_eq!(
+            ToolExecutionError::from_tool_output(&wire)
+                .expect("round trip")
+                .patch_context_mismatch_path(),
+            Some("guide.md")
+        );
+        assert_eq!(fs::read_to_string(temp_dir.path().join("guide.md"))?, "actual content\n");
+        assert!(registry.has_patch_recovery_read(tools::READ_FILE, &json!({"path":"guide.md", "limit":10})));
+    }
     Ok(())
 }

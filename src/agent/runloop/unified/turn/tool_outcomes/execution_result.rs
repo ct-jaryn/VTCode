@@ -118,26 +118,6 @@ fn emit_turn_metric_log(
     );
 }
 
-fn extract_written_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
-    use vtcode_core::config::constants::tools;
-
-    match tool_name {
-        tools::UNIFIED_FILE => {
-            let action = args.get("action").and_then(serde_json::Value::as_str)?;
-            match action {
-                "write" | "edit" | "patch" | "delete" | "move" | "copy" => args
-                    .get("path")
-                    .or_else(|| args.get("destination"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(|s| s.to_string()),
-                _ => None,
-            }
-        }
-        tools::APPLY_PATCH => args.get("path").and_then(serde_json::Value::as_str).map(|s| s.to_string()),
-        _ => None,
-    }
-}
-
 /// Main handler for tool execution results.
 ///
 /// This function coordinates:
@@ -267,16 +247,22 @@ async fn handle_success<'a>(
     // (`has_successful_readonly_signature`) to treat future identical calls as
     // duplicates and return the stale loop-detected stub instead of re-executing.
     let is_loop_detected_stub = output.get("loop_detected").and_then(|v| v.as_bool()).unwrap_or(false);
-    if command_success
-        && !is_loop_detected_stub
-        && !vtcode_core::tools::tool_intent::classify_tool_intent(tool_name, args_val).mutating
-    {
-        let signature = signature_key_for(tool_name, args_val);
-        t_ctx.ctx.harness_state.record_successful_readonly_signature(signature);
-    } else {
-        // Record written files for read-after-write guard
-        if let Some(path) = extract_written_path(tool_name, args_val) {
-            t_ctx.ctx.harness_state.record_written_file(&path);
+    let is_mutating = vtcode_core::tools::tool_intent::classify_tool_intent(tool_name, args_val).mutating;
+    if command_success && !is_loop_detected_stub {
+        if !is_mutating {
+            let signature = signature_key_for(tool_name, args_val);
+            t_ctx.ctx.harness_state.record_successful_readonly_signature(signature);
+        } else {
+            // Arm the read-after-write guard for every file this mutation
+            // touched (`mutation_target_paths` parses apply_patch payloads for
+            // their real targets). Failed or stubbed calls arm nothing: they
+            // wrote no content, so there is no diff preview to fall back on
+            // and reads must stay available for inspecting the failure.
+            for target in vtcode_core::tools::mutation_target_paths(tool_name, args_val) {
+                let normalized =
+                    crate::agent::runloop::git::normalize_workspace_path(&t_ctx.ctx.config.workspace, &target);
+                t_ctx.ctx.harness_state.record_written_file(&normalized.to_string_lossy());
+            }
         }
     }
     let mut turn_loop_ctx = t_ctx.ctx.as_turn_loop_context();

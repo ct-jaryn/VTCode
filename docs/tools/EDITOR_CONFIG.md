@@ -1,6 +1,6 @@
 # External Editor Configuration
 
-The `/edit` command uses the [`editor-command`](https://docs.rs/editor-command/latest/editor_command/) crate to automatically detect and launch your preferred text editor.
+The external editor (Ctrl+G) uses the [`editor-command`](https://docs.rs/editor-command/latest/editor_command/) crate to automatically detect and launch your preferred text editor.
 
 ## Overview
 
@@ -12,7 +12,7 @@ The guided setup is available from the TUI:
 
 - Run `/config`, select **Tools & Integrations**, then choose `External Editor`.
 - Run `/config tools.editor` to jump straight into the same wizard.
-- The wizard configures `/edit`, `Ctrl+E` when the prompt is empty, and single-click file links in the TUI.
+- The wizard configures the external editor, `Ctrl+E` when the prompt is empty, and single-click file links in the TUI.
 - After saving editor settings, the flow can also take you to `/config file_opener` for ANSI hyperlink URI behavior.
 - In the custom-command step, pressing `Enter` on an empty inline input keeps the displayed default command.
 
@@ -20,7 +20,7 @@ Editor settings are configured in the `[tools.editor]` section of `vtcode.toml`:
 
 ```toml
 [tools.editor]
-# Enable external editor support for /edit command
+# Enable external editor support
 enabled = true
 
 # Leave empty to use automatic detection based on environment variables
@@ -64,7 +64,7 @@ If neither environment variable is set, VT Code tries common editors in PATH:
 ### Launch interactive editor (no file)
 
 ```
-/edit
+Ctrl+G
 ```
 
 This opens your default editor with a temporary file. The file contents are returned and inserted into your input when you save and close the editor.
@@ -72,14 +72,14 @@ This opens your default editor with a temporary file. The file contents are retu
 ### Edit specific file
 
 ```
-/edit src/main.rs
+Ctrl+G (with `src/main.rs` linked from the transcript)
 ```
 
 Opens `src/main.rs` in your preferred editor.
 
-For real file opens, VT Code launches GUI editors immediately and returns without waiting, even while an agent turn is active. Single-click transcript and modal links use a bounded out-of-band request queue, so they do not become `/edit` prompts. VS Code opens use `--reuse-window` and preserve supported line/column targets. Duplicate clicks for the same target are coalesced while a launch is pending.
+For real file opens, VT Code launches GUI editors immediately and returns without waiting, even while an agent turn is active. Single-click transcript and modal links use a bounded out-of-band request queue, so they do not become editor prompts. VS Code opens use `--reuse-window` and preserve supported line/column targets. Duplicate clicks for the same target are coalesced while a launch is pending.
 
-If your selected editor is terminal-based (for example `vim`/`nvim`) and `suspend_tui = true`, VT Code uses the serialized suspend-and-wait path and resumes the TUI after the editor closes. Temporary-file `/edit` flows still wait because VT Code has to read edited content back into the composer.
+If your selected editor is terminal-based (for example `vim`/`nvim`) and `suspend_tui = true`, VT Code uses the serialized suspend-and-wait path and resumes the TUI after the editor closes. Temporary-file editor flows still wait because VT Code has to read edited content back into the composer.
 
 When a launch must wait for the edited content (temporary-file and plan-file flows), VT Code injects the editor's wait flag if your configured command omitted it — `code` becomes `code --wait`, `zed`/`subl`/`mate` become `--wait`, and `open -a …` becomes `open -W`. This keeps read-back accurate even when `preferred_editor` does not include `--wait`. Non-waiting real-file opens strip those flags so they return immediately.
 
@@ -88,7 +88,7 @@ Single-clicking a file path in the transcript or a modal uses the same editor wo
 ### Edit relative paths
 
 ```
-/edit path/to/file.txt
+external editor with `path/to/file.txt`
 ```
 
 Paths are resolved relative to the workspace root.
@@ -216,7 +216,7 @@ export EDITOR=/usr/bin/nvim
 
 ### Changes not saved in temporary files
 
-When using `/edit` without a file argument:
+When using the external editor without a file argument:
 
 1. A temporary file is created
 2. Your editor is launched
@@ -227,7 +227,7 @@ Ensure you actually save the file in your editor (e.g., `:w` in vim) before clos
 
 ## Integration with VT Code Features
 
-The `/edit` command works with:
+The external editor works with:
 
 -   **File browser** - Select files to edit using `@` symbol or `/files`
 -   **Workspace context** - Editors open with workspace root as working directory

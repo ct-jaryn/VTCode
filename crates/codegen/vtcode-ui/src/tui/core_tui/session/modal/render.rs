@@ -6,7 +6,7 @@ use crate::tui::ui::tui::session::inline_list::{
 use crate::tui::ui::tui::session::list_panel::{
     SharedListPanelSections, SharedListPanelStyles, SharedListWidgetModel, render_shared_list_panel,
 };
-use crate::tui::ui::tui::types::{InlineListSelection, SecurePromptConfig};
+use crate::tui::ui::tui::types::{InlineItemKind, InlineListSelection, InlineStatus, InlineTone, SecurePromptConfig};
 use ratatui::{
     prelude::*,
     widgets::{Paragraph, Tabs, Wrap},
@@ -148,6 +148,7 @@ struct ModalListPanelModel<'a> {
     list: &'a mut ModalListState,
     styles: &'a ModalRenderStyles,
     inline_editor: Option<&'a ModalInlineEditor>,
+    show_numbers: bool,
 }
 
 impl SharedListWidgetModel for ModalListPanelModel<'_> {
@@ -165,6 +166,9 @@ impl SharedListWidgetModel for ModalListPanelModel<'_> {
         let selection_gutter = selection_padding_width() as u16;
         let content_width = width.saturating_sub(selection_gutter) as usize;
         let selected_visible = self.list.list_state.selected();
+        // Gate once: per-row numbers stay cheap so crowded lists do not
+        // pay a quadratic scan for badges they will not show.
+        let numbered = self.show_numbers && self.list.numbered_shortcuts();
         self.list
             .visible_indices
             .iter()
@@ -172,6 +176,7 @@ impl SharedListWidgetModel for ModalListPanelModel<'_> {
             .map(|(visible_index, &item_index)| {
                 let is_selected = selected_visible == Some(visible_index)
                     && self.list.items.get(item_index).is_some_and(|i| i.selection.is_some());
+                let shortcut_number = numbered.then(|| self.list.shortcut_number(visible_index)).flatten();
                 let lines = modal_list_item_lines(
                     self.list,
                     visible_index,
@@ -180,6 +185,7 @@ impl SharedListWidgetModel for ModalListPanelModel<'_> {
                     content_width,
                     self.inline_editor,
                     is_selected,
+                    shortcut_number,
                 );
                 (
                     InlineListRow {
@@ -218,24 +224,29 @@ pub fn render_modal_list(
     styles: &ModalRenderStyles,
     footer_hint: Option<&str>,
     inline_editor: Option<&ModalInlineEditor>,
+    show_numbers: bool,
+    status: Option<&InlineStatus>,
 ) -> Rect {
     if area.width == 0 || area.height == 0 {
         return area;
     }
 
-    let summary = modal_list_summary_line(list, styles, footer_hint);
-    let mut panel_model = ModalListPanelModel { list, styles, inline_editor };
-    let sections = SharedListPanelSections {
-        header: Vec::new(),
-        info: summary.into_iter().collect(),
-        search: None,
-    };
+    let mut info = Vec::new();
+    // Status strip sits above the keyboard/filter hint so the last action is
+    // still readable while the user keeps navigating.
+    if let Some(status) = status {
+        let tone = tone_style(status.tone, styles);
+        info.push(Line::from(vec![Span::styled("• ", tone), Span::styled(status.message.clone(), tone)]));
+    }
+    info.extend(modal_list_summary_line(list, styles, footer_hint));
+    let mut panel_model = ModalListPanelModel { list, styles, inline_editor, show_numbers };
+    let sections = SharedListPanelSections { header: Vec::new(), info, search: None };
     render_shared_list_panel(
         frame,
         area,
         sections,
         SharedListPanelStyles {
-            base_style: styles.selectable,
+            base_style: styles.background,
             selected_style: Some(styles.highlight),
             text_style: styles.detail,
             divider_style: Some(styles.border),
@@ -473,11 +484,20 @@ pub(crate) fn render_wizard_modal_body(
         idx += 1;
     }
 
+    let wizard_numbers = wizard.numbered_shortcuts();
     if let Some(step) = wizard.steps.get_mut(wizard.current_step)
         && idx < chunks.len()
     {
-        outcome.list_area =
-            Some(render_modal_list(frame, chunks[idx], &mut step.list, styles, None, inline_editor.as_ref()));
+        outcome.list_area = Some(render_modal_list(
+            frame,
+            chunks[idx],
+            &mut step.list,
+            styles,
+            None,
+            inline_editor.as_ref(),
+            wizard_numbers,
+            None,
+        ));
     }
 
     outcome
@@ -487,10 +507,12 @@ fn modal_list_summary_line(
     list: &ModalListState,
     styles: &ModalRenderStyles,
     footer_hint: Option<&str>,
-) -> Option<Line<'static>> {
+) -> Vec<Line<'static>> {
     if !list.filter_active() {
-        let message = list.non_filter_summary_text(footer_hint)?;
-        return Some(Line::from(Span::styled(message, styles.hint)));
+        return match list.non_filter_summary_text(footer_hint) {
+            Some(message) => vec![Line::from(Span::styled(message, styles.hint))],
+            None => Vec::new(),
+        };
     }
 
     let mut spans = Vec::new();
@@ -505,22 +527,13 @@ fn modal_list_summary_line(
             ));
         }
     } else {
-        spans.push(Span::styled(
-            format!(
-                "{} {} {} {}",
-                ui::MODAL_LIST_SUMMARY_MATCHES_LABEL,
-                matches,
-                ui::MODAL_LIST_SUMMARY_TOTAL_LABEL,
-                total
-            ),
-            styles.detail,
-        ));
+        spans.push(Span::styled(format!("{matches} / {total}"), styles.detail));
     }
 
     if spans.is_empty() {
-        None
+        Vec::new()
     } else {
-        Some(Line::from(spans))
+        vec![Line::from(spans)]
     }
 }
 
@@ -661,6 +674,8 @@ pub(crate) fn render_modal_body(
                         context.styles,
                         context.footer_hint,
                         None,
+                        context.search.is_none(),
+                        context.status,
                     ));
                 }
             }
@@ -713,9 +728,9 @@ fn is_plan_overflow_row(trimmed: &str) -> bool {
 }
 
 /// Split `Label: value` metadata rows (`Risk`, `Source`, the permission-popup
-/// agent goal, …) so the label can render dimmed and the value in body style.
-/// Returns the trimmed label and value; `Tool:` stays a header and never
-/// matches here.
+/// agent goal, the approval sandbox posture, …) so the label can render
+/// muted and the value in body style. Returns the trimmed label and value;
+/// `Tool:` stays a header and never matches here.
 fn split_context_row(trimmed: &str) -> Option<(&str, &str)> {
     const CONTEXT_LABELS: &[&str] = &[
         "Reason",
@@ -727,6 +742,7 @@ fn split_context_row(trimmed: &str) -> Option<(&str, &str)> {
         "Source",
         "Summary",
         "Plan",
+        "Environment",
         "What the agent is trying to do",
         "Requested from",
     ];
@@ -791,6 +807,7 @@ fn modal_instruction_lines(area: Rect, instructions: &[String], styles: &ModalRe
 
     let mut items: Vec<Vec<Line<'static>>> = Vec::new();
     let mut first_content_rendered = false;
+    let mut first_code_row_seen = false;
     let content_width = area.width.saturating_sub(2) as usize;
     let bullet_prefix = format!("{} ", ui::MODAL_INSTRUCTIONS_BULLET);
     let bullet_indent = " ".repeat(UnicodeWidthStr::width(bullet_prefix.as_str()));
@@ -826,7 +843,23 @@ fn modal_instruction_lines(area: Rect, instructions: &[String], styles: &ModalRe
             let command = code.trim();
             first_content_rendered = true;
             let mut spans = vec![Span::styled(code_gutter.to_string(), styles.divider)];
-            for segment in shell_syntax_segments(command, &shell_styles, true) {
+            // The approval command block opens with a `$ ` shell marker on
+            // its first row. Paint it dimmed and keep it out of the syntax
+            // tokenizer, where a lone `$` would highlight as a variable.
+            // Only the first code row is eligible, so a continuation line
+            // that literally starts with `$ ` keeps its token colors.
+            // Generic path: any modal's first `$ `-prefixed code fence gets
+            // this treatment; today only the approval preview emits one.
+            let (marker, body) = if !first_code_row_seen {
+                first_code_row_seen = true;
+                command.strip_prefix("$ ").map(|rest| ("$ ", rest)).unwrap_or(("", command))
+            } else {
+                ("", command)
+            };
+            if !marker.is_empty() {
+                spans.push(Span::styled(marker.to_string(), styles.detail));
+            }
+            for segment in shell_syntax_segments(body, &shell_styles, true) {
                 spans.push(Span::styled(segment.text, ratatui_style_from_inline(&segment.style, None)));
             }
             items.push(vec![Line::from(spans)]);
@@ -1100,6 +1133,7 @@ pub fn modal_list_item_lines(
     content_width: usize,
     inline_editor: Option<&ModalInlineEditor>,
     is_selected: bool,
+    shortcut_number: Option<usize>,
 ) -> Vec<Line<'static>> {
     let item = match list.items.get(item_index) {
         Some(i) => i,
@@ -1140,17 +1174,27 @@ pub fn modal_list_item_lines(
         primary_spans.push(Span::styled(cursor_indicator, cursor_style));
     }
 
+    // Numbered shortcut badge (`1.`–`9.`) for search-less modals, mirroring
+    // the digit keys that jump to each option. Non-selectable rows (dividers,
+    // separators) carry no number.
+    if let Some(number) = shortcut_number {
+        primary_spans.push(Span::styled(format!("{number}."), styles.detail));
+        primary_spans.push(Span::raw(" "));
+    }
+
     if !indent.is_empty() {
         primary_spans.push(Span::raw(indent.clone()));
     }
 
     if let Some(badge) = &item.badge {
         let badge_label = format!("[{badge}]");
-        primary_spans.push(Span::styled(badge_label, modal_badge_style(badge.as_str(), styles)));
+        primary_spans.push(Span::styled(badge_label, modal_badge_style(badge.as_str(), item.badge_tone, styles)));
         primary_spans.push(Span::raw(" "));
     }
 
-    let title_style = if is_selected && item.selection.is_some() {
+    let title_style = if item.is_hint() {
+        styles.detail
+    } else if is_selected && item.selection.is_some() {
         styles.highlight
     } else if item.selection.is_some() {
         styles.selectable
@@ -1163,14 +1207,46 @@ pub fn modal_list_item_lines(
     let title_spans = highlight_segments(item.title.as_str(), title_style, styles.search_match, list.highlight_terms());
     primary_spans.extend(title_spans);
 
-    // Group spacing without per-item cost: headers (Actions, Quick Access,
-    // Sections, Settings) get one blank row above so dense subtitle lists
-    // stay scannable within the multiline row cap.
-    let mut lines = Vec::new();
-    if item.is_header() && visible_index > 0 {
-        lines.push(Line::default());
+    // Live value for setting rows: trailing column after a dimmed separator.
+    // Tone follows `badge_tone` (On → success, Off/unset → dimmed, else accent).
+    if let Some(value) = &item.value {
+        // Pad short titles so values line up as a column when possible.
+        let title_width: usize = item.title.chars().count();
+        let target = crate::design::constants::VALUE_COL;
+        if title_width < target {
+            primary_spans.push(Span::raw(" ".repeat(target - title_width)));
+        } else {
+            primary_spans.push(Span::raw("  "));
+        }
+        primary_spans.push(Span::styled("·  ", styles.detail));
+        let value_style = if is_selected {
+            styles.highlight
+        } else if item.badge_tone == InlineTone::Neutral {
+            styles.detail
+        } else {
+            tone_style(item.badge_tone, styles)
+        };
+        primary_spans.extend(highlight_segments(
+            value.as_str(),
+            value_style,
+            styles.search_match,
+            list.highlight_terms(),
+        ));
     }
-    lines.push(Line::from(primary_spans));
+
+    // Shared group rhythm: blank line above and below every group header so
+    // sections stay scannable in dense subtitle lists (settings, model picker,
+    // permission groups). Dividers keep a single full-width rule.
+    let mut lines = Vec::new();
+    if item.is_header() {
+        if visible_index > 0 {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(primary_spans));
+        lines.push(Line::default());
+    } else {
+        lines.push(Line::from(primary_spans));
+    }
 
     if let Some(subtitle) = &item.subtitle {
         let indent_width = item.indent as usize * 2;
@@ -1225,7 +1301,22 @@ pub fn modal_list_item_lines(
     lines
 }
 
-fn modal_badge_style(badge: &str, styles: &ModalRenderStyles) -> Style {
+fn tone_style(tone: InlineTone, styles: &ModalRenderStyles) -> Style {
+    match tone {
+        InlineTone::Neutral => styles.badge,
+        InlineTone::Accent => styles.accent,
+        InlineTone::Success => styles.success,
+        InlineTone::Warning => styles.warning,
+        InlineTone::Danger => styles.danger,
+        InlineTone::Current => styles.accent.add_modifier(Modifier::BOLD),
+    }
+}
+
+fn modal_badge_style(badge: &str, tone: InlineTone, styles: &ModalRenderStyles) -> Style {
+    if tone != InlineTone::Neutral {
+        return tone_style(tone, styles);
+    }
+    // Fallback for callers that set only a badge label (no tone).
     match badge {
         "Active" | "Action" | "Current" => styles.header.add_modifier(Modifier::BOLD),
         "Read-only" => styles.detail.add_modifier(Modifier::ITALIC),
@@ -1257,11 +1348,16 @@ mod tests {
             search_match: Style::default(),
             title: Style::default(),
             divider: Style::default(),
+            background: Style::default(),
             instruction_border: Style::default(),
             instruction_title: Style::default(),
             instruction_bullet: Style::default(),
             instruction_body: Style::default(),
             hint: Style::default(),
+            success: Style::default(),
+            warning: Style::default(),
+            danger: Style::default(),
+            accent: Style::default(),
         }
     }
 
@@ -1356,6 +1452,147 @@ mod tests {
     }
 
     #[test]
+    fn modal_instruction_command_renders_shell_marker_as_own_span() {
+        let styles = modal_render_styles();
+        let lines = modal_instruction_lines(Rect::new(0, 0, 80, 6), &["`$ cargo test --locked`".to_string()], &styles);
+
+        let command_line = lines
+            .iter()
+            .find(|line| line_text(line).contains("cargo"))
+            .expect("command row");
+        // Gutter + marker + at least command/option token segments.
+        assert!(command_line.spans.len() > 3, "marker must not swallow body tokens, got: {command_line:?}");
+        assert_eq!(command_line.spans[1].content.as_ref(), "$ ");
+        assert_eq!(line_text(command_line).trim_start(), "$ cargo test --locked");
+    }
+
+    #[test]
+    fn modal_instruction_shell_marker_applies_only_to_first_code_row() {
+        let styles = modal_render_styles();
+        let lines = modal_instruction_lines(
+            Rect::new(0, 0, 80, 8),
+            &["`$ echo hi`".to_string(), "`$ echo bye`".to_string()],
+            &styles,
+        );
+
+        let texts = lines.iter().map(line_text).collect::<Vec<_>>();
+        assert_eq!(texts.len(), 2);
+        let first = lines.iter().find(|line| line_text(line).contains("hi")).expect("first row");
+        assert_eq!(first.spans[1].content.as_ref(), "$ ");
+        // A continuation line that literally starts with `$ ` keeps its
+        // tokenizer output instead of gaining a marker span.
+        let second = lines.iter().find(|line| line_text(line).contains("bye")).expect("second row");
+        assert_ne!(second.spans[1].content.as_ref(), "$ ", "got: {second:?}");
+    }
+
+    fn numbered_option(title: &str) -> InlineListItem {
+        InlineListItem {
+            title: title.to_string(),
+            subtitle: None,
+            badge: None,
+            indent: 0,
+            selection: Some(InlineListSelection::SlashCommand(title.to_string())),
+            search_value: None,
+            ..Default::default()
+        }
+    }
+
+    fn separator_option() -> InlineListItem {
+        InlineListItem {
+            title: String::new(),
+            subtitle: None,
+            badge: None,
+            indent: 0,
+            selection: None,
+            search_value: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn modal_list_item_numbers_skip_non_selectable_rows() {
+        let styles = modal_render_styles();
+        let list = ModalListState::new(
+            vec![
+                numbered_option("Approve once"),
+                numbered_option("Allow for session"),
+                separator_option(),
+                numbered_option("Deny once"),
+            ],
+            None,
+        );
+
+        let first_lines: Vec<String> = (0..4)
+            .map(|visible_index| {
+                let item_index = list.visible_indices[visible_index];
+                let number = list.shortcut_number(visible_index);
+                let rows = modal_list_item_lines(&list, visible_index, item_index, &styles, 60, None, false, number);
+                line_text(&rows[0])
+            })
+            .collect();
+        assert!(
+            first_lines[0].contains("1.") && first_lines[0].contains("Approve once"),
+            "got: {:?}",
+            first_lines[0]
+        );
+        assert_eq!(
+            line_text(
+                &modal_list_item_lines(
+                    &list,
+                    0,
+                    list.visible_indices[0],
+                    &styles,
+                    60,
+                    None,
+                    false,
+                    list.shortcut_number(0)
+                )[0]
+            )
+            .trim_start(),
+            "1. Approve once"
+        );
+        assert!(
+            first_lines[1].contains("2.") && first_lines[1].contains("Allow for session"),
+            "got: {:?}",
+            first_lines[1]
+        );
+        assert!(!first_lines[2].contains("3."), "separator must carry no number, got: {:?}", first_lines[2]);
+        assert!(first_lines[3].contains("3.") && first_lines[3].contains("Deny once"), "got: {:?}", first_lines[3]);
+    }
+
+    #[test]
+    fn modal_list_item_numbers_hidden_when_disabled() {
+        let styles = modal_render_styles();
+        let list = ModalListState::new(vec![numbered_option("Approve once"), numbered_option("Deny once")], None);
+
+        for visible_index in 0..2 {
+            let item_index = list.visible_indices[visible_index];
+            let rows = modal_list_item_lines(&list, visible_index, item_index, &styles, 60, None, false, None);
+            let text = line_text(&rows[0]);
+            assert!(!text.contains("1.") && !text.contains("2."), "numbers must stay hidden, got: {text}");
+        }
+    }
+
+    #[test]
+    fn modal_list_item_numbers_hidden_on_crowded_lists() {
+        // Ten selectables fail the shared gate: no row may show a number,
+        // or digits would advertise shortcuts that routing swallows.
+        let styles = modal_render_styles();
+        let items: Vec<InlineListItem> = (1..=10).map(|number| numbered_option(&format!("Option {number}"))).collect();
+        let list = ModalListState::new(items, None);
+        assert!(!list.numbered_shortcuts());
+
+        for visible_index in 0..10 {
+            let item_index = list.visible_indices[visible_index];
+            let number = list.shortcut_number(visible_index);
+            assert_eq!(number, None, "crowded row {visible_index} must have no number");
+            let rows = modal_list_item_lines(&list, visible_index, item_index, &styles, 60, None, false, number);
+            let text = line_text(&rows[0]);
+            assert!(!text.contains("1."), "dead number leaked on crowded row, got: {text}");
+        }
+    }
+
+    #[test]
     fn narrow_modal_keeps_command_tail_and_omission_evidence() {
         let styles = modal_render_styles();
         let lines = modal_instruction_lines(
@@ -1392,6 +1629,25 @@ mod tests {
         let text = line_text(risk_line);
         assert!(!text.contains('•'), "context row must not use bullet, got: {text}");
         assert!(risk_line.spans.len() > 1, "label and value should be separate spans");
+    }
+
+    #[test]
+    fn modal_instruction_environment_row_splits_label_and_value() {
+        let styles = modal_render_styles();
+        let lines = modal_instruction_lines(
+            Rect::new(0, 0, 80, 6),
+            &["Environment: default policy + extra grants".to_string()],
+            &styles,
+        );
+
+        let env_line = lines
+            .iter()
+            .find(|line| line_text(line).contains("extra grants"))
+            .expect("env row");
+        let text = line_text(env_line);
+        assert!(!text.contains('•'), "env row must not use bullet, got: {text}");
+        assert!(env_line.spans.len() > 1, "label and value should be separate spans");
+        assert!(env_line.spans.iter().any(|span| span.content.as_ref() == "Environment:"));
     }
 
     #[test]
@@ -1484,6 +1740,7 @@ mod tests {
                 indent: 0,
                 selection: Some(InlineListSelection::Model(0)),
                 search_value: Some("alpha".to_string()),
+                ..Default::default()
             }],
             None,
         );
@@ -1498,6 +1755,7 @@ mod tests {
                     Rect::new(0, 0, 80, 8),
                     ModalBodyContext {
                         instructions: &instructions,
+                        status: None,
                         footer_hint: None,
                         list: Some(&mut list),
                         styles: &styles,
@@ -1562,6 +1820,7 @@ mod tests {
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction("permissions.default:cycle".to_string())),
                 search_value: None,
+                ..Default::default()
             }],
             None,
         );
@@ -1576,18 +1835,76 @@ mod tests {
             search_match: Style::default(),
             title: Style::default(),
             divider: Style::default(),
+            background: Style::default(),
             instruction_border: Style::default(),
             instruction_title: Style::default(),
             instruction_bullet: Style::default(),
             instruction_body: Style::default(),
             hint: Style::default(),
+            success: Style::default(),
+            warning: Style::default(),
+            danger: Style::default(),
+            accent: Style::default(),
         };
 
-        let summary = modal_list_summary_line(&list, &styles, None).expect("expected summary line for config list");
+        let summary = modal_list_summary_line(&list, &styles, None)
+            .into_iter()
+            .next()
+            .expect("expected summary line for config list");
         let text = line_text(&summary);
-        assert!(text.contains("Navigation:"));
+        assert!(text.contains("↑↓ select"), "hint: {text}");
         assert!(!text.contains("Alt+D"));
         assert!(!text.contains("Density:"));
+    }
+
+    #[test]
+    fn config_list_summary_ignores_explicit_footer_hint() {
+        // Regression: callers must not pass a footer to a list containing
+        // `ConfigAction` items. Such lists are `FixedComfortable` and render
+        // the shared navigation hint, so an explicit footer is silently
+        // dropped. Pin that behavior so dead footer copy cannot be reintroduced.
+        let list = ModalListState::new(
+            vec![InlineListItem {
+                title: "Permission default".to_string(),
+                subtitle: Some("permissions.default = ask".to_string()),
+                badge: Some("Toggle".to_string()),
+                indent: 0,
+                selection: Some(InlineListSelection::ConfigAction("permissions.default:cycle".to_string())),
+                search_value: None,
+                ..Default::default()
+            }],
+            None,
+        );
+
+        let styles = ModalRenderStyles {
+            border: Style::default(),
+            highlight: Style::default(),
+            badge: Style::default(),
+            header: Style::default(),
+            selectable: Style::default(),
+            detail: Style::default(),
+            search_match: Style::default(),
+            title: Style::default(),
+            divider: Style::default(),
+            background: Style::default(),
+            instruction_border: Style::default(),
+            instruction_title: Style::default(),
+            instruction_bullet: Style::default(),
+            instruction_body: Style::default(),
+            hint: Style::default(),
+            success: Style::default(),
+            warning: Style::default(),
+            danger: Style::default(),
+            accent: Style::default(),
+        };
+
+        let summary = modal_list_summary_line(&list, &styles, Some("Esc to go back"))
+            .into_iter()
+            .next()
+            .expect("summary line");
+        let text = line_text(&summary);
+        assert!(text.contains("↑↓ select"), "config lists render the shared navigation hint: {text}");
+        assert!(!text.contains("Esc to go back"), "explicit footer must be dropped for config lists: {text}");
     }
 
     #[test]
@@ -1600,6 +1917,7 @@ mod tests {
                 indent: 0,
                 selection: Some(InlineListSelection::Model(0)),
                 search_value: Some("gpt-5".to_string()),
+                ..Default::default()
             }],
             None,
         );
@@ -1614,15 +1932,20 @@ mod tests {
             search_match: Style::default(),
             title: Style::default(),
             divider: Style::default(),
+            background: Style::default(),
             instruction_border: Style::default(),
             instruction_title: Style::default(),
             instruction_bullet: Style::default(),
             instruction_body: Style::default(),
             hint: Style::default(),
+            success: Style::default(),
+            warning: Style::default(),
+            danger: Style::default(),
+            accent: Style::default(),
         };
 
         let summary = modal_list_summary_line(&list, &styles, None);
-        assert!(summary.is_none(), "density summary should be hidden");
+        assert!(summary.is_empty(), "density summary should be hidden");
     }
 
     #[test]
@@ -1651,6 +1974,7 @@ mod tests {
             label: "Search models".to_string(),
             placeholder: Some("provider, name, id".to_string()),
             query: String::new(),
+            fuzzy: false,
         });
 
         let has_title = lines.iter().any(|line| line.contains("Search models"));
@@ -1665,6 +1989,7 @@ mod tests {
             label: "Search models".to_string(),
             placeholder: Some("provider, name, id".to_string()),
             query: "openrouter".to_string(),
+            fuzzy: false,
         });
 
         let search_index = lines
@@ -1688,6 +2013,7 @@ mod tests {
             label: String::new(),
             placeholder: Some("provider, name, id".to_string()),
             query: String::new(),
+            fuzzy: false,
         });
 
         let placeholder_row = lines
@@ -1708,17 +2034,21 @@ mod tests {
                 indent: 0,
                 selection: Some(InlineListSelection::Model(0)),
                 search_value: Some("gpt-5".to_string()),
+                ..Default::default()
             }],
             None,
         );
         let styles = modal_render_styles();
         let mut list = list;
-        list.apply_search("gpt");
+        list.apply_search("gpt", false);
 
-        let summary = modal_list_summary_line(&list, &styles, None).expect("summary should exist");
+        let summary = modal_list_summary_line(&list, &styles, None)
+            .into_iter()
+            .next()
+            .expect("summary should exist");
         let text = line_text(&summary);
 
-        assert!(text.contains("Matches 1 of 1"));
+        assert!(text.contains("1 / 1"), "quiet match counter: {text}");
         assert!(!text.contains("gpt"));
         assert!(!text.contains("Filter:"));
     }
@@ -1738,6 +2068,7 @@ mod tests {
                     Rect::new(0, 0, 40, 8),
                     ModalBodyContext {
                         instructions: &instructions,
+                        status: None,
                         footer_hint: None,
                         list: Some(&mut list),
                         styles: &styles,
@@ -1767,5 +2098,106 @@ mod tests {
 
         assert!(rendered.contains("ABCD-EFGH"));
         assert!(!rendered.contains("**ABCD-EFGH**"));
+    }
+
+    #[test]
+    fn setting_row_renders_accent_value_and_dimmed_subtitle() {
+        let styles = modal_render_styles();
+        let list = ModalListState::new(
+            vec![InlineListItem {
+                title: "Fullscreen copy".to_string(),
+                value: Some("On".to_string()),
+                subtitle: Some("Copy selection to clipboard".to_string()),
+                badge: Some("On".to_string()),
+                selection: Some(InlineListSelection::ConfigAction("settings:set:x:toggle".to_string())),
+                badge_tone: InlineTone::Success,
+                kind: InlineItemKind::Setting,
+                ..Default::default()
+            }],
+            None,
+        );
+        let lines = modal_list_item_lines(&list, 0, 0, &styles, 60, None, false, None);
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(text.contains("Fullscreen copy"), "title rendered: {text}");
+        assert!(text.contains("On"), "value rendered: {text}");
+        assert!(text.contains("Copy selection to clipboard"), "subtitle rendered: {text}");
+    }
+
+    #[test]
+    fn status_strip_uses_tone_and_sits_above_hint() {
+        let styles = modal_render_styles();
+        let mut list = ModalListState::new(
+            vec![InlineListItem {
+                title: "Item".to_string(),
+                selection: Some(InlineListSelection::ConfigAction("x".to_string())),
+                ..Default::default()
+            }],
+            None,
+        );
+        let status = InlineStatus::success("Enabled IDE context");
+        let area = Rect::new(0, 0, 60, 6);
+        let mut terminal = Terminal::new(TestBackend::new(60, 6)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_modal_list(frame, area, &mut list, &styles, Some("Esc close"), None, false, Some(&status));
+            })
+            .expect("render");
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_string()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Enabled IDE context"), "status visible: {rendered}");
+        assert!(rendered.contains("•"), "status bullet: {rendered}");
+    }
+
+    #[test]
+    fn badge_tone_maps_current_to_accent_bold() {
+        let styles = modal_render_styles();
+        let current = modal_badge_style("Current", InlineTone::Current, &styles);
+        let danger = modal_badge_style("Destructive", InlineTone::Danger, &styles);
+        assert_ne!(current, danger, "tones must be distinguishable");
+        assert_eq!(current, styles.accent.add_modifier(Modifier::BOLD));
+        assert_eq!(danger, styles.danger);
+    }
+
+    #[test]
+    fn group_headers_add_spacing_above_and_below() {
+        let styles = modal_render_styles();
+        let list = ModalListState::new(
+            vec![
+                InlineListItem::group_header("Anthropic"),
+                InlineListItem {
+                    title: "Claude".to_string(),
+                    subtitle: Some("desc".to_string()),
+                    selection: Some(InlineListSelection::Model(0)),
+                    ..Default::default()
+                },
+                InlineListItem::group_header("OpenAI"),
+                InlineListItem {
+                    title: "GPT".to_string(),
+                    subtitle: Some("desc".to_string()),
+                    selection: Some(InlineListSelection::Model(1)),
+                    ..Default::default()
+                },
+            ],
+            None,
+        );
+        // First header: no leading blank, but trailing blank before items.
+        let h0 = modal_list_item_lines(&list, 0, 0, &styles, 60, None, false, None);
+        assert_eq!(h0.len(), 2, "first header is title + trailing gap: {h0:?}");
+        // Later header: blank above and below.
+        let h1 = modal_list_item_lines(&list, 2, 2, &styles, 60, None, false, None);
+        assert_eq!(h1.len(), 3, "later header is gap + title + gap: {h1:?}");
+        // Item rows stay title + subtitle (no extra blank in compact lists).
+        let item = modal_list_item_lines(&list, 1, 1, &styles, 60, None, false, None);
+        assert_eq!(item.len(), 2, "title + subtitle only: {item:?}");
     }
 }

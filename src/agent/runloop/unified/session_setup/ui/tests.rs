@@ -203,7 +203,7 @@ fn apply_persistent_memory_header_guide_sets_badge_and_highlight() {
 }
 
 #[test]
-fn background_local_agent_visibility_hides_stopped_entries() {
+fn background_local_agent_visibility_keeps_stopped_entries() {
     let entry = vtcode_core::subagents::BackgroundSubprocessEntry {
         id: "background-default".to_string(),
         session_id: "session-456".to_string(),
@@ -226,7 +226,39 @@ fn background_local_agent_visibility_hides_stopped_entries() {
         transcript_path: None,
     };
 
-    assert!(visible_background_local_agents(vec![entry]).is_empty());
+    let visible = visible_background_local_agents(vec![entry]);
+    assert_eq!(visible.len(), 1, "finished background rows stay visible for history");
+}
+
+#[test]
+fn delegated_local_agent_visibility_keeps_completed_and_hides_closed() {
+    let base = SubagentStatusEntry {
+        id: "thread-1".to_string(),
+        session_id: "session-123".to_string(),
+        parent_thread_id: "main".to_string(),
+        agent_name: "rust-engineer".to_string(),
+        display_label: "rust-engineer".to_string(),
+        description: "Review Rust changes".to_string(),
+        source: "project".to_string(),
+        color: None,
+        status: vtcode_core::subagents::SubagentStatus::Completed,
+        background: false,
+        depth: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+        summary: Some("done".to_string()),
+        error: None,
+        transcript_path: None,
+        nickname: None,
+    };
+    let mut closed = base.clone();
+    closed.id = "thread-2".to_string();
+    closed.status = vtcode_core::subagents::SubagentStatus::Closed;
+
+    let visible = visible_delegated_local_agents(vec![base, closed]);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].status, vtcode_core::subagents::SubagentStatus::Completed);
 }
 
 #[test]
@@ -411,7 +443,7 @@ fn file_open_callback_defers_terminal_editors_to_idle_drain() {
 }
 
 #[test]
-fn busy_model_and_effort_steer_route_to_settings_events() {
+fn busy_model_steer_routes_to_settings_events() {
     use vtcode_core::core::agent::steering::SteeringMessage;
     let state = Arc::new(state::CtrlCState::new());
     let notify = Arc::new(Notify::new());
@@ -427,15 +459,9 @@ fn busy_model_and_effort_steer_route_to_settings_events() {
         test_exec_sessions(),
     );
 
-    for text in [
-        "/model",
-        "/model foo",
-        "/effort",
-        "/effort high",
-        "/effort --persist low",
-    ] {
+    for text in ["/model", "/model foo"] {
         callback(&InlineEvent::Steer(text.into()));
-        let forwarded = settings_rx.try_recv().expect("model/effort steer must reach settings task");
+        let forwarded = settings_rx.try_recv().expect("model steer must reach settings task");
         assert!(matches!(forwarded, InlineEvent::Steer(_)), "expected Steer for {text}");
         assert!(steering_rx.try_recv().is_err(), "{text} must not become follow-up steering");
     }
@@ -449,7 +475,7 @@ fn ordinary_steer_still_routes_to_steering_channel() {
     let (steering_tx, mut steering_rx) = tokio::sync::mpsc::unbounded_channel::<SteeringMessage>();
     let (settings_events, mut settings_rx) = tokio::sync::mpsc::unbounded_channel();
     let callback = build_session_event_callback(
-        state,
+        state.clone(),
         notify,
         Some(steering_tx),
         settings_events,
@@ -461,6 +487,32 @@ fn ordinary_steer_still_routes_to_steering_channel() {
     callback(&InlineEvent::Steer("keep going".into()));
     assert!(matches!(steering_rx.try_recv(), Ok(SteeringMessage::FollowUpInput(_))));
     assert!(settings_rx.try_recv().is_err());
+    assert!(
+        state.take_steer_delivered(),
+        "successful steering delivery must latch so the runloop does not queue twice"
+    );
+}
+
+#[test]
+fn steer_without_steering_sender_leaves_delivery_latch_clear() {
+    let state = Arc::new(state::CtrlCState::new());
+    let notify = Arc::new(Notify::new());
+    let (settings_events, _settings_rx) = tokio::sync::mpsc::unbounded_channel();
+    let callback = build_session_event_callback(
+        state.clone(),
+        notify,
+        None,
+        settings_events,
+        Arc::new(EditorOpenDispatcher::new(true)),
+        PathBuf::from("/tmp"),
+        test_exec_sessions(),
+    );
+
+    callback(&InlineEvent::Steer("queue me".into()));
+    assert!(
+        !state.take_steer_delivered(),
+        "undelivered steer must leave the latch clear so the runloop queues it"
+    );
 }
 
 #[test]

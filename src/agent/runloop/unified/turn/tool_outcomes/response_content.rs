@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use vtcode_commons::preview::{condense_text_bytes, tail_preview_text};
 use vtcode_core::config::constants::tools as tool_names;
-use vtcode_core::core::agent::result_reducers::strip_tui_display_fields;
+use vtcode_core::core::agent::result_reducers::{reduce_tool_result, strip_tui_display_fields};
 use vtcode_core::llm::provider::{LLMRequest, Message as LlmMessage};
 use vtcode_core::llm::{
     LightweightFeature, collect_single_response, create_provider_for_model_route, resolve_lightweight_route,
@@ -431,7 +431,13 @@ async fn build_tool_response_content(
     // `output` via the pipeline-output path, not from this string, so
     // removing it here is display-safe and avoids feeding redundant display
     // data to the model on every tracker call.
-    let model_output = strip_tui_display_fields(tool_name, output);
+    //
+    // Apply `reduce_tool_result` first so interactive sessions share the
+    // headless AgentRunner's hard caps (32 KiB / 2000 lines on read/exec
+    // bodies). Without this, `raw=true` and summarizer-failure fallbacks
+    // push full tool bodies into history.
+    let reduced = reduce_tool_result(tool_name, output.clone());
+    let model_output = strip_tui_display_fields(tool_name, &reduced);
     let output = model_output.as_ref();
 
     // Skip LLM summarization when raw=true is requested
@@ -715,6 +721,7 @@ mod tests {
         let output = json!({
             "spool_path": ".vtcode/context/tool_outputs/command.log",
             "spooled_bytes": 38_912,
+            "spool_line_count": 377,
             "preview": "bounded command preview",
             "output": "large output that was written to the spool"
         });
@@ -723,6 +730,7 @@ mod tests {
         let shaped: serde_json::Value = serde_json::from_str(&content).expect("shaped response should be JSON");
         assert_eq!(shaped["spool_path"], output["spool_path"]);
         assert_eq!(shaped["spooled_bytes"], 38_912);
+        assert_eq!(shaped["spool_line_count"], 377);
         assert_eq!(shaped["preview"], "bounded command preview");
         assert!(shaped.get("output").is_none());
     }
@@ -786,5 +794,27 @@ mod tests {
 
         assert_eq!(diagnostics.spooled_results, 0);
         assert_eq!(diagnostics.raw_spooled_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn raw_tool_response_applies_reduce_tool_result_hard_caps() {
+        // Interactive path must share the headless AgentRunner's reduce caps
+        // even when raw=true skips summarization (the previous leak).
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        let stdout = (0..2200).map(|_| "a").collect::<Vec<_>>().join("\n");
+        let output = json!({ "stdout": stdout, "exit_code": 0 });
+        let args = json!({ "cmd": "gen", "raw": true });
+
+        let mut ctx = backing.turn_processing_context();
+        let content = prepare_tool_response_content(&mut ctx, tool_names::UNIFIED_EXEC, &args, &output).await;
+
+        let shaped: serde_json::Value = serde_json::from_str(&content).expect("model content should be JSON");
+        assert_eq!(shaped["is_truncated"], json!(true));
+        let visible = shaped["stdout"].as_str().expect("stdout remains a string");
+        assert!(
+            visible.lines().count() < 2200,
+            "raw=true must still apply reduce_tool_result line caps, got {} lines",
+            visible.lines().count()
+        );
     }
 }

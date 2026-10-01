@@ -44,7 +44,9 @@ pub(super) struct PromptAssemblyOutput {
 fn append_recovery_mode_prompt(system_prompt: &mut String, planning_active: bool, recovery_reason: Option<&str>) {
     system_prompt.push_str("\n[Recovery Mode]\n");
     system_prompt.push_str("- tools_disabled: true\n");
+    system_prompt.push_str("- tool_definitions_remain_for_cache_stability_only: true\n");
     system_prompt.push_str("- do_not_request_more_tools: true\n");
+    system_prompt.push_str("- do_not_emit_tool_calls: true\n");
 
     if planning_active {
         system_prompt.push_str(
@@ -129,21 +131,18 @@ async fn build_prompt_output(
     }
 
     let tool_snapshot = {
+        // Keep the real tool catalog during tool-free recovery so the wire
+        // tools array and the [Runtime Tool Catalog] section stay byte-stable
+        // with tool-enabled turns (prompt-cache prefix reuse). [Recovery Mode]
+        // plus `tool_choice: none` (or Merge's omitted choice) prevent calls.
         if input.turn.tool_free_recovery {
             append_recovery_mode_prompt(
                 &mut system_prompt,
                 input.turn.planning_active,
                 input.turn.recovery_reason.as_deref(),
             );
-            SessionToolCatalogSnapshot::new(
-                ctx.tool_catalog.current_version(),
-                ctx.tool_catalog.current_epoch(),
-                input.turn.planning_active,
-                input.turn.request_user_input_enabled,
-                None,
-                false,
-            )
-        } else if !input.turn.capabilities.tools {
+        }
+        if !input.turn.capabilities.tools {
             SessionToolCatalogSnapshot::new(
                 ctx.tool_catalog.current_version(),
                 ctx.tool_catalog.current_epoch(),
@@ -153,10 +152,15 @@ async fn build_prompt_output(
                 false,
             )
         } else {
-            let base_snapshot_future = ctx.tool_catalog.filtered_snapshot_with_stats(
+            let stable_catalog = ctx
+                .vt_cfg
+                .map(|cfg| cfg.prompt_cache.stable_tool_catalog_across_modes)
+                .unwrap_or(true);
+            let base_snapshot_future = ctx.tool_catalog.filtered_snapshot_with_stats_ex(
                 ctx.tools,
                 input.turn.planning_active,
                 input.turn.request_user_input_enabled,
+                stable_catalog,
             );
             #[cfg(feature = "profiling")]
             let base_snapshot = {
@@ -193,15 +197,15 @@ async fn build_prompt_output(
             ctx.vt_cfg,
         );
 
-        if input.turn.client_local_tool_deferral && !input.turn.tool_free_recovery {
+        if input.turn.client_local_tool_deferral {
             // Client-local deferral omits deferred tools from the wire payload
             // (see `build_turn_request`); tell the model what it can still
             // reach through the relevant discovery tool. `tool_snapshot` still
             // carries the full, un-filtered tool list at this point, so
             // `deferred_count`/namespace metadata reflect what is actually
-            // being withheld this turn. Skip during tool-free recovery: that
-            // path sends `tools: None` (see `build_turn_request`), so the model
-            // cannot load deferred tools even if told about them.
+            // being withheld this turn. Recovery keeps the same wire filter
+            // for cache stability; tools are present but not callable
+            // (`tool_choice: none` / Merge omits the choice).
             append_deferred_tools_prompt_section(
                 &mut system_prompt,
                 tool_snapshot.snapshot.as_deref().map_or(&[], |tools| tools.as_slice()),

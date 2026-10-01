@@ -12,18 +12,16 @@ use super::cargo_failure_diagnostics::{
 use super::exec_command::suggest_max_tokens_for_command;
 use super::exec_support::{
     ExecOutputPreview, ExecRunOutputConfig, PtyEphemeralCapture, attach_exec_response_context,
-    attach_long_command_wait_steering, attach_pty_continuation, floor_exec_char_boundary,
-    max_output_tokens_from_payload,
+    attach_long_command_wait_steering, attach_pty_continuation, max_output_tokens_from_payload,
 };
 use crate::tools::types::VTCodeExecSession;
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{fmt::Write, sync::Mutex};
-use vtcode_commons::preview::excerpt_text_lines;
+use vtcode_commons::preview::{condense_text_bytes, excerpt_text_lines};
 
 const DEFAULT_INSPECT_MAX_MATCHES: usize = 200;
-const EXEC_OUTPUT_TRUNCATED_SENTINEL: &str = "\n[Output truncated]";
 
 pub(super) fn build_exec_output_preview(raw_output: &str, max_tokens: usize) -> (String, bool) {
     if max_tokens == 0 {
@@ -37,11 +35,15 @@ pub(super) fn build_exec_output_preview(raw_output: &str, max_tokens: usize) -> 
         return (String::new(), false);
     }
 
-    let preview_end = floor_exec_char_boundary(raw_output, max_output_len);
-    let mut output = raw_output[..preview_end].to_string();
-    output.push_str(EXEC_OUTPUT_TRUNCATED_SENTINEL);
-
-    (output, true)
+    // Split the same inline budget head+tail instead of head-only: build and
+    // test summaries (the part that decides the next action) sit at the end
+    // of long logs, and a head-only cut destroyed them, forcing full
+    // re-executions with `| tail`. Byte windowing is canonicalized in
+    // `vtcode_commons::preview::condense_text_bytes` — the same marker every
+    // other condensed tool output shows the model.
+    let tail = max_output_len / 2;
+    let head = max_output_len - tail;
+    (condense_text_bytes(raw_output, head, tail), true)
 }
 
 pub(super) fn build_exec_response(

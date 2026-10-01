@@ -29,6 +29,7 @@ use crate::agent::runloop::unified::turn::session::{
     mcp_lifecycle, memory_prompt, slash_command_handler, tool_dispatch,
 };
 use status_refresh::{StatusRefreshContext, StatusRefreshReason, StatusRefreshRequest, refresh_interaction_ui};
+pub(crate) use support::handle_select_primary_agent;
 use support::{
     InlineLoopActionResolution, apply_live_theme_and_appearance, build_durable_scheduler_daemon,
     build_user_message_content, extract_recent_follow_up_hint, fallback_args_preview,
@@ -36,7 +37,6 @@ use support::{
     selected_model_supports_image_input, stalled_follow_up_recovery_prompt, stalled_verification_resume_directive,
     submitted_images_are_unsupported, sync_mcp_approval_policy_for_context,
 };
-pub(crate) use support::{handle_select_primary_agent, try_resume_latest_session};
 use vtcode_config::loader::SimpleConfigWatcher;
 
 /// Shared by both repeated-follow-up directives: structured next-step fields

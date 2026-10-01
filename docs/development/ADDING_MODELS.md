@@ -32,13 +32,9 @@ namespace.
 - [ ] For a gateway provider, document the default endpoint, API-key variable, curated picker routes, and pass-through rules for arbitrary provider/model IDs
 - [ ] If the model is OpenRouter-only, mirror its metadata in `build_data/openrouter_models.json`
 - [ ] Add enum variant (`crates/codegen/vtcode-config/src/models/model_id.rs`)
-- [ ] Update `as_str.rs` - string mapping
-- [ ] Update `display.rs` - human-readable name
-- [ ] Update `description.rs` - model description
-- [ ] Update `parse.rs` - string parsing
+- [ ] Add one row to `model_id_table!` in `table.rs` (single source for as_str/parse/display/description/provider)
 - [ ] Update `collection.rs` - all_models list
 - [ ] Update `capabilities.rs` - generation version
-- [ ] Update `provider.rs` - provider assignment
 - [ ] Verify with `cargo check --package vtcode-config`
 
 ## Detailed Steps
@@ -116,55 +112,28 @@ GPT56Luna,
 
 **Naming convention:** `PascalCase` enum variant, no hyphens.
 
-### Step 4: Update as_str.rs
+### Step 4: Register the Model in table.rs
 
-**File:** `crates/codegen/vtcode-config/src/models/model_id/as_str.rs`
+**File:** `crates/codegen/vtcode-config/src/models/model_id/table.rs`
 
-Maps enum to constant string:
-
-```rust
-ModelId::GPT56Luna => models::openai::GPT_5_6_LUNA,
-ModelId::GPT56Luna => models::openai::GPT_5_6_LUNA,
-```
-
-### Step 5: Update display.rs
-
-**File:** `crates/codegen/vtcode-config/src/models/model_id/display.rs`
-
-Human-readable name for UI:
+`model_id_table!` is the single source for the per-model ID, parsing,
+display name, description, and provider assignment. Add exactly one row
+for the new variant — never add per-model match arms to the wrapper
+files (`as_str.rs`, `display.rs`, `description.rs`, `parse.rs`,
+`provider.rs`); those keep only OpenRouter/`Custom` special cases and
+delegate everything else to the table:
 
 ```rust
-ModelId::GPT56Luna => "GPT-5.4 Nano",
-ModelId::GPT56Luna => "GPT-5.4 Mini",
+StepFun5Preview {
+    provider: StepFun,
+    id: models::stepfun::STEP_5_PREVIEW,
+    parse: [models::stepfun::STEP_5_PREVIEW],
+    display: "Step 5 Preview",
+    description: "StepFun's frontier model for production-scale Agent applications with 1M context, native image/video input, and tool calling.",
+},
 ```
 
-### Step 6: Update description.rs
-
-**File:** `crates/codegen/vtcode-config/src/models/model_id/description.rs`
-
-Full description for help/info:
-
-```rust
-ModelId::GPT56Luna => {
-    "Lightweight GPT-5.4 variant optimized for speed and cost-efficiency"
-}
-ModelId::GPT56Luna => {
-    "Compact GPT-5.4 variant for cost-effective tasks with reduced reasoning overhead"
-}
-```
-
-### Step 7: Update parse.rs
-
-**File:** `crates/codegen/vtcode-config/src/models/model_id/parse.rs`
-
-String → Enum parsing:
-
-```rust
-s if s == models::openai::GPT_5_6_LUNA => Ok(ModelId::GPT56Luna),
-s if s == models::openai::GPT_5_6_LUNA => Ok(ModelId::GPT56Luna),
-```
-
-### Step 8: Update collection.rs
+### Step 5: Update collection.rs
 
 **File:** `crates/codegen/vtcode-config/src/models/model_id/collection.rs`
 
@@ -178,7 +147,7 @@ ModelId::GPT56Luna,      // Add here
 ModelId::GPT56Sol,
 ```
 
-### Step 9: Update capabilities.rs
+### Step 6: Update capabilities.rs
 
 **File:** `crates/codegen/vtcode-config/src/models/model_id/capabilities.rs`
 
@@ -197,26 +166,6 @@ ModelId::GPT56Sol | ModelId::GPT56Sol | ModelId::GPT56Luna | ModelId::GPT56Luna 
 // is_pro_variant() - if pro/advanced variant (optional)
 // is_efficient_variant() - if lightweight/fast variant (optional)
 // supports_shell_tool() - if supports shell execution (depends on model class)
-```
-
-### Step 10: Update provider.rs
-
-**File:** `crates/codegen/vtcode-config/src/models/model_id/provider.rs`
-
-Add to provider match:
-
-```rust
-ModelId::GPT5
- | ModelId::GPT52
- | ModelId::GPT52Codex
- | ModelId::GPT56Sol
- | ModelId::GPT56Sol
- | ModelId::GPT56Luna    // Add here
- | ModelId::GPT56Luna    // Add here
- | ModelId::GPT5Mini
- | ModelId::GPT5Nano
- // ... rest
- => Provider::OpenAI,
 ```
 
 ## Verification
@@ -257,13 +206,9 @@ Input: ["text"]
 1. openai.rs - SUPPORTED_MODELS + constant
 2. models.json - full metadata
 3. model_id.rs - enum variant
-4. as_str.rs - ModelId::GPT56Luna => models::openai::GPT_5_6_LUNA
-5. display.rs - "GPT-5.4 Nano"
-6. description.rs - description string
-7. parse.rs - s if s == models::openai::GPT_5_6_LUNA => Ok(ModelId::GPT56Luna)
-8. collection.rs - add to all_models()
-9. capabilities.rs - update version + optional trait methods
-10. provider.rs - add to OpenAI provider match
+4. table.rs - one model_id_table! row (covers as_str/parse/display/description/provider)
+5. collection.rs - add to all_models()
+6. capabilities.rs - update version + optional trait methods
 ```
 
 ## Automation Ideas
@@ -301,14 +246,14 @@ x **Don't:**
 
 - Add model only to JSON without enum
 - Use hyphens in enum names (`GPT-5-4-Nano`)
-- Forget to update `provider.rs` match
+- Add per-model match arms in `as_str.rs`/`display.rs`/`description.rs`/`parse.rs`/`provider.rs` instead of one `table.rs` row
 - Forget to update `collection.rs` all_models list
 - Inconsistent naming across files
 
 v **Do:**
 
 - Keep naming consistent: `gpt-5.4-nano` (const), `GPT56Luna` (enum), `"GPT-5.4 Nano"` (display)
-- Update all 10 files in order
+- Update the files in order (the `table.rs` row covers the five wrapper mappings)
 - Run `cargo check` after each logical group
 - Test with actual model resolution before submitting
 

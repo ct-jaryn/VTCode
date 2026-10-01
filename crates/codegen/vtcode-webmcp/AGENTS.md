@@ -11,6 +11,7 @@
 - `filesystem` — canonicalized, digest-checked headless workspace adapter using `vtcode-diff` for authoritative diffs.
 - `remote_mcp` — authenticated read-only Streamable HTTP and legacy SSE transports.
 - `server` — Axum WebSocket transport and request dispatch.
+- `error.rs` — crate error types.
 
 ## Rules
 

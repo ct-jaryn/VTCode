@@ -126,6 +126,62 @@ pub struct InlineTheme {
 }
 
 // ---------------------------------------------------------------------------
+// List / modal presentation tones
+// ---------------------------------------------------------------------------
+
+/// Semantic tone for list badges, values, and modal status strips.
+///
+/// Renderers map each tone onto theme styles; callers pick the tone, never a
+/// raw color, so every surface stays theme-consistent and WCAG-checked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InlineTone {
+    #[default]
+    Neutral,
+    Accent,
+    Success,
+    Warning,
+    Danger,
+    /// Live/current selection marker (the active model, the current value).
+    Current,
+}
+
+/// A short-lived status message shown inside a list modal (footer strip).
+///
+/// One status is kept at a time; a new action overwrites the previous status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineStatus {
+    pub tone: InlineTone,
+    pub message: String,
+}
+
+impl InlineStatus {
+    #[must_use]
+    pub fn new(tone: InlineTone, message: impl Into<String>) -> Self {
+        Self { tone, message: message.into() }
+    }
+
+    #[must_use]
+    pub fn success(message: impl Into<String>) -> Self {
+        Self::new(InlineTone::Success, message)
+    }
+
+    #[must_use]
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self::new(InlineTone::Warning, message)
+    }
+
+    #[must_use]
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::new(InlineTone::Danger, message)
+    }
+
+    #[must_use]
+    pub fn info(message: impl Into<String>) -> Self {
+        Self::new(InlineTone::Accent, message)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Header context types
 // ---------------------------------------------------------------------------
 
@@ -188,7 +244,12 @@ impl Default for InlineHeaderContext {
     fn default() -> Self {
         let version = env!("CARGO_PKG_VERSION").to_string();
         Self {
-            app_name: "App".to_string(),
+            // Keep in sync with `vtcode-config::constants::app::DISPLAY_NAME`.
+            // `vtcode-commons` cannot depend on `vtcode-config` (config depends
+            // on commons), so the product name is duplicated here. Covered by
+            // the `header_placeholder_app_name_matches_product` ratchet in
+            // `vtcode-ui`.
+            app_name: "VT Code".to_string(),
             provider: "Provider: unavailable".to_string(),
             model: "Model: unavailable".to_string(),
             context_window_size: None,

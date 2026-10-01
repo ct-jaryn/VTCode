@@ -3,11 +3,12 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Widget, Wrap},
+    widgets::{Clear, Paragraph, Widget},
 };
 
 use crate::tui::config::constants::ui;
-use crate::tui::ui::tui::session::{Session, TranscriptLine, pulse_spinner_frame_for_phase};
+use crate::tui::ui::tui::session::{Session, TranscriptLine};
+use tui_shimmer::shimmer_spans_with_style_at_phase;
 use vtcode_config::constants::tools;
 
 /// Widget for rendering the transcript area with conversation history
@@ -53,6 +54,7 @@ impl<'a> TranscriptWidget<'a> {
 }
 
 impl<'a> Widget for TranscriptWidget<'a> {
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
             self.session.set_transcript_area(None);
@@ -60,55 +62,59 @@ impl<'a> Widget for TranscriptWidget<'a> {
             return;
         }
 
-        // No left gutter – transcript content is flush with the terminal edge.
-        // Previously a `Block` with a border added a 1-column inset on all sides,
-        // which produced the left-blank before bullets/warnings seen in the
-        // screenshot. Rendering without a border makes `inner == area`.
-        let inner = area;
+        let inner = transcript_content_area(area);
 
         if inner.height == 0 || inner.width == 0 {
             self.session.set_transcript_area(None);
             self.session.clear_transcript_file_link_targets();
             return;
         }
-        self.session.set_transcript_area(Some(inner));
-
-        // Clamp effective dimensions to prevent pathological CPU usage with huge terminals
-        // See: https://github.com/anthropics/claude-code/issues/21567
-        let effective_height = inner.height.min(ui::TUI_MAX_VIEWPORT_HEIGHT);
-        let effective_width = inner.width.min(ui::TUI_MAX_VIEWPORT_WIDTH);
-
-        self.session.apply_transcript_rows(effective_height);
-
-        let content_width = effective_width;
-        if content_width == 0 {
-            self.session.clear_transcript_file_link_targets();
-            return;
+        let layout = self.session.layout_sticky_prompt(inner);
+        let scroll_area = layout.body;
+        let content_width = scroll_area.width;
+        let viewport_rows = usize::from(scroll_area.height);
+        let visible_start = layout.source_row;
+        if let Some(header) = layout.header {
+            let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            let style = self.session.styles.sticky_prompt_style();
+            Clear.render(header_area, buf);
+            Paragraph::new(header).style(style).render(header_area, buf);
         }
-        self.session.apply_transcript_width(content_width);
-
-        let viewport_rows = effective_height as usize;
-        let effective_padding = ui::effective_transcript_bottom_padding(viewport_rows);
-        let total_rows = self.session.total_transcript_rows(content_width) + effective_padding;
-        let (top_offset, _clamped_total_rows) = self.session.prepare_transcript_scroll(total_rows, viewport_rows);
-        let vertical_offset = top_offset.min(self.session.scroll_manager.max_offset());
-        self.session.transcript_view_top = vertical_offset;
-
-        let visible_start = vertical_offset;
-        let scroll_area = inner;
 
         // Use cached visible lines to avoid rebuilding on every frame
         let cached_lines = self
             .session
             .collect_transcript_window_cached(content_width, visible_start, viewport_rows);
 
-        // Check if we need to mutate the lines (fill empty space or add overlays)
-        let fill_count = viewport_rows.saturating_sub(cached_lines.len());
-        let needs_mutation = fill_count > 0 || !self.session.queued_inputs.is_empty();
+        // Check if we need to mutate the lines (queue overlay). Bottom padding
+        // rows need no mutation — the buffer is already default-styled empty
+        // space, so padding the line list only forced a per-frame clone.
+        let needs_mutation = !self.session.queued_inputs.is_empty();
+
+        // Fast path: no queue overlay, no live indicator shimmer, and no
+        // explicit links — paint cached rows in place without cloning Lines
+        // into Paragraph (hotpath: that clone was ~15KB/frame).
+        let has_links = cached_lines.iter().any(|line| !line.explicit_links.is_empty());
+        let spinner_active = active_indicator_shimmer_phase(self.session).is_some();
+        if !needs_mutation && !has_links && !spinner_active {
+            self.session.clear_transcript_file_link_targets();
+            if self.session.transcript_clear_required {
+                Clear.render(scroll_area, buf);
+                self.session.transcript_clear_required = false;
+            }
+            let default_style = self.session.styles.default_style();
+            let default_bg = default_style.bg;
+            paint_pre_wrapped_lines(cached_lines.as_slice(), scroll_area, buf, default_style);
+            apply_borrowed_line_backgrounds(buf, scroll_area, cached_lines.as_slice(), default_bg);
+            clear_transcript_gutters(area, inner, default_style, buf);
+            return;
+        }
 
         let mut visible_lines = if needs_mutation {
-            // Need to mutate, so clone and modify
+            // Need to mutate (queue overlay), so clone, pad to the viewport
+            // (overlay paints at the bottom), and modify.
             let mut lines = cached_lines.to_vec();
+            let fill_count = viewport_rows.saturating_sub(lines.len());
             if fill_count > 0 {
                 let target_len = lines.len() + fill_count;
                 lines.resize_with(target_len, TranscriptLine::default);
@@ -130,12 +136,99 @@ impl<'a> Widget for TranscriptWidget<'a> {
         // Paint full-width line tints AFTER Paragraph. Paragraph::render
         // first fills the whole area with `default_style` (terminal bg),
         // which would wipe a pre-painted band on cells past the line text.
-        let default_bg = self.session.styles.default_style().bg;
-        let paragraph = Paragraph::new(visible_lines.clone())
-            .style(self.session.styles.default_style())
-            .wrap(Wrap { trim: false });
+        // Precompute per-row tints so the owned lines can move into Paragraph
+        // without a second clone.
+        let default_style = self.session.styles.default_style();
+        let default_bg = default_style.bg;
+        let row_tints: Vec<Option<Color>> = visible_lines.iter().map(line_background).collect();
+        // Lines are already wrapped to `content_width` == `scroll_area.width` in
+        // reflow. Re-wrapping in Paragraph every frame was the dominant
+        // steady-state render cost (hotpath: ~21KB/frame).
+        let paragraph = Paragraph::new(visible_lines).style(default_style);
         paragraph.render(scroll_area, buf);
-        apply_full_width_line_backgrounds(buf, scroll_area, &visible_lines, default_bg);
+        apply_precomputed_line_backgrounds(buf, scroll_area, &row_tints, default_bg);
+        clear_transcript_gutters(area, inner, default_style, buf);
+    }
+}
+
+fn transcript_content_area(area: Rect) -> Rect {
+    let gutter = transcript_horizontal_gutter(area.width);
+    Rect::new(
+        area.x.saturating_add(gutter),
+        area.y,
+        area.width.saturating_sub(gutter.saturating_mul(2)),
+        area.height,
+    )
+}
+
+fn transcript_horizontal_gutter(width: u16) -> u16 {
+    if width >= ui::INLINE_TRANSCRIPT_WIDE_GUTTER_MIN_WIDTH {
+        ui::INLINE_TRANSCRIPT_WIDE_GUTTER_COLUMNS
+    } else if width >= ui::INLINE_TRANSCRIPT_STANDARD_GUTTER_MIN_WIDTH {
+        ui::INLINE_TRANSCRIPT_STANDARD_GUTTER_COLUMNS
+    } else {
+        0
+    }
+}
+
+fn clear_transcript_gutters(area: Rect, content_area: Rect, style: Style, buf: &mut Buffer) {
+    let left_width = content_area.x.saturating_sub(area.x);
+    if left_width > 0 {
+        let left = Rect::new(area.x, area.y, left_width, area.height);
+        Clear.render(left, buf);
+        buf.set_style(left, style);
+    }
+
+    let right_x = content_area.right();
+    let right_width = area.right().saturating_sub(right_x);
+    if right_width > 0 {
+        let right = Rect::new(right_x, area.y, right_width, area.height);
+        Clear.render(right, buf);
+        buf.set_style(right, style);
+    }
+}
+
+/// Paint pre-wrapped transcript rows by writing spans directly into the buffer.
+/// Avoids cloning `Line`s into `Paragraph` on the common no-link path.
+/// Span styles patch `default_style` (same merge order as Paragraph).
+fn paint_pre_wrapped_lines(lines: &[TranscriptLine], area: Rect, buf: &mut Buffer, default_style: Style) {
+    buf.set_style(area, default_style);
+    let max_rows = usize::from(area.height).min(lines.len());
+    for (row, transcript_line) in lines.iter().take(max_rows).enumerate() {
+        let y = area.y + row as u16;
+        let mut x = area.x;
+        for span in &transcript_line.line.spans {
+            if x >= area.right() {
+                break;
+            }
+            let remaining = area.right().saturating_sub(x);
+            if remaining == 0 {
+                break;
+            }
+            let merged = default_style.patch(span.style);
+            let (end_x, _end_y) = buf.set_stringn(x, y, span.content.as_ref(), remaining as usize, merged);
+            x = end_x;
+        }
+    }
+}
+
+/// Fill untinted cells on a diff row using `line_background` from borrowed rows.
+fn apply_borrowed_line_backgrounds(buf: &mut Buffer, area: Rect, lines: &[TranscriptLine], default_bg: Option<Color>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let max_rows = usize::from(area.height).min(lines.len());
+    for (row, transcript_line) in lines.iter().take(max_rows).enumerate() {
+        let Some(bg) = line_background(&transcript_line.line) else {
+            continue;
+        };
+        let y = area.y + row as u16;
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            if cell.bg == Color::Reset || Some(cell.bg) == default_bg {
+                cell.bg = bg;
+            }
+        }
     }
 }
 
@@ -155,66 +248,63 @@ const FILE_OPERATION_INDICATORS: &[&str] = &[
     "❋ Applying patch to ",
     "❋ Search/replace in ",
     "❋ Deleting ",
+    "❋ Drafting plan",
+    "❋ Validating plan",
+    "❋ Persisting plan",
+    "❋ Preparing approval",
 ];
 
 fn apply_active_file_operation_spinner(session: &Session, lines: &mut [Line<'static>]) {
-    let Some(frame) = active_file_operation_spinner_frame(session) else {
+    let Some(phase) = active_indicator_shimmer_phase(session) else {
         return;
     };
 
+    // Sweep a shimmer across the whole indicator line (icon + verb + target)
+    // at the shared shimmer phase, so the transcript pulses in sync with the
+    // footer. Only the newest indicator row animates and only while its work
+    // is live; the cached transcript is never mutated, so the static `❋`
+    // row (with its links/colors) returns untouched when activity ends.
     for line in lines.iter_mut().rev() {
-        if is_file_operation_indicator_line(line) && replace_indicator_icon(line, frame) {
-            break;
+        if !is_file_operation_indicator_line(line) {
+            continue;
         }
+        let text = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+        let base_style = line.spans.first().map(|span| span.style).unwrap_or_default();
+        line.spans = shimmer_spans_with_style_at_phase(&text, base_style, phase);
+        break;
     }
 }
 
-fn active_file_operation_spinner_frame(session: &Session) -> Option<&'static str> {
+/// Shimmer phase for the active transcript indicator row, if any.
+///
+/// Returns `None` when animation is suppressed (reduced motion, screen
+/// reader) or nothing is live, so idle frames skip the span rebuild
+/// entirely. File tools key off `Running tool: <name>`; planning phases key
+/// off their footer statuses (`Drafting/Validating/Persisting plan...`,
+/// `Preparing approval...`), which the runloop keeps live while the long
+/// synthesis runs.
+fn active_indicator_shimmer_phase(session: &Session) -> Option<f32> {
     if !session.appearance.should_animate_progress_status() {
         return None;
     }
 
     let left = session.input_status_left.as_deref()?.to_ascii_lowercase();
-    let tool_name = left.strip_prefix("running tool: ")?;
-    let is_active_file_tool = FILE_OPERATION_STATUS_TOOLS.contains(&tool_name);
+    if let Some(tool_name) = left.strip_prefix("running tool: ") {
+        return FILE_OPERATION_STATUS_TOOLS
+            .contains(&tool_name)
+            .then(|| session.shimmer_state.phase());
+    }
 
-    is_active_file_tool.then(|| pulse_spinner_frame_for_phase(session.shimmer_state.phase()))
+    let is_planning_status = left.contains("drafting plan")
+        || left.contains("validating plan")
+        || left.contains("persisting plan")
+        || left.contains("preparing approval");
+    is_planning_status.then(|| session.shimmer_state.phase())
 }
 
 fn is_file_operation_indicator_line(line: &Line<'_>) -> bool {
     let text = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
     FILE_OPERATION_INDICATORS.iter().any(|pattern| text.contains(pattern))
-}
-
-fn replace_indicator_icon(line: &mut Line<'static>, frame: &str) -> bool {
-    let mut replaced = false;
-    let mut new_spans = Vec::with_capacity(line.spans.len() + 2);
-
-    for span in std::mem::take(&mut line.spans) {
-        if replaced {
-            new_spans.push(span);
-            continue;
-        }
-
-        let style = span.style;
-        let text = span.content.into_owned();
-        let Some(icon_index) = text.find('❋') else {
-            new_spans.push(Span::styled(text, style));
-            continue;
-        };
-        let icon_end = icon_index + '❋'.len_utf8();
-        if icon_index > 0 {
-            new_spans.push(Span::styled(text[..icon_index].to_string(), style));
-        }
-        new_spans.push(Span::styled(frame.to_string(), style));
-        if icon_end < text.len() {
-            new_spans.push(Span::styled(text[icon_end..].to_string(), style));
-        }
-        replaced = true;
-    }
-
-    line.spans = new_spans;
-    replaced
 }
 
 /// Full-row tint for a diff line.
@@ -226,6 +316,10 @@ fn replace_indicator_icon(line: &mut Line<'static>, frame: &str) -> bool {
 /// uncoloured sibling (or two different colours), and full-width fill would
 /// paint the empty pane with the other side's tint.
 fn line_background(line: &Line<'_>) -> Option<Color> {
+    // Fast reject: plain prose has no tinted spans and no side-by-side divider.
+    if !line.spans.iter().any(|span| span.style.bg.is_some()) {
+        return None;
+    }
     let mut first_background = None;
     let mut marker_background = None;
     let mut has_uncolored_divider = false;
@@ -258,14 +352,19 @@ fn line_background(line: &Line<'_>) -> Option<Color> {
 /// Only cells still on the terminal default background are painted. Word-chip
 /// cells (stronger red/green) must keep their colour so the two-level band
 /// survives the full-width fill.
-fn apply_full_width_line_backgrounds(buf: &mut Buffer, area: Rect, lines: &[Line<'_>], default_bg: Option<Color>) {
+fn apply_precomputed_line_backgrounds(
+    buf: &mut Buffer,
+    area: Rect,
+    row_tints: &[Option<Color>],
+    default_bg: Option<Color>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let max_rows = usize::from(area.height).min(lines.len());
-    for (row, line) in lines.iter().take(max_rows).enumerate() {
-        let Some(bg) = line_background(line) else {
+    let max_rows = usize::from(area.height).min(row_tints.len());
+    for (row, bg) in row_tints.iter().take(max_rows).enumerate() {
+        let Some(bg) = bg else {
             continue;
         };
         let y = area.y + row as u16;
@@ -274,10 +373,17 @@ fn apply_full_width_line_backgrounds(buf: &mut Buffer, area: Rect, lines: &[Line
             // Reset / terminal default → line tint. Any explicit paint
             // (word chip, already-tinted span, etc.) is left alone.
             if cell.bg == Color::Reset || Some(cell.bg) == default_bg {
-                cell.bg = bg;
+                cell.bg = *bg;
             }
         }
     }
+}
+
+/// Fill untinted cells on a diff row with the line tint (test helper).
+#[cfg(test)]
+fn apply_full_width_line_backgrounds(buf: &mut Buffer, area: Rect, lines: &[Line<'_>], default_bg: Option<Color>) {
+    let row_tints: Vec<Option<Color>> = lines.iter().map(line_background).collect();
+    apply_precomputed_line_backgrounds(buf, area, &row_tints, default_bg);
 }
 
 #[cfg(test)]
@@ -453,6 +559,84 @@ mod tests {
 
     fn row_text(buf: &Buffer, area: Rect, row: u16) -> String {
         (area.left()..area.right()).map(|x| buf[(x, row)].symbol()).collect::<String>()
+    }
+
+    #[test]
+    fn transcript_gutters_adapt_to_available_width() {
+        assert_eq!(
+            transcript_content_area(Rect::new(7, 3, 120, 12)),
+            Rect::new(9, 3, 116, 12),
+            "wide terminals get a modest two-column gutter",
+        );
+        assert_eq!(
+            transcript_content_area(Rect::new(7, 3, 80, 12)),
+            Rect::new(8, 3, 78, 12),
+            "standard terminals use a smaller gutter",
+        );
+        assert_eq!(
+            transcript_content_area(Rect::new(7, 3, 48, 12)),
+            Rect::new(7, 3, 48, 12),
+            "very narrow terminals keep the full width",
+        );
+
+        let area = Rect::new(0, 0, 120, 6);
+        let mut session = Session::new(InlineTheme::default(), None, 12);
+        session.push_line(InlineMessageKind::Agent, vec![segment("wide transcript")]);
+        let mut buf = Buffer::empty(area);
+        for x in [0, 1, 118, 119] {
+            buf[(x, 0)].set_symbol("X");
+        }
+
+        TranscriptWidget::new(&mut session).render(area, &mut buf);
+
+        assert_eq!(session.transcript_area(), Some(Rect::new(2, 0, 116, 6)));
+        assert_eq!(buf[(0, 0)].symbol(), " ", "left gutter must stay clear");
+        assert_eq!(buf[(1, 0)].symbol(), " ", "left gutter must stay clear");
+        assert_eq!(buf[(2, 0)].symbol(), "w", "message text starts inside the gutter");
+        assert_eq!(buf[(118, 0)].symbol(), " ", "right gutter must stay clear");
+        assert_eq!(buf[(119, 0)].symbol(), " ", "right gutter must stay clear");
+    }
+
+    #[test]
+    fn transcript_content_area_keeps_link_and_render_coordinates_aligned() {
+        let area = Rect::new(10, 2, 80, 8);
+        let content_area = transcript_content_area(area);
+        let url = "https://example.com/docs";
+        let mut session = Session::new(InlineTheme::default(), None, 12);
+        session.push_line(InlineMessageKind::Agent, vec![segment(&format!("Open {url}"))]);
+        let mut buf = Buffer::empty(area);
+
+        TranscriptWidget::new(&mut session).render(area, &mut buf);
+
+        assert_eq!(session.transcript_area(), Some(content_area));
+        let link_start = content_area.x + "Open ".len() as u16;
+        assert_eq!(buf[(link_start, area.y)].symbol(), "h");
+        assert!(
+            session.update_transcript_file_link_hover(link_start, area.y),
+            "the rendered URL cell should hit the matching transcript link target",
+        );
+        assert_eq!(row_text(&buf, area, area.y).chars().next(), Some(' '));
+    }
+
+    #[test]
+    fn very_narrow_transcript_keeps_wrapped_content_inside_the_viewport() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut session = Session::new(InlineTheme::default(), None, 12);
+        session.push_line(
+            InlineMessageKind::Agent,
+            vec![segment("alpha beta gamma delta epsilon zeta eta theta iota kappa")],
+        );
+        let mut buf = Buffer::empty(area);
+
+        TranscriptWidget::new(&mut session).render(area, &mut buf);
+
+        assert_eq!(session.transcript_area(), Some(area));
+        let rows: Vec<String> = (area.y..area.bottom())
+            .map(|row| row_text(&buf, area, row).trim_end().to_string())
+            .filter(|row| !row.is_empty())
+            .collect();
+        assert!(rows.len() >= 2, "narrow transcript should wrap into multiple rows: {rows:?}");
+        assert!(rows.iter().all(|row| row.chars().count() <= usize::from(area.width)));
     }
 
     #[test]
@@ -637,5 +821,89 @@ mod tests {
         assert!(!rendered.is_empty());
         assert!(rendered.iter().any(|row| row == "line 1"));
         assert!(rendered.iter().any(|row| row == "line 3"));
+    }
+
+    fn shimmer_session_with_status(status: &str) -> Session {
+        let mut session = Session::new(InlineTheme::default(), None, 12);
+        session.input_status_left = Some(status.to_string());
+        session
+    }
+
+    fn shimmer_line_text(line: &Line) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn indicator_shimmer_preserves_text_and_restyles_active_row() {
+        use ratatui::text::Line as RatLine;
+        let session = shimmer_session_with_status("Running tool: edit_file");
+        let original = RatLine::from("❋ Editing vtcode.toml...");
+        let mut lines = vec![original.clone()];
+        apply_active_file_operation_spinner(&session, &mut lines);
+
+        assert_eq!(shimmer_line_text(&lines[0]), "❋ Editing vtcode.toml...");
+        assert_ne!(lines[0].spans, original.spans, "active row must shimmer");
+    }
+
+    #[test]
+    fn indicator_shimmer_sweep_moves_with_phase() {
+        use ratatui::text::Line as RatLine;
+        let mut session = shimmer_session_with_status("Drafting plan... (42 chars)");
+        // The sweep head starts off-text (10 chars of padding), so advance
+        // until it has travelled into the line. Bounded: ~12 ticks minimum.
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            session.handle_tick();
+            if session.shimmer_state.phase() >= 0.2 {
+                break;
+            }
+        }
+        assert!(
+            session.shimmer_state.phase() >= 0.2,
+            "phase must advance while drafting, got {}",
+            session.shimmer_state.phase()
+        );
+
+        let mut advanced = vec![RatLine::from("❋ Drafting plan — researching codebase...")];
+        apply_active_file_operation_spinner(&session, &mut advanced);
+
+        let fresh = shimmer_session_with_status("Drafting plan... (42 chars)");
+        let mut at_zero = vec![RatLine::from("❋ Drafting plan — researching codebase...")];
+        apply_active_file_operation_spinner(&fresh, &mut at_zero);
+
+        assert_eq!(shimmer_line_text(&advanced[0]), "❋ Drafting plan — researching codebase...");
+        assert_ne!(advanced[0].spans, at_zero[0].spans, "sweep position must follow the shared shimmer phase");
+    }
+
+    #[test]
+    fn indicator_shimmer_animates_only_the_newest_row() {
+        use ratatui::text::Line as RatLine;
+        let session = shimmer_session_with_status("Validating plan...");
+        let first = RatLine::from("❋ Drafting plan — researching codebase...");
+        let second = RatLine::from("❋ Validating plan...");
+        let mut lines = vec![first.clone(), second.clone()];
+        apply_active_file_operation_spinner(&session, &mut lines);
+
+        assert_eq!(lines[0].spans, first.spans, "older row must stay static");
+        assert_ne!(lines[1].spans, second.spans, "newest row must shimmer");
+    }
+
+    #[test]
+    fn indicator_shimmer_stays_static_without_live_status() {
+        use ratatui::text::Line as RatLine;
+        for status in ["Running tool: code_search", "main*", "Ready"] {
+            let session = shimmer_session_with_status(status);
+            let original = RatLine::from("❋ Drafting plan — researching codebase...");
+            let mut lines = vec![original.clone()];
+            apply_active_file_operation_spinner(&session, &mut lines);
+            assert_eq!(lines[0].spans, original.spans, "stale row must not shimmer for {status:?}");
+        }
+
+        let mut session = shimmer_session_with_status("Drafting plan... (42 chars)");
+        session.appearance.reduce_motion_mode = true;
+        let original = RatLine::from("❋ Drafting plan — researching codebase...");
+        let mut lines = vec![original.clone()];
+        apply_active_file_operation_spinner(&session, &mut lines);
+        assert_eq!(lines[0].spans, original.spans, "reduced motion must keep the row static");
     }
 }

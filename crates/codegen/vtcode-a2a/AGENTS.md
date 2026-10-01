@@ -1,6 +1,6 @@
 # vtcode-a2a
 
-[Root AGENTS.md](../AGENTS.md) | Agent2Agent (A2A) Protocol support. Layer 0 crate — zero internal vtcode dependencies.
+[Root AGENTS.md](../../../AGENTS.md) | Agent2Agent (A2A) Protocol support. Layer 0 crate — zero internal vtcode dependencies.
 
 ## Module Groups
 

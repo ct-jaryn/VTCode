@@ -1,6 +1,6 @@
 # xtask
 
-[Root AGENTS.md](../../../../AGENTS.md) | Release packaging automation for `cargo-binstall` extra-files layout.
+[Root AGENTS.md](../../../AGENTS.md) | Release packaging automation for `cargo-binstall` extra-files layout.
 
 ## Role
 

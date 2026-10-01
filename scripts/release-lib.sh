@@ -162,6 +162,12 @@ generate_structured_changelog() {
 			local hash message
 			hash=$(echo "$line" | awk '{print $1}')
 			message=$(echo "$line" | cut -d' ' -f2-)
+			# Skip release noise + owner-only TODO churn (docs/project/TODO.md).
+			local lower_msg
+			lower_msg=$(echo "$message" | tr '[:upper:]' '[:lower:]')
+			if [[ "$lower_msg" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog|update.*todo|docs\(todo\)|docs\(project\).*todo|^update project$) ]]; then
+				continue
+			fi
 			local type
 			type=$(parse_commit_type "$message")
 			local clean_msg

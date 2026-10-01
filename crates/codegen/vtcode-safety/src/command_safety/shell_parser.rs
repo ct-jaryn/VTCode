@@ -377,6 +377,23 @@ fn extract_command_from_node(node: tree_sitter::Node, source: &str) -> Option<Ve
             continue;
         }
 
+        // Leading `KEY=value` prefixes and concatenated assignment values
+        // (`NODE_OPTIONS='--require ./x'`) are part of the command's
+        // environment contract. Keep them as one word so intent/activity
+        // classification can inspect injection keys;
+        // `command_words_after_environment_prefix` still strips them before
+        // locating the executable. `concatenation` must use the full span
+        // text — its children are only the `NAME=` and quoted value pieces.
+        if matches!(child.kind(), "variable_assignment" | "concatenation") {
+            if let Ok(arg) = child.utf8_text(source.as_bytes()) {
+                let trimmed = arg.trim();
+                if !trimmed.is_empty() {
+                    command.push(trimmed.to_string());
+                }
+            }
+            continue;
+        }
+
         if matches!(
             child.kind(),
             "word" | "string" | "raw_string" | "ansi_c_string" | "simple_expansion" | "variable_expansion"
@@ -697,6 +714,81 @@ mod tests {
 
 use anyhow::bail;
 
+/// Delimiter token of a quoted heredoc starting just after `<<` / `<<-`.
+///
+/// Returns `(delimiter, token_byte_len)` where the token covers the optional
+/// `-`, surrounding whitespace, and the quoted delimiter word. Bare
+/// (unquoted) delimiters return `None`: those bodies still allow substitution.
+pub(crate) fn quoted_heredoc_delim(rest: &str) -> Option<(String, usize)> {
+    let mut idx = 0usize;
+    let bytes = rest.as_bytes();
+    if bytes.first() == Some(&b'-') {
+        idx += 1;
+    }
+    while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b'\t') {
+        idx += 1;
+    }
+    let quote = match bytes.get(idx) {
+        Some(b'\'') | Some(b'"') => bytes[idx],
+        _ => return None,
+    };
+    idx += 1;
+    let delim_start = idx;
+    while idx < bytes.len() && bytes[idx] != quote {
+        idx += 1;
+    }
+    if idx >= bytes.len() || idx == delim_start {
+        return None;
+    }
+    let delim = rest[delim_start..idx].to_string();
+    idx += 1; // closing quote
+    Some((delim, idx))
+}
+
+/// Byte length of a quoted heredoc body starting just after the opener line's
+/// newline, through the closing delimiter line (inclusive). Returns `None`
+/// when the closing delimiter never appears so callers keep scanning the
+/// unterminated body and fail closed on anything executable inside it.
+pub(crate) fn heredoc_body_skip_len(rest: &str, delim: &str) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let mut idx = 0usize;
+    while idx <= bytes.len() {
+        let line_end = rest[idx..].find('\n').map(|offset| idx + offset).unwrap_or(bytes.len());
+        let line = rest[idx..line_end].trim_end_matches('\r');
+        let next = if line_end < bytes.len() {
+            line_end + 1
+        } else {
+            bytes.len()
+        };
+        if line == delim {
+            return Some(next);
+        }
+        if line_end >= bytes.len() {
+            return None;
+        }
+        idx = next;
+    }
+    None
+}
+
+/// Advance a `CharIndices` iterator by at most `max_bytes`, returning the byte
+/// index just past the last consumed char (or `fallback` when nothing remains).
+fn consume_bytes(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    max_bytes: usize,
+    fallback: usize,
+) -> usize {
+    let mut consumed = 0usize;
+    let mut end = fallback;
+    while consumed < max_bytes
+        && let Some((idx, ch)) = chars.next()
+    {
+        consumed += ch.len_utf8();
+        end = idx + ch.len_utf8();
+    }
+    end
+}
+
 /// Quote state for shell segment splitting.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum QuoteState {
@@ -712,6 +804,10 @@ pub(crate) fn split_shell_segments(command: &str) -> Result<Vec<String>> {
     let mut state = QuoteState::None;
     let mut escaped = false;
     let mut segment_start = 0usize;
+    // Delimiter of a `<<'EOF'`-shaped heredoc whose opener line has not ended
+    // yet. The opener line stays live shell; the body is skipped at the
+    // unquoted newline.
+    let mut pending_heredoc: Option<String> = None;
     let mut chars = command.char_indices().peekable();
 
     while let Some((idx, ch)) = chars.next() {
@@ -747,14 +843,43 @@ pub(crate) fn split_shell_segments(command: &str) -> Result<Vec<String>> {
                     '\\' => escaped = true,
                     '\'' => state = QuoteState::Single,
                     '"' => state = QuoteState::Double,
+                    // Quoted heredoc bodies are literal data (newlines, backticks
+                    // included). Arm the skip here but keep scanning: everything
+                    // after the delimiter on the opener line is live shell, so
+                    // operators there must still split segments or bail. The
+                    // body is skipped at the unquoted opener newline below.
+                    '<' if matches!(chars.peek(), Some((_, '<'))) => {
+                        let _ = chars.next(); // second '<'
+                        let rest: String = chars.clone().map(|(_, c)| c).collect();
+                        if let Some((delim, token_len)) = quoted_heredoc_delim(&rest) {
+                            let _ = consume_bytes(&mut chars, token_len, idx + ch.len_utf8());
+                            pending_heredoc = Some(delim);
+                        }
+                    }
                     '`' => bail!("Command injection pattern detected"),
                     '$' if matches!(chars.peek(), Some((_, '('))) => {
                         bail!("Command injection pattern detected");
                     }
                     ';' => bail!("Unquoted command chaining detected"),
-                    '\n' => bail!(
-                        "multi-line shell commands are not allowed; use file tools (write_file/apply_patch) for multi-line content instead of heredocs"
-                    ),
+                    '\n' => {
+                        // The opener line ended in unquoted context: the quoted
+                        // heredoc body starts here and is literal data. Without
+                        // a closing delimiter the body keeps being scanned, so
+                        // executable content in it still fails closed.
+                        if let Some(delim) = pending_heredoc.take() {
+                            let rest: String = chars.clone().map(|(_, c)| c).collect();
+                            if let Some(skip) = heredoc_body_skip_len(&rest, &delim) {
+                                // The opener line is a live command; the body
+                                // belongs to no segment.
+                                push_segment(command, segment_start, idx, &mut segments);
+                                segment_start = consume_bytes(&mut chars, skip, command.len());
+                                continue;
+                            }
+                        }
+                        bail!(
+                            "multi-line shell commands are not allowed; use file tools (write_file/apply_patch) for multi-line content instead of heredocs"
+                        );
+                    }
                     '|' | '&' => {
                         push_segment(command, segment_start, idx, &mut segments);
                         segment_start = idx + ch.len_utf8();

@@ -143,3 +143,107 @@ fn clarifying_question_detected_for_exact_checkpoint_turn_856_phrase() {
         "Next open decision: Do you want me to implement this in a single unified runloop branch, or first create a reviewable exec-plan document under docs/harness/exec-plans/?"
     ));
 }
+
+#[test]
+fn prepared_tool_call_maps_shell_aliases_to_exec_command() {
+    let call = uni::ToolCall::function(
+        "call_test".to_string(),
+        "bash".to_string(),
+        r#"{"command": ["echo", "hi"], "action": "run"}"#.to_string(),
+    );
+    let prepared = PreparedAssistantToolCall::new(call);
+    assert_eq!(prepared.tool_name(), "exec_command");
+    assert!(prepared.args_error().is_none() || prepared.args().is_some());
+}
+
+#[test]
+fn prepared_tool_call_rejects_prose_blob_names() {
+    let call =
+        uni::ToolCall::function("call_test".to_string(), "` in content — could a skill".to_string(), "{}".to_string());
+    let prepared = PreparedAssistantToolCall::new(call);
+    assert!(prepared.args().is_none() || prepared.args_error().is_some());
+}
+
+#[test]
+fn builtin_tool_names_all_pass_dispatchability_gate() {
+    // Every builtin tool name reachable through native tool calls must pass
+    // `is_dispatchable_tool_name`; otherwise the gate in
+    // `PreparedAssistantToolCall::new` would reject legitimate calls with
+    // "tool name is not a clean identifier". The constants module
+    // compile-time-validates [a-z0-9_] shape, so this guards the gate against
+    // future gate tightening that outlaws a shipped name.
+    use vtcode_config::constants::tools;
+
+    let names = [
+        tools::EXEC_COMMAND,
+        tools::WRITE_STDIN,
+        tools::APPLY_PATCH,
+        tools::CODE_SEARCH,
+        tools::UNIFIED_SEARCH,
+        tools::UNIFIED_EXEC,
+        tools::UNIFIED_FILE,
+        tools::THINK,
+        tools::SEARCH_TOOLS,
+        tools::MCP,
+        tools::MCP_SEARCH_TOOLS,
+        tools::MCP_GET_TOOL_DETAILS,
+        tools::MCP_LIST_SERVERS,
+        tools::MCP_CONNECT_SERVER,
+        tools::MCP_DISCONNECT_SERVER,
+        tools::WEB_SEARCH,
+        tools::WEB_FETCH,
+        tools::FETCH_URL,
+        tools::DEFUDDLE_FETCH,
+        tools::LIST,
+        tools::GREP,
+        tools::FETCH,
+        tools::EXEC_PTY_CMD,
+        tools::SHELL,
+        tools::GREP_FILE,
+        tools::LIST_FILES,
+        tools::LIST_SKILLS,
+        tools::LOAD_SKILL,
+        tools::LOAD_SKILL_RESOURCE,
+        tools::RUN_PTY_CMD,
+        tools::CREATE_PTY_SESSION,
+        tools::LIST_PTY_SESSIONS,
+        tools::CLOSE_PTY_SESSION,
+        tools::SEND_PTY_INPUT,
+        tools::READ_PTY_SESSION,
+        tools::RESIZE_PTY_SESSION,
+        tools::EXECUTE_CODE,
+        tools::READ_FILE,
+        tools::WRITE_FILE,
+        tools::EDIT_FILE,
+        tools::DELETE_FILE,
+        tools::CREATE_FILE,
+        tools::SEARCH_REPLACE,
+        tools::FILE_OP,
+        tools::MOVE_FILE,
+        tools::COPY_FILE,
+        tools::GET_ERRORS,
+        tools::REQUEST_USER_INPUT,
+        tools::MEMORY,
+        tools::ASK_QUESTIONS,
+        tools::ASK_USER_QUESTION,
+        tools::AGENT,
+        tools::CRON,
+        tools::CRON_CREATE,
+        tools::CRON_LIST,
+        tools::CRON_DELETE,
+        tools::START_PLANNING,
+        tools::TASK_TRACKER,
+        tools::SPAWN_AGENT,
+        tools::SPAWN_BACKGROUND_SUBPROCESS,
+        tools::SEND_INPUT,
+        tools::WAIT_AGENT,
+        tools::RESUME_AGENT,
+        tools::CLOSE_AGENT,
+    ];
+    for name in names {
+        assert!(
+            crate::agent::runloop::text_tools::is_dispatchable_tool_name(name),
+            "builtin tool name must pass the dispatchability gate: {name}"
+        );
+    }
+}

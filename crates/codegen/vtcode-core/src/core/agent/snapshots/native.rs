@@ -57,6 +57,51 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::rename(temp, path)?;
     Ok(())
 }
+
+/// Whether a locked fd still refers to the file currently at `lock_path`.
+///
+/// The completion path unlinks `rewind.lock` while holding its lock. A process
+/// that opened the old inode just before that unlink can `try_lock` the ghost
+/// after the holder drops — while another process creates a fresh file — and
+/// both would believe they hold the lock. Comparing inos closes that window.
+#[cfg(unix)]
+fn locked_file_matches_path(file: &fs::File, lock_path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(locked) = file.metadata() else {
+        return false;
+    };
+    let Ok(current) = fs::metadata(lock_path) else {
+        return false;
+    };
+    locked.ino() == current.ino()
+}
+
+#[cfg(not(unix))]
+fn locked_file_matches_path(_: &fs::File, _: &Path) -> bool {
+    true
+}
+
+/// Acquire the workspace rewind lock, verifying the locked inode is still the
+/// file at `lock_path`. A ghost acquisition (locked inode replaced under us)
+/// is dropped and retried against the current file, so mutual exclusion holds
+/// across the completion path's unlink-while-held cleanup.
+fn acquire_verified_rewind_lock(lock_path: &Path) -> std::io::Result<fs::File> {
+    for _ in 0..3 {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)?;
+        file.try_lock()?;
+        if locked_file_matches_path(&file, lock_path) {
+            return Ok(file);
+        }
+        drop(file);
+    }
+    Err(std::io::Error::other("rewind.lock kept changing identity; retry the turn"))
+}
+
 fn file_records(manifest: &filesnap::Manifest, workspace: &Path, engine: &str) -> Result<Vec<FileSnapshot>> {
     manifest
         .entries
@@ -388,6 +433,59 @@ impl SnapshotManager {
         }
     }
 
+    /// Bound a finished session's navigation record so it cannot pin every turn
+    /// snapshot for the full retention window. Keeps the newest
+    /// [`REWIND_ACTIVE_KEEP`] active turns for a possible resume, drops the
+    /// rest (those `turn_*.json` files become prune-eligible), clears the redo
+    /// stack, and releases the workspace rewind lock.
+    pub async fn complete_session_navigation(&self, session: &str) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let nav_path = self.navigation_path(session)?;
+        let mut state = self.navigation(session)?;
+        let had_record = nav_path.exists();
+        if state.active.len() > REWIND_ACTIVE_KEEP {
+            let drop_count = state.active.len() - REWIND_ACTIVE_KEEP;
+            state.active.drain(..drop_count);
+        }
+        for entry in std::mem::take(&mut state.redo) {
+            self.retire_recovery_record(&entry.snapshot).await;
+        }
+        // Avoid inventing an empty branch file for checkpoint-less sessions.
+        if had_record || !state.active.is_empty() || state.pending.is_some() {
+            atomic_json(&nav_path, &state)?;
+        }
+        let lock_path = self.storage_dir.join("rewind.lock");
+        // Only remove the lock while we hold it. Deleting an flocked file that
+        // another process holds would let later `try_lock` calls create a fresh
+        // inode and break mutual exclusion.
+        match fs::OpenOptions::new().read(true).write(true).open(&lock_path) {
+            Ok(file) => {
+                // Only unlink while holding a lock on the file that is
+                // currently at the path; a ghost lock (path replaced under
+                // us) must not delete the replacement's lock file.
+                if file.try_lock().is_ok() && locked_file_matches_path(&file, &lock_path) {
+                    if let Err(error) = fs::remove_file(&lock_path)
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        tracing::debug!(%error, "failed to remove rewind.lock after session completion");
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::debug!(%error, "failed to open rewind.lock after session completion");
+            }
+        }
+        // Newly unpinned turns can be reclaimed now rather than waiting for the
+        // next prompt's budget prune.
+        if let Err(error) = self.prune_snapshot_budget().await {
+            tracing::debug!(%error, "checkpoint budget prune failed after session completion");
+        }
+        Ok(())
+    }
+
     fn build_ignore(&self, policy: &str) -> Result<filesnap::Gitignore> {
         anyhow::ensure!(policy.len() <= 1024 * 1024, "Ignore policy is too large");
         let mut builder = filesnap::GitignoreBuilder::new(&self.canonical_workspace);
@@ -406,13 +504,8 @@ impl SnapshotManager {
     ) -> Result<PromptCheckpointLease> {
         let mut state = self.navigation(session)?;
         anyhow::ensure!(state.pending.is_none(), "Interrupted rewind; run /rewind-recover before continuing");
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.storage_dir.join("rewind.lock"))?;
-        lock.try_lock().context("Another turn or rewind is using this workspace")?;
+        let lock = acquire_verified_rewind_lock(&self.storage_dir.join("rewind.lock"))
+            .context("Another turn or rewind is using this workspace")?;
         let workspace = self.canonical_workspace.clone();
         let storage = self.storage_dir.clone();
         let engine = format!("vt-{}", uuid::Uuid::new_v4());
@@ -470,6 +563,13 @@ impl SnapshotManager {
             self.retire_recovery_record(&entry.snapshot).await;
         }
         atomic_json(&self.navigation_path(session)?, &state)?;
+        // Cheap count-budget prune so checkpoints stay bounded on the per-turn
+        // hot path. Navigation-referenced turns are protected inside the prune.
+        // Age expiry (which reads every checkpoint body) stays on the cold
+        // `cleanup_old_snapshots` path.
+        if let Err(error) = self.prune_snapshot_budget().await {
+            tracing::debug!(%error, "checkpoint budget prune failed");
+        }
         active_map()
             .lock()
             .map_err(|error| anyhow::anyhow!("Checkpoint lock poisoned: {error}"))?
@@ -495,13 +595,8 @@ impl SnapshotManager {
         session: &str,
         conversation: &[SessionMessage],
     ) -> Result<CheckpointRestore> {
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.storage_dir.join("rewind.lock"))?;
-        lock.try_lock().context("Wait for the current turn to finish")?;
+        let _lock = acquire_verified_rewind_lock(&self.storage_dir.join("rewind.lock"))
+            .context("Wait for the current turn to finish")?;
         let policy = match fs::read_to_string(self.canonical_workspace.join(".filesnapignore")) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -611,13 +706,8 @@ impl SnapshotManager {
     /// this never touches the redo stack, so `/rewind-recover` cannot overwrite
     /// edits made after a completed rewind when there is nothing to recover.
     pub async fn recover_pending_rewind(&self, session: &str) -> Result<CheckpointRestore> {
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.storage_dir.join("rewind.lock"))?;
-        lock.try_lock().context("Wait for the current turn to finish")?;
+        let _lock = acquire_verified_rewind_lock(&self.storage_dir.join("rewind.lock"))
+            .context("Wait for the current turn to finish")?;
         // Fail closed when no recovery is pending; never fall back to redo.
         let state = self.navigation(session)?;
         let pending = state.pending.clone().context("No interrupted rewind to recover")?;
@@ -650,6 +740,57 @@ mod tests {
     use super::*;
     use crate::llm::provider::MessageRole;
     use tempfile::TempDir;
+
+    #[test]
+    #[cfg(unix)]
+    fn rewind_lock_acquire_verifies_and_blocks_concurrent_holders() {
+        let temp = TempDir::new().expect("tempdir");
+        let lock_path = temp.path().join("rewind.lock");
+
+        let first = acquire_verified_rewind_lock(&lock_path).expect("first acquire");
+        assert!(
+            locked_file_matches_path(&first, &lock_path),
+            "a fresh acquisition must cover the current path inode"
+        );
+
+        // A live holder blocks other acquirers (WouldBlock), preserving the
+        // pre-existing mutual-exclusion behavior.
+        let second = acquire_verified_rewind_lock(&lock_path);
+        let error = second.expect_err("held lock must block");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+        drop(first);
+        let third = acquire_verified_rewind_lock(&lock_path).expect("re-acquire after release");
+        assert!(locked_file_matches_path(&third, &lock_path));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rewind_lock_detects_replaced_path_inode() {
+        let temp = TempDir::new().expect("tempdir");
+        let lock_path = temp.path().join("rewind.lock");
+        fs::write(&lock_path, b"").expect("create lock file");
+        let ghost = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open old inode");
+
+        // The completion path's unlink-while-held replaced the file: the old
+        // fd is now a ghost and must not be treated as covering the path.
+        fs::remove_file(&lock_path).expect("unlink");
+        fs::write(&lock_path, b"").expect("recreate lock file");
+        assert!(
+            !locked_file_matches_path(&ghost, &lock_path),
+            "a ghost fd must not verify against the replaced path"
+        );
+
+        // The acquire helper never accepts a ghost: it retries onto the
+        // current file even while the ghost is still open.
+        let verified = acquire_verified_rewind_lock(&lock_path).expect("acquire onto current inode");
+        assert!(locked_file_matches_path(&verified, &lock_path));
+    }
+
     #[test]
     #[cfg(unix)]
     fn shell_redirects_only_capture_literal_targets_with_a_known_cwd() {
@@ -915,6 +1056,49 @@ mod tests {
             .navigate_prompt(None, RevertScope::Both, &session, &restored.conversation)
             .await?;
         assert_eq!(redone.conversation, current);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_session_navigation_trims_active_and_clears_redo() -> Result<()> {
+        let dir = TempDir::new()?;
+        let manager = SnapshotManager::new(SnapshotConfig::new(dir.path().into()))?;
+        let storage = dir.path().join(".vtcode").join("checkpoints");
+        let session = uuid::Uuid::new_v4().to_string();
+        let key: String = session.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        let branch_path = storage.join(format!("branch_{key}.json"));
+        let lock_path = storage.join("rewind.lock");
+        fs::write(&lock_path, b"")?;
+
+        // 20 protected turns plus a redo entry: the completion trim must keep
+        // only the newest REWIND_ACTIVE_KEEP actives and drop redo entirely.
+        let active: Vec<usize> = (1435..=1454).collect();
+        let recovery = Recovery {
+            policy: String::new(),
+            snapshot: uuid::Uuid::new_v4().to_string(),
+            active: vec![1435],
+        };
+        let recovery_path = recovery_path(&storage, &recovery.snapshot);
+        atomic_json(&recovery_path, &serde_json::json!({}))?;
+        let state = Navigation {
+            active: active.clone(),
+            redo: vec![recovery],
+            pending: None,
+        };
+        atomic_json(&branch_path, &state)?;
+
+        manager.complete_session_navigation(&session).await?;
+
+        let saved: Navigation = serde_json::from_slice(&fs::read(&branch_path)?)?;
+        assert_eq!(
+            saved.active,
+            active[active.len() - REWIND_ACTIVE_KEEP..].to_vec(),
+            "only the newest rewind window stays pinned"
+        );
+        assert!(saved.redo.is_empty(), "completion must clear redo");
+        assert!(saved.pending.is_none());
+        assert!(!lock_path.exists(), "completion must release the workspace rewind lock");
+        assert!(!recovery_path.exists(), "completion must retire redo recovery records");
         Ok(())
     }
 }

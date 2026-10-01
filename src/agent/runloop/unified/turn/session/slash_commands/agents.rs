@@ -1,3 +1,5 @@
+use crate::agent::runloop::ui_list;
+use crate::agent::runloop::ui_list::Tone;
 use anyhow::{Result, anyhow, bail};
 use std::path::PathBuf;
 use vtcode_commons::VtCodePaths;
@@ -245,6 +247,7 @@ async fn show_agents_manager(mut ctx: SlashCommandContext<'_>) -> Result<SlashCo
         Some(InlineListSearchConfig {
             label: String::new(),
             placeholder: Some("browse, create, edit, thread".to_string()),
+            fuzzy: false,
         }),
     );
 
@@ -294,14 +297,16 @@ async fn show_agent_catalog(mut ctx: SlashCommandContext<'_>) -> Result<SlashCom
 
     let mut items = Vec::new();
     for spec in &specs {
-        items.push(InlineListItem {
-            title: spec.name.clone(),
-            subtitle: Some(agent_subtitle(spec, false)),
-            badge: Some(agent_badge(spec)),
-            indent: 0,
-            selection: Some(InlineListSelection::ConfigAction(format!("{AGENT_INSPECT_PREFIX}{}", spec.name))),
-            search_value: Some(format!("{} {} {}", spec.name, spec.description, spec.source.label())),
-        });
+        items.push(
+            ui_list::action(
+                spec.name.clone(),
+                agent_subtitle(spec, false),
+                Some(agent_badge(spec)),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction(format!("{AGENT_INSPECT_PREFIX}{}", spec.name))),
+            )
+            .with_search_value(format!("{} {} {}", spec.name, spec.description, spec.source.label())),
+        );
     }
     for spec in &shadowed {
         items.push(InlineListItem {
@@ -311,6 +316,7 @@ async fn show_agent_catalog(mut ctx: SlashCommandContext<'_>) -> Result<SlashCom
             indent: 0,
             selection: None,
             search_value: Some(format!("{} shadowed {} {}", spec.name, spec.description, spec.source.label())),
+            ..Default::default()
         });
     }
 
@@ -327,6 +333,7 @@ async fn show_agent_catalog(mut ctx: SlashCommandContext<'_>) -> Result<SlashCom
         Some(InlineListSearchConfig {
             label: String::new(),
             placeholder: Some("name, source, description".to_string()),
+            fuzzy: false,
         }),
     );
 
@@ -467,13 +474,15 @@ async fn select_custom_agent_name(ctx: &mut SlashCommandContext<'_>, title: &str
 
     let items = specs
         .iter()
-        .map(|spec| InlineListItem {
-            title: spec.name.clone(),
-            subtitle: Some(agent_subtitle(spec, false)),
-            badge: Some(agent_badge(spec)),
-            indent: 0,
-            selection: Some(InlineListSelection::ConfigAction(format!("{AGENT_INSPECT_PREFIX}{}", spec.name))),
-            search_value: Some(format!("{} {} {}", spec.name, spec.description, spec.source.label())),
+        .map(|spec| {
+            ui_list::action(
+                spec.name.clone(),
+                agent_subtitle(spec, false),
+                Some(agent_badge(spec)),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction(format!("{AGENT_INSPECT_PREFIX}{}", spec.name))),
+            )
+            .with_search_value(format!("{} {} {}", spec.name, spec.description, spec.source.label()))
         })
         .collect::<Vec<_>>();
     let selected = items.first().and_then(|item| item.selection.clone());
@@ -485,6 +494,7 @@ async fn select_custom_agent_name(ctx: &mut SlashCommandContext<'_>, title: &str
         Some(InlineListSearchConfig {
             label: String::new(),
             placeholder: Some("name, description, source".to_string()),
+            fuzzy: false,
         }),
     );
 
@@ -504,22 +514,22 @@ async fn confirm_delete_agent(ctx: &mut SlashCommandContext<'_>, name: &str) -> 
             "Delete `{name}` from disk? This cannot be undone automatically."
         )],
         vec![
-            InlineListItem {
-                title: "Delete agent".to_string(),
-                subtitle: Some("Remove the selected definition file".to_string()),
-                badge: Some("Confirm".to_string()),
-                indent: 0,
-                selection: Some(InlineListSelection::ConfigAction("agents:confirm-delete".to_string())),
-                search_value: Some("confirm delete".to_string()),
-            },
-            InlineListItem {
-                title: "Cancel".to_string(),
-                subtitle: Some("Keep the agent definition".to_string()),
-                badge: None,
-                indent: 0,
-                selection: Some(InlineListSelection::ConfigAction("agents:cancel-delete".to_string())),
-                search_value: Some("cancel".to_string()),
-            },
+            ui_list::action(
+                "Delete agent",
+                "Remove the selected definition file".to_string(),
+                Some("Confirm".to_string()),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction("agents:confirm-delete".to_string())),
+            )
+            .with_search_value("confirm delete".to_string()),
+            ui_list::action(
+                "Cancel",
+                "Keep the agent definition".to_string(),
+                None,
+                Tone::Neutral,
+                Some(InlineListSelection::ConfigAction("agents:cancel-delete".to_string())),
+            )
+            .with_search_value("cancel".to_string()),
         ],
         Some(InlineListSelection::ConfigAction("agents:cancel-delete".to_string())),
         None,
@@ -616,6 +626,7 @@ fn action_item(title: &str, subtitle: &str, badge: Option<&str>, search_value: &
         indent: 0,
         selection: Some(InlineListSelection::ConfigAction(format!("{AGENT_ACTION_PREFIX}{action}"))),
         search_value: Some(search_value.to_string()),
+        ..Default::default()
     }
 }
 

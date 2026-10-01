@@ -56,7 +56,7 @@ async fn build_agent_with_tools_config(workspace: &Path, tools_config: ToolsConf
     let mut discovery_input = SubagentDiscoveryInput::new(workspace.to_path_buf());
     discovery_input.include_user_agents = false;
     let discovered = discover_subagents(&discovery_input).expect("discover primary agents");
-    let primary_agents = PrimaryAgentCatalog::from_specs_with_default(&discovered.effective, "duck");
+    let primary_agents = PrimaryAgentCatalog::from_specs_with_default(&discovered.effective, "build");
 
     ZedAgent::new(
         core_config,
@@ -242,8 +242,14 @@ async fn read_only_primary_agents_hide_local_tools() {
     let plan_names = definition_names(agent.tool_definitions(true, &enabled_tools, "plan").unwrap());
     let build_names = definition_names(agent.tool_definitions(true, &enabled_tools, "build").unwrap());
 
+    // Duck is bash-denied, so only the direct read tools remain on the wire.
     assert_eq!(duck_names, vec![tools::LIST_FILES.to_string()]);
-    assert_eq!(plan_names, duck_names);
+    // Plan intentionally keeps `bash` permitted so read-only shell inspection
+    // (`rg`, `cat`, ...) stays advertised while planning; the planning dispatch
+    // gate blocks mutating commands at execution time. See
+    // `plan_agent_permissions` in vtcode-config.
+    assert!(plan_names.contains(&tools::LIST_FILES.to_string()));
+    assert!(plan_names.contains(&tools::EXEC_COMMAND.to_string()));
     let removed_tool = format!("switch_{}", "mode");
     assert!(!build_names.contains(&removed_tool));
     assert!(build_names.contains(&tools::LIST_FILES.to_string()));
@@ -492,7 +498,7 @@ async fn resolved_messages_include_primary_agent_prompt() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, MessageRole::System);
     let prompt = messages[0].content.as_text();
-    assert!(prompt.contains("You are the duck agent"));
+    assert!(prompt.contains("You are the build agent"));
     assert!(!prompt.contains("Architect mode"));
     assert!(!prompt.contains("Code mode"));
 }

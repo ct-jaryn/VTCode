@@ -460,6 +460,23 @@ fn append_output_segments_with_ansi(
     }
 }
 
+fn split_shell_continuation(text: &str) -> (&str, bool) {
+    // `wrap_shell_command_with_continuations` marks every wrapped line except
+    // the last with a trailing ` \`. Strip it before shell highlighting so the
+    // marker never confuses the bash grammar, then re-emit it dimmed.
+    if let Some(stripped) = text.strip_suffix(" \\") {
+        (stripped, true)
+    } else {
+        (text, false)
+    }
+}
+
+fn continuation_marker_segment(styles: &PtyLineStyles) -> InlineSegment {
+    let mut style = styles.glyph.as_ref().clone();
+    style.effects |= Effects::DIMMED;
+    InlineSegment { text: " \\".to_string(), style: Arc::new(style) }
+}
+
 pub(super) fn line_to_segments(line: &str, styles: &PtyLineStyles) -> (Vec<InlineSegment>, Vec<InlineLinkRange>) {
     if let Some(command_text) = line.strip_prefix("• Ran ") {
         let mut segments = vec![
@@ -476,13 +493,21 @@ pub(super) fn line_to_segments(line: &str, styles: &PtyLineStyles) -> (Vec<Inlin
                 style: Arc::clone(&styles.output),
             },
         ];
-        segments.extend(shell_syntax_segments(command_text, styles, true));
+        let (body, has_continuation) = split_shell_continuation(command_text);
+        segments.extend(shell_syntax_segments(body, styles, true));
+        if has_continuation {
+            segments.push(continuation_marker_segment(styles));
+        }
         return (segments, Vec::new());
     }
 
     if let Some(text) = line.strip_prefix("  │ ") {
         let mut segments = glyph_prefix('│', styles);
-        segments.extend(shell_syntax_segments(text, styles, false));
+        let (body, has_continuation) = split_shell_continuation(text);
+        segments.extend(shell_syntax_segments(body, styles, false));
+        if has_continuation {
+            segments.push(continuation_marker_segment(styles));
+        }
         return (segments, Vec::new());
     }
 
@@ -553,6 +578,34 @@ mod tests {
             &link_ranges[0].target,
             InlineLinkTarget::Url(url) if url == "https://example.com/docs"
         ));
+    }
+
+    #[test]
+    fn ran_header_continuation_marker_is_stripped_from_highlighting_and_reemitted_dimmed() {
+        let styles = PtyLineStyles::new();
+        let (segments, links) = line_to_segments("• Ran echo a \\", &styles);
+        assert!(links.is_empty());
+        let text: String = segments.iter().map(|segment| segment.text.as_str()).collect();
+        assert_eq!(text, "• Ran echo a \\");
+        let marker = segments.last().expect("continuation marker segment");
+        assert_eq!(marker.text, " \\");
+        assert!(marker.style.effects.contains(Effects::DIMMED));
+        // The marker must not leak into the highlighted body: no body segment
+        // other than the marker itself ends with a backslash.
+        for segment in &segments[..segments.len() - 1] {
+            assert!(!segment.text.ends_with('\\'), "marker leaked into body: {segment:?}");
+        }
+    }
+
+    #[test]
+    fn ran_continuation_row_without_marker_has_no_trailing_segment() {
+        let styles = PtyLineStyles::new();
+        let (plain, _) = line_to_segments("  │ git status --short", &styles);
+        assert!(!plain.iter().any(|segment| segment.text == " \\"));
+        let (marked, _) = line_to_segments("  │ git add a \\", &styles);
+        let text: String = marked.iter().map(|segment| segment.text.as_str()).collect();
+        assert_eq!(text, "  │ git add a \\");
+        assert_eq!(marked.last().map(|segment| segment.text.as_str()), Some(" \\"));
     }
 
     #[test]

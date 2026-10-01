@@ -18,6 +18,10 @@ When the CLI starts it builds a **layer stack** and merges all present layers fr
 
 Tables are deep-merged recursively. Scalars and arrays are replaced by the higher-precedence layer.
 
+### Legacy top-level provider aliases
+
+Bare top-level `default_provider = "…"` / `default_model = "…"` keys (in the global `config.toml` or a `vtcode.toml` root) are honored: the loader promotes them into `[agent] provider` / `[agent] default_model` **per layer** before merging. Normal layer precedence still applies — an explicit `[agent]` value in the same file wins over that file's own top-level alias, and higher-precedence layers win over lower ones. Without the promotion these keys would be silently dropped and the runtime would fall back to the compiled-in default provider.
+
 ### Explicit config file (session override)
 
 When an explicit config file is present (`--config path` or `VTCODE_CONFIG_PATH`),

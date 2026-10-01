@@ -32,10 +32,15 @@ impl SlashCommandItem {
 }
 
 /// Search configuration for a list overlay.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct InlineListSearchConfig {
     pub label: String,
     pub placeholder: Option<String>,
+    /// Match candidates by fuzzy subsequence (via nucleo) and rank results by
+    /// relevance, instead of requiring every query term to be a substring.
+    /// Opt-in: palettes that filter on enumerated values (e.g. model pickers)
+    /// keep exact-term filtering to avoid over-matching.
+    pub fuzzy: bool,
 }
 
 /// Configuration for a secure (masked) prompt input.

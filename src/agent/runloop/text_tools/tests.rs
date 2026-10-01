@@ -195,6 +195,28 @@ fn test_detect_textual_tool_call_rejects_excessive_bracketed_nesting() {
 }
 
 #[test]
+fn unclosed_fence_tail_still_parses_tool_call() {
+    // Truncated streaming output can leave a fence opener without a closer.
+    // Fail-open: the tail after the opener is treated as unfenced so a real
+    // tool call there still parses instead of being silently dropped.
+    // Tag literals in this test are assembled from parts so this test adds
+    // no new contiguous tool-call tag to the source (other tests in this
+    // file already hold literal tags; a literal tag here would itself be
+    // scanned as a call by tooling that greps test sources).
+    let open = format!("<{}", "tool_call>");
+    let key = format!("<{}", "arg_key>");
+    let key_close = format!("</{}", "arg_key>");
+    let value = format!("<{}", "arg_value>");
+    let value_close = format!("</{}", "arg_value>");
+    let text = format!(
+        "Partial output:\n```sh\necho demo\n{open}exec_command\n{key}command{key_close}{value}echo hi{value_close}\n{key}action{key_close}{value}run{value_close}\n"
+    );
+    let (name, args) = detect_textual_tool_call(&text).expect("call after unclosed fence opener must parse");
+    assert_eq!(name, tools::EXEC_COMMAND);
+    assert_eq!(args["action"], "run");
+}
+
+#[test]
 fn test_detect_textual_tool_call_rejects_excessive_function_nesting() {
     let mut nested = String::new();
     for _ in 0..260 {
@@ -1053,4 +1075,86 @@ fn parse_function_equals_handles_whitespace_around_values() {
     let (name, args) = result.unwrap();
     assert_eq!(name, "task_tracker");
     assert_eq!(args["action"], "list");
+}
+
+#[test]
+fn is_clean_tool_name_accepts_identifiers_only() {
+    use super::canonical::is_clean_tool_name;
+    assert!(is_clean_tool_name("exec_command"));
+    assert!(is_clean_tool_name("run_pty_cmd"));
+    assert!(is_clean_tool_name("Read_File"));
+    assert!(!is_clean_tool_name(""));
+    assert!(!is_clean_tool_name("` in content — could a skill"));
+    assert!(!is_clean_tool_name("exec_command{\"command\": \"x\"}"));
+    assert!(!is_clean_tool_name("has space"));
+    assert!(!is_clean_tool_name("1leading_digit"));
+    assert!(!is_clean_tool_name(&"x".repeat(65)));
+}
+
+#[test]
+fn tagged_markup_inside_fence_is_not_a_tool_call() {
+    // Documentation/test fixtures quoting tagged markup must not execute.
+    let text = "The skill documentation quotes this example:\n\n```sh\n<tool_call>bash<arg_key>command</arg_key><arg_value>rm -rf /tmp/demo</arg_value></tool_call>\n```\n\nDo not run it.";
+    assert!(detect_textual_tool_call(text).is_none(), "fenced tagged markup must not become a tool call");
+}
+
+#[test]
+fn mid_prose_tool_call_mention_is_not_a_tool_call() {
+    // Session 20260925T141131Z: prose that merely mentions the tag produced a
+    // garbage tool name. The first tag occurrence yields a non-identifier name
+    // and must be skipped; without a second clean call the text stays text.
+    let text = "containing `<tool_call>` example markup trigger unintended tool execution? Possibly. Now check remaining commits.";
+    assert!(detect_textual_tool_call(text).is_none(), "prose mention must not bind");
+}
+
+#[test]
+fn tagged_scan_skips_prose_mention_and_parses_clean_call() {
+    use super::canonical::is_clean_tool_name;
+    // First occurrence is a backticked mention (invalid name); the later real
+    // call must still parse.
+    let text = "Docs mention `<tool_call>` as a tag. Then the model runs:\n\
+                <tool_call>exec_command\n\
+                <arg_key>command</arg_key><arg_value>echo hi</arg_value>\n\
+                <arg_key>action</arg_key><arg_value>run</arg_value></tool_call>";
+    assert!(!is_clean_tool_name("`"), "backtick name must be dirty");
+    assert!(is_clean_tool_name("exec_command"));
+    let direct = super::parse_tagged::parse_tagged_tool_call(text);
+    assert!(direct.is_some(), "parse_tagged_tool_call should find the clean call");
+    let (name, args) = detect_textual_tool_call(text).expect("clean call after prose mention should parse");
+    assert_eq!(name, tools::EXEC_COMMAND);
+    assert_eq!(args["action"], "run");
+}
+
+#[test]
+fn fenced_tagged_example_is_stripped_like_unfenced_intent() {
+    // Strip removes tool-call-shaped regions wherever they appear (recovery
+    // salvage and plan-mode cleanup want that). Execution is what the fence
+    // gate blocks — see `tagged_markup_inside_fence_is_not_a_tool_call`.
+    let text = "Docs:\n```text\n<tool_call>bash<arg_key>command</arg_key><arg_value>rm -rf /</arg_value></tool_call>\n```\nDone.";
+    let stripped = strip_textual_tool_call_regions(text);
+    assert!(stripped.contains("```text"), "fence markers must survive strip");
+    assert!(!stripped.contains("rm -rf /"), "tool-call payload is stripped");
+}
+
+#[test]
+fn shell_alias_maps_only_true_shell_names() {
+    use crate::agent::runloop::text_tools::canonicalize_shell_tool_alias;
+    assert_eq!(canonicalize_shell_tool_alias("bash").as_deref(), Some("exec_command"));
+    assert_eq!(canonicalize_shell_tool_alias("shell").as_deref(), Some("exec_command"));
+    assert_eq!(canonicalize_shell_tool_alias("run").as_deref(), Some("exec_command"));
+    // PTY-family tools keep their identity
+    assert_eq!(canonicalize_shell_tool_alias("run_pty_cmd"), None);
+    assert_eq!(canonicalize_shell_tool_alias("create_pty_session"), None);
+    assert_eq!(canonicalize_shell_tool_alias("read_file"), None);
+}
+
+#[test]
+fn dispatchable_tool_name_allows_mcp_and_rejects_prose() {
+    use crate::agent::runloop::text_tools::is_dispatchable_tool_name;
+    assert!(is_dispatchable_tool_name("exec_command"));
+    assert!(is_dispatchable_tool_name("mcp__github__list_issues"));
+    assert!(is_dispatchable_tool_name("mcp::github::list_issues"));
+    assert!(!is_dispatchable_tool_name("has space"));
+    assert!(!is_dispatchable_tool_name("` in content"));
+    assert!(!is_dispatchable_tool_name(&"x".repeat(65)));
 }

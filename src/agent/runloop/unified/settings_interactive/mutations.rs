@@ -45,16 +45,16 @@ pub(crate) fn reload_state_from_disk(state: &mut SettingsPaletteState) -> Result
     state.draft = manager.config().clone();
     if let Some(source_path) = manager.config_path() {
         state.source_path = source_path.to_path_buf();
-        state.source_label = format!("Configuration source: {}", source_path.display());
+        state.source_label = None;
     } else {
         state.source_path = state.workspace.join("vtcode.toml");
-        state.source_label = no_config_source_label(&state.workspace);
+        state.source_label = Some(no_config_source_label());
     }
     Ok(())
 }
 
-pub(super) fn no_config_source_label(workspace: &Path) -> String {
-    format!("No vtcode.toml found for {}. Draft starts from runtime defaults.", workspace.display())
+pub(super) fn no_config_source_label() -> String {
+    "No vtcode.toml found. Draft starts from runtime defaults.".to_string()
 }
 
 pub(super) fn add_array_item(root: &mut TomlValue, path: &str) -> Result<()> {

@@ -1,6 +1,6 @@
 # vtcode-mcp
 
-[Root AGENTS.md](../AGENTS.md) | Model Context Protocol client, connection pooling, and tool discovery. Layer 1 crate -- depends on vtcode-config, vtcode-commons, vtcode-utility-tool-specs.
+[Root AGENTS.md](../../../AGENTS.md) | Model Context Protocol client, connection pooling, and tool discovery. Layer 1 crate -- depends on vtcode-config, vtcode-commons, vtcode-utility-tool-specs.
 
 ## Module Groups
 
@@ -10,6 +10,7 @@
 | Transport | `rmcp_transport.rs`, `connection_pool.rs` |
 | Discovery | `tool_discovery.rs`, `tool_discovery_cache.rs`, `schema.rs` |
 | Types | `types.rs`, `traits.rs`, `errors.rs`, `enhanced_config.rs` |
+| Infra | `conversion.rs`, `sandbox_context.rs`, `trust.rs` |
 | Utils | `utils.rs` |
 
 ## Rules

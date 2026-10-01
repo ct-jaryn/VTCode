@@ -155,6 +155,6 @@ are separate — `/secret` manages API keys; `/login` manages OAuth.
 | --- | --- |
 | `/rewind` | Pick a saved prompt and confirm restoring files and conversation together. |
 | `/redo` | Reverse the last rewind, including conversation. |
-| `/rewind-recover` | Recover after an interrupted rewind (pending-only; no-op without pending recovery, never touches redo). |
+| `/rewind` | Rewind to a checkpoint; an interrupted rewind auto-recovers on the next `/rewind`. |
 
 New prompts are checkpointed automatically. See [checkpoint details](../development/filesnap-checkpoints.md).

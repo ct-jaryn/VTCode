@@ -187,8 +187,12 @@ impl ToolHandler for ApplyPatchHandler {
         // Extract patch input from payload
         let patch_input = match payload {
             ToolPayload::Function { arguments } => {
-                let args: Value = serde_json::from_str(&arguments)
-                    .map_err(|e| ToolCallError::respond(format!("Failed to parse function arguments: {e}")))?;
+                let args: Value = serde_json::from_str(&arguments).map_err(|e| {
+                    ToolCallError::respond(format!(
+                        "Failed to parse function arguments: {e}. {}",
+                        crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION
+                    ))
+                })?;
                 crate::tools::apply_patch::decode_apply_patch_input(&args)
                     .map_err(|e| ToolCallError::respond(format!("Failed to decode patch input: {e}")))?
                     .map(|input| input.text)

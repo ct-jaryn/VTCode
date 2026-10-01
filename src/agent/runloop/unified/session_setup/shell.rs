@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use anyhow::{Context, Result};
 use tokio::sync::Notify;
 use vtcode_config::root::ColorSchemeMode;
+use vtcode_core::config::constants::app as app_constants;
 use vtcode_core::config::constants::ui as ui_constants;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::config::types::AgentConfig as CoreAgentConfig;
@@ -82,7 +83,12 @@ pub(crate) async fn initialize_session_shell(
 
     let active_styles = theme::active_styles();
     let theme_spec = inline_theme_from_core_styles(&active_styles);
-    let default_placeholder = Some(ui_constants::CHAT_INPUT_PLACEHOLDER_BOOTSTRAP.to_string());
+    // Paint the final placeholder on the shell frame: the configured
+    // onboarding placeholder (in-memory derivation, no I/O) or the shared
+    // bootstrap hint. `initialize_session_ui` re-derives the same value, so
+    // the ready re-drive never visibly swaps the placeholder.
+    let default_placeholder = crate::agent::runloop::welcome::configured_chat_placeholder(vt_cfg)
+        .or_else(|| Some(ui_constants::CHAT_INPUT_PLACEHOLDER_BOOTSTRAP.to_string()));
     let inline_rows = vt_cfg
         .as_ref()
         .map(|cfg| cfg.ui.inline_viewport_rows)
@@ -141,9 +147,15 @@ pub(crate) async fn initialize_session_shell(
         Some(_) => Ok(()),
     });
 
-    // Never await the palette probe here: a silent terminal must not delay
-    // the typeable shell. `note_crossterm_raw_mode` makes a late RawModeGuard
-    // restore a no-op once crossterm owns the TTY.
+    // Await the palette probe before the TUI owns the TTY. The probe is
+    // bounded (~50 ms read + 40 ms settle + 100 ms drain on failure), and it
+    // already overlapped with startup-context resolution, so this usually
+    // returns immediately. Spawning the event loop concurrently lets late
+    // `OSC 10/11/4` replies win the `/dev/tty` read race and leak as
+    // `10;rgb:...` keystrokes; the vendored `parse_osc` backstop swallows
+    // stragglers from slow terminals. `note_crossterm_raw_mode` stays as a
+    // guard so a late `RawModeGuard` restore cannot undo crossterm raw mode.
+    crate::agent::probe::await_terminal_palette_probe().await;
     vtcode_core::utils::terminal_color_probe::note_crossterm_raw_mode();
 
     let mut session = spawn_session_with_options(
@@ -170,7 +182,7 @@ pub(crate) async fn initialize_session_shell(
             workspace_root: Some(config.workspace.clone()),
             slash_commands: slash_command_items,
             appearance: vt_cfg.map(to_tui_appearance),
-            app_name: "VT Code".to_string(),
+            app_name: app_constants::DISPLAY_NAME.to_string(),
             non_interactive_hint: Some("Use `vtcode ask \"your prompt\"` for non-interactive input.".to_string()),
             key_bindings: user_key_bindings,
             preview_callback: Some(preview_callback),
@@ -242,14 +254,20 @@ pub(crate) fn build_session_event_callback(
             }
         }
         InlineEvent::Steer(input) => {
-            if matches!(input.text.split_whitespace().next(), Some("/model" | "/effort")) {
+            if matches!(input.text.split_whitespace().next(), Some("/model")) {
                 let _ = settings_events.send(event.clone());
                 return;
             }
+            // Hand text-only steers to the live steering channel for mid-turn
+            // injection. When the channel is unavailable (no sender yet, or
+            // closed) leave the delivery latch clear so the runloop Steer
+            // handler queues the message for the next ready boundary instead
+            // of dropping it.
             if !input.has_attachments()
                 && let Some(sender) = steering_sender.as_ref()
+                && sender.send(SteeringMessage::FollowUpInput(input.text.clone())).is_ok()
             {
-                let _ = sender.send(SteeringMessage::FollowUpInput(input.text.clone()));
+                state.mark_steer_delivered();
             }
         }
         InlineEvent::Transient(

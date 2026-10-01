@@ -137,6 +137,27 @@ pub struct ApprovalCacheConfig {
     pub regexes: IndexSet<String>,
 }
 
+/// Maximum remembered approval entries per cache collection. Unbounded growth
+/// turned `tool-policy.json` into a multi-hundred-kilobyte file after a few
+/// long sessions (see session-vtcode-20260925T234343Z: 294 KB). Oldest
+/// insertions are dropped first so recent approvals survive.
+pub const APPROVAL_CACHE_MAX_ENTRIES: usize = 256;
+
+impl ApprovalCacheConfig {
+    /// Drop the oldest entries so each collection stays within
+    /// [`APPROVAL_CACHE_MAX_ENTRIES`]. Returns `true` when anything was trimmed.
+    pub fn trim_to_budget(&mut self) -> bool {
+        let mut trimmed = false;
+        for collection in [&mut self.allowed, &mut self.prefixes, &mut self.regexes] {
+            while collection.len() > APPROVAL_CACHE_MAX_ENTRIES {
+                let _ = collection.shift_remove_index(0);
+                trimmed = true;
+            }
+        }
+        trimmed
+    }
+}
+
 /// Stored MCP policy state, persisted alongside standard tool policies
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpPolicyStore {
@@ -1089,6 +1110,7 @@ impl ToolPolicyManager {
     /// Persist an explicit approval key for future prompts in this workspace.
     pub async fn add_approval_cache_key(&mut self, approval_key: impl Into<String>) -> Result<()> {
         if self.config.approval_cache.allowed.insert(approval_key.into()) {
+            self.config.approval_cache.trim_to_budget();
             self.save_config().await?;
         }
         Ok(())
@@ -1115,6 +1137,7 @@ impl ToolPolicyManager {
         }
 
         if changed {
+            self.config.approval_cache.trim_to_budget();
             self.save_config().await?;
         }
         Ok(())
@@ -1123,6 +1146,7 @@ impl ToolPolicyManager {
     /// Persist a shell prefix approval entry for future prompts in this workspace.
     pub async fn add_approval_cache_prefix(&mut self, prefix_entry: impl Into<String>) -> Result<()> {
         if self.config.approval_cache.prefixes.insert(prefix_entry.into()) {
+            self.config.approval_cache.trim_to_budget();
             self.save_config().await?;
         }
         Ok(())
@@ -1545,6 +1569,45 @@ api_key_env = "STALE_API_KEY"
         assert!(
             reloaded
                 .has_approval_cache_key("cargo test|sandbox_permissions=\"use_default\"|additional_permissions=null")
+        );
+    }
+
+    #[test]
+    fn approval_cache_trim_drops_oldest_entries() {
+        let mut cache = ApprovalCacheConfig::default();
+        for index in 0..(APPROVAL_CACHE_MAX_ENTRIES + 10) {
+            cache.allowed.insert(format!("key-{index:04}"));
+        }
+        assert!(cache.trim_to_budget());
+        assert_eq!(cache.allowed.len(), APPROVAL_CACHE_MAX_ENTRIES);
+        // Oldest entries are dropped first; the most recent survive.
+        assert!(!cache.allowed.contains("key-0000"));
+        assert!(cache.allowed.contains(&format!("key-{:04}", APPROVAL_CACHE_MAX_ENTRIES + 9)));
+        // Idempotent when already within budget.
+        assert!(!cache.trim_to_budget());
+    }
+
+    #[tokio::test]
+    async fn approval_cache_persist_trims_to_budget() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("tool-policy.json");
+        let mut manager = ToolPolicyManager::new_with_config_path(&config_path).await.expect("manager");
+
+        for index in 0..(APPROVAL_CACHE_MAX_ENTRIES + 5) {
+            manager
+                .add_approval_cache_key(format!("persist-key-{index:04}"))
+                .await
+                .expect("persist approval");
+        }
+
+        let reloaded = ToolPolicyManager::new_with_config_path(&config_path)
+            .await
+            .expect("reload manager");
+        // Oldest keys were trimmed; the most recent survive.
+        assert!(!reloaded.has_approval_cache_key("persist-key-0000"), "oldest approval keys must be trimmed");
+        assert!(
+            reloaded.has_approval_cache_key(&format!("persist-key-{:04}", APPROVAL_CACHE_MAX_ENTRIES + 4)),
+            "newest approval keys must survive the trim"
         );
     }
 

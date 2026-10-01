@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::config::loader::VTCodeConfig;
@@ -537,13 +537,21 @@ impl NotificationManager {
         #[cfg(feature = "desktop-notifications")]
         {
             use std::time::Duration;
-            match notify_rust::Notification::new()
+            let mut notification = notify_rust::Notification::new();
+            notification
                 .summary("VT Code")
                 .body(message)
                 .icon("dialog-information")
-                .timeout(Duration::from_secs(5))
-                .show()
-            {
+                .timeout(Duration::from_secs(5));
+
+            #[cfg(target_os = "macos")]
+            let result = send_after_macos_notification_setup(ensure_macos_notification_application, || {
+                notification.show().map_err(Into::into)
+            });
+            #[cfg(not(target_os = "macos"))]
+            let result = notification.show();
+
+            match result {
                 Ok(notification) => {
                     tracing::debug!("Desktop notification sent: {:?}", notification);
                     true
@@ -607,6 +615,26 @@ impl NotificationManager {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "desktop-notifications"))]
+fn ensure_macos_notification_application() -> Result<()> {
+    // notify-rust otherwise asks mac-notification-sys to discover an app with
+    // AppleScript, which triggers a macOS Automation permission dialog.
+    // `set_application` is idempotent after success and retryable after failure
+    // (patches/mac-notification-sys/PATCH.md). Call it on every send instead of
+    // caching a failure in `OnceLock` for the process lifetime.
+    notify_rust::set_application("com.apple.finder")
+        .map_err(|error| anyhow::anyhow!("failed to configure macOS notification application: {error}"))
+}
+
+#[cfg(all(target_os = "macos", feature = "desktop-notifications"))]
+fn send_after_macos_notification_setup<T>(
+    setup: impl FnOnce() -> Result<()>,
+    send: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    setup()?;
+    send()
+}
+
 impl Default for NotificationManager {
     fn default() -> Self {
         Self::new()
@@ -614,8 +642,6 @@ impl Default for NotificationManager {
 }
 
 /// Global notification manager instance for easy access
-use std::sync::OnceLock;
-
 static GLOBAL_NOTIFICATION_MANAGER: OnceLock<NotificationManager> = OnceLock::new();
 static GLOBAL_NOTIFICATION_HOOK_ENGINE: OnceLock<RwLock<Option<LifecycleHookEngine>>> = OnceLock::new();
 
@@ -854,6 +880,45 @@ mod tests {
             manager.desktop_notification_backends(NotificationBackend::Auto),
             AUTO_DESKTOP_NOTIFICATION_BACKENDS
         );
+    }
+
+    #[cfg(all(target_os = "macos", feature = "desktop-notifications"))]
+    #[test]
+    fn macos_notification_application_registration_succeeds() {
+        ensure_macos_notification_application().expect("Finder must be available for macOS notifications");
+    }
+
+    #[cfg(all(target_os = "macos", feature = "desktop-notifications"))]
+    #[test]
+    fn macos_notification_setup_runs_before_delivery_and_failure_skips_it() {
+        use std::cell::Cell;
+
+        let step = Cell::new(0);
+        let delivered = send_after_macos_notification_setup(
+            || {
+                assert_eq!(step.get(), 0);
+                step.set(1);
+                Ok(())
+            },
+            || {
+                assert_eq!(step.get(), 1);
+                step.set(2);
+                Ok(42)
+            },
+        );
+        assert_eq!(delivered.unwrap(), 42);
+        assert_eq!(step.get(), 2);
+
+        let send_called = Cell::new(false);
+        let failed = send_after_macos_notification_setup(
+            || anyhow::bail!("application registration failed"),
+            || {
+                send_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(failed.is_err());
+        assert!(!send_called.get());
     }
 
     #[tokio::test]

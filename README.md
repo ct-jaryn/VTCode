@@ -12,6 +12,7 @@
 [![Model Context Protocol](https://img.shields.io/badge/Model_Context_Protocol-A63333?style=flat-square&logo=modelcontextprotocol&logoColor=white)](./docs/guides/mcp-integration.md)
 [![Agent Plugins](https://img.shields.io/badge/Agent_Plugins-5865F2?style=flat-square)](./docs/guides/agent-plugins.md)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vinhnx/VTCode)
+<a href="https://www.producthunt.com/products/vt-code?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vt-code" target="_blank" rel="noopener noreferrer"><img alt="VT Code - Open-source coding agent harness built for long-running work | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1248210&amp;theme=light&amp;t=1789739815450"></a>
 
 </div>
 
@@ -25,20 +26,22 @@
 - [Overview](#overview)
 - [Quick start](#quick-start)
   - [1. Install](#1-install)
-  - [2. Configure](#2-configure)
-  - [3. Run](#3-run)
-- [Why VT Code](#why-vt-code)
-- [Architecture](#architecture)
-- [Usage](#usage)
-  - [Commands](#commands)
-  - [Everyday recipes](#everyday-recipes)
-  - [WebMCP browser bridge (opt-in)](#webmcp-browser-bridge-opt-in)
+  - [2. Configure your project](#2-configure-your-project)
+  - [3. Start an interactive session](#3-start-an-interactive-session)
+- [Workflows](#workflows)
+  - [Interactive work](#interactive-work)
+  - [Headless automation](#headless-automation)
+  - [Scheduled tasks](#scheduled-tasks)
+  - [Session management](#session-management)
+  - [Optional integrations](#optional-integrations)
 - [Documentation](#documentation)
 - [Development](#development)
 - [Contributing](#contributing)
+  - [Contribute](#contribute)
+- [Community](#community)
   - [Contributors](#contributors)
-- [Support](#support)
   - [Contact](#contact)
+  - [Resources](#resources)
   - [Share VT Code](#share-vt-code)
   - [Sponsorship](#sponsorship)
 - [License](#license)
@@ -47,14 +50,18 @@
 
 ## Overview
 
-VT Code is a coding agent for your terminal: interactive TUI, headless
-`exec`, and scheduled runs in one Rust binary. The model proposes work; the
-runtime provides tools, context management, and command policy, and you
-review changes before they land.
+VT Code is an open-source terminal coding agent built in Rust. Explore a
+codebase, plan changes, run tools, and review edits in the interactive TUI, or
+run `vtcode exec` headless. You pick the model and permissions; the runtime
+handles context, tools, and execution policy, and you review every change
+before it lands.
+
+- **Plan and review:** read-only planning mode, then inspect edits in turn diffs.
+- **Sustain long sessions:** project instructions, context compaction, resumption, execution logs.
+- **Control execution:** command policy and sandboxing at the boundary.
+- **Choose your stack:** hosted or local models, plus MCP servers, Agent Skills, and Plugins.
 
 <div align="center">
-
-<a href="https://www.producthunt.com/products/vt-code?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vt-code" target="_blank" rel="noopener noreferrer"><img alt="VT Code - Open-source coding agent harness built for long-running work | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1248210&amp;theme=light&amp;t=1789739815450"></a>
 
 <img src="./resources/gif/vtcode.gif" alt="VT Code demo" width="60%" />
 <br />
@@ -63,48 +70,38 @@ review changes before they land.
 
 </div>
 
-Full docs catalog: [docs overview](./docs/README.md).
-
 > [!NOTE]
 > **Status:** Active development; some automation flows are experimental.
-> OAuth login for ChatGPT and GitHub Copilot reuses the Codex CLI's public
-> client identity (unofficial); prefer your own API key for supported paths.
-> See [OAuth authentication](./docs/guides/oauth-authentication.md).
-
-<details>
-<summary><strong>Behind the build</strong></summary>
-
-- [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in)
-  covering harness design, evals, security, and lessons learned.
-- [Podcast](https://www.youtube.com/watch?v=XLoswcd5rH0) ·
-  [Video](https://www.youtube.com/watch?v=PvL_kPjgU6o)
-
-</details>
 
 ## Quick start
 
 ### 1. Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vinhnx/vtcode/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/vinhnx/VTCode/main/scripts/install.sh | bash
 ```
 
-The installer also sets up `ripgrep` and `ast-grep` on macOS/Linux. Other
-methods from the [installation guide](./docs/installation/README.md):
+The installer also sets up `ripgrep` and `ast-grep` on macOS/Linux. Or use
+Homebrew or Cargo:
 
 ```bash
 brew trust vinhnx/tap
 brew install vinhnx/tap/vtcode
-# or, if you have Rust: cargo install vtcode
+
+# Or install with Rust
+cargo install vtcode
 ```
 
+See the [installation guide](./docs/installation/README.md) for prerequisites,
+other methods, and the installer script you can review before running.
+
 > [!NOTE]
-> Windows artifacts are best-effort and may lag behind macOS/Linux; see the
-> [installation guide](./docs/installation/README.md).
+> Windows artifacts are best-effort and may lag behind macOS/Linux.
 
-### 2. Configure
+### 2. Configure your project
 
-In your project, initialize workspace instructions and add a provider key:
+Open your project, initialize its configuration and instructions, then add
+credentials for your chosen provider. For example, with OpenAI:
 
 ```bash
 cd path/to/your/project
@@ -112,213 +109,165 @@ vtcode init                # scaffolds config + AGENTS.md; review before committ
 vtcode secret add openai   # stores an OpenAI API key in your OS keyring
 ```
 
-Any provider works in place of `openai`. Env vars or a workspace `.env` also
-work; `vtcode login` covers supported OAuth providers. Credential options:
-[Getting started](./docs/user-guide/getting-started.md).
+Replace `openai` with your supported provider. Credentials can also come from
+environment variables or a workspace `.env`; `vtcode login` handles supported
+login flows. See [Getting started](./docs/user-guide/getting-started.md) and
+[Provider guides](./docs/providers/PROVIDER_GUIDES.md).
+
+> [!NOTE]
+> ChatGPT OAuth reuses the Codex CLI's public client identity through an
+> unofficial compatibility flow; prefer your own OpenAI API key. GitHub
+> Copilot uses the official `copilot` CLI. See
+> [OAuth authentication](./docs/guides/oauth-authentication.md).
 
 > [!CAUTION]
 > Never commit API keys or put them in `vtcode.toml`.
 
-### 3. Run
+### 3. Start an interactive session
 
 ```bash
 vtcode   # open the interactive TUI in your project
 ```
 
-Ask for a change, inspect the result, keep or discard it. For headless tasks
-and sessions, see [Commands](#commands).
+Start with a focused request, such as “Explain how this project handles
+authentication,” then review the diff and test results before committing. For
+automation and session commands, see [Workflows](#workflows).
 
-## Why VT Code
+## Workflows
 
-For work that takes more than one prompt:
+### Interactive work
 
-- **Context that persists.** Project instructions, context assembly, and
-  compaction for long sessions. [Runtime guidance](./docs/development/runtime-guidance.md)
-- **Controlled tool use.** Command policy and sandboxing at the execution
-  boundary. [Security model](./docs/development/COMMAND_SECURITY_MODEL.md)
-- **Revisitable sessions.** `vtcode continue`, `vtcode trajectory`,
-  workspace snapshots. [Command reference](./docs/user-guide/commands.md)
-- **A review path.** Plan read-only before implementing; inspect edits in
-  turn diffs. [Planning workflow](./docs/guides/planning-workflow.md) ·
-  [Diff previews](./docs/development/diff-preview.md)
-- **Beyond the TUI.** Headless `vtcode exec`, scheduled prompts, MCP,
-  Skills, and Plugins. [Full automation](./docs/guides/full-automation.md) ·
-  [Providers](./docs/providers/PROVIDER_GUIDES.md)
+Use `vtcode` to explore a codebase, plan a change, and implement it in the TUI.
+For larger tasks, start with [read-only planning](./docs/guides/planning-workflow.md)
+and review [turn diffs](./docs/development/diff-preview.md) before committing.
+See the [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
-For repeatable, environment-checked results, use the
-[eval framework](./docs/guides/eval.md); an agent's completion message alone
-is not a verification result.
+### Headless automation
 
-## Architecture
-
-One binary, four layers. Everything the model touches goes through the
-harness; nothing bypasses it.
-
-```mermaid
-graph LR
-    subgraph entry [Entry points]
-        TUI[TUI]
-        CLI[CLI / exec / cron]
-        ACP[Editor via ACP]
-    end
-
-    subgraph harness [Harness]
-        LOOP[Agent loop]
-        CTX[Context assembly + compaction]
-        SEC[Tool policy + sandboxed exec]
-        EVT[(ThreadEvent log)]
-    end
-
-    subgraph ext [Extensions]
-        MCPX[MCP servers]
-        SKILLS[Skills]
-        PLUGINS[Plugins]
-    end
-
-    MODELS[OpenAI · Anthropic · Gemini · local]
-
-    TUI --> LOOP
-    CLI --> LOOP
-    ACP --> LOOP
-    LOOP --> CTX
-    LOOP --> SEC
-    LOOP <--> EVT
-    LOOP <--> ext
-    LOOP <--> MODELS
-```
-
-The TUI, headless `exec`/`ask`, cron schedules, and editors over ACP all
-drive the same loop. Layers map to workspace crates: entry points in
-`vtcode` and `vtcode-acp`; the harness in `vtcode-core` (policy and
-sandboxing in `vtcode-safety`); the `ThreadEvent` contract in
-`vtcode-exec-events`; extensions in `vtcode-mcp`, `vtcode-skills`, and
-`vtcode-agent-plugins`; provider clients in `vtcode-llm`.
-
-Layer-by-layer details: [Architecture guide](./docs/ARCHITECTURE.md).
-
-## Usage
-
-One binary: TUI, session tools, provider integrations, and an eval runner.
-
-### Commands
-
-Run `vtcode` for the TUI; pick a subcommand for a specific task:
+Use `ask` for a tool-free answer and `exec` for a tool-enabled coding task:
 
 ```bash
 vtcode ask "explain Rc vs Arc"    # one-shot answer, no session, no tools
 vtcode exec "refactor main.rs"    # headless task with the full tool loop
 vtcode review                     # agent review of uncommitted changes
-vtcode eval --suite suite.json    # verify behavior with pass@k metrics
 ```
 
-Common commands, flags, and workflows: [command reference](./docs/user-guide/commands.md).
+`exec` needs autonomous execution enabled in `[automation.full_auto]` plus
+`full_auto` workspace trust. In a terminal, an untrusted workspace prompts for
+trust; in CI or another non-TTY environment, grant trust beforehand or set
+`VTCODE_TRUST_WORKSPACE=full-auto`; otherwise non-TTY runs fail rather than
+prompt. Full-auto's tool allow-list, explicit denies, and execution policy still
+apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust and output
+options and [full automation](./docs/guides/full-automation.md) for
+configuration.
 
-For session lifecycle and day-to-day operations:
+For repeatable, environment-checked results, use the
+[eval framework](./docs/guides/eval.md): a completion message alone is not
+verification.
 
-| Command                              | Purpose                                                                               |
-| ------------------------------------ | ------------------------------------------------------------------------------------- |
-| `vtcode continue`                    | Resume the last session, or fork it into a new one with `--session-id`                |
-| `vtcode init`                        | Scaffold `vtcode.toml` and `AGENTS.md` in the workspace; review before committing     |
-| `vtcode exec resume`                 | Continue a finished headless run with a follow-up prompt: `--last` or a session id    |
-| `vtcode schedule`                    | Durable recurring prompts, by cron or one-shot; `install-service` survives restarts   |
-| `vtcode secret`                      | Store provider API keys in your OS keyring, never in shell history or workspace files |
-| `vtcode login`                       | OAuth sign-in for ChatGPT and GitHub Copilot; see [OAuth authentication](./docs/guides/oauth-authentication.md) |
-| `vtcode auth`                        | Show authentication status for one provider or all supported providers               |
-| `vtcode models`                      | Inspect, test, and compare providers and models                                       |
-| `vtcode snapshots` / `vtcode revert` | List and roll back to workspace snapshots                                             |
-| `vtcode tool-policy`                 | Allow or deny specific tools per workspace                                            |
-| `vtcode trajectory`                  | Pretty-print run logs for debugging and audits                                        |
-| `vtcode skills` / `vtcode plugins`   | Manage skills and agent plugins                                                       |
-| `vtcode mcp`                         | Connect and manage MCP servers                                                        |
+### Scheduled tasks
 
-More: `vtcode config`, `vtcode dependencies`, `vtcode acp`, `vtcode a2a`,
-`vtcode webmcp`, `vtcode session-store`, `vtcode schema` (built-in tool
-schemas), `vtcode analyze` (workspace structure/security/performance),
-`vtcode check` (built-in repository checks), and `vtcode man` (man pages).
-Full list: `vtcode --help` or the
-[command reference](./docs/user-guide/commands.md).
-
-### Everyday recipes
+For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md):
+durable prompt jobs on the same exec runtime:
 
 ```bash
-# Review only the uncommitted diff, then exit with a verdict
-vtcode review
+# Weekly dependency audit (Mondays 09:00)
+vtcode schedule create --name "weekly-dep-audit" \
+  --cron "0 9 * * 1" \
+  --prompt "Check for outdated dependencies and report known vulnerabilities"
+```
 
-# Weekly dependency audit (Mondays 09:00) as a durable cron job
-vtcode schedule create --name "weekly-dep-audit" --cron "0 9 * * 1" --prompt "check for outdated deps and open an issue if any have CVEs"
+### Session management
 
-# Resume yesterday's session and fork it for a new experiment
-vtcode continue --session-id <id>
+```bash
+# Resume the most recent interactive session
+vtcode continue
 
 # Continue the last headless run with a follow-up prompt
 vtcode exec resume --last "continue the refactor"
 
-# See exactly what the agent did in the last run
+# Inspect the execution log
 vtcode trajectory
 ```
 
-Pick a specific exec session by id: `vtcode exec resume <session-id> "..."`.
-Headless `exec`: [exec mode guide](./docs/user-guide/exec-mode.md) ·
-Cron schedules: [scheduled tasks guide](./docs/user-guide/scheduled-tasks.md).
+Use `vtcode continue --session-id <id>` to fork an earlier session.
+See `vtcode --help` or the [command reference](./docs/user-guide/commands.md)
+for all commands and flags.
 
-### WebMCP browser bridge (opt-in)
+### Optional integrations
 
-Pair the TUI with a browser editor for authenticated, bounded editing:
+Enable these only when you need them; none are required for the quick start.
+
+- **Tools and extensions:** [MCP servers](./docs/guides/mcp-integration.md),
+  [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
+  [Plugins](./docs/guides/agent-plugins.md).
+- **Editors:** [ACP with Zed](./docs/guides/zed-acp.md).
+- **Cross-thread memory:** [Memcode MCP](./docs/guides/memcode-mcp.md) carries
+  context between tasks; see the
+  [write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
+- **Browser editing:** [WebMCP](./docs/user-guide/webmcp.md) pairs the TUI with
+  an authenticated browser editor:
 
 ```bash
 /webmcp pair <origin>    # inside the TUI
 ```
 
-Hosts and deployment: [WebMCP user guide](./docs/user-guide/webmcp.md).
+The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
+([mirror](https://vinhnx.github.io/VTCode/)) uses this authenticated,
+workspace-scoped bridge. Setup and deployment:
+[WebMCP user guide](./docs/user-guide/webmcp.md) ·
+[deployment reference](./docs/reference/webmcp.md).
 
 ## Documentation
 
-Per-subcommand details are in the
-[command reference](./docs/user-guide/commands.md).
+Guides by task; the full catalog lives in the
+[documentation index](./docs/INDEX.md), the
+[docs overview](./docs/README.md), and the
+[Wiki](https://github.com/vinhnx/VTCode/wiki):
 
-| Layer   | Guides                                                                                                                                                                                                                                                                                   |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Start   | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md) · [Wiki](https://github.com/vinhnx/VTCode/wiki)                                                                  |
-| Use     | [TUI](./docs/user-guide/interactive-mode.md) · [CLI](./docs/user-guide/commands.md) · [Exec mode](./docs/user-guide/exec-mode.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [WebMCP](./docs/user-guide/webmcp.md) |
-| Automate | [Automation](./docs/guides/full-automation.md) · [Hooks](./docs/guides/hooks-guide.md) · [Planning](./docs/guides/planning-workflow.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) |
-| Extend  | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md)                                                                                                                |
-| Operate | [Safety](./docs/security/SECURITY_MODEL.md) · [Evals](./docs/guides/eval.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) · [Architecture](./docs/ARCHITECTURE.md) |
-
-Can't find a topic? [Documentation Index](./docs/INDEX.md).
-
-The [WebMCP hosted app](https://vtcode.vinhnx.chatgpt.site/)
-([mirror](https://vinhnx.github.io/VTCode/)) pairs with the TUI bridge;
-deployment: [WebMCP deployment reference](./docs/reference/webmcp.md).
+| Goal | Guides |
+| --- | --- |
+| Get started | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [Providers](./docs/providers/PROVIDER_GUIDES.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md) |
+| Work interactively | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
+| Automate tasks | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md) |
+| Extend VT Code | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md) |
+| Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) |
 
 ## Development
 
 ```mermaid
 graph LR
     BIN[vtcode binary] --> CORE[vtcode-core harness]
+    BIN --> EVAL[vtcode-eval]
     CORE --> LLM[vtcode-llm]
     CORE --> SAFETY[vtcode-safety]
     CORE --> EVENTS[vtcode-exec-events]
+    CORE --> CONFIG[vtcode-config]
+    CORE --> MEMORY[vtcode-memory]
     CORE --> UI[vtcode-ui]
 ```
 
-Rust stable, edition 2024, MSRV 1.98.1. Clone and run the fast gate:
+Full 23-crate workspace map: [Architecture guide](./docs/ARCHITECTURE.md).
+Requires Rust 1.98.1+ (edition 2024) and `cargo-nextest` for tests:
 
 ```bash
-git clone https://github.com/vinhnx/vtcode.git
-cd vtcode
+git clone https://github.com/vinhnx/VTCode.git
+cd VTCode
 ./scripts/run-debug.sh     # build and launch a debug binary
-./scripts/check-dev.sh     # fast gate: clippy, fmt, check (10-30s)
-cargo nextest run          # tests (never `cargo test`)
+./scripts/check-dev.sh     # fast gate: clippy, fmt, check
+cargo nextest run          # tests (requires cargo-nextest)
 ```
 
-CI runs with `RUSTFLAGS="-D warnings"` and `--locked`; match locally with
-`cargo check --locked`. Details: [development overview](./docs/development/README.md)
-· [testing guide](./docs/development/testing.md).
+CI sets `RUSTFLAGS="-D warnings"` and builds with `--locked`; match locally
+with `RUSTFLAGS="-D warnings" cargo check --locked`. Setup and checks:
+[development overview](./docs/development/README.md) ·
+[testing guide](./docs/development/testing.md).
 
-Release binaries and notes: [GitHub releases](https://github.com/vinhnx/vtcode/releases)
-(Windows artifacts may lag behind macOS/Linux).
+Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/releases).
 
 ## Contributing
+
+### Contribute
 
 Contributions are welcome:
 
@@ -329,16 +278,18 @@ Contributions are welcome:
 - **Bug reports**: include `vtcode trajectory` output when possible.
 
 Before a PR: [Conventional Commits](https://www.conventionalcommits.org)
-(`type(scope): subject`), `./scripts/check-dev.sh` + `cargo nextest run`,
+(`type(scope): subject`), `./scripts/check-dev.sh` + `cargo nextest run`, and a
 focused diff.
+
+## Community
 
 ### Contributors
 
 VT Code is what it is because of the people who build, test, and improve it
-alongside me. Thank you, all of you.
+alongside me; thank you, all of you.
 
 <details>
-<summary><strong>Show all contributors</strong></summary>
+<summary>View all contributors</summary>
 
 <!-- CONTRIBUTORS:START -->
 
@@ -387,26 +338,31 @@ alongside me. Thank you, all of you.
 **Want to see your avatar here?** Every bit counts: one-line fixes, bug
 reports, and feedback are all welcome.
 
-[Report a bug](https://github.com/vinhnx/vtcode/issues/new?template=bug_report.md) ·
-[Request a feature](https://github.com/vinhnx/vtcode/issues/new?template=feature_request.md) ·
-[Share feedback](https://github.com/vinhnx/vtcode/discussions) ·
-[Star the repo](https://github.com/vinhnx/vtcode/stargazers) ·
+[Report a bug](https://github.com/vinhnx/VTCode/issues/new?template=bug_report.md) ·
+[Request a feature](https://github.com/vinhnx/VTCode/issues/new?template=feature_request.md) ·
+[Share feedback](https://github.com/vinhnx/VTCode/discussions) ·
+[Star the repo](https://github.com/vinhnx/VTCode/stargazers) ·
 [Contribute](./docs/CONTRIBUTING.md)
-
-## Support
 
 ### Contact
 
-Partnership and collaboration: `vinhnguyen2308 [at] gmail [dot] com`.
-Bugs and feature requests: [GitHub Issues](https://github.com/vinhnx/vtcode/issues).
+Partnerships and collaboration: `vinhnguyen2308 [at] gmail [dot] com`. Bugs and
+feature requests: [GitHub Issues](https://github.com/vinhnx/VTCode/issues).
 Security vulnerabilities: report privately via
-[GitHub private vulnerability reporting](https://github.com/vinhnx/vtcode/security/advisories/new);
+[GitHub private vulnerability reporting](https://github.com/vinhnx/VTCode/security/advisories/new);
 never open a public issue. Details: [security policy](./docs/SECURITY.md).
+
+### Resources
+
+- [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in):
+  harness design, evals, security, lessons learned.
+- [Podcast](https://www.youtube.com/watch?v=XLoswcd5rH0) ·
+  [Video](https://www.youtube.com/watch?v=PvL_kPjgU6o)
 
 ### Share VT Code
 
-If VT Code helped you ship something, telling other developers is the
-easiest way to support the project:
+If VT Code helped you ship something, telling other developers is the easiest
+way to support it:
 
 [Share on X](https://twitter.com/intent/tweet?text=VT%20Code%20is%20an%20open-source%20coding%20agent%20for%20your%20terminal&url=https%3A%2F%2Fgithub.com%2Fvinhnx%2Fvtcode) ·
 [Share on Hacker News](https://news.ycombinator.com/submitlink?u=https%3A%2F%2Fgithub.com%2Fvinhnx%2Fvtcode&t=VT%20Code%20%E2%80%93%20Open-source%20coding%20agent%20for%20your%20terminal) ·
@@ -416,18 +372,13 @@ easiest way to support the project:
 
 ### Sponsorship
 
-VT Code is maintained in spare time. A [sponsorship](https://github.com/sponsors/vinhnx)
-keeps the project independent.
-
-<details>
-<summary><strong>Sponsors</strong></summary>
+VT Code is maintained in spare time; a
+[sponsorship](https://github.com/sponsors/vinhnx) keeps it independent.
 
 <a href="https://github.com/dnhn"><img src="https://avatars.githubusercontent.com/u/2561973" width="80" height="80" alt="@dnhn" style="border-radius: 50%" /></a>
 <a href="https://github.com/codemod"><img src="https://avatars.githubusercontent.com/u/78830094" width="80" height="80" alt="@codemod" style="border-radius: 50%" /></a>
 <a href="https://github.com/coderabbitai"><img src="https://avatars.githubusercontent.com/u/132028505" width="80" height="80" alt="@coderabbitai" style="border-radius: 50%" /></a>
 <a href="https://github.com/KhaiRyth"><img src="https://avatars.githubusercontent.com/u/273723951" width="80" height="80" alt="@KhaiRyth" style="border-radius: 50%" /></a>
-
-</details>
 
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-30363D?style=for-the-badge&logo=github-sponsors&logoColor=%23EA4AAA)](https://github.com/sponsors/vinhnx)
 [![Buy Me a Coffee](./resources/screenshots/qr_donate.png)](https://buymeacoffee.com/vinhnx)

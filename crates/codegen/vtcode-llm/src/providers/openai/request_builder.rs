@@ -112,6 +112,15 @@ pub(crate) struct ResponsesRequestContext<'a> {
     pub prompt_cache_key: Option<&'a str>,
     pub include_prompt_cache_retention: bool,
     pub prompt_cache_retention: Option<&'a str>,
+    /// Emit explicit `prompt_cache_breakpoint` markers on the stable prefix.
+    /// Only native api.openai.com honors them: third-party
+    /// Responses-compatible endpoints (e.g. Merge Gateway via a base-URL
+    /// override) reject the field with 400 `invalid_parameter`, and the
+    /// ChatGPT subscription backend rejects it with 400
+    /// `prompt_cache_breakpoint is not supported on this model` (observed
+    /// live on `gpt-6.1-sol`). Implicit breakpoints still cover the latest
+    /// message on those backends.
+    pub include_explicit_cache_breakpoints: bool,
     pub default_service_tier: Option<&'a str>,
     pub default_response_store: Option<bool>,
     pub default_responses_include: Option<&'a [String]>,
@@ -151,7 +160,10 @@ fn is_gpt56_model(model: &str) -> bool {
 }
 
 fn is_gpt6_model(model: &str) -> bool {
-    matches!(model, openai_models::GPT_6_ASTRA | openai_models::GPT_6_SOL | openai_models::GPT_6_LUNA)
+    matches!(
+        model,
+        openai_models::GPT_6_ASTRA | openai_models::GPT_6_SOL | openai_models::GPT_6_1_SOL | openai_models::GPT_6_LUNA
+    )
 }
 
 fn is_openai_gpt_responses_model(model: &str) -> bool {
@@ -626,10 +638,12 @@ fn build_responses_item_history(
 
     // GPT-5.6+ exact-match caching needs explicit breakpoints on the stable
     // prefix; the implicit breakpoint alone only covers the latest message.
-    // Gated on the Responses model family only (not the TTL flag) so the
-    // API-key and ChatGPT backends keep sharing one item/history builder.
-    // Older models reject the field outright, enforced inside the helper.
-    if ctx.is_responses_api_model {
+    // Gated on the Responses model family (not the TTL flag) so the API-key
+    // and ChatGPT backends keep sharing one item/history builder, and on the
+    // backend flag so third-party endpoints never receive markers.
+    // Older models reject the field outright, enforced inside the helper, and
+    // non-native endpoints never receive markers (they 400 on the field).
+    if ctx.is_responses_api_model && ctx.include_explicit_cache_breakpoints {
         apply_explicit_cache_breakpoints(&mut responses_payload.input, &request.model);
     }
 
@@ -1050,6 +1064,7 @@ mod tests {
             prompt_cache_key: None,
             include_prompt_cache_retention: false,
             prompt_cache_retention: None,
+            include_explicit_cache_breakpoints: true,
             default_service_tier: None,
             default_response_store: None,
             default_responses_include,
@@ -1404,6 +1419,31 @@ mod tests {
             last_blocks.iter().all(|b| b.get("prompt_cache_breakpoint").is_none()),
             "trailing varying message stays implicit-only so the stable prefix can partial-match"
         );
+    }
+
+    #[test]
+    fn non_native_endpoints_omit_explicit_cache_breakpoints() {
+        // Merge Gateway and other Responses-compatible endpoints reject
+        // `prompt_cache_breakpoint` with 400 `invalid_parameter`; the provider
+        // only sets the flag for first-party backends.
+        let request = gpt56_request(vec![
+            provider::Message::user("stable context".to_string()),
+            provider::Message::user("new question".to_string()),
+        ]);
+        let mut ctx = cache_ctx();
+        ctx.include_explicit_cache_breakpoints = false;
+
+        let payload = build_responses_request(&request, &ctx).expect("request should build");
+        assert_eq!(
+            count_explicit_breakpoints(&payload),
+            0,
+            "compat endpoints must not receive prompt_cache_breakpoint markers"
+        );
+    }
+
+    #[test]
+    fn gpt61_sol_is_explicit_cache_breakpoint_model() {
+        assert!(super::is_explicit_cache_breakpoint_model(models::openai::GPT_6_1_SOL));
     }
 
     #[test]

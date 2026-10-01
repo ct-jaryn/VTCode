@@ -2272,12 +2272,17 @@ fn resolve_compaction_threshold_prefers_configured_value() {
 #[test]
 fn resolve_compaction_threshold_reserves_output_room_when_unset() {
     let reserve = DEFAULT_OUTPUT_RESERVE_TOKENS as u64;
-    assert_eq!(resolve_compaction_threshold(None, 200_000), Some(200_000 - reserve));
+    // Unset values trigger at `DEFAULT_COMPACTION_TRIGGER_RATIO` of the prompt
+    // budget (capacity minus the output reserve), not the full budget.
+    let prompt_budget = 200_000 - reserve;
+    let expected = prompt_budget * 3 / 4;
+    assert_eq!(resolve_compaction_threshold(None, 200_000), Some(expected));
 }
 
 #[test]
 fn resolve_compaction_threshold_clamps_to_context_size() {
     let reserve = DEFAULT_OUTPUT_RESERVE_TOKENS as u64;
+    // An explicit threshold is clamped to the full prompt budget (no ratio).
     assert_eq!(resolve_compaction_threshold(Some(300_000), 200_000), Some(200_000 - reserve));
 }
 
@@ -2289,7 +2294,8 @@ fn resolve_compaction_threshold_requires_context_or_override() {
 #[test]
 fn effective_compaction_threshold_follows_provider_capacity_when_session_budget_unset() {
     // Arrange: the default session budget is 0 (unset), so the provider
-    // capacity drives the threshold and only the output reserve is subtracted.
+    // capacity drives the threshold. The output reserve is subtracted and the
+    // default trigger ratio then applies to the remaining prompt budget.
     let provider = ContextSizedProvider { context_size: 500_000, provider_name: "openai" };
     let config = VTCodeConfig::default();
 
@@ -2297,7 +2303,8 @@ fn effective_compaction_threshold_follows_provider_capacity_when_session_budget_
     let threshold = effective_compaction_threshold(Some(&config), &provider, "stub-model");
 
     // Assert
-    assert_eq!(threshold, Some(500_000 - DEFAULT_OUTPUT_RESERVE_TOKENS));
+    let prompt_budget = 500_000 - DEFAULT_OUTPUT_RESERVE_TOKENS;
+    assert_eq!(threshold, Some(prompt_budget * 3 / 4));
 }
 
 #[test]
@@ -2311,21 +2318,24 @@ fn effective_compaction_threshold_clamps_session_budget_to_provider_capacity() {
     let threshold = effective_compaction_threshold(Some(&config), &provider, "stub-model");
 
     // Assert: the 160k session budget is clamped to the 100k provider capacity,
-    // and the output reserve is subtracted from the result.
-    assert_eq!(threshold, Some(100_000 - DEFAULT_OUTPUT_RESERVE_TOKENS));
+    // the output reserve is subtracted, and the default trigger ratio applies.
+    let prompt_budget = 100_000 - DEFAULT_OUTPUT_RESERVE_TOKENS;
+    assert_eq!(threshold, Some(prompt_budget * 3 / 4));
 }
 
 #[test]
 fn effective_compaction_threshold_uses_default_session_budget_without_config() {
-    // A zero (unset) session budget defers to the provider capacity minus the
-    // output reserve.
+    // A zero (unset) session budget defers to the provider capacity. The
+    // unset threshold then triggers at the ratio of the prompt budget
+    // (capacity minus the output reserve).
     let threshold = effective_compaction_threshold(
         None,
         &ContextSizedProvider { context_size: 500_000, provider_name: "openai" },
         "stub-model",
     );
 
-    assert_eq!(threshold, Some(500_000 - DEFAULT_OUTPUT_RESERVE_TOKENS));
+    let prompt_budget = 500_000 - DEFAULT_OUTPUT_RESERVE_TOKENS;
+    assert_eq!(threshold, Some(prompt_budget * 3 / 4));
 }
 
 #[test]
@@ -2347,7 +2357,10 @@ fn explicit_compaction_threshold_overrides_session_budget_but_not_provider_capac
         "stub-model",
     );
 
-    // Assert
+    // Assert: the explicit 200k threshold wins over the 300k session budget, and
+    // is clamped to the prompt budget (capacity minus the output reserve) when
+    // the provider capacity is lower. An explicit threshold bypasses the
+    // default trigger ratio — only unset values are ratio-scaled.
     assert_eq!(session_override, Some(200_000));
     assert_eq!(provider_cap, Some(150_000 - DEFAULT_OUTPUT_RESERVE_TOKENS));
 }
@@ -2366,8 +2379,9 @@ fn zero_session_budget_preserves_provider_derived_threshold() {
     );
 
     // Assert
-    assert_eq!(threshold, Some(200_000 - DEFAULT_OUTPUT_RESERVE_TOKENS));
-    assert_eq!(resolve_compaction_threshold(Some(0), 200_000), Some(200_000 - DEFAULT_OUTPUT_RESERVE_TOKENS as u64));
+    let prompt_budget = 200_000 - DEFAULT_OUTPUT_RESERVE_TOKENS;
+    assert_eq!(threshold, Some(prompt_budget * 3 / 4));
+    assert_eq!(resolve_compaction_threshold(Some(0), 200_000), Some((prompt_budget * 3 / 4) as u64));
 }
 
 #[test]
@@ -2396,7 +2410,8 @@ async fn capability_driven_compaction_triggers_for_three_families_at_small_and_l
         for context_size in [32_000, 1_000_000] {
             let provider = ContextSizedProvider { context_size, provider_name };
             let config = VTCodeConfig::default();
-            let threshold = context_size - DEFAULT_OUTPUT_RESERVE_TOKENS;
+            let prompt_budget = context_size - DEFAULT_OUTPUT_RESERVE_TOKENS;
+            let threshold = prompt_budget * 3 / 4;
             assert_eq!(
                 vtcode_core::compaction::effective_context_budget(Some(&config), &provider, "dynamic-model"),
                 context_size
@@ -2480,10 +2495,8 @@ fn discovered_resolved_context_reaches_runtime_budget_without_changing_other_mod
             resolved.context_window(),
         );
         assert_eq!(vtcode_core::compaction::effective_context_budget(None, provider.as_ref(), "dynamic-32k"), 32_000);
-        assert_eq!(
-            effective_compaction_threshold(None, provider.as_ref(), "dynamic-32k"),
-            Some(32_000 - DEFAULT_OUTPUT_RESERVE_TOKENS)
-        );
+        let prompt_budget = 32_000 - DEFAULT_OUTPUT_RESERVE_TOKENS;
+        assert_eq!(effective_compaction_threshold(None, provider.as_ref(), "dynamic-32k"), Some(prompt_budget * 3 / 4));
         assert_eq!(provider.effective_context_size("other-model"), 1_000_000);
         assert_eq!(provider.effective_context_size(""), 32_000);
     }

@@ -143,10 +143,38 @@ are designed to keep the first-request overhead low and per-turn growth bounded.
   replaying the full parent bootstrap on every child turn.
 - **Tool-result clearing is on by default.** Old tool results are stripped from
   context once it grows past `trigger_tokens` (default 100k), keeping only the most
-  recent `keep_tool_uses` (default 3) results.
+  recent `keep_tool_uses` (default 3) results. Requests that will not carry native
+  context edits get the request-only local rewrite (`clear_old_tool_results`):
+  non-Anthropic providers, Anthropic routes whose model capability profile
+  lacks context edits, and headless (`vtcode exec`) Anthropic runs, which never
+  attach native context management. The local rewrite stubs
+  older tool-result bodies while preserving `tool_call_id` pairing. Durable
+  session history and `ThreadEvent`s keep the full payload.
 - **Builtin tool count is capped.** The number of LLM-exposed builtin tools stays
   within a small cap; new tools must consolidate, defer, or deliberately raise the
-  cap. Builtin tool schemas in `progressive` mode fit in a ~3k-token envelope.
+  cap. Builtin tool schemas in `progressive` mode fit in a **2,000-token**
+  envelope (measured ~1,793 on the Codex-4 default profile).
+  The always-eager set is the Codex baseline plus structured search
+  (`exec_command`, `write_stdin`, `apply_patch` when supported, `search_tools`,
+  `code_search`, `grep_file`). Deferred structured search pushed models to shell
+  out via `exec_command` and pay in huge tool outputs (session data 2026-09-28);
+  the extra schema tokens are cheaper. Planner, skills, and agent tools
+  defer until `search_tools` surfaces them (planner tools stay eager while
+  planning is active).
+- **Tool-result clearing defaults** (`agent.harness.tool_result_clearing`):
+  `trigger_tokens: 40000`, `keep_tool_uses: 2`. Research/audit turns were
+  observed at ~1M input tokens/turn with the old 100k trigger — tool results
+  piled up long before any clearing. Durable history is unchanged.
+  `clear_tool_inputs` defaults to `true`, so paired `apply_patch` /
+  `write_file` arguments are replaced with a JSON placeholder whenever their
+  results are stubbed; set it `false` to keep full tool-call inputs on the
+  wire.
+- **Tool-output economy.** Interactive and headless paths share
+  `reduce_tool_result` hard caps (32 KiB / 2000 lines on read/exec bodies).
+  `list_files` `mode=tree` emits at most 200 nodes and 50 children per
+  directory and sets `tree_truncated` when it stops. Failure diagnosis is
+  memoized per `(tool, evidence)` with at most three model-backed calls per
+  turn; repeats reuse the first diagnosis or the deterministic fallback.
 - **Startup token-overhead warnings.** At session start (unless `--quiet`),
   VT Code logs non-fatal `tracing::warn!` messages when the config is likely to
   inflate per-request cost: more than 8 configured MCP servers,
@@ -175,10 +203,21 @@ are designed to keep the first-request overhead low and per-turn growth bounded.
 
 ### Auditing token cost
 
-A first-request budget guard rail is enforced by tests:
+A first-request budget guard rail is enforced by tests (lean harness defaults):
+
+| Budget | Cap |
+|---|---|
+| Progressive builtin tool-schema tokens | ≤ 2,000 |
+| First request (no MCP) | ≤ 6,000 |
+| First request (MCP growth ceiling) | ≤ 8,000 |
+
+These are **intentional lean caps** (HarnessTax). Do not raise them without new
+session/benchmark evidence that the headroom is insufficient.
 
 - `crates/codegen/vtcode-core/src/tools/registry/builtins.rs::emitted_model_tool_schema_fits_within_first_request_budget`
   asserts builtin tool schemas stay within the budget in `progressive` mode.
+- `first_request_total_token_budget_within_limit` asserts the effective-default
+  system prompt (Minimal) plus schemas/appendix/addendum fit the 6k/8k ceilings.
 - `crates/codegen/vtcode-core/src/tools/handlers/session_tool_catalog.rs` tests assert MCP tools
   defer (small or large catalog) and that the client-local policy defers small MCP
   catalogs.
@@ -189,6 +228,30 @@ Run them with:
 cargo nextest run -p vtcode-core emitted_model_tool_schema_fits_within_first_request_budget
 cargo nextest run -p vtcode-core -E 'test(session_tool_catalog)'
 ```
+
+### Harness tax (first-call fixed overhead)
+
+HarnessTax (Pan et al., 2026 — https://harnesstax.github.io/) shows the same
+model can cost up to 5x more under a different coding-agent harness at
+essentially the same success rate; the gap is mostly **first-call fixed
+overhead** (instructions + tool schemas), not more turns. VT Code surfaces that
+tax so it can be measured, not guessed:
+
+- Every assembled request logs `token_budget_breakdown` with
+  `system_prompt_tokens`, `tool_schema_tokens`, `message_history_tokens`,
+  `on_wire_tools`, `first_call`, and `fixed_overhead_tokens`
+  (`system + tool schemas` — the per-call harness tax before the task prompt).
+- The session's first assembled request is captured once into interactive
+  `SessionStats::first_call_composition` and shown on exit as
+  `First-call overhead N (system S + tools T)`.
+- Eval reports (`vtcode-eval`) include a `Cost efficiency` line:
+  `cost/solve`, mean cost per priced attempt, mean tokens per attempt, and mean turns
+  per attempt. `cost_per_solve` is `None` when any attempt is unpriced
+  (unknown cost is not free) or nothing passed.
+
+`agent.system_prompt_mode` defaults to **minimal** (~500 tokens). Keep new tools
+and instruction files lean: Progressive schemas and the first-request budgets
+above are the enforcement side of the same trade-off.
 
 ### Model pricing and fallback policy
 

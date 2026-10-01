@@ -347,6 +347,17 @@ pub(super) fn build_structured_error_content(
                 serde_json::to_value(debug_context).unwrap_or(serde_json::Value::Null),
             );
         }
+        // Policy/permission denials collapse to one generic sentence, which
+        // leaves the model guessing between retrying, switching tools, or
+        // ending the turn (checkpoint turn_724: 7 retries). Attach the
+        // tool-specific denial diagnostic — the same actionable fix the
+        // user-facing preflight prompt receives — so the model can act on
+        // the denial instead of guessing.
+        if error_class == "policy_blocked"
+            && let Some(diagnostic) = tool_denial_diagnostic(&error.tool_name)
+        {
+            obj.insert("diagnostic".to_string(), diagnostic);
+        }
     }
 
     if let Some(tool) = fallback_tool {
@@ -486,7 +497,7 @@ fn extract_background_subagent_name_from_error(error_msg: &str) -> Option<String
 
 #[cfg(test)]
 mod tests {
-    use super::tool_denial_diagnostic;
+    use super::{ToolExecutionError, build_structured_error_content, tool_denial_diagnostic};
 
     #[test]
     fn request_user_input_denial_directive_tells_model_to_stop() {
@@ -535,5 +546,27 @@ mod tests {
     #[test]
     fn unknown_tool_returns_no_diagnostic() {
         assert!(tool_denial_diagnostic("some_unknown_tool").is_none());
+    }
+
+    #[test]
+    fn structured_error_content_attaches_diagnostic_on_policy_denial() {
+        let error = ToolExecutionError::policy_violation("exec_command", "Tool permission denied");
+        let payload = build_structured_error_content(&error, None, None, "execution");
+
+        assert_eq!(
+            payload["error_class"].as_str(),
+            Some("policy_blocked"),
+            "a policy denial must classify as policy_blocked"
+        );
+        let diagnostic = payload
+            .get("diagnostic")
+            .expect("policy denial for a covered tool must carry the denial diagnostic");
+        assert!(diagnostic["fix"]["action"].is_string(), "diagnostic must carry a concrete fix");
+
+        // A non-denied execution failure gets no diagnostic noise.
+        let runtime_error =
+            ToolExecutionError::from_anyhow("exec_command", &anyhow::anyhow!("process failed"), 0, false, false, None);
+        let payload = build_structured_error_content(&runtime_error, None, None, "execution");
+        assert!(payload.get("diagnostic").is_none(), "non-denial failures must not carry a denial diagnostic");
     }
 }

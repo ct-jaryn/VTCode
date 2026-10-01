@@ -118,18 +118,7 @@ pub(crate) async fn prepare_session_bootstrap_with_mode(
         None
     };
 
-    let placeholder = if onboarding_cfg.enabled && todo_planning_enabled {
-        onboarding_cfg.chat_placeholder.as_ref().and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-    } else {
-        None
-    };
+    let placeholder = configured_chat_placeholder(vt_cfg);
 
     SessionBootstrap {
         placeholder,
@@ -147,6 +136,27 @@ pub(crate) async fn prepare_session_bootstrap_with_mode(
         legacy_key_bindings: HashMap::new(),
         system_prompt_report: Default::default(),
     }
+}
+
+/// Resolve the user-configured chat placeholder, if any.
+///
+/// Pure in-memory derivation shared by the shell paint path and the full
+/// bootstrap so the ready re-drive never changes the placeholder the shell
+/// already painted (seamless state transition).
+pub(crate) fn configured_chat_placeholder(vt_cfg: Option<&VTCodeConfig>) -> Option<String> {
+    let onboarding_cfg = vt_cfg.map(|cfg| &cfg.agent.onboarding)?;
+    let todo_planning_enabled = vt_cfg.map(|cfg| cfg.agent.todo_planning_mode).unwrap_or(true);
+    if !(onboarding_cfg.enabled && todo_planning_enabled) {
+        return None;
+    }
+    onboarding_cfg.chat_placeholder.as_ref().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn build_header_highlights(onboarding_cfg: &AgentOnboardingConfig) -> Vec<InlineHeaderHighlight> {

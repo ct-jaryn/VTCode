@@ -21,6 +21,7 @@ impl ModelId {
             // OpenAI models
             ModelId::GPT6Astra,
             ModelId::GPT6Sol,
+            ModelId::GPT61Sol,
             ModelId::GPT6Luna,
             ModelId::GPT56Sol,
             ModelId::GPT56Terra,
@@ -29,6 +30,7 @@ impl ModelId {
             ModelId::OpenAIGptOss120b,
             // Anthropic models
             ModelId::ClaudeSonnet5,
+            ModelId::ClaudeSonnet55,
             ModelId::ClaudeFable5,
             ModelId::ClaudeFable51,
             ModelId::ClaudeOpus5,
@@ -53,6 +55,7 @@ impl ModelId {
             ModelId::MergeGatewayAnthropicClaudeOpus5,
             ModelId::MergeGatewayAnthropicClaudeOpus55,
             ModelId::MergeGatewayAnthropicClaudeSonnet5,
+            ModelId::MergeGatewayAnthropicClaudeSonnet55,
             ModelId::MergeGatewayXaiGrok46,
             ModelId::MergeGatewayXaiGrok47,
             ModelId::MergeGatewayMinimaxH3,
@@ -71,6 +74,7 @@ impl ModelId {
             ModelId::MergeGatewayDeepseekFlash,
             ModelId::MergeGatewayOpenAIGpt6Astra,
             ModelId::MergeGatewayOpenAIGpt6Sol,
+            ModelId::MergeGatewayOpenAIGpt61Sol,
             ModelId::MergeGatewayOpenAIGpt6Luna,
             // Mistral models
             ModelId::MistralLarge3,

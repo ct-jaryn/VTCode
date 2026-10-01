@@ -491,8 +491,35 @@ fn ensure_completed_turn_response(
     Ok(response_was_fallback)
 }
 
-fn completed_turn_requires_final_response(result: &TurnLoopResult) -> bool {
-    matches!(result, TurnLoopResult::Completed { plan_approved_execution_pending: false })
+/// True when a `Completed` turn must publish a final assistant response.
+///
+/// Primary-agent handoffs (plan entry via `SwitchPrimaryAgent`, deferred
+/// mid-turn `start_planning`, approved-plan execution via the policy target)
+/// are control-flow turns: the session loop constructs the follow-up request,
+/// and the handoff turn legitimately ends on a tool result with no assistant
+/// final. Requiring one would append a misleading recovery fallback and
+/// convert the handoff into `Blocked`.
+fn completed_turn_requires_final_response(result: &TurnLoopResult, primary_agent_handoff: bool) -> bool {
+    !primary_agent_handoff && matches!(result, TurnLoopResult::Completed { plan_approved_execution_pending: false })
+}
+
+/// Whether the turn ends on a primary-agent control-flow handoff that the
+/// outer session loop will follow. Includes the deferred plan-entry switch
+/// so mid-turn `start_planning` is exempt from the final-response guard
+/// before that switch is applied to `pending_primary_agent`.
+fn is_primary_agent_handoff(
+    pending_primary_agent: &Option<String>,
+    pending_plan_execution_target: &Option<crate::agent::runloop::unified::planning_workflow::PlanExecutionTarget>,
+    deferred_plan_entry_switch: bool,
+) -> bool {
+    pending_primary_agent.is_some() || pending_plan_execution_target.is_some() || deferred_plan_entry_switch
+}
+
+/// True when a `SwitchPrimaryAgent` handoff is *entering* plan mode rather than
+/// leaving it for an approved-plan execution agent. Plan entry must not claim
+/// `plan_approved_execution_pending` (that flag starts implementation).
+pub(crate) fn is_plan_entry_handoff(agent: &str) -> bool {
+    agent.eq_ignore_ascii_case("plan")
 }
 
 pub(crate) struct TurnLoopOutcome {
@@ -816,7 +843,7 @@ pub(crate) async fn run_turn_loop(
     // the session loop.
     ctx.renderer.flush_compact_command_group();
     ctx.set_phase(TurnPhase::Preparing);
-    ctx.tool_registry.begin_turn_preview_window();
+    super::turn_loop_helpers::restore_fresh_turn_tool_guidance(working_history, ctx.harness_state.is_recovery_active());
     if let Some(Err(e)) = ctx.harness_emitter.map(|e| e.emit(turn_started_event())) {
         tracing::debug!(error = %e, "harness turn_started event emission failed");
     }
@@ -829,6 +856,11 @@ pub(crate) async fn run_turn_loop(
     );
     if ctx.is_planning_active() {
         ctx.plan_session.start_turn();
+        // Planning work starts now: the user request exists, so promote to
+        // the Planning stage and show the researching indicator once per
+        // turn. Mode entry alone stays Idle to avoid a premature "Planning..."
+        // footer before any request.
+        crate::agent::runloop::unified::planning_workflow_state::mark_planning_turn_started(ctx.renderer, ctx.handle);
     }
     // After a permanent `request_user_input` denial, suppress the tool for the
     // rest of the session so the model stops retrying it across turns.
@@ -870,12 +902,13 @@ pub(crate) async fn run_turn_loop(
         ctx.safety_validator.set_limits(max_per_turn, max_per_session);
         ctx.safety_validator.start_turn();
     }
-    // Tracks whether planning-aware budgets are already in effect. When
-    // planning is entered mid-turn (via the enter trigger below), the limits
-    // computed above used `planning_active = false` and must be re-applied so
-    // the planning research floor (120 calls/turn) takes effect immediately
-    // instead of exhausting the smaller build-mode budget (checkpoint turn_804).
-    let mut planning_limits_applied = ctx.is_planning_active();
+    // Tracks the planning flag from the previous loop iteration so Build↔Plan
+    // auto-switches mid-turn re-apply budgets in *both* directions. Raising
+    // only `max(limit, floor)` is not enough: the prior mode may have already
+    // consumed that cap, so the new mode needs a full floor of remaining
+    // headroom from now (user report: explicit Plan works, auto-switch hits
+    // the tool-call limit).
+    let mut last_planning_active = ctx.is_planning_active();
 
     loop {
         if handle_steering_messages(&mut ctx, working_history, &mut result).await? {
@@ -911,25 +944,45 @@ pub(crate) async fn run_turn_loop(
             break;
         }
 
-        // Planning entered mid-turn: re-derive turn config and budgets with
-        // `planning_active = true` so research isn't capped by the smaller
-        // build-mode limits that were computed at turn start.
-        if !planning_limits_applied && ctx.is_planning_active() {
-            planning_limits_applied = true;
-            ctx.plan_session.start_turn();
+        // Build↔Plan auto-switch mid-turn: re-derive turn config and grant a
+        // full *remaining* mode floor so the new phase is not starved by the
+        // prior phase's consumption (checkpoint turn_804 + user Build→Plan
+        // tool-call-limit report).
+        let planning_now = ctx.is_planning_active();
+        if planning_now != last_planning_active {
+            last_planning_active = planning_now;
+            if planning_now {
+                ctx.plan_session.start_turn();
+                // Planning just became active inside a running turn: promote to
+                // the stage and show the researching row once, since work is live.
+                crate::agent::runloop::unified::planning_workflow_state::mark_planning_turn_started(
+                    ctx.renderer,
+                    ctx.handle,
+                );
+            }
             turn_config = extract_turn_config(
                 effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
-                true,
+                planning_now,
                 ctx.renderer.supports_inline_ui(),
             );
             if ctx.plan_session.is_interview_denied() {
                 turn_config.request_user_input_enabled = false;
             }
-            current_max_tool_loops = current_max_tool_loops.max(turn_config.max_tool_loops);
-            ctx.harness_state.max_tool_calls =
-                super::turn_loop_helpers::effective_max_tool_calls_for_turn(ctx.harness_state.max_tool_calls, true);
-            let (max_per_turn, max_per_session) =
-                resolve_safety_tool_call_limits(ctx.harness_state.max_tool_calls, turn_config.max_session_turns, true);
+            super::turn_loop_helpers::apply_mode_switch_remaining_tool_call_floor(
+                &mut ctx.harness_state.max_tool_calls,
+                ctx.harness_state.tool_calls,
+                planning_now,
+            );
+            super::turn_loop_helpers::apply_mode_switch_remaining_tool_loop_floor(
+                &mut current_max_tool_loops,
+                step_count,
+                planning_now,
+            );
+            let (max_per_turn, max_per_session) = resolve_safety_tool_call_limits(
+                ctx.harness_state.max_tool_calls,
+                turn_config.max_session_turns,
+                planning_now,
+            );
             ctx.safety_validator.set_limits(max_per_turn, max_per_session);
         }
 
@@ -1804,10 +1857,12 @@ pub(crate) async fn run_turn_loop(
         match turn_outcome {
             TurnHandlerOutcome::Continue => continue,
             TurnHandlerOutcome::SwitchPrimaryAgent(agent) => {
-                // Plan-mode "switch to build/auto agent" decision: end the turn
-                // normally and let the interaction loop perform the handoff.
+                // Primary-agent handoff after the turn. Plan *entry* selects the
+                // plan agent without claiming an approved-plan execution turn;
+                // plan→build/auto still uses the approved-plan path below.
+                let plan_entry = is_plan_entry_handoff(&agent);
                 pending_primary_agent = Some(agent);
-                result = TurnLoopResult::Completed { plan_approved_execution_pending: true };
+                result = TurnLoopResult::Completed { plan_approved_execution_pending: !plan_entry };
                 break;
             }
             TurnHandlerOutcome::SwitchPrimaryAgentWithPolicy { target } => {
@@ -1902,16 +1957,24 @@ pub(crate) async fn run_turn_loop(
         )?;
     }
 
-    // An approved-plan handoff is a completed control-flow turn, not a user-
-    // visible assistant turn. Its implementation request is constructed by
-    // the outer session loop, so requiring a final assistant response here
-    // would convert the handoff into `Blocked` before execution can start.
-    let final_response_was_fallback = if completed_turn_requires_final_response(&result) {
+    // An approved-plan handoff or plan-entry handoff is a completed control-
+    // flow turn, not a user-visible assistant turn. Its follow-up request is
+    // constructed by the outer session loop, so requiring a final assistant
+    // response here would convert the handoff into `Blocked` before the
+    // implementation/planning turn can start.
+    //
+    // Consume the deferred plan-entry switch *before* the guard: mid-turn
+    // `start_planning` queues it without breaking the turn, and the handoff
+    // must be exempt like an explicit `SwitchPrimaryAgent("plan")`.
+    let deferred_plan_entry_switch = ctx.plan_session.take_plan_entry_agent_switch();
+    let primary_agent_handoff =
+        is_primary_agent_handoff(&pending_primary_agent, &pending_plan_execution_target, deferred_plan_entry_switch);
+    let final_response_was_fallback = if completed_turn_requires_final_response(&result, primary_agent_handoff) {
         ensure_completed_turn_response(&mut ctx, working_history, turn_history_start_len)?
     } else {
         ctx.harness_state.final_response_was_fallback()
     };
-    if completed_turn_requires_final_response(&result) {
+    if completed_turn_requires_final_response(&result, primary_agent_handoff) {
         if final_response_was_fallback {
             let reason = completed_fallback_reason(ctx.is_planning_active());
             // Diagnostic for false-Blocked reports (e.g. simple requests ending
@@ -1943,6 +2006,32 @@ pub(crate) async fn run_turn_loop(
             result = TurnLoopResult::Blocked {
                 reason: Some(PLAN_RECOVERY_EXHAUSTED_REASON.to_string()),
             };
+        }
+    }
+
+    // Apply the deferred plan-entry agent switch at this turn boundary unless
+    // a stronger handoff (approved-plan policy target / explicit switch) owns
+    // the boundary. Apply on Blocked too: plan mode often blocks tools in the
+    // entry turn, and discarding here would leave the build agent selected
+    // forever while planning stays active.
+    if deferred_plan_entry_switch {
+        if pending_primary_agent.is_none() && pending_plan_execution_target.is_none() {
+            pending_primary_agent =
+                Some(crate::agent::runloop::unified::planning_workflow_state::PLAN_PRIMARY_AGENT_NAME.to_string());
+            tracing::info!(
+                target: "vtcode.planning_workflow",
+                switch_path = "plan_entry",
+                agent = %crate::agent::runloop::unified::planning_workflow_state::PLAN_PRIMARY_AGENT_NAME,
+                "Applying deferred plan primary-agent switch after turn boundary"
+            );
+        } else {
+            tracing::info!(
+                target: "vtcode.planning_workflow",
+                switch_path = "plan_entry",
+                has_primary_agent = pending_primary_agent.is_some(),
+                has_plan_execution_target = pending_plan_execution_target.is_some(),
+                "Discarding deferred plan primary-agent switch; stronger handoff owns the boundary"
+            );
         }
     }
 

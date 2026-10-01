@@ -10,6 +10,10 @@ pub(super) struct LocalAgentsState {
     entries: Vec<LocalAgentEntry>,
     navigator: ListNavigator,
     active_ids: HashSet<String>,
+    /// List body rect from the last floating-window paint (mouse hit-testing).
+    list_area: Option<ratatui::layout::Rect>,
+    /// Outer floating-window rect from the last paint (mouse hit-testing).
+    window_area: Option<ratatui::layout::Rect>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,6 +62,27 @@ impl LocalAgentsState {
     /// both the drawer shimmer and the global background loading signal.
     pub(super) fn loading_count(&self) -> usize {
         self.entries.iter().filter(|entry| entry.is_loading()).count()
+    }
+
+    /// Retained terminal rows (completed / failed / stopped / exited).
+    pub(super) fn finished_count(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.is_finished()).count()
+    }
+
+    pub(super) fn set_list_area(&mut self, area: Option<ratatui::layout::Rect>) {
+        self.list_area = area;
+    }
+
+    pub(super) fn list_area(&self) -> Option<ratatui::layout::Rect> {
+        self.list_area
+    }
+
+    pub(super) fn set_window_area(&mut self, area: Option<ratatui::layout::Rect>) {
+        self.window_area = area;
+    }
+
+    pub(super) fn window_area(&self) -> Option<ratatui::layout::Rect> {
+        self.window_area
     }
 
     fn has_entries(&self) -> bool {

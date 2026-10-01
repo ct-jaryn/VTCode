@@ -555,7 +555,7 @@ VT Code can also run a background subagent as a managed child `vtcode` subproces
 - `Ctrl+B` first hands an active foreground PTY or pipe command to the unified background-session manager; when no foreground command is active, it starts or stops a background subagent only after you enable background mode and set `default_agent`
 - if background mode is disabled or unconfigured, `Ctrl+B` opens the Local Agents drawer and shows the setup guidance instead of launching anything
 - `/subprocesses` opens the Local Agents drawer
-- `/jobs` is retained as a compatibility alias for that same unified drawer, including raw background `exec`/PTY sessions.
+- `/config jobs` opens that same unified drawer (`/jobs` still works as a hidden alias), including raw background `exec`/PTY sessions.
 - `Alt+S` focuses the same Local Agents drawer quickly from the main session
 - when local agents exist, the footer shows a compact badge such as `1 local agent | ↓ explore`
 - in wide layouts, the sidebar shows a single `Local Agents` section instead of separate live-agent and subprocess sections

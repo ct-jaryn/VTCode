@@ -2,6 +2,10 @@
 
 [Root AGENTS.md](../../../AGENTS.md) | Reusable bounded diff computation and semantic preview layout.
 
+## Key Types
+
+`DiffDocument` + `DiffHunk`/`DiffLine` semantic model | `DiffOptions` bounds | `compute_diff`/`format_unified_diff` entry points
+
 ## Conventions
 
 - Keep the core independent of VT Code crates and renderer themes.

@@ -9,6 +9,8 @@ use super::super::semantic::{resolve_semantic_match, semantic_anchor_term};
 use super::io::AtomicWriter;
 use super::{PatchChunk, PatchError};
 
+use vtcode_commons::preview::condense_error_echo;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LineEnding {
     LF,
@@ -120,7 +122,7 @@ pub(super) async fn compute_replacements(
             if !context_found && let Some(context) = chunk.change_context() {
                 return Err(PatchError::ContextNotFound {
                     path: path.to_string(),
-                    context: context.to_string(),
+                    context: condense_error_echo(context),
                 });
             }
             let insertion_idx = if chunk.change_context().is_some() {
@@ -172,13 +174,13 @@ pub(super) async fn compute_replacements(
             if !context_found && let Some(context) = chunk.change_context() {
                 return Err(PatchError::ContextNotFound {
                     path: path.to_string(),
-                    context: context.to_string(),
+                    context: condense_error_echo(context),
                 });
             }
             let snippet = if old_segment.is_empty() {
                 "<empty>".to_string()
             } else {
-                old_segment.join("\n")
+                condense_error_echo(&old_segment.join("\n"))
             };
             return Err(PatchError::SegmentNotFound { path: path.to_string(), snippet });
         }

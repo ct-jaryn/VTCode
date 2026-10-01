@@ -41,6 +41,9 @@ Common optional fields:
 Every function tool accepts `max_output_tokens`. It defaults to 10,000 and must
 be between 1 and 50,000. VT Code spools the complete output and limits only the
 model-visible preview.
+Completed output spools include `spool_line_count` so targeted shell reads can
+stay within the available lines without probing beyond EOF. The count includes
+an unterminated final line and is omitted while a live spool is pending.
 
 The limit is validated during preflight before dispatch. Omit it to use the
 10,000-token default or provide an integer override in that range; strings,

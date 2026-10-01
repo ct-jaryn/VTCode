@@ -267,6 +267,23 @@ pub(crate) fn handle_history_picker_key(
             picker.cancel(input_manager);
             true
         }
+        // Ctrl+C (and terminal ETX encoding) cancels the picker, mirroring
+        // Esc. Without this, Ctrl+C falls through to the generic Char arm
+        // below and is inserted as "c" into the search query, leaving the
+        // modal open with no way to dismiss via keyboard interrupt.
+        KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            picker.cancel(input_manager);
+            true
+        }
+        KeyCode::Char('\u{3}') => {
+            picker.cancel(input_manager);
+            true
+        }
+        // Readline-style cancel, matching reverse-search behavior.
+        KeyCode::Char('g') | KeyCode::Char('G') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            picker.cancel(input_manager);
+            true
+        }
         KeyCode::Enter => {
             picker.accept(input_manager);
             true
@@ -313,6 +330,16 @@ pub(crate) fn handle_history_picker_key(
             true
         }
         KeyCode::Char(ch) => {
+            // Control/Alt/Super-modified keys are shortcuts, not search text.
+            // Without this guard Ctrl+C (and friends) would be inserted as
+            // literal characters into the query instead of dismissing.
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.intersects(KeyModifiers::SUPER | KeyModifiers::META)
+                || ch.is_control()
+            {
+                return false;
+            }
             picker.add_char(ch, history);
             true
         }
@@ -543,5 +570,68 @@ mod tests {
         assert_eq!(manager.content(), multiline);
         assert_eq!(manager.cursor(), multiline.len());
         assert_eq!(manager.line_count(), 3);
+    }
+
+    #[test]
+    fn test_ctrl_c_cancels_picker_without_inserting() {
+        let mut picker = HistoryPickerState::new();
+        let mut manager = InputManager::new();
+        manager.set_content("draft".to_string());
+        let history = make_history();
+
+        picker.open(&manager);
+        picker.update_search(&history);
+        assert!(picker.active);
+
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(handle_history_picker_key(&key, &mut picker, &mut manager, &history));
+
+        assert!(!picker.active);
+        assert_eq!(manager.content(), "draft");
+        assert!(picker.search_query.is_empty());
+    }
+
+    #[test]
+    fn test_ctrl_g_cancels_picker() {
+        let mut picker = HistoryPickerState::new();
+        let mut manager = InputManager::new();
+        let history = make_history();
+
+        picker.open(&manager);
+        picker.update_search(&history);
+
+        let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert!(handle_history_picker_key(&key, &mut picker, &mut manager, &history));
+        assert!(!picker.active);
+    }
+
+    #[test]
+    fn test_etx_cancels_picker() {
+        let mut picker = HistoryPickerState::new();
+        let mut manager = InputManager::new();
+        let history = make_history();
+
+        picker.open(&manager);
+        picker.update_search(&history);
+
+        let key = KeyEvent::new(KeyCode::Char('\u{3}'), KeyModifiers::NONE);
+        assert!(handle_history_picker_key(&key, &mut picker, &mut manager, &history));
+        assert!(!picker.active);
+    }
+
+    #[test]
+    fn test_ctrl_modified_char_is_not_inserted() {
+        let mut picker = HistoryPickerState::new();
+        let mut manager = InputManager::new();
+        let history = make_history();
+
+        picker.open(&manager);
+        picker.update_search(&history);
+
+        // Ctrl+B is not a picker shortcut: it must not leak into the query.
+        let key = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert!(!handle_history_picker_key(&key, &mut picker, &mut manager, &history));
+        assert!(picker.active);
+        assert!(picker.search_query.is_empty());
     }
 }

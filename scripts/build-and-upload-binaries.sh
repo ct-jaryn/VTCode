@@ -8,6 +8,8 @@ set -e
 # Source common utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
+# Shared macOS Developer ID signing and notarization helpers.
+source "$SCRIPT_DIR/macos-release-signing.sh"
 
 BUILD_TOOL="cargo"
 TARGET_ENV_ASSIGNMENTS=()
@@ -21,12 +23,20 @@ package_release_archive() {
     local binary_name="${4:-vtcode}"
     local release_dir="target/$target/release"
 
+    if [[ "$target" == *-apple-darwin ]]; then
+        sign_and_notarize_macos_binary "$release_dir/$binary_name"
+    fi
+
     cp "$release_dir/$binary_name" "$dist_dir/$binary_name"
     (
         cd "$dist_dir"
         tar -czf "$archive_name" "$binary_name"
         rm -rf "$binary_name"
     )
+
+    if [[ "$target" == *-apple-darwin ]]; then
+        verify_macos_release_archive "$dist_dir/$archive_name"
+    fi
 }
 
 package_windows_archive() {
@@ -190,6 +200,10 @@ build_binaries() {
     print_info "Building binaries for all platforms for version $version..."
 
     if [ "$DRY_RUN" = false ]; then
+        macos_release_signing_preflight
+    fi
+
+    if [ "$DRY_RUN" = false ]; then
         rm -rf "$dist_dir"
         mkdir -p "$dist_dir"
     fi
@@ -302,6 +316,10 @@ build_binaries_local() {
     local dist_dir="dist"
 
     print_info "Building binaries for local platform(s) for version $version..."
+
+    if [[ "$OSTYPE" == "darwin"* && "$DRY_RUN" = false ]]; then
+        macos_release_signing_preflight
+    fi
 
     if [ "$DRY_RUN" = false ]; then
         rm -rf "$dist_dir"
@@ -468,6 +486,13 @@ upload_binaries() {
         print_info "Dry run: would upload binaries to $tag"
         return 0
     fi
+
+    local macos_archive
+    for macos_archive in "$dist_dir"/vtcode-"$version"-*-apple-darwin.tar.gz; do
+        if [[ -f "$macos_archive" ]]; then
+            verify_macos_release_archive "$macos_archive"
+        fi
+    done
 
     print_info "Checking GitHub Release $tag..."
 

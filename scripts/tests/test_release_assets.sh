@@ -78,6 +78,11 @@ if create_compatibility_asset "$tmp/vtcode-0.141.6-aarch64-apple-darwin.tar.gz" 
 else
     fail_test "tar.gz compat bytes mismatch"
 fi
+if [[ -x "$out" ]]; then
+    pass "tar.gz compat asset is executable"
+else
+    fail_test "tar.gz compat asset is not executable"
+fi
 
 # Fixture zip with a root-level vtcode.exe binary (matches CI packaging).
 if command -v zip >/dev/null 2>&1; then

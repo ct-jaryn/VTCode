@@ -2161,6 +2161,7 @@ mod tests {
         assert!(capabilities::supports_turn_scoped_system_messages(models::anthropic::CLAUDE_FABLE_5, ""));
         assert!(capabilities::supports_turn_scoped_system_messages("claude-opus-4-8", ""));
         assert!(capabilities::supports_turn_scoped_system_messages(models::anthropic::CLAUDE_OPUS_5, ""));
+        assert!(capabilities::supports_turn_scoped_system_messages(models::anthropic::CLAUDE_SONNET_5_5, ""));
         assert!(!capabilities::supports_turn_scoped_system_messages(models::anthropic::CLAUDE_SONNET_5, ""));
     }
 }

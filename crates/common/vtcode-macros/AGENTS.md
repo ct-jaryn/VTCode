@@ -1,6 +1,6 @@
 # vtcode-macros
 
-Procedural macros for VT Code. Contains derive macros and attribute macros shared across workspace crates.
+[Root AGENTS.md](../../../AGENTS.md) | `StringNewtype` derive macro shared across workspace crates.
 
 ## Conventions
 

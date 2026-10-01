@@ -8,7 +8,7 @@ VT Code has two distinct prompt sources:
 | Project instruction map | User/workspace `AGENTS.md`, `CLAUDE.md`, and `.vtcode/rules/` | Project conventions, local architecture, and maintainer workflows | User-controlled context, never a security boundary |
 
 The compiled section is deterministic, cached with the static profile, and
-kept below its approximate 420-token cap. It must not read, embed, or generate
+kept below its approximate 590-token cap. It must not read, embed, or generate
 content from repository instruction files. Profile-specific operating details
 remain in the prompt builder; correctness-critical behavior belongs in runtime
 policy, schemas, tests, or lints.
@@ -27,6 +27,29 @@ complete output in Transcript Review. The model must not rerun commands merely
 to reveal hidden output; material findings belong in a visible progress update
 or the final reply. The provider-neutral collapsed-output disclosure reinforces
 this after each affected tool result.
+
+Empty searches are evidence of absence within the queried scope, so retries
+should ask a new question or change scope. For optional tooling, inspect the
+declared project/CI commands and check availability once; report an unavailable
+check as skipped and continue. A failure from an available checker still needs
+to be resolved.
+
+The navigation tracker counts empty successful read-only search pipelines as
+low-signal results even when a final filter such as `head` or `sed` returns
+exit 0. It uses the existing planning/execution convergence limits; it does not
+change command permissions or treat pipeline success as verification. Quiet
+existence probes, non-empty results, unfinished captures, and hidden or spooled
+output do not count as empty evidence.
+
+Standalone grep-style searches with exit 1 and fully visible empty output use
+deterministic no-match diagnosis without a model request or diagnosis-budget
+charge. Compound commands, redirected diagnostics, and hidden output retain
+the ordinary failure path because the search's exit status is not established.
+
+Orientation uses topic searches over code, memory, and logs followed by matching
+read ranges. Repository memory can grow large; concatenating the full corpus for
+each task consumes context and forces unnecessary spool reads. This guidance
+ships in every prompt profile and does not impose another output quota.
 
 ## Continuity and long-running work
 
@@ -122,6 +145,15 @@ explicit `wait` action remains available when a caller needs a synchronous
 observation. The canonical completion record is emitted as
 `background_subprocess_completed` in event schema 0.16.0.
 
+Exec-session lookup failures are typed `ResourceNotFound` errors with the existing
+debug metadata code `exec_session_not_found`. They use deterministic recovery
+without a model-diagnosis call or circuit-breaker charge. Wait, poll, and inspect
+propagate missing-session/output errors immediately instead of returning empty
+success or spending the full wait deadline. Recover the exact ID from the original
+response and reuse recorded completion output. A missing handle does not prove a
+command failed; rerun only when fresh execution is needed. The pending-verification
+gate still requires a successful verifier when its result was lost.
+
 Cross-turn resume hint body is transient, not universal guidance: when a turn ends with a
 live foreground session, the next turn start injects a bounded `Exec session resume:` hint
 via `append_transient_turn_notes` (same path for normal next-turn and session
@@ -135,12 +167,12 @@ universal section is not taxed on turns with no live session; per-tool
 `guidelines.rs` `write_stdin` guidance carries only a one-line pointer that the
 hint may appear.
 
-The provider-facing history also has an aggregate tool-preview budget per
-turn (32 KiB execution, 96 KiB planning). After exhaustion, new payload bodies are replaced by bounded metadata,
-but scalar control signals such as success, exit code, completion status,
-verification requirements, and retryability remain visible. The metadata tells
-the agent not to repeat equivalent calls merely to recover hidden output, and
-checkpoint diagnostics record how many previews were suppressed.
+Provider-facing tool previews are bounded per result (up to 64 KiB execution,
+96 KiB planning), with larger output retained in the spool and session viewer.
+Each result retains a bounded preview and outcome/control metadata; earlier
+output volume never exhausts later visibility or disables tools. History
+compaction bounds accumulated context. Legacy preview-exhaustion markers are
+retained for diagnostic/replay compatibility, without gating new inspections.
 Diagnostics also report requested, admitted, and derived unadmitted tool-call
 counts so budget or policy rejections cannot disappear from turn accounting.
 Read-only results reused by same-turn caches, cross-turn target caches, or
@@ -178,3 +210,9 @@ cargo check --locked
 Release archives are independently allowlisted to contain the binary, man
 page, and shell completions only. They must never include `AGENTS.md` or other
 workspace guidance.
+
+Debug traces emit span completion records with timings instead of repetitive
+enter/exit records on each poll. Skill-reference extraction removes Markdown
+delimiters, ignores external links, and sorts deduplicated validation errors.
+PTY decoding handles large valid chunks and retains only an incomplete UTF-8
+suffix across reads; chunk size alone is not a Unicode error.

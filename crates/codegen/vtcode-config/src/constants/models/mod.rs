@@ -45,6 +45,7 @@ pub const O4_MINI: &str = openai::O4_MINI;
 pub const GPT_OSS_20B: &str = openai::GPT_OSS_20B;
 pub const GPT_OSS_120B: &str = openai::GPT_OSS_120B;
 pub const CLAUDE_SONNET_5: &str = anthropic::CLAUDE_SONNET_5;
+pub const CLAUDE_SONNET_5_5: &str = anthropic::CLAUDE_SONNET_5_5;
 pub const CLAUDE_OPUS_5: &str = anthropic::CLAUDE_OPUS_5;
 pub const CLAUDE_OPUS_5_5: &str = anthropic::CLAUDE_OPUS_5_5;
 pub(crate) const CLAUDE_FABLE_5: &str = anthropic::CLAUDE_FABLE_5;

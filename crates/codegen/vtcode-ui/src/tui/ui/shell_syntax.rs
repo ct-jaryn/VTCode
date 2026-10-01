@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use anstyle::{AnsiColor, Color as AnsiColorEnum, Effects, Style as AnsiStyle};
+use vtcode_commons::formatting::{RAN_COMMAND_CONTINUATION_WIDTH, RAN_COMMAND_FIRST_WIDTH};
 use vtcode_commons::ui_protocol::{InlineSegment, InlineTextStyle, convert_style};
 
 use crate::tui::ui::syntax_highlight;
@@ -346,7 +347,54 @@ pub fn line_to_compact_segments(
             style: Arc::clone(&styles.count),
         });
     } else if let Some(cmd) = metadata.command.as_deref() {
-        segments.extend(shell_syntax_segments(cmd, styles, true));
+        // Long single-command rows wrap with explicit `\` continuations so a
+        // chained `git add … && git commit … && git log …` reads as one shell
+        // command instead of terminal-reflow word wrap. Short rows stay
+        // single-line; `\n` splits are honored by transcript reflow.
+        const COMPACT_CONT_INDENT: &str = "\n      ";
+        let needs_wrap = cmd.chars().count() > RAN_COMMAND_FIRST_WIDTH;
+        if needs_wrap {
+            // Operator-aware (same `&&`/`||`/`|` chunking as the expanded
+            // `• Ran` headers): each chain/pipe stage starts on a fresh row.
+            // The wrapper already appends ` \\` to non-final rows; strip it
+            // here so the marker is emitted once with separator styling.
+            let wrapped = vtcode_commons::formatting::wrap_shell_command_with_continuations(
+                cmd,
+                RAN_COMMAND_FIRST_WIDTH,
+                RAN_COMMAND_CONTINUATION_WIDTH,
+            );
+            if wrapped.len() > 1 {
+                for (idx, line) in wrapped.iter().enumerate() {
+                    // First wrapped line uses command-position highlighting;
+                    // continuations highlight as args (no leading command word).
+                    let expect_command = idx == 0;
+                    let is_final_line = idx + 1 == wrapped.len();
+                    // The wrapper appends ` \` to non-final rows only, so on
+                    // the final row a trailing ` \` is the command's own text
+                    // (a real line continuation) and must be kept verbatim.
+                    let body = if is_final_line {
+                        line.as_str()
+                    } else {
+                        line.strip_suffix(" \\").unwrap_or(line)
+                    };
+                    segments.extend(shell_syntax_segments(body, styles, expect_command));
+                    if idx + 1 < wrapped.len() {
+                        segments.push(InlineSegment {
+                            text: " \\".to_string(),
+                            style: Arc::clone(&styles.separator),
+                        });
+                        segments.push(InlineSegment {
+                            text: COMPACT_CONT_INDENT.to_string(),
+                            style: Arc::clone(&styles.output),
+                        });
+                    }
+                }
+            } else {
+                segments.extend(shell_syntax_segments(cmd, styles, true));
+            }
+        } else {
+            segments.extend(shell_syntax_segments(cmd, styles, true));
+        }
         if metadata.hidden_line_count > 0 {
             segments.push(InlineSegment {
                 text: format!(" · … +{} lines", metadata.hidden_line_count),
@@ -419,6 +467,49 @@ mod tests {
         for fragment in ["node_modules", "package-lock", "\\.backup"] {
             assert!(text.contains(fragment), "missing {fragment:?} in {text:?}");
         }
+    }
+
+    #[test]
+    fn compact_row_keeps_command_own_trailing_continuation_backslash() {
+        // The wrapper appends ` \` to non-final rows only, so on the final
+        // wrapped row a trailing ` \` belongs to the command itself (a real
+        // line continuation). Stripping it there would make the transcript
+        // diverge from what executed.
+        let styles = ShellLineStyles::new();
+        let with_continuation = "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\";
+        assert!(with_continuation.chars().count() > RAN_COMMAND_FIRST_WIDTH);
+        let meta = vtcode_commons::ui_protocol::CompactActivityMetadata {
+            group_id: 1,
+            command_count: 1,
+            command: Some(with_continuation.into()),
+            hidden_line_count: 0,
+            suffix: None,
+            review_anchor: None,
+            review_anchors: vec![],
+        };
+        let text: String = line_to_compact_segments(&meta, &styles)
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(text.ends_with(" \\"), "command's own trailing continuation must survive: {text:?}");
+
+        // Asymmetric check: a command that does not end in ` \` gains no
+        // marker on the final row either.
+        let without_continuation = "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa target";
+        let meta = vtcode_commons::ui_protocol::CompactActivityMetadata {
+            group_id: 1,
+            command_count: 1,
+            command: Some(without_continuation.into()),
+            hidden_line_count: 0,
+            suffix: None,
+            review_anchor: None,
+            review_anchors: vec![],
+        };
+        let text: String = line_to_compact_segments(&meta, &styles)
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(!text.ends_with(" \\"), "no continuation marker may appear on the final row: {text:?}");
     }
 
     #[test]

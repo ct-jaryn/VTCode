@@ -1028,6 +1028,12 @@ impl ConfigManager {
 
             // Update values while preserving structure and comments
             Self::merge_sparse_toml_documents(&mut doc, &new_doc, &default_doc);
+            // The sparse merge cannot express the deletion of optional fields
+            // whose default serializes to absent (they appear in neither the
+            // sparse update nor the defaults), so resets issued through save
+            // paths (e.g. service_tier back to Project default) would leave
+            // stale file values behind forever. Reconcile those explicitly.
+            Self::prune_cleared_optional_fields(&mut doc, &config_to_persist);
 
             VtCodePaths::write_private_file_atomic(path, doc.to_string().as_bytes())
                 .with_context(|| format!("Failed to write config file: {}", path.display()))?;
@@ -1047,6 +1053,40 @@ impl ConfigManager {
             provider_override.api_key_env = None;
         }
         safe_config
+    }
+
+    /// Remove file values for optional fields the effective config reset to
+    /// their absent default (e.g. `provider.openai.service_tier` back to
+    /// Project default). The sparse merge cannot express these deletions
+    /// (absent from both the sparse update and the defaults), so each entry
+    /// pairs a dotted path with a typed cleared-check. Only listed paths are
+    /// touched; foreign keys are never removed. Extend the list when a new
+    /// resettable optional reaches a save path.
+    fn prune_cleared_optional_fields(doc: &mut toml_edit::DocumentMut, config: &VTCodeConfig) {
+        // Each entry: (dotted path, is_cleared).
+        let cleared: &[(&[&str], bool)] =
+            &[(&["provider", "openai", "service_tier"], config.provider.openai.service_tier.is_none())];
+        for (path, is_cleared) in cleared {
+            if *is_cleared {
+                Self::remove_path_and_prune_empty_parents(doc.as_table_mut(), path);
+            }
+        }
+    }
+
+    /// Remove `path` from `table`, then drop ancestor tables left empty.
+    /// Returns true when `table` itself is now empty.
+    fn remove_path_and_prune_empty_parents(table: &mut toml_edit::Table, path: &[&str]) -> bool {
+        let Some((first, rest)) = path.split_first() else {
+            return table.is_empty();
+        };
+        if rest.is_empty() {
+            table.remove(first);
+        } else if let Some(child) = table.get_mut(first).and_then(toml_edit::Item::as_table_mut) {
+            if Self::remove_path_and_prune_empty_parents(child, rest) {
+                table.remove(first);
+            }
+        }
+        table.is_empty()
     }
 
     fn repair_repository_config_file(path: &Path) -> Result<bool> {

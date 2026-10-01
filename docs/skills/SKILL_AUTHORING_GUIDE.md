@@ -32,6 +32,7 @@ description: Explain what this skill does and when to use it.
 license: Apache-2.0
 compatibility: Requires git and network access
 allowed-tools: Read Write Bash
+argument-hint: "[expected argument]"
 metadata:
   owner: platform-team
 ---

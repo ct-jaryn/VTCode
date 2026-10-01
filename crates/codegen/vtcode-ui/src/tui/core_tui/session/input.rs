@@ -1,4 +1,6 @@
-use super::{PLACEHOLDER_COLOR, Session, measure_text_width, ratatui_color_from_ansi, ratatui_style_from_inline};
+use super::{
+    Action, PLACEHOLDER_COLOR, Session, measure_text_width, ratatui_color_from_ansi, ratatui_style_from_inline,
+};
 use crate::tui::config::constants::ui;
 use crate::tui::ui::tui::types::InlineTextStyle;
 use anstyle::{Color as AnsiColorEnum, Effects};
@@ -7,6 +9,40 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Padding, Paragraph, Wrap},
 };
+
+/// Paint pre-wrapped lines into `area` without Paragraph wrapping.
+/// `base` is the Paragraph base style; span styles patch on top.
+fn paint_pre_wrapped_text(text: &Text<'static>, area: Rect, buf: &mut Buffer, base: Style) {
+    for (row, line) in text.lines.iter().take(usize::from(area.height)).enumerate() {
+        let y = area.y + row as u16;
+        let mut x = area.x;
+        for span in &line.spans {
+            if x >= area.right() {
+                break;
+            }
+            let merged = base.patch(span.style);
+            let (end_x, _) =
+                buf.set_stringn(x, y, span.content.as_ref(), area.right().saturating_sub(x) as usize, merged);
+            x = end_x;
+        }
+    }
+}
+
+fn paint_pre_wrapped_line(line: &Line<'static>, area: Rect, buf: &mut Buffer, base: Style) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut x = area.x;
+    let y = area.y;
+    for span in &line.spans {
+        if x >= area.right() {
+            break;
+        }
+        let merged = base.patch(span.style);
+        let (end_x, _) = buf.set_stringn(x, y, span.content.as_ref(), area.right().saturating_sub(x) as usize, merged);
+        x = end_x;
+    }
+}
 use regex::Regex;
 use std::fmt::Write;
 use std::path::Path;
@@ -17,8 +53,8 @@ use vtcode_commons::fs::{is_image_path, trim_trailing_image_path_str, unescape_w
 
 use super::utils::line_truncation::truncate_line_with_ellipsis_if_overflow;
 
-struct InputRender {
-    text: Text<'static>,
+pub(super) struct InputRender {
+    pub(super) text: Text<'static>,
     cursor_x: u16,
     cursor_y: u16,
 }
@@ -220,13 +256,25 @@ struct InputLayout {
     cursor_column: u16,
 }
 
+/// Visual-row geometry of the composer input.
+///
+/// Dimension key: `total_rows` is the soft-wrapped row count (at least 1);
+/// `cursor_row` is the 0-based row holding the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InputVisualGeometry {
+    pub(crate) total_rows: usize,
+    pub(crate) cursor_row: usize,
+}
+
 const SHELL_MODE_BORDER_TITLE: &str = " ! Shell mode ";
 const SHELL_MODE_STATUS_HINT: &str = "Shell mode (!): direct command execution";
 
 impl Session {
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(crate) fn render_input(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.height == 0 {
             self.set_input_area(None);
+            self.set_background_indicator_hits(Vec::new());
             return;
         }
 
@@ -262,12 +310,18 @@ impl Session {
         let inner = block.inner(input_area);
         self.set_input_area(Some(inner));
         let input_render = self.build_input_render(inner.width, inner.height);
-        let paragraph = Paragraph::new(input_render.text)
-            .style(background_style)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(paragraph.block(block), input_area);
+        // Input rows are already soft-wrapped to `inner.width` by `input_layout`.
+        // Paint via set_span — avoid Paragraph wrap every frame (hotpath ~5KB).
+        frame.render_widget(block, input_area);
+        {
+            let buf = frame.buffer_mut();
+            buf.set_style(inner, background_style);
+            paint_pre_wrapped_text(&input_render.text, inner, buf, background_style);
+        }
         self.apply_input_selection_highlight(frame.buffer_mut(), inner);
-        if self.input_manager.selection_needs_copy() {
+        // Auto-copy on select only when enabled; otherwise the selection stays
+        // until the user copies manually with Ctrl+C (or Cmd+C).
+        if self.fullscreen.interaction.copy_on_select && self.input_manager.selection_needs_copy() {
             let _ = self.copy_input_selection_to_clipboard();
         }
 
@@ -285,11 +339,23 @@ impl Session {
         }
 
         if let Some(status_area) = status_area {
-            let status_line = self.render_input_status_line(status_area.width).unwrap_or_default();
-            let status = Paragraph::new(status_line)
-                .style(self.styles.default_style())
-                .wrap(Wrap { trim: false });
-            frame.render_widget(status, status_area);
+            let (status_line, background_hits) = self
+                .render_input_status_line_with_hit(status_area.width)
+                .unwrap_or((Line::default(), Vec::new()));
+            {
+                let buf = frame.buffer_mut();
+                buf.set_style(status_area, self.styles.default_style());
+                paint_pre_wrapped_line(&status_line, status_area, buf, self.styles.default_style());
+            }
+            let hits = background_hits
+                .into_iter()
+                .map(|(start, end)| {
+                    Rect::new(status_area.x.saturating_add(start), status_area.y, end.saturating_sub(start), 1)
+                })
+                .collect();
+            self.set_background_indicator_hits(hits);
+        } else {
+            self.set_background_indicator_hits(Vec::new());
         }
     }
 
@@ -426,7 +492,141 @@ impl Session {
         (layout, start, end)
     }
 
-    fn build_input_render(&self, width: u16, height: u16) -> InputRender {
+    /// Visual-row geometry of the composer.
+    ///
+    /// Rows are soft-wrapped visual rows from [`Session::input_layout`], not
+    /// logical `\n` lines: a long single-line draft that wraps on screen
+    /// spans multiple visual rows. Returns `None` before the first render
+    /// (no input area yet) or for a zero-width area.
+    pub(crate) fn input_visual_geometry(&self) -> Option<InputVisualGeometry> {
+        let area = self.input_area()?;
+        if area.width == 0 {
+            return None;
+        }
+        let prompt_width = UnicodeWidthStr::width(self.prompt_prefix.as_str()) as u16;
+        let layout = self.input_layout(area.width, prompt_width.min(area.width));
+        Some(InputVisualGeometry {
+            total_rows: layout.buffers.len().max(1),
+            cursor_row: layout.cursor_line_idx,
+        })
+    }
+
+    /// Whether the composer spans more than one visual row.
+    ///
+    /// Falls back to logical lines before the first render (no input area).
+    pub(crate) fn is_multi_row_composer(&self) -> bool {
+        match self.input_visual_geometry() {
+            Some(geometry) => geometry.total_rows > 1,
+            None => !self.input_manager.is_single_line(),
+        }
+    }
+
+    /// Move the cursor up one visual (soft-wrapped) row.
+    ///
+    /// Returns `true` when the cursor moved, `false` at the first row or
+    /// when the input area is unknown.
+    pub(crate) fn move_cursor_up_within_visual(&mut self) -> bool {
+        self.move_cursor_visual_rows(-1)
+    }
+
+    /// Move the cursor down one visual (soft-wrapped) row.
+    ///
+    /// Returns `true` when the cursor moved, `false` at the last row or
+    /// when the input area is unknown.
+    pub(crate) fn move_cursor_down_within_visual(&mut self) -> bool {
+        self.move_cursor_visual_rows(1)
+    }
+
+    fn move_cursor_visual_rows(&mut self, delta: isize) -> bool {
+        let area = match self.input_area() {
+            Some(area) if area.width > 0 => area,
+            _ => return false,
+        };
+        let prompt_width = UnicodeWidthStr::width(self.prompt_prefix.as_str()) as u16;
+        let layout = self.input_layout(area.width, prompt_width.min(area.width));
+        let total = layout.buffers.len();
+        if total == 0 {
+            return false;
+        }
+        let current = layout.cursor_line_idx.min(total - 1);
+        let Some(target_idx) = current.checked_add_signed(delta) else {
+            return false;
+        };
+        if target_idx >= total || target_idx == current {
+            return false;
+        }
+        let desired = layout.cursor_column.saturating_sub(layout.buffers[current].prefix_width);
+        let target = &layout.buffers[target_idx];
+        let mut acc = 0u16;
+        let mut offset = 0usize;
+        for ch in target.text.chars() {
+            if acc >= desired {
+                break;
+            }
+            acc = acc.saturating_add(UnicodeWidthChar::width(ch).unwrap_or(0) as u16);
+            offset += 1;
+        }
+        let char_index = target.char_start.saturating_add(offset);
+        self.input_manager
+            .set_cursor(char_index_to_byte_index(self.input_manager.content(), char_index));
+        true
+    }
+
+    /// Test-only entry that exercises the fingerprint cache.
+    #[cfg(test)]
+    pub(super) fn build_input_render_for_test(&mut self, width: u16, height: u16) -> InputRender {
+        self.build_input_render(width, height)
+    }
+
+    /// Build (or reuse) the input paragraph model for the current input state.
+    fn build_input_render(&mut self, width: u16, height: u16) -> InputRender {
+        if width == 0 || height == 0 {
+            return InputRender { text: Text::default(), cursor_x: 0, cursor_y: 0 };
+        }
+
+        // Hash content (not just length) so same-length edits cannot serve a
+        // stale cached paragraph. Cursor and flags cover layout/placeholder.
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(self.input_manager.content(), &mut hasher);
+        std::hash::Hash::hash(&self.prompt_prefix, &mut hasher);
+        let content_hash = std::hash::Hasher::finish(&hasher);
+        let cursor = self.input_manager.cursor();
+        let compact = self.input_compact_mode;
+        let suggested = self.suggested_prompt_state.active;
+        let key = (width, height, content_hash, cursor, compact, suggested);
+
+        if let Some((w, h, hash, cur, cmp, sug, cached)) = self.input_render_cache.take() {
+            if (w, h, hash, cur, cmp, sug) == key {
+                let render = InputRender {
+                    text: cached.text.clone(),
+                    cursor_x: cached.cursor_x,
+                    cursor_y: cached.cursor_y,
+                };
+                self.input_render_cache = Some((w, h, hash, cur, cmp, sug, cached));
+                return render;
+            }
+            // Stale — drop before rebuild.
+        }
+
+        let render = self.build_input_render_uncached(width, height);
+        self.input_render_cache = Some((
+            width,
+            height,
+            content_hash,
+            cursor,
+            compact,
+            suggested,
+            InputRender {
+                text: render.text.clone(),
+                cursor_x: render.cursor_x,
+                cursor_y: render.cursor_y,
+            },
+        ));
+        render
+    }
+
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
+    fn build_input_render_uncached(&self, width: u16, height: u16) -> InputRender {
         if width == 0 || height == 0 {
             return InputRender { text: Text::default(), cursor_x: 0, cursor_y: 0 };
         }
@@ -722,13 +922,15 @@ impl Session {
             return Some(preview.placeholder);
         }
 
-        let line_count = content.split('\n').count();
-        if line_count >= ui::INLINE_PASTE_COLLAPSE_LINE_THRESHOLD {
-            let char_count = content.chars().count();
-            return Some(format!("[Pasted Content {char_count} chars]"));
-        }
-
         if let Some(compact) = compact_image_placeholders(content) {
+            // `compact_image_placeholders` returns the full content with image
+            // paths substituted. Never render it unbounded: large inputs are
+            // already collapsed by `input_compact_preview` above, so this is
+            // only a safety net for small embeds.
+            if compact.chars().count() >= ui::INLINE_INPUT_COMPACT_CHAR_THRESHOLD {
+                let char_count = content.chars().count();
+                return Some(format!("[Pasted Content {char_count} chars]"));
+            }
             return Some(compact);
         }
 
@@ -737,28 +939,11 @@ impl Session {
 
     fn input_compact_preview(&self) -> Option<CompactInputPreview> {
         let content = self.input_manager.content();
-        let range = self.input_manager.compact_paste_range()?;
-        if range.start >= range.end
-            || range.end > content.len()
-            || !content.is_char_boundary(range.start)
-            || !content.is_char_boundary(range.end)
-        {
-            return None;
+        if let Some(preview) = compact_paste_range_preview(content, self.input_manager.compact_paste_range()) {
+            return Some(preview);
         }
 
-        let pasted = &content[range.clone()];
-        if pasted.split('\n').count() < ui::INLINE_PASTE_COLLAPSE_LINE_THRESHOLD {
-            return None;
-        }
-
-        let before = compact_inline_segment(&content[..range.start]);
-        let after_lines = content[range.end..].split('\n').map(compact_inline_segment).collect();
-        let char_count = pasted.chars().count();
-        Some(CompactInputPreview {
-            before,
-            placeholder: format!("[Pasted Content {char_count} chars]"),
-            after_lines,
-        })
+        generic_large_input_preview(content, self.input_manager.attachments().len())
     }
 
     pub(crate) fn visible_inline_prompt_suggestion_suffix(&self) -> Option<String> {
@@ -775,13 +960,20 @@ impl Session {
     }
 
     pub(crate) fn render_input_status_line(&self, width: u16) -> Option<Line<'static>> {
+        self.render_input_status_line_with_hit(width).map(|(line, _hits)| line)
+    }
+
+    /// Status line plus column ranges (relative to the status area) of the
+    /// clickable background indicator spans: the activity text and the
+    /// `{key} background` hint only.
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
+    pub(crate) fn render_input_status_line_with_hit(&self, width: u16) -> Option<(Line<'static>, Vec<(u16, u16)>)> {
         if width == 0 {
             return None;
         }
 
         let mut left = self
             .copy_notification_text()
-            .map(str::to_owned)
             .or_else(|| self.status_left_text().map(str::to_owned));
         let right = self.status_right_text().map(str::to_string);
 
@@ -825,6 +1017,10 @@ impl Session {
             return None;
         }
 
+        let background_status = (!self.is_running_activity())
+            .then(|| self.background_activity_status_text())
+            .flatten();
+
         let dim_style = {
             let mut style = self.styles.default_style().add_modifier(Modifier::DIM);
             if let Some(secondary) = self.theme.secondary.or(self.theme.foreground) {
@@ -846,10 +1042,12 @@ impl Session {
             }
             style
         };
-        let mut spans = Vec::new();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut background_hits: Vec<(u16, u16)> = Vec::new();
 
         // Add left content (git status or shimmered activity)
         if let Some(left_value) = left.as_ref() {
+            let before: u16 = spans.iter().map(|s| measure_text_width(&s.content)).sum();
             if status_requires_shimmer(left_value) && self.appearance.should_animate_progress_status() {
                 spans.extend(shimmer_spans_with_style_at_phase(
                     left_value,
@@ -859,6 +1057,15 @@ impl Session {
             } else {
                 spans.extend(self.create_git_status_spans(left_value, dim_style));
             }
+            if let Some(status) = background_status.as_deref()
+                && let Some(rel_start) = left_value.find(status).map(|idx| measure_text_width(&left_value[..idx]))
+            {
+                let start = before.saturating_add(rel_start);
+                let end = start.saturating_add(measure_text_width(status));
+                if start < end {
+                    background_hits.push((start, end));
+                }
+            }
         } else if self.thinking_spinner.is_active {
             spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
             spans.push(Span::raw(" "));
@@ -866,7 +1073,8 @@ impl Session {
         }
 
         if let Some(hint) = background_hint.as_deref() {
-            Self::append_background_hint_spans(
+            let hint_start = spans.iter().map(|s| measure_text_width(&s.content)).sum::<u16>();
+            let key_hit_rel = Self::append_background_hint_spans(
                 &mut spans,
                 hint,
                 self.background_shortcut_label(),
@@ -874,6 +1082,13 @@ impl Session {
                 key_style,
                 label_style,
             );
+            if let Some((rel_start, rel_end)) = key_hit_rel {
+                let start = hint_start.saturating_add(rel_start);
+                let end = hint_start.saturating_add(rel_end);
+                if start < end {
+                    background_hits.push((start, end));
+                }
+            }
         }
 
         // Build right side spans (scroll indicator + optional right content)
@@ -905,10 +1120,25 @@ impl Session {
             return None;
         }
 
+        let total_width: u16 = spans.iter().map(|s| measure_text_width(&s.content)).sum();
         let mut line = Line::from(spans);
         // Apply ellipsis truncation to prevent status line from overflowing
         line = truncate_line_with_ellipsis_if_overflow(line, usize::from(width));
-        Some(line)
+        // Hits are measured pre-truncation. Keep only columns that still map to
+        // real content (exclude the ellipsis and anything dropped).
+        let content_width = if total_width > width {
+            width.saturating_sub(1)
+        } else {
+            width
+        };
+        let hits = background_hits
+            .into_iter()
+            .filter_map(|(start, end)| {
+                let clamped_end = end.min(content_width);
+                (start < clamped_end).then_some((start, clamped_end))
+            })
+            .collect::<Vec<_>>();
+        Some((line, hits))
     }
 
     fn input_uses_shell_prefix(&self) -> bool {
@@ -992,6 +1222,9 @@ impl Session {
         Some(format!("↓ or Alt+S local agents · {} background", self.background_shortcut_label()))
     }
 
+    /// Appends the local-agents hint spans. Returns the column range of the
+    /// `{key} background` span only (relative to the start of the appended
+    /// content) so click hit-testing ignores `Alt+S local agents` and separators.
     fn append_background_hint_spans(
         spans: &mut Vec<Span<'static>>,
         hint: &str,
@@ -999,17 +1232,33 @@ impl Session {
         dim_style: Style,
         key_style: Style,
         label_style: Style,
-    ) {
+    ) -> Option<(u16, u16)> {
+        let mut appended_width = 0_u16;
+        let mut key_hit: Option<(u16, u16)> = None;
+        let mut push = |spans: &mut Vec<Span<'static>>, text: &str, style: Style, mark: bool| {
+            let width = measure_text_width(text);
+            let start = appended_width;
+            let end = appended_width.saturating_add(width);
+            if mark {
+                key_hit = Some(match key_hit {
+                    Some((s, e)) => (s.min(start), e.max(end)),
+                    None => (start, end),
+                });
+            }
+            appended_width = end;
+            spans.push(Span::styled(text.to_owned(), style));
+        };
+
         // PTY-only hint has the exact shape "{key} background".
         if let Some(prefix) = hint.strip_suffix(" background")
             && prefix == key_label
         {
             if !spans.is_empty() {
-                spans.push(Span::styled(" · ", dim_style));
+                push(spans, " · ", dim_style, false);
             }
-            spans.push(Span::styled(key_label.to_owned(), key_style));
-            spans.push(Span::styled(" background", label_style));
-            return;
+            push(spans, key_label, key_style, true);
+            push(spans, " background", label_style, true);
+            return key_hit;
         }
         // Combined drawer hint has the exact shape
         // "↓ or Alt+S local agents · {key} background".
@@ -1018,20 +1267,23 @@ impl Session {
             && prefix == key_label
         {
             if !spans.is_empty() {
-                spans.push(Span::styled(" · ", dim_style));
+                push(spans, " · ", dim_style, false);
             }
-            spans.push(Span::styled("↓ or ", label_style));
-            spans.push(Span::styled("Alt+S", key_style));
-            spans.push(Span::styled(" local agents", label_style));
-            spans.push(Span::styled(" · ", dim_style));
-            spans.push(Span::styled(key_label.to_owned(), key_style));
-            spans.push(Span::styled(" background", label_style));
-            return;
+            push(spans, "↓ or ", label_style, false);
+            push(spans, "Alt+S", key_style, false);
+            push(spans, " local agents", label_style, false);
+            push(spans, " · ", dim_style, false);
+            push(spans, key_label, key_style, true);
+            push(spans, " background", label_style, true);
+            return key_hit;
         }
         if !spans.is_empty() {
-            spans.push(Span::styled(" · ", dim_style));
+            push(spans, " · ", dim_style, false);
         }
-        spans.push(Span::styled(hint.to_owned(), dim_style));
+        // Unrecognized hint shape: render it dim but do not make it a hit
+        // target. Only the known `{key} background` shapes are clickable.
+        push(spans, hint, dim_style, false);
+        key_hit
     }
 
     /// Builds the footer scroll indicator.
@@ -1044,6 +1296,8 @@ impl Session {
     /// - While scrolled: `↑ {visible_top}/{total}` shows the top row position.
     /// - When new lines arrived while scrolled: `↓ {N} new` highlights the
     ///   pending content until the user returns to the bottom.
+    /// - When scrolled up with a tracked change: appends
+    ///   `⤓ Jump to last change [key]` hint.
     fn build_scroll_indicator(&self) -> Option<String> {
         if !self.user_scrolled {
             return None;
@@ -1053,11 +1307,15 @@ impl Session {
         let total = self.transcript_rows.max(1) as usize;
         let top = self.scroll_manager.offset().saturating_add(1).min(total);
 
-        let label = if pending > 0 {
+        let mut label = if pending > 0 {
             format!("↓ {} new", pending)
         } else {
             format!("↑ {}/{}", top, total)
         };
+        if self.should_show_jump_to_last_change() {
+            let key_label = self.primary_binding_label(Action::JumpToLastChange).unwrap_or("Ctrl+End");
+            label.push_str(&format!(" · ⤓ Jump to last change [{key_label}]"));
+        }
         Some(label)
     }
 
@@ -1104,7 +1362,7 @@ impl Session {
 
     /// Build input render data for external widgets
     pub(crate) fn build_input_widget_data(&self, width: u16, height: u16) -> InputWidgetData {
-        let input_render = self.build_input_render(width, height);
+        let input_render = self.build_input_render_uncached(width, height);
         let background_style = self.styles.input_background_style();
 
         InputWidgetData {
@@ -1208,7 +1466,7 @@ static IMAGE_PATH_INLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
               | [A-Za-z]:[\\/](?:[^\n\\\/]+[\\/])+
             )
             [^\n]+?
-            \.(?:png|jpe?g|gif|bmp|webp|tiff?|svg)
+            \.(?:png|jpe?g|gif|webp)
         )"#,
     )
     .expect("Failed to compile inline image path regex")
@@ -1286,6 +1544,10 @@ pub(crate) fn status_requires_shimmer(text: &str) -> bool {
         "running:",
         "running ",
         "executing ",
+        "drafting plan",
+        "validating plan",
+        "persisting plan",
+        "preparing approval",
         "approval required",
         "permission required",
         "action required",
@@ -1378,6 +1640,198 @@ fn compact_inline_segment(content: &str) -> String {
         .chars()
         .map(|ch| if ch == '\n' || ch == '\r' { ' ' } else { ch })
         .collect()
+}
+
+/// Number of image tokens visible in composer text.
+///
+/// Counts clipboard `[Image #N]` placeholders, inline `data:image/…` payloads,
+/// and image file-path matches. Used with the attachment count to decide when
+/// the composer should collapse to a summary instead of showing full text.
+fn count_input_image_tokens(content: &str) -> usize {
+    let placeholder_count = content.matches("[Image #").count();
+    let inline_data_count = content.matches("data:image/").count();
+    let path_count = IMAGE_PATH_INLINE_REGEX.captures_iter(content).count();
+    placeholder_count.saturating_add(inline_data_count).saturating_add(path_count)
+}
+
+/// Number of `@file` reference tokens in composer text.
+fn count_input_file_tokens(content: &str) -> usize {
+    tokenize_input(content)
+        .iter()
+        .filter(|token| token.kind == InputTokenKind::FileReference)
+        .count()
+}
+
+/// Effective image count for collapse decisions: the larger of visible text
+/// tokens and live attachments, so orphaned-attachment payloads still collapse
+/// while deleted placeholders do not double-count.
+fn effective_image_count(content: &str, attachment_count: usize) -> usize {
+    count_input_image_tokens(content).max(attachment_count)
+}
+
+/// Measured size of composer (or pasted) text for collapse decisions.
+///
+/// Dimension key: `char_count` is Unicode scalar count, `line_count` is
+/// logical `\n` lines, `image_count` covers `[Image #N]` + `data:image/` +
+/// image paths (+ attachments via [`InputSizeMetrics::of_content`]),
+/// `file_count` is `@file` tokens. Single source of truth so the paste gate,
+/// the generic preview gate, and the paste-tracking gate cannot drift apart.
+struct InputSizeMetrics {
+    char_count: usize,
+    line_count: usize,
+    image_count: usize,
+    file_count: usize,
+}
+
+impl InputSizeMetrics {
+    fn of_text(text: &str) -> Self {
+        Self {
+            char_count: text.chars().count(),
+            line_count: text.split('\n').count(),
+            image_count: count_input_image_tokens(text),
+            file_count: count_input_file_tokens(text),
+        }
+    }
+
+    fn of_content(content: &str, attachment_count: usize) -> Self {
+        Self {
+            char_count: content.chars().count(),
+            line_count: content.split('\n').count(),
+            image_count: effective_image_count(content, attachment_count),
+            file_count: count_input_file_tokens(content),
+        }
+    }
+
+    fn should_collapse(&self) -> bool {
+        self.line_count >= ui::INLINE_PASTE_COLLAPSE_LINE_THRESHOLD
+            || self.char_count >= ui::INLINE_INPUT_COMPACT_CHAR_THRESHOLD
+            || self.image_count >= ui::INLINE_INPUT_COMPACT_IMAGE_THRESHOLD
+            || self.file_count >= ui::INLINE_INPUT_COMPACT_FILE_TOKEN_THRESHOLD
+    }
+
+    fn placeholder(&self) -> String {
+        format_large_input_placeholder(self.char_count, self.line_count, self.image_count, self.file_count)
+    }
+}
+
+/// Summary placeholder for large composer content.
+///
+/// Dimension key: `char_count` is Unicode scalar count, `line_count` is
+/// logical `\n` lines, `image_count` covers `[Image #N]` + `data:image/` +
+/// image paths + attachments, `file_count` is `@file` tokens. Keeps the
+/// legacy `[Pasted Content N chars]` prefix so existing transcript/status
+/// matching keeps working, appending line/image/file details when present.
+fn format_large_input_placeholder(
+    char_count: usize,
+    line_count: usize,
+    image_count: usize,
+    file_count: usize,
+) -> String {
+    let mut placeholder = format!("[Pasted Content {char_count} chars");
+    if line_count > 1 {
+        let _ = write!(placeholder, ", {line_count} lines");
+    }
+    if image_count > 0 {
+        let label = if image_count == 1 { "image" } else { "images" };
+        let _ = write!(placeholder, ", {image_count} {label}");
+    }
+    if file_count > 0 {
+        let label = if file_count == 1 { "file" } else { "files" };
+        let _ = write!(placeholder, ", {file_count} {label}");
+    }
+    placeholder.push(']');
+    placeholder
+}
+
+/// Paste-range preview, extended beyond the legacy line-count gate.
+///
+/// Collapses when the pasted slice itself is large by lines, chars, images,
+/// or file tokens. `before` keeps the last head-chars of the previous content
+/// and each `after` line keeps its first head-chars, so surrounding context
+/// stays visible but bounded while the pasted block becomes one marker.
+fn compact_paste_range_preview(content: &str, range: Option<std::ops::Range<usize>>) -> Option<CompactInputPreview> {
+    let range = range?;
+    if range.start >= range.end
+        || range.end > content.len()
+        || !content.is_char_boundary(range.start)
+        || !content.is_char_boundary(range.end)
+    {
+        return None;
+    }
+
+    let pasted = &content[range.clone()];
+    let pasted_metrics = InputSizeMetrics::of_text(pasted);
+    if !pasted_metrics.should_collapse() {
+        return None;
+    }
+
+    let head_chars = ui::INLINE_INPUT_COMPACT_PREVIEW_HEAD_CHARS;
+    let before_src = &content[..range.start];
+    let before = compact_inline_segment(&before_src[last_n_chars_start(before_src, head_chars)..]);
+    let after_lines = content[range.end..]
+        .split('\n')
+        .map(|line| compact_inline_segment(&line[..first_n_chars_end(line, head_chars)]))
+        .collect();
+    Some(CompactInputPreview {
+        before,
+        placeholder: pasted_metrics.placeholder(),
+        after_lines,
+    })
+}
+
+/// Generic preview for large composer content without a qualifying paste range.
+///
+/// Covers typed large inputs, single-line floods (minified JSON/base64), and
+/// token floods (many `[Image #N]` / `@file`). For char-large content shows a
+/// truncated head, the summary placeholder, and a truncated tail so previous
+/// content is summarized rather than rendered in full. For token-only floods
+/// (short text but many images/files) shows just the placeholder to avoid
+/// echoing the token list twice.
+fn generic_large_input_preview(content: &str, attachment_count: usize) -> Option<CompactInputPreview> {
+    let metrics = InputSizeMetrics::of_content(content, attachment_count);
+    if !metrics.should_collapse() {
+        return None;
+    }
+
+    let head_chars = ui::INLINE_INPUT_COMPACT_PREVIEW_HEAD_CHARS;
+    let tail_chars = ui::INLINE_INPUT_COMPACT_PREVIEW_TAIL_CHARS;
+    let char_large = metrics.char_count > head_chars.saturating_add(tail_chars);
+    let (before, after_lines) = if char_large {
+        let before = compact_inline_segment(&content[..first_n_chars_end(content, head_chars)]);
+        let tail = &content[last_n_chars_start(content, tail_chars)..];
+        (before, vec![compact_inline_segment(tail)])
+    } else {
+        (String::new(), Vec::new())
+    };
+    Some(CompactInputPreview {
+        before,
+        placeholder: metrics.placeholder(),
+        after_lines,
+    })
+}
+
+/// Whether pasted text should be tracked as a collapsible block.
+///
+/// Mirrors the preview gate so char-large, image-heavy, and file-heavy pastes
+/// collapse the same way line-heavy pastes already do.
+pub(crate) fn should_track_compact_paste(pasted: &str) -> bool {
+    InputSizeMetrics::of_text(pasted).should_collapse()
+}
+
+/// End byte index of the first `n` chars (char-boundary safe, no allocation).
+fn first_n_chars_end(content: &str, n: usize) -> usize {
+    content.char_indices().nth(n).map_or(content.len(), |(idx, _)| idx)
+}
+
+/// Start byte index of the last `n` chars (char-boundary safe, no allocation).
+fn last_n_chars_start(content: &str, n: usize) -> usize {
+    if n == 0 {
+        return content.len();
+    }
+    match content.char_indices().rev().nth(n) {
+        Some((idx, ch)) => idx + ch.len_utf8(),
+        None => 0,
+    }
 }
 
 fn display_width_for_char_range(content: &str, char_count: usize) -> u16 {

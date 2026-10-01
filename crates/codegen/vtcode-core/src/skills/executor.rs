@@ -14,13 +14,14 @@
 //! 5. Final response is returned
 
 use crate::config::VTCodeConfig;
+use crate::config::constants::tools as tool_constants;
 use crate::config::models::ModelId;
 use crate::core::agent::runner::{AgentRunner, RunnerSettings};
 use crate::core::agent::task::Task;
 use crate::core::agent::types::AgentType;
 use crate::core::loop_detector::LoopDetector;
 use crate::llm::collect_single_response;
-use crate::llm::provider::{FinishReason, LLMProvider, LLMRequest, Message, ToolDefinition};
+use crate::llm::provider::{FinishReason, LLMProvider, LLMRequest, Message, ToolCall, ToolDefinition};
 use crate::skills::types::Skill;
 use crate::tool_policy::ToolPolicy;
 use crate::tools::ToolRegistry;
@@ -250,6 +251,286 @@ impl ForkSkillExecutor for ChildAgentSkillExecutor {
     }
 }
 
+/// Canonicalize a textual tool name emitted inside skill sub-LLM content.
+///
+/// Gateway-served models (e.g. `zai/glm-5.3-flash`) sometimes emit
+/// `<tool_call>bash ...` markup instead of native function calls. This maps
+/// shell aliases to `exec_command` and normalizes separators the same way the
+/// interactive runloop does, without pulling the binary-only `text_tools`
+/// parsers into `vtcode-core`.
+fn canonicalize_skill_textual_tool_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches(|ch| matches!(ch, '"' | '\'' | '`'));
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut normalized = String::with_capacity(trimmed.len());
+    let mut last_was_separator = false;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if ch == '_' {
+            normalized.push('_');
+            last_was_separator = false;
+        } else if matches!(ch, ' ' | '\t' | '\n' | '-' | ':' | '.') && !last_was_separator && !normalized.is_empty() {
+            normalized.push('_');
+            last_was_separator = true;
+        }
+    }
+    let normalized = normalized.trim_matches('_').to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    if matches!(
+        normalized.as_str(),
+        "run"
+            | "runcmd"
+            | "runcommand"
+            | "terminalrun"
+            | "terminalcmd"
+            | "terminalcommand"
+            | "command"
+            | "shell"
+            | "bash"
+            | "container_exec"
+            | "exec"
+            | "exec_command"
+    ) {
+        return Some(tool_constants::EXEC_COMMAND.to_string());
+    }
+    Some(normalized)
+}
+
+fn read_skill_tag_text(input: &str) -> (String, &str) {
+    let trimmed = input.trim_start();
+    if trimmed.is_empty() {
+        return (String::new(), "");
+    }
+    if let Some(idx) = trimmed.find('<') {
+        let (value, rest) = trimmed.split_at(idx);
+        (value.trim().to_string(), rest)
+    } else {
+        (trimmed.trim().to_string(), "")
+    }
+}
+
+fn parse_skill_scalar_value(raw: &str) -> Value {
+    if let Ok(value) = serde_json::from_str::<Value>(raw.trim()) {
+        return value;
+    }
+    let trimmed = raw.trim();
+    let trimmed = trimmed.trim_end_matches(&[',', ';'][..]);
+    let trimmed = trimmed.trim();
+    let trimmed = trimmed.trim_matches('"').trim_matches('\'').trim();
+    if trimmed.is_empty() {
+        return Value::String(String::new());
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "true" => return Value::Bool(true),
+        "false" => return Value::Bool(false),
+        "null" => return Value::Null,
+        _ => {}
+    }
+    if let Ok(int) = trimmed.parse::<i64>() {
+        return Value::Number(int.into());
+    }
+    if let Ok(float) = trimmed.parse::<f64>()
+        && let Some(number) = serde_json::Number::from_f64(float)
+    {
+        return Value::Number(number);
+    }
+    Value::String(trimmed.to_string())
+}
+
+/// Find the index of the `}` matching the `{` at `start`, string-aware so
+/// braces inside quoted strings do not affect depth. Returns `None` when
+/// unbalanced.
+fn find_skill_json_end(text: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escaped = false;
+    for (relative, ch) in text[start..].char_indices() {
+        if let Some(delimiter) = in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == delimiter {
+                in_string = None;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_string = Some(ch);
+            continue;
+        }
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+            if depth == 0 {
+                return Some(start + relative);
+            }
+        }
+    }
+    None
+}
+
+/// Parse `<tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value>...`
+/// markup from skill sub-LLM text into a native-equivalent tool call.
+///
+/// Returns `None` when no parseable markup is present so callers fall back to
+/// treating the text as the final answer. Only the first `<tool_call>` block
+/// is converted; the loop drives subsequent calls one iteration at a time.
+/// Parse tool-call markup from skill sub-LLM text into a native-equivalent
+/// tool call.
+///
+/// Returns `None` when no parseable markup is present so callers fall back to
+/// treating the text as the final answer. Only the first **unfenced** clean
+/// tagged block is converted; the loop drives subsequent calls one iteration
+/// at a time. Markup inside fenced code blocks is documentation (skill docs,
+/// quoted examples) and is never executed. Mid-prose mentions that yield a
+/// non-identifier name are skipped.
+fn parse_textual_skill_tool_call(text: &str) -> Option<(String, Value)> {
+    const TOOL_TAG: &str = "<tool_call>";
+    const ARG_KEY_TAG: &str = "<arg_key>";
+    const ARG_VALUE_TAG: &str = "<arg_value>";
+    const ARG_KEY_CLOSE: &str = "</arg_key>";
+    const ARG_VALUE_CLOSE: &str = "</arg_value>";
+
+    let mut search_from = 0usize;
+    loop {
+        let start = vtcode_commons::text_fence::find_unfenced_from(text, TOOL_TAG, search_from)?;
+        let rest_initial = &text[start + TOOL_TAG.len()..];
+        let name_end = rest_initial
+            .find(|c: char| c == '<' || c == '{' || c.is_whitespace())
+            .unwrap_or(rest_initial.len());
+        let raw_name = rest_initial[..name_end].trim();
+        if !vtcode_commons::text_fence::is_clean_tool_name(raw_name) {
+            search_from = start + TOOL_TAG.len();
+            continue;
+        }
+        let Some(canonical) = canonicalize_skill_textual_tool_name(raw_name) else {
+            search_from = start + TOOL_TAG.len();
+            continue;
+        };
+        if let Some(parsed) = finish_parse_textual_skill_tool_call(
+            rest_initial,
+            name_end,
+            canonical,
+            ARG_KEY_TAG,
+            ARG_VALUE_TAG,
+            ARG_KEY_CLOSE,
+            ARG_VALUE_CLOSE,
+            TOOL_TAG,
+        ) {
+            return Some(parsed);
+        }
+        search_from = start + TOOL_TAG.len();
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tag constants passed from the outer scanner loop."
+)]
+fn finish_parse_textual_skill_tool_call(
+    rest_initial: &str,
+    name_end: usize,
+    canonical: String,
+    arg_key_tag: &str,
+    arg_value_tag: &str,
+    arg_key_close: &str,
+    arg_value_close: &str,
+    tool_tag: &str,
+) -> Option<(String, Value)> {
+    let mut rest = &rest_initial[name_end..];
+    let mut object = serde_json::Map::new();
+    let mut found_arg_tags = false;
+
+    while let Some(key_index) = rest.find(arg_key_tag) {
+        found_arg_tags = true;
+        rest = &rest[key_index + arg_key_tag.len()..];
+        // Keys never legitimately contain `<`, but values can (e.g. shell
+        // redirections or `<verified-target>` placeholders), so always read
+        // up to the explicit close tag when present instead of stopping at
+        // the next `<` (which would truncate the value).
+        let (raw_key, after_key) = match rest.find(arg_key_close) {
+            Some(close_index) => (rest[..close_index].trim().to_string(), &rest[close_index + arg_key_close.len()..]),
+            None => {
+                let (key, after) = read_skill_tag_text(rest);
+                if key.is_empty() {
+                    rest = after;
+                    continue;
+                }
+                (key, after)
+            }
+        };
+        if raw_key.is_empty() {
+            rest = after_key;
+            continue;
+        }
+        rest = after_key;
+        let Some(value_index) = rest.find(arg_value_tag) else {
+            break;
+        };
+        rest = &rest[value_index + arg_value_tag.len()..];
+        let (raw_value, after_value) = match rest.find(arg_value_close) {
+            Some(close_index) => (rest[..close_index].trim().to_string(), &rest[close_index + arg_value_close.len()..]),
+            None => {
+                let (value, after) = read_skill_tag_text(rest);
+                (value, after)
+            }
+        };
+        rest = after_value;
+        object.insert(raw_key.trim().to_string(), parse_skill_scalar_value(raw_value.trim()));
+    }
+
+    if !found_arg_tags {
+        let after_name = &rest_initial[name_end..];
+        let content_end = after_name
+            .find(tool_tag)
+            .or_else(|| after_name.find("</tool_call>"))
+            .unwrap_or(after_name.len());
+        let content = after_name[..content_end].trim();
+        if content.is_empty() {
+            return None;
+        }
+        if let Some(json_start) = content.find('{') {
+            if let Some(json_end) = find_skill_json_end(content, json_start)
+                && let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(&content[json_start..=json_end])
+            {
+                for (key, value) in parsed {
+                    object.insert(key, value);
+                }
+            }
+        }
+        if object.is_empty() {
+            return None;
+        }
+    }
+
+    if canonical == tool_constants::EXEC_COMMAND {
+        let needs_default = match object.get("action") {
+            None => true,
+            Some(Value::String(action)) => action.is_empty(),
+            Some(Value::Null) => true,
+            Some(_) => false,
+        };
+        if needs_default {
+            object.insert("action".to_string(), Value::String("run".to_string()));
+        }
+    }
+    Some((canonical, Value::Object(object)))
+}
+
 /// Execute a skill with LLM sub-call support (Phase 5)
 ///
 /// Creates a sub-conversation where:
@@ -372,8 +653,29 @@ pub async fn execute_skill_with_sub_llm(
         // Extract content - handle Option
         let content = response.content.unwrap_or_default();
 
+        // Resolve native tool calls first; fall back to textual `<tool_call>`
+        // markup for gateway-served models that do not emit native function
+        // calls in skill sub-conversations (e.g. `zai/glm-5.3-flash` emitting
+        // `<tool_call>bash<arg_key>command</arg_key>...`).
+        let has_native_calls = response.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
+        let effective_tool_calls: Option<Vec<ToolCall>> = match response.tool_calls {
+            Some(calls) if !calls.is_empty() => Some(calls),
+            _ => parse_textual_skill_tool_call(&content).map(|(name, args)| {
+                let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
+                vec![ToolCall::function(uuid::Uuid::new_v4().to_string(), name, args_json)]
+            }),
+        };
+        if let Some(ref tool_calls) = effective_tool_calls {
+            info!(
+                skill = skill.name(),
+                calls = tool_calls.len(),
+                native = has_native_calls,
+                "Skill sub-LLM tool calls resolved"
+            );
+        }
+
         // Add assistant response to conversation
-        if let Some(tool_calls) = &response.tool_calls {
+        if let Some(tool_calls) = &effective_tool_calls {
             Arc::make_mut(&mut request.messages)
                 .push(Message::assistant_with_tools(content.clone(), tool_calls.clone()));
         } else {
@@ -381,7 +683,7 @@ pub async fn execute_skill_with_sub_llm(
         }
 
         // Check if there are tool calls to handle
-        if let Some(tool_calls) = response.tool_calls {
+        if let Some(tool_calls) = effective_tool_calls {
             if !tool_calls.is_empty() {
                 info!("Skill '{}' made {} tool calls", skill.name(), tool_calls.len());
                 let mut force_tool_free_synthesis_reason = None;
@@ -646,7 +948,7 @@ impl SkillExecutionContext {
     }
 }
 
-use crate::llm::provider::{LLMError, LLMNormalizedStream, LLMResponse, NormalizedStreamEvent, ToolCall};
+use crate::llm::provider::{LLMError, LLMNormalizedStream, LLMResponse, NormalizedStreamEvent};
 use crate::skills::types::{SkillManifest, SkillPermissionProfile};
 use crate::tools::traits::Tool;
 use futures::stream;
@@ -1848,4 +2150,392 @@ fn skill_command_permissions_ignore_empty_skill_permissions() {
     let merged = merge_skill_command_permissions(&skill, "shell", original.clone());
 
     assert_eq!(merged, original);
+}
+
+#[test]
+fn textual_skill_tool_call_parses_reported_bash_markup() {
+    let text = "Gathering diff and status information.<tool_call>bash<arg_key>command</arg_key><arg_value>git status --short && echo \"---STAGED---\" && git diff --cached --stat</arg_value><arg_key>description</arg_key><arg_value>Check git status and diff summary</arg_value></tool_call>";
+    let (name, args) = parse_textual_skill_tool_call(text).expect("bash markup should parse");
+    assert_eq!(name, tool_constants::EXEC_COMMAND);
+    assert_eq!(args["action"], serde_json::json!("run"));
+    assert!(
+        args["command"].as_str().unwrap_or_default().contains("git status --short"),
+        "unexpected args: {args}"
+    );
+}
+
+#[test]
+fn textual_skill_tool_call_parses_json_payload() {
+    let text = r#"<tool_call>exec_command{"command": "git diff", "action": "run"}</tool_call>"#;
+    let (name, args) = parse_textual_skill_tool_call(text).expect("json payload should parse");
+    assert_eq!(name, tool_constants::EXEC_COMMAND);
+    assert_eq!(args["command"], serde_json::json!("git diff"));
+}
+
+#[test]
+fn textual_skill_tool_call_rejects_plain_prose() {
+    assert!(parse_textual_skill_tool_call("Review the full diff for correctness").is_none());
+    assert!(parse_textual_skill_tool_call("I can't access the repository").is_none());
+}
+
+#[test]
+fn textual_skill_tool_name_canonicalizes_shell_aliases() {
+    for alias in ["bash", "shell", "exec", "run", "command"] {
+        assert_eq!(
+            canonicalize_skill_textual_tool_name(alias).as_deref(),
+            Some("exec_command"),
+            "alias {alias} should map to exec_command"
+        );
+    }
+    assert_eq!(canonicalize_skill_textual_tool_name("read_file").as_deref(), Some("read_file"));
+}
+
+#[test]
+fn textual_skill_tool_call_preserves_angle_brackets_in_values() {
+    let text =
+        "<tool_call>bash<arg_key>command</arg_key><arg_value>git diff <verified-target>...HEAD</arg_value></tool_call>";
+    let (name, args) = parse_textual_skill_tool_call(text).expect("placeholder markup should parse");
+    assert_eq!(name, tool_constants::EXEC_COMMAND);
+    assert_eq!(args["command"], serde_json::json!("git diff <verified-target>...HEAD"));
+}
+
+#[test]
+fn textual_skill_tool_call_ignores_trailing_text_after_json() {
+    let text = r#"<tool_call>exec_command{"command": "git diff"} trailing }</tool_call>"#;
+    let (name, args) = parse_textual_skill_tool_call(text).expect("json payload should parse");
+    assert_eq!(name, tool_constants::EXEC_COMMAND);
+    assert_eq!(args["command"], serde_json::json!("git diff"));
+}
+
+#[test]
+fn textual_skill_tool_call_ignores_fenced_documentation_example() {
+    // Skill docs / test fixtures quoting markup must not execute.
+    let text = "The skill documentation quotes this example:\n\n```sh\n<tool_call>bash<arg_key>command</arg_key><arg_value>rm -rf /tmp/demo</arg_value></tool_call>\n```\n\nDo not run it; summarize instead.";
+    assert!(parse_textual_skill_tool_call(text).is_none(), "fenced tagged markup must not become a tool call");
+}
+
+#[test]
+fn textual_skill_tool_call_ignores_mid_prose_tag_mention() {
+    let text = "containing `<tool_call>` example markup trigger unintended tool execution? Possibly. Now check remaining commits.";
+    assert!(parse_textual_skill_tool_call(text).is_none(), "prose mention must not bind");
+}
+
+#[test]
+fn textual_skill_tool_call_skips_dirty_name_and_parses_clean_call() {
+    let text = "Docs mention `<tool_call>` as a tag. Then:\n<tool_call>exec_command<arg_key>command</arg_key><arg_value>echo hi</arg_value></tool_call>";
+    let (name, args) = parse_textual_skill_tool_call(text).expect("clean call after prose mention should parse");
+    assert_eq!(name, tool_constants::EXEC_COMMAND);
+    assert_eq!(args["command"], serde_json::json!("echo hi"));
+}
+
+#[test]
+fn is_clean_skill_tool_name_rejects_prose() {
+    use vtcode_commons::text_fence::is_clean_tool_name as is_clean_skill_tool_name;
+    assert!(is_clean_skill_tool_name("exec_command"));
+    assert!(is_clean_skill_tool_name("bash"));
+    assert!(!is_clean_skill_tool_name(""));
+    assert!(!is_clean_skill_tool_name("` in content"));
+    assert!(!is_clean_skill_tool_name("has space"));
+    assert!(!is_clean_skill_tool_name(&"x".repeat(65)));
+}
+
+#[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]
+struct TextualToolThenFinalizeProvider {
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl LLMProvider for TextualToolThenFinalizeProvider {
+    fn name(&self) -> &str {
+        "textual-tool-then-finalize"
+    }
+
+    fn supported_models(&self) -> Vec<String> {
+        vec!["gpt-5.1-codex".to_string()]
+    }
+
+    fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
+        Ok(())
+    }
+
+    async fn generate(&self, request: LLMRequest) -> Result<LLMResponse, LLMError> {
+        let mut calls = self.calls.lock().expect("provider calls mutex");
+        *calls += 1;
+
+        match *calls {
+            1 => Ok(LLMResponse {
+                content: Some(
+                    "Gathering diff.<tool_call>bash<arg_key>command</arg_key><arg_value>git status --short</arg_value><arg_key>action</arg_key><arg_value>run</arg_value></tool_call>"
+                        .to_string(),
+                ),
+                model: request.model,
+                tool_calls: None,
+                finish_reason: FinishReason::Stop,
+                ..Default::default()
+            }),
+            2 => Ok(LLMResponse {
+                content: Some("finalized after textual tool call".to_string()),
+                model: request.model,
+                finish_reason: FinishReason::Stop,
+                ..Default::default()
+            }),
+            _ => panic!("unexpected provider call count: {}", *calls),
+        }
+    }
+}
+
+#[tokio::test]
+async fn skill_executor_runs_textual_tool_markup_without_native_calls() {
+    let manifest = SkillManifest {
+        name: "test-skill".to_string(),
+        description: "Test skill".to_string(),
+        vtcode_native: Some(true),
+        ..Default::default()
+    };
+    let skill =
+        Skill::new(manifest, PathBuf::from("/tmp"), "# Test Instructions".to_string()).expect("failed to create skill");
+    let workspace = tempdir().expect("temp workspace");
+    let mut registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    // Register under the canonical name the textual fallback produces so the
+    // wiring (parse -> scope check -> registry dispatch) is exercised.
+    let tool_name = tool_constants::EXEC_COMMAND;
+    let tool_calls = Arc::new(Mutex::new(0usize));
+    registry
+        .register_tool(
+            ToolRegistration::from_tool_instance(
+                tool_name,
+                CapabilityLevel::CodeSearch,
+                CountingSkillTool { calls: Arc::clone(&tool_calls) },
+            )
+            .with_network_access(ToolNetworkAccess::Local),
+        )
+        .await
+        .expect("register tool");
+    registry.allow_all_tools().await.expect("allow tools");
+    let provider = TextualToolThenFinalizeProvider { calls: Mutex::new(0) };
+
+    let result = execute_skill_with_sub_llm(
+        &skill,
+        "review".to_string(),
+        &provider,
+        &mut registry,
+        vec![ToolDefinition::function(
+            tool_name.to_string(),
+            "Textual fallback test tool".to_string(),
+            json!({"type": "object"}),
+        )],
+        "gpt-5.1-codex".to_string(),
+    )
+    .await
+    .expect("textual tool markup should execute and finalize");
+
+    assert_eq!(result, "finalized after textual tool call");
+    assert_eq!(*provider.calls.lock().expect("provider calls mutex"), 2);
+    assert_eq!(*tool_calls.lock().expect("tool calls mutex"), 1);
+}
+
+#[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]
+struct TextualUnknownToolThenFinalizeProvider {
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl LLMProvider for TextualUnknownToolThenFinalizeProvider {
+    fn name(&self) -> &str {
+        "textual-unknown-tool-then-finalize"
+    }
+
+    fn supported_models(&self) -> Vec<String> {
+        vec!["gpt-5.1-codex".to_string()]
+    }
+
+    fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
+        Ok(())
+    }
+
+    async fn generate(&self, request: LLMRequest) -> Result<LLMResponse, LLMError> {
+        let mut calls = self.calls.lock().expect("provider calls mutex");
+        *calls += 1;
+
+        match *calls {
+            1 => Ok(LLMResponse {
+                content: Some(
+                    "Gathering diff.<tool_call>unified_diff<arg_key>path</arg_key><arg_value>src/main.rs</arg_value></tool_call>"
+                        .to_string(),
+                ),
+                model: request.model,
+                tool_calls: None,
+                finish_reason: FinishReason::Stop,
+                ..Default::default()
+            }),
+            2 => {
+                assert!(request.tools.is_none());
+                let prompt = request
+                    .messages
+                    .last()
+                    .map(|message| message.content.as_text().to_string())
+                    .unwrap_or_default();
+                assert!(prompt.contains("unified_diff"));
+                assert!(prompt.contains(SKILL_TOOL_FREE_SYNTHESIS_PROMPT));
+
+                Ok(LLMResponse {
+                    content: Some("finalized after textual unknown tool".to_string()),
+                    model: request.model,
+                    finish_reason: FinishReason::Stop,
+                    ..Default::default()
+                })
+            }
+            _ => panic!("unexpected provider call count: {}", *calls),
+        }
+    }
+}
+
+#[tokio::test]
+async fn skill_executor_forces_final_synthesis_after_textual_unknown_tool() {
+    let manifest = SkillManifest {
+        name: "test-skill".to_string(),
+        description: "Test skill".to_string(),
+        vtcode_native: Some(true),
+        ..Default::default()
+    };
+    let skill =
+        Skill::new(manifest, PathBuf::from("/tmp"), "# Test Instructions".to_string()).expect("failed to create skill");
+    let workspace = tempdir().expect("temp workspace");
+    let mut registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    registry.allow_all_tools().await.expect("allow tools");
+    let provider = TextualUnknownToolThenFinalizeProvider { calls: Mutex::new(0) };
+
+    let result = execute_skill_with_sub_llm(
+        &skill,
+        "review".to_string(),
+        &provider,
+        &mut registry,
+        vec![ToolDefinition::function(
+            "read_file".to_string(),
+            "Read".to_string(),
+            json!({"type": "object"}),
+        )],
+        "gpt-5.1-codex".to_string(),
+    )
+    .await
+    .expect("textual unknown tool should trigger final synthesis");
+
+    assert_eq!(result, "finalized after textual unknown tool");
+}
+
+#[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]
+struct TextualOutOfScopeToolThenFinalizeProvider {
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl LLMProvider for TextualOutOfScopeToolThenFinalizeProvider {
+    fn name(&self) -> &str {
+        "textual-out-of-scope-tool-then-finalize"
+    }
+
+    fn supported_models(&self) -> Vec<String> {
+        vec!["gpt-5.1-codex".to_string()]
+    }
+
+    fn validate_request(&self, _request: &LLMRequest) -> Result<(), LLMError> {
+        Ok(())
+    }
+
+    async fn generate(&self, request: LLMRequest) -> Result<LLMResponse, LLMError> {
+        let mut calls = self.calls.lock().expect("provider calls mutex");
+        *calls += 1;
+
+        match *calls {
+            1 => Ok(LLMResponse {
+                content: Some(
+                    "Trying to run a command.<tool_call>bash<arg_key>command</arg_key><arg_value>rm -rf /</arg_value><arg_key>action</arg_key><arg_value>run</arg_value></tool_call>"
+                        .to_string(),
+                ),
+                model: request.model,
+                tool_calls: None,
+                finish_reason: FinishReason::Stop,
+                ..Default::default()
+            }),
+            2 => {
+                assert!(request.tools.is_none());
+                let prompt = request
+                    .messages
+                    .last()
+                    .map(|message| message.content.as_text().to_string())
+                    .unwrap_or_default();
+                assert!(
+                    prompt.contains("exec_command") || prompt.contains("bash"),
+                    "forced synthesis must name the denied tool, got: {prompt}"
+                );
+                assert!(prompt.contains(SKILL_TOOL_FREE_SYNTHESIS_PROMPT));
+
+                Ok(LLMResponse {
+                    content: Some("finalized after out-of-scope textual tool".to_string()),
+                    model: request.model,
+                    finish_reason: FinishReason::Stop,
+                    ..Default::default()
+                })
+            }
+            _ => panic!("unexpected provider call count: {}", *calls),
+        }
+    }
+}
+
+/// Textual `tool_call` markup must not bypass skill tool scope: a call for a tool
+/// absent from the skill's tool definitions is denied before registry dispatch
+/// (even when the registry has the tool registered and allowed) and forces
+/// tool-free synthesis.
+#[tokio::test]
+async fn skill_executor_denies_textual_tool_markup_outside_skill_scope() {
+    let manifest = SkillManifest {
+        name: "test-skill".to_string(),
+        description: "Test skill".to_string(),
+        vtcode_native: Some(true),
+        ..Default::default()
+    };
+    let skill =
+        Skill::new(manifest, PathBuf::from("/tmp"), "# Test Instructions".to_string()).expect("failed to create skill");
+    let workspace = tempdir().expect("temp workspace");
+    let mut registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    // Registry has exec_command available; skill scope must still deny it.
+    let tool_name = tool_constants::EXEC_COMMAND;
+    let tool_calls = Arc::new(Mutex::new(0usize));
+    registry
+        .register_tool(
+            ToolRegistration::from_tool_instance(
+                tool_name,
+                CapabilityLevel::CodeSearch,
+                CountingSkillTool { calls: Arc::clone(&tool_calls) },
+            )
+            .with_network_access(ToolNetworkAccess::Local),
+        )
+        .await
+        .expect("register tool");
+    registry.allow_all_tools().await.expect("allow tools");
+    let provider = TextualOutOfScopeToolThenFinalizeProvider { calls: Mutex::new(0) };
+
+    let result = execute_skill_with_sub_llm(
+        &skill,
+        "review".to_string(),
+        &provider,
+        &mut registry,
+        // Skill only sees read_file; textual bash/exec_command must be denied.
+        vec![ToolDefinition::function(
+            "read_file".to_string(),
+            "Read".to_string(),
+            json!({"type": "object"}),
+        )],
+        "gpt-5.1-codex".to_string(),
+    )
+    .await
+    .expect("out-of-scope textual tool should force final synthesis");
+
+    assert_eq!(result, "finalized after out-of-scope textual tool");
+    assert_eq!(
+        *tool_calls.lock().expect("tool calls mutex"),
+        0,
+        "out-of-scope textual tool must never reach the registry"
+    );
+    assert_eq!(*provider.calls.lock().expect("provider calls mutex"), 2);
 }

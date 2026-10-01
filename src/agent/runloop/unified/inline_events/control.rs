@@ -27,12 +27,4 @@ impl<'a, 'state> InlineControlProcessor<'a, 'state> {
         self.state.renderer().line(MessageStyle::Info, "✓")?;
         Ok(InlineLoopAction::Exit(SessionEndReason::Exit))
     }
-
-    pub(crate) fn force_cancel_pty_session(self) -> Result<InlineLoopAction> {
-        self.state.reset_interrupt_state();
-        self.state
-            .renderer()
-            .line(MessageStyle::Status, "Force-cancelling active PTY session.")?;
-        Ok(InlineLoopAction::Continue)
-    }
 }

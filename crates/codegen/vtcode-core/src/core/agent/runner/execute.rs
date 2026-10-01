@@ -24,7 +24,9 @@ use crate::core::agent::hash_utils::stable_system_prefix_hash;
 use crate::core::agent::refusal;
 use crate::core::agent::runtime::{AgentRuntime, RuntimeControl};
 use crate::core::agent::session::AgentSessionState;
-use crate::core::agent::state::normalize_history_for_request_shared;
+use crate::core::agent::state::{
+    clear_old_tool_results, normalize_history_for_request_shared, should_apply_local_tool_result_clearing,
+};
 use crate::core::agent::task::{ContextItem, Task, TaskOutcome, TaskResults};
 use crate::exec::events::HarnessEventKind;
 use crate::llm::provider::{Message, ToolCall, ToolChoice, ToolDefinition, supports_responses_chaining};
@@ -506,6 +508,7 @@ impl AgentRunner {
 
     /// Execute a task with this agent
     pub async fn execute_task(&mut self, task: &Task, contexts: &[ContextItem]) -> Result<TaskResults> {
+        self.tool_registry.begin_patch_recovery_turn();
         // Phase 1: Setup — harness alignment, conversation building, session init,
         // orchestration planning. Extracted to `prepare_task_execution` for testability.
         let setup = self.prepare_task_execution(task, contexts).await?;
@@ -535,7 +538,6 @@ impl AgentRunner {
 
         let result: Result<_> = {
             for turn in 0..self.max_turns {
-                self.tool_registry.begin_turn_preview_window();
                 if matches!(runtime.poll_turn_control().await, RuntimeControl::StopRequested) {
                     self.runner_println(format_args!(
                         "{} {}",
@@ -816,6 +818,29 @@ impl AgentRunner {
                 }
 
                 let normalized_messages = normalize_history_for_request_shared(Arc::clone(&runtime.state.messages));
+                // Local stand-in for Anthropic `clear_tool_uses` on routes
+                // without context edits (same gate as the interactive
+                // runloop). Request-only: durable history is untouched.
+                let normalized_messages = {
+                    let clearing = &self.config().agent.harness.tool_result_clearing;
+                    // Headless requests never attach native context
+                    // management (`context_management: None` in the
+                    // HarnessRequestPlanInput below), so the gate must not
+                    // consume the provider capability: for Anthropic that
+                    // combination would apply neither native nor local
+                    // clearing and old tool bodies would ride every request.
+                    if should_apply_local_tool_result_clearing(&provider_name, false, clearing.enabled) {
+                        Arc::new(clear_old_tool_results(
+                            normalized_messages.as_slice(),
+                            clearing.trigger_tokens,
+                            clearing.keep_tool_uses,
+                            clearing.clear_at_least_tokens,
+                            clearing.clear_tool_inputs,
+                        ))
+                    } else {
+                        normalized_messages
+                    }
+                };
                 let (request_messages, previous_response_id) = prepare_responses_request_messages(
                     &mut runtime.state.previous_response_chains,
                     &provider_name,
@@ -1608,9 +1633,24 @@ mod tests {
     use super::{prepare_responses_request_messages, record_terminal_turn_event, tool_loop_limit_reached};
     use crate::core::agent::events::ExecEventRecorder;
     use crate::core::agent::session::AgentSessionState;
+    use crate::core::agent::state::should_apply_local_tool_result_clearing;
     use crate::core::agent::task::TaskOutcome;
     use crate::exec::events::ThreadEvent;
     use crate::llm::provider::{Message, records_responses_continuation_state};
+
+    #[test]
+    fn headless_local_clearing_gate_ignores_provider_context_edit_capability() {
+        // Headless requests never attach native context management, so the
+        // gate must run with context_edits == false even for Anthropic;
+        // otherwise headless Anthropic gets neither native nor local
+        // clearing and old tool bodies ride every request.
+        assert!(should_apply_local_tool_result_clearing("anthropic", false, true));
+        assert!(!should_apply_local_tool_result_clearing("anthropic", false, false));
+        // Interactive semantics stay pinned: native edits exclude the local
+        // pass, other providers use it regardless of capability.
+        assert!(!should_apply_local_tool_result_clearing("anthropic", true, true));
+        assert!(should_apply_local_tool_result_clearing("openai", true, true));
+    }
 
     #[test]
     fn failed_outcome_emits_only_turn_failed() {

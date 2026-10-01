@@ -1,6 +1,10 @@
 # vtcode-agent-plugins
 
-Agent Plugins manifest parsing, validation, and discovery for VT Code.
+[Root AGENTS.md](../../../AGENTS.md) | Agent Plugins manifest parsing, validation, and discovery.
+
+## Modules
+
+`manifest.rs` PluginManifest | `mcp.rs` McpConfig | `discovery.rs` plugin discovery | `loader.rs` loading sources | `expansion.rs` placeholder expansion | `errors.rs` PluginError
 
 ## Conventions
 

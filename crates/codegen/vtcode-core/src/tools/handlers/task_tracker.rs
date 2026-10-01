@@ -21,10 +21,10 @@ use std::str::FromStr;
 use crate::config::constants::tools;
 use crate::tools::error_helpers::deserialize_tool_args;
 use crate::tools::handlers::task_tracking::{
-    TaskCounts, TaskItemInput, TaskStepMetadata, TaskTrackingStatus, TaskTreeNode, append_notes, append_notes_section,
-    append_task_step_metadata, compact_task_tree_view, is_bulk_sync_update, metadata_from_input,
-    normalize_optional_text, normalize_string_items, parse_marked_status_prefix, parse_status_prefix,
-    validate_action_index_fields, validate_update_shape,
+    TASK_ITEMS_DESCRIPTION, TaskCounts, TaskItemInput, TaskStepMetadata, TaskTrackingStatus, TaskTreeNode,
+    append_notes, append_notes_section, append_task_step_metadata, compact_task_tree_view, is_bulk_sync_update,
+    metadata_from_input, normalize_optional_text, normalize_string_items, parse_marked_status_prefix,
+    parse_status_prefix, validate_action_index_fields, validate_task_item_inputs, validate_update_shape,
 };
 use crate::utils::file_utils::{ensure_dir_exists, read_file_with_context, write_file_with_context};
 use anyhow::{Context, Result, bail};
@@ -133,6 +133,7 @@ impl TaskChecklist {
 }
 
 fn parse_input_items(items: &[TaskItemInput]) -> Result<Vec<TaskItem>> {
+    validate_task_item_inputs(items)?;
     items
         .iter()
         .filter_map(|item| match item {
@@ -463,7 +464,7 @@ fn standard_task_tracker_parameter_schema() -> Value {
                         }
                     ]
                 },
-                "description": "Task descriptions or structured items. Supports [x]/[~]/[!]/[ ] prefixes for status sync."
+                "description": TASK_ITEMS_DESCRIPTION
             },
             "index": {
                 "type": "integer",
@@ -603,9 +604,9 @@ fn standard_task_tracker_parameter_schema() -> Value {
 
 pub(crate) fn task_tracker_description_for_workflow(planning_active: bool) -> &'static str {
     if planning_active {
-        "Adaptive task tracking for planning. Persists hierarchical plan progress under .vtcode/plans/<plan>.tasks.md and mirrors updates to .vtcode/tasks/current_task.md. Actions: create, update, list, add. Calling action=create again replaces the plan task list and its progress; use action=update or action=add to change it. For action=update, planning item indices are positive 1-based flat or hierarchical index_path values; index: 0 is invalid. Use items for bulk updates."
+        "Adaptive task tracking for planning. Persists hierarchical plan progress under .vtcode/plans/<plan>.tasks.md and mirrors updates to .vtcode/tasks/current_task.md. Actions: create, update, list, add. Calling action=create again replaces the plan task list and its progress; use action=update or action=add to change it. For action=update, planning item indices are positive 1-based flat or hierarchical index_path values; index: 0 is invalid. Use items only to replace the full checklist with descriptions and explicit statuses, not indexed updates or JSON-encoded strings."
     } else {
-        "Track task progress through a single checklist API (action: create | update | list | add). Use with action=create at the start of a multi-step plan; action=update as work progresses; action=list to review current state. For action=update, item indices are 1-based; standard checklist-level completion alone may use index: 0 with status: completed. Planning workflow accepts only positive flat or hierarchical index paths. Use items for bulk updates. Calling action=create again replaces the current checklist and its progress, unless the title and items match the active checklist, in which case the call is a no-op; use action=update or action=add to change an existing checklist. Tracker state mirrors between .vtcode/tasks/current_task.md and active plan sidecar files when available."
+        "Track task progress through a single checklist API (action: create | update | list | add). Use with action=create at the start of a multi-step plan; action=update as work progresses; action=list to review current state. For action=update, item indices are 1-based; standard checklist-level completion alone may use index: 0 with status: completed. Planning workflow accepts only positive flat or hierarchical index paths. Use items only to replace the full checklist with descriptions and explicit statuses, not indexed updates or JSON-encoded strings. Calling action=create again replaces the current checklist and its progress, unless the title and items match the active checklist, in which case the call is a no-op; use action=update or action=add to change an existing checklist. Tracker state mirrors between .vtcode/tasks/current_task.md and active plan sidecar files when available."
     }
 }
 
@@ -1290,6 +1291,9 @@ mod tests {
         let schema = tool.parameter_schema().expect("task tracker schema");
 
         assert_eq!(schema["properties"]["index"]["minimum"], 0);
+        let items_description = schema["properties"]["items"]["description"].as_str().unwrap();
+        assert!(items_description.contains("Full checklist replacement"));
+        assert!(items_description.contains("never JSON-encoded strings"));
         assert_eq!(schema["properties"]["index_path"]["pattern"], "^[1-9][0-9]*$");
         let description = schema["properties"]["index"]["description"]
             .as_str()
@@ -1340,6 +1344,54 @@ mod tests {
         for args in invalid_cases {
             assert!(jsonschema::validate(&schema, &args).is_err(), "expected invalid args: {args}");
         }
+    }
+
+    #[tokio::test]
+    async fn bulk_update_rejects_encoded_commands_without_resetting_completed_steps() {
+        let temp = TempDir::new().unwrap();
+        let (_state, tool) = setup_tool(&temp);
+        tool.execute(json!({
+            "action": "create",
+            "title": "Preserve progress",
+            "items": [
+                {"description": "Update introduction", "status": "completed", "files": ["README.md"], "outcome": "Clear overview", "verify": ["review headings"]},
+                {"description": "Review links", "status": "blocked", "outcome": "Await network"}
+            ]
+        })).await.unwrap();
+        let tracker_path = temp.path().join(".vtcode/tasks/current_task.md");
+        let persisted_before = std::fs::read_to_string(&tracker_path).unwrap();
+        let before = tool.execute(json!({"action": "list"})).await.unwrap();
+
+        for (action, encoded) in [
+            ("update", r#"{"index_path":"1","status":"completed","outcome":"Done","verify":"review headings"}"#),
+            ("update", r#"  [x] {"index_path":"1","status":"completed"}"#),
+            ("create", r#"{"index":1,"status":"completed"}"#),
+        ] {
+            let error = tool
+                .execute(json!({
+                    "action": action,
+                    "title": "Incorrect replacement",
+                    "items": ["Replacement must not leak", encoded]
+                }))
+                .await
+                .expect_err("encoded updates must not replace the tracker");
+            assert!(error.to_string().contains("JSON-encoded task updates"));
+            assert!(
+                error
+                    .to_string()
+                    .contains(r#"{"action":"update","index_path":"1","status":"completed"}"#)
+            );
+            assert_eq!(tool.execute(json!({"action": "list"})).await.unwrap(), before);
+            assert_eq!(std::fs::read_to_string(&tracker_path).unwrap(), persisted_before);
+        }
+
+        tool.execute(json!({"action": "update", "index_path": "2", "status": "completed"}))
+            .await
+            .unwrap();
+        let after = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(after["checklist"]["completed"], 2);
+        assert_eq!(after["checklist"]["items"][0]["description"], "Update introduction");
+        assert_eq!(after["checklist"]["items"][0]["files"], json!(["README.md"]));
     }
 
     #[tokio::test]

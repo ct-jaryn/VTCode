@@ -20,10 +20,11 @@ use vtcode_ui::tui::app::{InlineHandle, InlineMessageKind, InlineSegment, Inline
 
 use crate::agent::runloop::unified::run_loop_context::RunLoopContext;
 use crate::agent::runloop::unified::tool_pipeline::{
-    ToolDisplayStatus, ToolExecutionStatus, ToolPipelineOutcome, renders_pty_command_header, streams_pty_output,
+    ToolDisplayStatus, ToolExecutionStatus, ToolPipelineOutcome, is_exec_session_call, renders_pty_command_header,
+    streams_pty_output,
 };
 use crate::agent::runloop::unified::tool_summary_helpers::{
-    COMPACT_PREVIEW_LEN, display_command_text, preview_command, relativize_command_paths,
+    COMPACT_PREVIEW_LEN, display_command_text, preview_command, preview_full_command, relativize_command_paths,
 };
 use vtcode_commons::canonicalize;
 
@@ -1113,10 +1114,14 @@ fn normalized_lines_contain_subsequence(container: &[String], candidate: &[Strin
 }
 
 fn command_output_header(name: &str, args: &serde_json::Value, workspace_root: Option<&Path>) -> String {
-    // `display_command_text` is already display-safe (bare `|`, `>`, `;`).
-    // Keep the viewer header to a single readable preview line, consistent
-    // with the compact `• Ran` row, instead of echoing a multi-line script.
-    compact_command_preview(args, workspace_root)
+    // Transcript Review shows the complete command: viewport-aware wrapping
+    // (TUI reflow) owns overflow instead of a `…` truncation, so long chained
+    // commands remain readable in full. Uses the same script-runner folding as
+    // compact previews but applies no length cap.
+    display_command_text(args)
+        .map(|command| relativize_command_paths(&command, workspace_root))
+        .map(|command| preview_full_command(&command))
+        .filter(|command| !command.is_empty())
         .map(|command| format!("• Ran {command}"))
         .unwrap_or_else(|| format!("• Ran {name}"))
 }
@@ -1366,8 +1371,18 @@ async fn render_tool_output_common(
         return Ok(());
     }
 
-    let viewer_id = if renderer.supports_inline_ui() && is_command_output_call(name, args_val) {
-        let mut viewer_lines = if inline_run_tool || has_spool_path {
+    // Session follow-ups need a viewer capture too: the inline body is capped
+    // at 10 rows and the expand notice opens this record, so the complete
+    // stdin/stdout capture stays reachable without leaving the TUI.
+    let is_session_followup = is_exec_session_call(name, args_val);
+    // Drop any unused expand anchor from a prior call that did not overflow.
+    let _ = renderer.take_session_expand_anchor();
+    renderer.set_session_body(is_session_followup);
+    let viewer_id = if renderer.supports_inline_ui() && (is_command_output_call(name, args_val) || is_session_followup)
+    {
+        let mut viewer_lines = if is_session_followup {
+            build_pipe_command_output_lines(name, args_val, output, workspace_root, status)
+        } else if inline_run_tool || has_spool_path {
             complete_capture.as_deref().map_or_else(
                 || build_merged_command_output_lines(name, args_val, "", workspace_root, output, status),
                 |capture| build_merged_command_output_lines(name, args_val, capture, workspace_root, output, status),
@@ -1377,7 +1392,12 @@ async fn render_tool_output_common(
         };
         append_capture_status_line(&mut viewer_lines, output, complete_capture.as_deref());
         append_follow_up_capture_lines(&mut viewer_lines, output, complete_capture.as_deref());
-        Some(handle.record_tool_output(viewer_lines))
+        let viewer_id = handle.record_tool_output(viewer_lines);
+        // Session expand notices consume this when the 10-row body overflows.
+        if is_session_followup {
+            renderer.set_session_expand_anchor(viewer_id);
+        }
+        Some(viewer_id)
     } else {
         None
     };
@@ -2423,6 +2443,19 @@ mod tests {
         assert!(!header.contains("tur…ool"), "mid-string ellipsis leaked: {header}");
         assert!(!header.contains("\\'"), "escaped quotes leaked: {header}");
         assert_ne!(header, "• Ran python3 -c \"");
+    }
+
+    #[test]
+    fn command_header_shows_full_command_without_truncation() {
+        // Transcript Review must show the complete command: a long chained
+        // `git add && git commit && git log` must survive in full instead of
+        // head-truncating at the 120-char compact preview budget.
+        let command = "git add README.md && git commit -m 'docs(readme): expand contributors and sponsors by default' && git log --oneline -1 && git status --short && git diff --stat";
+        assert!(command.chars().count() > COMPACT_PREVIEW_LEN, "fixture must overflow compact cap");
+        let args = serde_json::json!({ "command": command });
+        let header = command_output_header(tools::EXEC_COMMAND, &args, None);
+        assert_eq!(header, format!("• Ran {command}"), "got: {header:?}");
+        assert!(!header.contains('…'), "truncation ellipsis leaked: {header:?}");
     }
 
     #[test]

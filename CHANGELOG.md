@@ -2,6 +2,368 @@
 
 All notable changes to vtcode will be documented in this file.
 ## 0.169.2 - 2026-09-24
+## 0.171.2 - 2026-09-30
+
+### Highlights
+#### Bug Fixes
+
+- Expire recovery restrictions and bound continuations (5625b649) 
+- Use warning amber for exit postamble notice (70574dc8) 
+- Keep tool previews available across long turns (2760a1b2) 
+- Stop OSC palette replies leaking into input on launch (9f2cf374) 
+- Preserve metadata and allow optional markdown lint (a7f91c12) 
+- Keep tool prefix stable across tool-free recovery (9c43d616) 
+- Make patch calls reliable with bounded recovery (37e11dfa) 
+- Preserve tracker state and expose spool line counts (8ed31945) 
+- Restrict LLM image parts to JPEG/PNG/GIF/WebP (61429d85) 
+- Bound search recovery and preserve exec session output (37bbc318) 
+#### Documentation
+
+- Finalize prompt-cache-hitrate feature document (9ef26918) 
+- Finalize prompt-cache-provider-gaps feature document (12f3f342) 
+- Tighten prose and promote Resources section (c221839b) 
+- Tighten wording and regroup sections (d471dac5) 
+- Restructure sections and tighten wording (d0f61971) 
+#### Features
+
+- Close provider prompt-cache gaps (4d60c077) 
+- Add sticky user-message navigation (398ac6b4) 
+### Other Changes
+#### Other
+
+- Update README (b2645476) 
+- Normalize line endings and apply cargo fmt (2b749ddd) 
+## 0.171.1 - 2026-09-30
+
+### Highlights
+#### Bug Fixes
+
+- Gate cache breakpoints on native backends, map Merge service tiers (f1f731ba) 
+- Tier-aware retries and Merge capability fast-fail (70fff2c2) 
+- Merge capability retry, tier mapping, and tier-reset persistence (1ad1fdc3) 
+#### Features
+
+- Gate ultrafast tier on native OpenAI across picker and wire (cd838ff1) 
+### Other Changes
+## 0.171.0 - 2026-09-29
+
+### Highlights
+#### Features
+
+- Add GPT-6.1 Sol and ultrafast service tier (6ff19cb8) 
+### Other Changes
+## 0.170.1 - 2026-09-29
+
+### Highlights
+#### Bug Fixes
+
+- Show full command in transcript review and advertise q to close (ef7aaae2) 
+- Accessible postamble styling and faster Ctrl+C teardown (08fb6217) 
+- Keep search-off picker layout and drop per-row filter allocs (d8be78d2) 
+- Simplify settings row helpers and model-picker back (00391eab) 
+- Declutter config settings rows and value column (21dec621) 
+- Align model picker with the value-column row pattern (08efb5b6) 
+- Tighten picker hints and drop dead footer copy (2b8fccaf) 
+- Unify grouped-modal design system and spacing (9b424fda) 
+- Clarify single-Enter slash submit intent (b2efeb1b) 
+- Clear alternate viewport before leaving across teardown paths (a3f32b9f) 
+- Restore conditional Current badges and align choice search (39966df7) 
+- Claim cooked-mode restore separately from escape restore (a6187c37) 
+- Surface coalesced warning when queued inputs hit the soft cap (4c2f4194) 
+- Badge permanence scope on tool permission prompt rows (c521bbf3) 
+- Condense failed-edit old_str and patch context in errors (60147a9f) 
+- Cap list_files tree emission with a node budget (9054561a) 
+- Preserve read paging fields, decouple tree from max_items, harden diagnosis memo (b77cbc61) 
+- Flag chunk_tail_omitted on byte-capped paged reads (4a3fc30a) 
+#### Documentation
+
+- Group extra commands and tighten usage intro (894f3449) (@vinhnx)
+- Expand contributors and sponsors by default (d2fa1600) 
+- Finalize tui-config-search report and commit range (db7619d7) 
+- Finalize config-models-modal-ux report and commit range (ec1ad729) 
+- Finalize ui-design-system report and commit range (332f350a) 
+- Finalize clear-tool-inputs-default report and commit range (e9e91a2a) 
+#### Features
+
+- Apply Sonnet 5.5 tuning guidance (0c9589cb) 
+- Collapse large composer inputs to bounded summary (7f045947) 
+- Paste-twice expand, Shift+Ctrl+V raw paste, shorter copy toast (1014be67) 
+- Responsive search for TUI configuration pickers (97fcfeac) 
+- Redesign config and models modal hierarchy and feedback (772b9441) 
+- Add char counter to copy notifications (85d8c449) 
+- Clear tool inputs with stubbed results by default (d2f448ad) 
+- Apply reduce_tool_result hard caps on interactive tool responses (b09e04d7) 
+### Other Changes
+#### Other
+
+- Cleanup (494a0bf4) (@vinhnx)
+- Responsive TUI configuration search (compose/tui-config-search) (916170a3) 
+- Config and models modal hierarchy and feedback (compose/config-models-modal-ux) (438bfd2a) 
+- Canonical TUI design system in vtcode-ui (compose/ui-design-system) (99d93b3d) 
+- Update README (5d67f5ae) 
+- Clear tool inputs with stubbed results by default (compose/clear-tool-inputs-default) (fa69e427) 
+- Tool-output economy — reduce caps, tree bounds, diagnosis memo (compose/tool-output-compact) (255a48ce) 
+#### Performance
+
+- Drop instruction-appendix Key points echo and single-source map (15b3daf7) 
+- Memoize tool-failure diagnosis and cap model calls per turn (fbb6fc1c) 
+#### Refactors
+
+- Simplify the deferred raw-mode restore on exit (1a2c5427) 
+- Move shared list design system into vtcode-ui::design (189ee766) 
+- Finish design::list migration from review (ac8905a8) 
+- Dedupe persistent-memory disabled check and fix hint text (e872b4c5) 
+- Name diagnosis-memo types and use CompactStr (dd7d4eb7) 
+#### Tests
+
+- Complete InlineListItem fields after modal UX merge (d3914450) 
+## 0.170.0 - 2026-09-29
+
+### Highlights
+#### Bug Fixes
+
+- Keep popup dialogs readable without dimmed text (480d37c0) 
+- Combine supplemental answer with remember request in planner flow (c6d7d1d1) 
+- Keep TUI messages queued when the agent is busy or unavailable (5f91b37c) 
+#### Documentation
+
+- Merge Spotlight into Overview and dedupe WebMCP mentions (c3a880a7) 
+#### Features
+
+- Add Claude Sonnet 5.5 to Anthropic and Merge Gateway (ffe088d4) 
+### Other Changes
+#### Other
+
+- Cleanup commands (8cde11d9) 
+- Cleanup (2415bcfc) 
+## 0.169.6 - 2026-09-28
+
+### Highlights
+#### Bug Fixes
+
+- Exclude TODO churn from changelog generator (e127c090) 
+- Show jump hint after wheel scroll (562ac39c) 
+- Share fence/name helpers and fix Build↔Plan switch budgets (2a48c270) 
+- Add awk family pattern to stop repeated prompts (839d376a) 
+- Concise Info notice for unavailable prompt checkpoint (f5bed9f1) 
+- Clean up Ctrl+C exit handling and postamble alignment (1b6f3ba4) 
+- Tighten interrupt exit postamble to remove blank gap (556d0f18) 
+- Close review gaps on session-efficiency (1df97c14) 
+- S3 follow-ups — print auth gate and earlier compaction (9c6d8c55) 
+- Wire trigger ratio and close print auth hole (9ad76939) 
+- Revert iTerm2 tab-icon profile on exit (c21b6a9f) 
+- Reset the agent-wide api_key_env when the CLI switches provider (856a8963) 
+- Align threshold expectations with the default trigger ratio (c22a1a87) 
+- Build the diff empty state with DOM APIs instead of innerHTML (758775e8) 
+- Pin open-review captures and stop inventing eviction dirty state (29c500dd) 
+- Correct style merge, input cache keys, and link fast-reject (8bdd9036) 
+- Filename links with trailing punct, input cache invalidation (9b868a38) 
+- Emit the exit summary as one atomic write (513a8220) 
+- Anchor the exit summary to the viewport bottom (3be55be3) 
+#### Documentation
+
+- Record harness-fence-share-and-close-race delivery (38228d70) 
+- Deliver session-efficiency after review (f92e8b7f) 
+- Deliver s3-followups after review (d268df68) 
+- Record tui-fps-responsiveness delivery (a4bd0b8a) 
+- Note tui-fps review-fix pass (549a61b9) 
+- Add missing subcommands and refine architecture graph (18f75bf6) 
+- Drop nonexistent stats subcommand, add app-server and anthropic-api (4cfbb42a) 
+#### Features
+
+- Improve transcript readability and accessibility (bf0225d2) 
+- Improve model picker and settings palette hierarchy (8778f177) 
+- Rework file picker with kind-aware rows and ignore-aware listing (0683b2d5) 
+### Other Changes
+#### Build
+
+- Centralize shared dependency versions in workspace.dependencies (de53b7ad) 
+#### Performance
+
+- Cut session noise and long-run token tax (de6676c2) 
+- Cut frame-path allocs and cache thrash under streaming load (1bfbd0d7) 
+- Hotpath-driven reflow and wrap cuts (3ef4fbe3) 
+- ASCII wrap fast path and drop Paragraph re-wrap (bf591e2d) 
+- Paint transcript without cloning Lines into Paragraph (4a1921d2) 
+- Cache input render and paint header without Paragraph (981ee238) 
+- Skip line tint scan when no span has a background (f565fb9e) 
+- Paint input and status without Paragraph wrap (bad95240) 
+#### Refactors
+
+- Drop redundant carriage write and flatten postamble guard (28e10edd) 
+#### Tests
+
+- Avoid string indexing in the text_fence assertions (ace055d9) 
+## 0.169.5 - 2026-09-27
+
+### Highlights
+#### Bug Fixes
+
+- Keep heredoc skip out of double-quoted strings (e2b7fdad) 
+- Restore constraint continuity for fresh task artifacts (29ccc8c0) 
+- Apply local tool-result clearing for non-Anthropic providers (d0d3ad55) 
+- Bound tool-result clearing to all non-kept results (fd05baef) 
+- Harden tool-result clearing stubs and cover headless runner (09b29db3) 
+- Admit bounded slice reads in read-after-write guard (d8f5ad7c) 
+- Arm read-after-write guard from parsed patch targets (e32acf5d) 
+- Keep output tail in exec inline preview window (0ef02e90) 
+- Widen plan-mode read-only classification for common probes (0540f811) 
+- Attach denial diagnostic to model-facing policy errors (75e9ef3d) 
+- Keep plan-entry turn alive and defer plan-agent switch (396924fa) 
+- Make approval switch recoverable and log plan_exit (3f17d0e2) 
+- Recover from approved-plan selection failures on all paths (7883691f) 
+- Apply deferred plan switch on Blocked turns; DRY approval failures (8c205e33) 
+- Auto-continue recoverable entry-turn Blocked ends in plan mode (83f87256) 
+- Keep default fuse remedy free of deny token 'permission' (10fbfa9b) 
+- Auto-continue recoverable blocked ends in every mode (c5792d79) 
+- Name empty-tracker blocked-end resume in budget messages (55267a05) 
+- Close plan-mode read-only holes found in adversarial review (ac328cea) 
+- Avoid macOS Apple Events prompt (4afa83be) 
+- Dismiss history picker on Ctrl+C (cca60e63) 
+- Gate Up/Down history on single-line input (a6e39b1f) 
+- Prewarm Gatekeeper before macOS debug runs (2666928d) 
+- Stop when Gatekeeper pre-scan fails (765e55c6) 
+- Up/Down traverses wrapped input rows instead of history (19dffc33) 
+- Missing-config prompt fallback uses enum default (08d4682d) 
+- Show full shell command in HITL modal without per-line truncation (696437cb) 
+- Notarize macOS binaries (6691cfe5) 
+- Model HITL modal on reference UX — question title, env row, $ marker (a044be4d) 
+- Preserve compatibility executable mode (4b49f6f4) 
+- Exclude Table of Contents from docs-map topics (190e6f6a) 
+- Allow unsigned macOS packaging (955bf11c) 
+- Close review findings across heredoc, clearing, spools (cf82d6df) 
+- Exempt deferred plan entry from final-response guard (1b6d8e0b) 
+- Change default primary agent from duck to build (df8c6be1) 
+- Silence macOS __eh_frame compact-unwind linker warning (d3edab4e) 
+- Close deferred risk-audit items (934a7966) 
+- Address review — mutex deadlock and fourth tail site (0e9155b0) 
+- Strip env prefixes in policy matching and refresh stale tests (1b228478) 
+#### Documentation
+
+- Deliver local-tool-result-clearing after review (21300f2a) 
+- Note freeform tool-input clearing in clear_old_tool_results (7861d0ae) 
+- Add update/logout to command roundup and normalize repo URL casing (c31a9b62) 
+- Deliver plan-mode-entry-handoff after review (a43e7c0e) 
+- Update project TODO (866aff69) 
+- Deliver harness-tax-observability after review (3b83723a) 
+- Update project TODO (a576b493) 
+- Deliver lean-harness-defaults after review (9a790928) 
+- Sync documentation with recent behavior changes (fa0b7e66) 
+- Deliver budget-retune-dead-tools after review (02204400) 
+- Audit and refresh module guides against current sources (276992cc) 
+- Consolidate agent guidance on AGENTS.md, remove CLAUDE.md (114cd139) 
+- Record post-audit action plan status (f10535ad) 
+- Trim jump-to-last-change wording (dc9ea131) 
+- Deliver risk-audit-deferred-items after review (c7000914) 
+#### Features
+
+- Surface first-call harness tax and eval cost-per-solve (4b41962e) 
+- Lean defaults for prompt, budgets, and eager tools (e746ce68) 
+- Add numbered shortcuts to search-less list modals (80db625a) 
+- Add back Jump to last change navigation (9632287e) 
+- Add fuzzy modal search and fullscreen interaction settings (62dc6618) 
+### Other Changes
+#### Other
+
+- Update TODO (6b97eb86) 
+- Update project (8b6691e1) 
+- Reapply "Merge branch 'fix/plan-mode-header-handoff'" (a34d5bfc) 
+- Update TODO (6430cb5d) 
+- Drop unnecessary qualification in wrap tests (15e9b067) 
+- Update TODO (3555a93e) 
+- Update TODO (7cc23653) 
+#### Performance
+
+- Stop sending tool-spec guidance three times per request (b7ca489c) 
+- Avoid serde_json Value IR on tool-arg and probe paths (12a631c1) 
+#### Refactors
+
+- Single-source preflight name-mistake phrase (c1d751dc) 
+- Share recoverable-block allow-list; deliver plan-mode-entry-handoff (d238d115) 
+- Share priced-cost helper and cover first-call latch (58030951) 
+#### Tests
+
+- Align stale expectations with current contracts (c632756d) 
+- Harden copy-on-select coverage and document manual copy (24a86d3d) 
+## 0.169.4 - 2026-09-26
+
+### Highlights
+#### Bug Fixes
+
+- Replace yanked chacha20 0.10.1 with 0.10.2 (72b5c7c5) (@vinhnx)
+- Silence macOS __eh_frame compact-unwind warning (295bd1a9) (@vinhnx)
+- Support argument-hint and silent allowed-tools list normalization (a60f8c69) 
+- Tighten background window review findings (b8c10b5e) 
+- Execute textual tool-call markup in skill sub-LLM fallback (9c9f9490) 
+- Surface validator feedback in terminal plan rejection history (a045db8f) 
+- Bound session close so stop/close cannot freeze the runloop (cfa8434f) 
+- Bound output-read lock acquire and widen close timeout (ff5ecda7) 
+- Escalate child reap and cover out-of-scope textual tool markup (f4de874e) 
+- Render blockquotes as italic without leading bar (ee8271ce) 
+- Restore macOS panic unwinding and re-tune preview-budget test sizes (7d3856e4) 
+- Sync header and full plan-agent switch on planning entry (57d6435d) 
+- Keep plan-entry handoffs out of Blocked and never restore plan (9c85c67c) 
+- Gate textual tool-calls on fences and clean names (60959f8e) 
+- Fail-open unclosed fence tail in textual tool-call gating (27792c10) 
+- Defer planning indicator until first planning turn (179afc0d) 
+- Shell-aware Ran header wrapping with shared widths (7393eb63) 
+- Format tool-call commands with explicit shell continuations (52ab4302) 
+- Stop name mistakes from tripping preflight circuit (c98bbf59) 
+- Prune turn checkpoints and skip quoted heredoc bodies (93b31290) 
+- Ignore stale session navigations when protecting turns (d3690926) 
+- Keep checkpoint prune off the hot path (84223819) 
+- Keep durable archive pointer and bound blocked status (69c96715) 
+- Stop residual session state from leaking across sessions (b730ed9d) 
+- Close review gaps in residual session hygiene (88e7e660) 
+- Harden residual hygiene against review findings (f1aac4d8) 
+#### Documentation
+
+- Refine structure and collapse promotional blocks (ba10f8a1) (@vinhnx)
+- Reorganize section structure without content changes (8f11eb58) 
+- Finalize background-agents-window feature doc (a16c8780) 
+- Spotlight Memcode cross-thread memory writeup (a651d88a) 
+- Record session-stdio-dimmer commit range (221f00f1) 
+- Move Spotlight to top and add Memcode pull quote (8101b4e5) 
+- Record plan-rejection-model-feedback delivery (29e3da63) 
+- Record session-close-harden delivery (ce55774e) 
+- Record session-close-and-skill-markup-harden delivery (dee20d19) 
+- Record plan-mode-header-handoff delivery range (f88757d7) 
+- Update plan-mode-header-handoff delivery range (3b6bfaa0) 
+- Record harness-textual-tool-call-harden delivery (655852ca) 
+- Record tool-loop-session-auto-grant delivery (e676bcf5) 
+- Update tool-loop-session-auto-grant after review fixes (141fe082) 
+- Deliver session-audit-harness-fixes after review (d4b05b95) 
+- Deliver tui-diagnostics-cleanup after review (c9f31c29) 
+- Deliver session-residual-hygiene after review (55d36ee2) 
+- Record final session-residual-hygiene commit range (136d05b2) 
+#### Features
+
+- Align discovery and loading with Agent Skills spec client guide (bc203212) 
+- Expand Local Agents into floating background window (e988dd53) 
+- Dim session stdio bodies and add expand notice (15474018) 
+- Live transcript progress rows with whole-line shimmer (29599e42) 
+- Auto-grant tool loops after first session grant (f9ccb493) 
+### Other Changes
+#### Other
+
+- Update TODO (21c2ab54) 
+- Update TODO (e2215fe1) 
+- Update TODO (f79ec288) 
+- Update TODO (4c42868c) 
+- Update TODO (78eabb32) 
+- Revert "Merge branch 'fix/plan-mode-header-handoff'" (a4bea5a2) 
+- Update TODO (a997cb99) 
+#### Refactors
+
+- Remove unused RL optimization loop module (2fb819df) 
+- Derive harness follow-up quiet path from producer constants (9a1ab4a0) 
+- Latch tool-loop grants inside apply path (d2c0c747) 
+- Enforce 2-line diagnostic contract across runloop (7d67cb21) 
+#### Tests
+
+- Cover full-command header wrapping end to end (7d41a8ff) 
+- Harden tool-call tag tests and document quiet follow-up UX (c9635e4d) 
+- Lock post-tool 2-line contract and fix stale hint helper (d29320c5) 
 ## 0.169.3 - 2026-09-25
 
 ### Highlights

@@ -3,12 +3,14 @@
 //! Isolates the start-planning confirmation overlay from the plan-approval flow
 //! so each can evolve independently and be tested without the other's UI state.
 
+use crate::agent::runloop::ui_list;
+use crate::agent::runloop::ui_list::Tone;
+
 use std::sync::Arc;
 
 use tokio::sync::Notify;
 use vtcode_ui::tui::app::{
-    InlineHandle, InlineListItem, InlineListSelection, InlineSession, ListOverlayRequest, TransientRequest,
-    TransientSubmission,
+    InlineHandle, InlineListSelection, InlineSession, ListOverlayRequest, TransientRequest, TransientSubmission,
 };
 
 use crate::agent::runloop::unified::overlay_prompt::{OverlayWaitOutcome, show_overlay_and_wait};
@@ -56,25 +58,24 @@ pub(crate) async fn present_start_planning_confirmation(
         lines,
         footer_hint: Some("Choose whether to enter the Planning workflow before the agent continues.".to_string()),
         items: vec![
-            InlineListItem {
-                title: "Enter Planning workflow".to_string(),
-                subtitle: Some("Enter the Planning workflow and persist the draft under .vtcode/plans.".to_string()),
-                badge: Some("Recommended".to_string()),
-                indent: 0,
-                selection: Some(InlineListSelection::ConfigAction(START_PLANNING_APPROVE_ACTION.to_string())),
-                search_value: None,
-            },
-            InlineListItem {
-                title: "Continue without Planning workflow".to_string(),
-                subtitle: Some("Continue without entering the Planning workflow.".to_string()),
-                badge: None,
-                indent: 0,
-                selection: Some(InlineListSelection::ConfigAction(START_PLANNING_STAY_ACTION.to_string())),
-                search_value: None,
-            },
+            ui_list::action(
+                "Enter Planning workflow",
+                "Enter the Planning workflow and persist the draft under .vtcode/plans.".to_string(),
+                Some("Recommended".to_string()),
+                Tone::Accent,
+                Some(InlineListSelection::ConfigAction(START_PLANNING_APPROVE_ACTION.to_string())),
+            ),
+            ui_list::action(
+                "Continue without Planning workflow",
+                "Continue without entering the Planning workflow.".to_string(),
+                None,
+                Tone::Neutral,
+                Some(InlineListSelection::ConfigAction(START_PLANNING_STAY_ACTION.to_string())),
+            ),
         ],
         selected: Some(InlineListSelection::ConfigAction(START_PLANNING_APPROVE_ACTION.to_string())),
         search: None,
+        status: None,
         hotkeys: Vec::new(),
     });
 

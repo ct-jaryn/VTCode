@@ -1,6 +1,7 @@
 use super::*;
 
 impl Session {
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(crate) fn render(&mut self, frame: &mut Frame<'_>) {
         let Some(layout) = self.prepare_frame_layout(frame, 0) else {
             return;

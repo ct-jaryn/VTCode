@@ -149,11 +149,18 @@ impl<'a> InlineEventContext<'a> {
                     )?;
                     self.modal.restore_input_draft(input);
                     InlineLoopAction::Continue
-                } else {
-                    // The queued intent is consumed via the steering channel
-                    // and applied to the live history at the next tool-call
-                    // boundary of the running turn (mid-turn steering).
+                } else if self.ctrl_c_state.take_steer_delivered() {
+                    // Callback already handed this steer to the live steering
+                    // channel (mid-turn injection). Stay passive so the message
+                    // is not queued twice.
                     self.input_processor().passive()
+                } else {
+                    // Steering was unavailable (no sender, closed channel, or
+                    // the callback never ran). Queue the message so it is
+                    // processed once the agent is ready instead of vanishing.
+                    self.state.reset_interrupt_state();
+                    let primary_agent = self.modal.active_primary_agent_name();
+                    self.input_processor().queue_submit(input, queue, primary_agent)
                 }
             }
             InlineEvent::Pause | InlineEvent::Resume => {
@@ -222,7 +229,7 @@ impl<'a> InlineEventContext<'a> {
                 }
             },
             InlineEvent::Cancel => self.control_processor().cancel()?,
-            InlineEvent::ForceCancelPtySession => self.control_processor().force_cancel_pty_session()?,
+            InlineEvent::ForceCancelPtySession => self.handle_force_cancel_pty_session().await?,
             InlineEvent::Exit => self.control_processor().exit()?,
             InlineEvent::Interrupt => self.handle_interrupt(),
             InlineEvent::BackgroundOperation => {
@@ -247,13 +254,7 @@ impl<'a> InlineEventContext<'a> {
                 }
             }
             InlineEvent::ExecSessionAction { id, action } => self.handle_exec_session_action(id, action).await?,
-            InlineEvent::LaunchEditor { draft } => {
-                if draft.is_empty() {
-                    self.input_processor().submit("/edit".into())
-                } else {
-                    InlineLoopAction::LaunchEditorWithDraft { draft }
-                }
-            }
+            InlineEvent::LaunchEditor { draft } => InlineLoopAction::LaunchEditorWithDraft { draft },
             InlineEvent::RequestInlinePromptSuggestion(draft) => {
                 self.state.reset_interrupt_state();
                 InlineLoopAction::RequestInlinePromptSuggestion(draft)
@@ -314,6 +315,7 @@ impl<'a> InlineEventContext<'a> {
             | InlineEvent::ScrollLineDown
             | InlineEvent::ScrollPageUp
             | InlineEvent::ScrollPageDown
+            | InlineEvent::JumpToLastChange
             | InlineEvent::FileSelected(_)
             | InlineEvent::HistoryPrevious
             | InlineEvent::HistoryNext => self.input_processor().passive(),
@@ -325,7 +327,7 @@ impl<'a> InlineEventContext<'a> {
     async fn submit_to_focused_exec_session(&mut self, input: SubmittedInput) -> Result<InlineLoopAction> {
         // Slash commands are application actions, not stdin for the focused
         // process. This also keeps keyboard-generated commands such as
-        // `/subprocesses` and `/model` usable while a session is focused.
+        // `/config subprocess` and `/model` usable while a session is focused.
         if input.text.trim_start().starts_with('/') {
             return Ok(self.input_processor().submit(input));
         }
@@ -361,6 +363,49 @@ impl<'a> InlineEventContext<'a> {
                     &format!("Failed to send input to exec session {session_id}: {error}"),
                 )?;
             }
+        }
+        Ok(self.input_processor().passive())
+    }
+
+    /// Escape hatch: force-stop foreground exec sessions so a stuck PTY
+    /// cannot keep the runloop loading and the composer locked. Background
+    /// sessions are user-owned and stay untouched.
+    async fn handle_force_cancel_pty_session(&mut self) -> Result<InlineLoopAction> {
+        self.state.reset_interrupt_state();
+        let Some(exec_sessions) = self.exec_sessions.clone() else {
+            self.state
+                .renderer()
+                .line(MessageStyle::Warning, "No exec session manager is available to force-cancel.")?;
+            return Ok(self.input_processor().passive());
+        };
+
+        self.state
+            .renderer()
+            .line(MessageStyle::Status, "Force-cancelling foreground exec sessions...")?;
+        let (stopped, closed, failed) = exec_sessions.force_cancel_foreground_sessions().await;
+        if stopped + closed + failed == 0 {
+            self.state
+                .renderer()
+                .line(MessageStyle::Info, "No foreground exec sessions to force-cancel.")?;
+        } else {
+            let mut parts = Vec::new();
+            if stopped > 0 {
+                parts.push(format!("{stopped} force-terminated"));
+            }
+            if closed > 0 {
+                parts.push(format!("{closed} closed"));
+            }
+            if failed > 0 {
+                parts.push(format!("{failed} failed"));
+            }
+            let style = if failed > 0 {
+                MessageStyle::Warning
+            } else {
+                MessageStyle::Info
+            };
+            self.state
+                .renderer()
+                .line(style, &format!("Force-cancel complete: {}.", parts.join(", ")))?;
         }
         Ok(self.input_processor().passive())
     }

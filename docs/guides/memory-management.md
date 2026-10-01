@@ -176,7 +176,7 @@ When `agent.persistent_memory.auto_write = true`, VT Code writes memory in two p
 
 ### Batch extraction
 
-The `/memory` palette includes **Batch Extract Memory From Past Sessions**, which reads the
+The `/config memory` palette includes **Batch Extract Memory From Past Sessions**, which reads the
 grounded-fact views of the most recent `batch_sessions` sessions (concurrent reads bounded by
 `batch_concurrency`), dedupes them, and consolidates the survivors into the global memory files
 under the same memory lock. Still-active sessions are skipped so partial snapshots are never
@@ -194,14 +194,14 @@ If `agent.small_model.use_for_memory = true`, VT Code prefers the configured lig
 
 ## Interactive Controls
 
-### `/memory`
+### `/config memory`
 
-Use `/memory` as the memory-focused control surface.
+Use `/config memory` as the memory-focused control surface.
 
 - In inline UI, it shows loaded `AGENTS.md` sources, matched rules, memory status, file paths, and quick actions.
 - Quick actions include toggling memory, toggling auto-write, toggling lightweight-memory routing, picking the memory triage model, scaffolding memory files, running one-time legacy cleanup, rebuilding the summary, opening the memory directory, and jumping to `/config memory`.
-- In non-inline UI, `/memory` prints status plus exact follow-up commands such as `/config memory` and `/edit <target>`.
-- `/memory` also shows whether cleanup is required because legacy raw prompts or serialized tool payloads were found in the memory store.
+- In non-inline UI, `/config memory` prints status plus exact follow-up commands such as `/config memory` and the memory file paths.
+- `/config memory` also shows whether cleanup is required because legacy raw prompts or serialized tool payloads were found in the memory store.
 
 ### Natural-language memory prompts
 
@@ -213,10 +213,10 @@ VT Code also detects explicit memory-management prompts before they go to the mo
 - The referenced answer is treated as reference material only because the current request explicitly approves saving it; the structured planner and inline confirmation remain required before any write.
 - Personal identity details, including names and aliases, are stored in the existing `preferences.md` topic rather than the repository-facts topic.
 - If the request is underspecified, such as `save to memory and remember my name`, VT Code asks for the missing detail before it writes anything.
-- If a save succeeds but the read-back verification cannot find the normalized fact, VT Code reports the verification failure and directs you to `/memory` to inspect the store.
-- Prompts like `show memory` or `what do you remember` route to the existing `/memory` surface instead of sending the request to the model.
+- If a save succeeds but the read-back verification cannot find the normalized fact, VT Code reports the verification failure and directs you to `/config memory` to inspect the store.
+- Prompts like `show memory` or `what do you remember` route to the existing `/config memory` surface instead of sending the request to the model.
 - If cleanup is required, VT Code asks you to run the one-time cleanup before any memory mutation.
-- If inline selection UI is unavailable, VT Code does not mutate memory and points you back to `/memory`.
+- If inline selection UI is unavailable, VT Code does not mutate memory and points you back to `/config memory`.
 
 ### `/config memory`
 
@@ -251,5 +251,5 @@ Use `/init --force` when you want to regenerate the root guidance file and refre
 - Keep authored guidance concise, reviewable, and intentionally human-written.
 - Use `.vtcode/rules/` for modular project rules instead of growing one large `AGENTS.md`.
 - Reserve persistent memory for reusable learned facts, not policy or mandatory coding standards.
-- Prefer `/memory` for day-to-day memory inspection and quick actions.
+- Prefer `/config memory` for day-to-day memory inspection and quick actions.
 - Prefer `/config memory` when you need to tune limits, excludes, or the storage location.

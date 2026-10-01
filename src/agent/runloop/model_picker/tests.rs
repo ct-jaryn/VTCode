@@ -16,6 +16,7 @@ use vtcode_core::utils::ansi::AnsiRenderer;
 use vtcode_ui::tui::app::{InlineHandle, InlineSession};
 
 use self::options::{MODEL_OPTIONS, build_filtered_options, find_option_index, option_indexes_for_provider};
+use super::selection::available_service_tiers;
 
 fn has_model(options: &[ModelOption], model: ModelId) -> bool {
     let id = model.as_str();
@@ -328,7 +329,8 @@ fn static_model_subtitle_formats_current_capabilities() {
 
     let subtitle = static_model_subtitle(option, "openai", "gpt-5.6-sol");
 
-    assert_eq!(subtitle, Some("Current • 1M • Reasoning • Tools • image".to_string()));
+    // `Current` is a badge (tone `Current`), not subtitle text.
+    assert_eq!(subtitle, Some("1M context • Reasoning • Tools • image".to_string()));
 }
 
 #[test]
@@ -336,13 +338,13 @@ fn dynamic_model_subtitle_stays_conservative_for_unknown_local_models() {
     let subtitle =
         dynamic_model_subtitle(Provider::Ollama, "custom-local-model", false, "ollama", "custom-local-model");
 
-    assert_eq!(subtitle, Some("Current • Local".to_string()));
+    assert_eq!(subtitle, Some("Local".to_string()));
 }
 
 #[test]
 fn current_model_line_shows_effective_anthropic_context_window() {
     let line = rendering::current_model_line("anthropic", "claude-sonnet-5");
-    assert_eq!(line, "Current: anthropic / claude-sonnet-5 • 1M");
+    assert_eq!(line, "Current: anthropic / claude-sonnet-5 • 1M context");
 }
 
 #[test]
@@ -545,8 +547,10 @@ fn openai_codex_reasoning_helpers_match_supported_variants() {
     assert!(!supports_xhigh_reasoning("gpt-5.1-codex-max"));
 
     assert!(supports_xhigh_reasoning("claude-sonnet-5"));
+    assert!(supports_xhigh_reasoning("claude-sonnet-5-5"));
     assert!(supports_xhigh_reasoning("claude-fable-5"));
     assert!(supports_max_reasoning("claude-sonnet-5"));
+    assert!(supports_max_reasoning("claude-sonnet-5-5"));
     assert!(supports_max_reasoning("claude-fable-5"));
     // The GPT-5.6 family supports Max adaptive reasoning.
     assert!(supports_max_reasoning("gpt-5.6-sol"));
@@ -610,6 +614,51 @@ fn build_result_uses_selected_flex_service_tier() {
 
     assert_eq!(result.service_tier, Some(OpenAIServiceTier::Flex));
     assert!(result.service_tier_changed);
+}
+
+#[test]
+fn available_service_tiers_hides_ultrafast_outside_native_openai() {
+    fn detail(provider: Option<Provider>, model: &str, supported: bool) -> SelectionDetail {
+        SelectionDetail {
+            provider_key: String::new(),
+            provider_label: String::new(),
+            provider_enum: provider,
+            model_id: model.to_string(),
+            model_display: model.to_string(),
+            known_model: true,
+            context_window: None,
+            reasoning_supported: false,
+            reasoning_effort_supported: false,
+            reasoning_optional: false,
+            reasoning_off_model: None,
+            service_tier_supported: supported,
+            requires_api_key: false,
+            uses_chatgpt_auth: false,
+            env_key: String::new(),
+            mimo_auth_method: None,
+        }
+    }
+
+    use OpenAIServiceTier::{Flex, Priority, Ultrafast};
+
+    // Native OpenAI offers every tier on supported models.
+    assert_eq!(
+        available_service_tiers(&detail(Some(Provider::OpenAI), "gpt-6.1-sol", true)),
+        vec![None, Some(Flex), Some(Priority), Some(Ultrafast)]
+    );
+    // Merge Gateway and other compatibles offer flex/priority but never ultrafast.
+    assert_eq!(
+        available_service_tiers(&detail(Some(Provider::MergeGateway), "openai/gpt-6.1-sol", true)),
+        vec![None, Some(Flex), Some(Priority)]
+    );
+    assert_eq!(
+        available_service_tiers(&detail(Some(Provider::XAI), "grok-4.7", true)),
+        vec![None, Some(Flex), Some(Priority)]
+    );
+    // Custom providers (no builtin enum) never offer ultrafast.
+    assert_eq!(available_service_tiers(&detail(None, "my-model", true)), vec![None, Some(Flex), Some(Priority)]);
+    // Routes without tier support offer nothing.
+    assert!(available_service_tiers(&detail(Some(Provider::Anthropic), "claude-sonnet-5", false)).is_empty());
 }
 
 #[test]
@@ -717,4 +766,18 @@ fn filter_options_by_whitelist_empty_returns_all() {
 
     let filtered = filter_options_by_whitelist(Cow::Borrowed(MODEL_OPTIONS.as_slice()), &[]);
     assert_eq!(filtered.len(), MODEL_OPTIONS.len());
+}
+
+#[test]
+fn step_one_divider_item_is_unselectable_untitled_separator() {
+    let divider = rendering::divider_item();
+
+    assert!(divider.selection.is_none(), "divider must not be selectable");
+    assert!(divider.subtitle.is_none());
+    assert!(divider.badge.is_none());
+    assert!(
+        divider.title.is_empty(),
+        "divider must use the canonical untitled form so the renderer spans content width: {}",
+        divider.title
+    );
 }

@@ -128,12 +128,17 @@ pub fn gather_orientation(workspace_root: &Path, session_id: &str) -> Orientatio
             )
         });
 
-    let spec_summary = harness_artifacts::read_spec_summary(workspace_root);
-    let contract_summary = harness_artifacts::read_contract_summary(workspace_root);
-    let sprint_contract_summary = harness_artifacts::read_sprint_contract_summary(workspace_root);
-    let evaluation_summary = harness_artifacts::read_evaluation_summary(workspace_root);
-    let outcome_verification_summary = harness_artifacts::read_outcome_verification_summary(workspace_root);
-    let feature_list_summary = harness_artifacts::read_feature_list_summary(workspace_root);
+    // Workspace-global task artifacts outlive their session. A leftover fixture
+    // must not describe this session's orientation.
+    let artifact_cutoff = harness_artifacts::session_artifact_cutoff(workspace_root, session_id);
+    let spec_summary = harness_artifacts::read_spec_summary_fresh(workspace_root, artifact_cutoff);
+    let contract_summary = harness_artifacts::read_contract_summary_fresh(workspace_root, artifact_cutoff);
+    let sprint_contract_summary =
+        harness_artifacts::read_sprint_contract_summary_fresh(workspace_root, artifact_cutoff);
+    let evaluation_summary = harness_artifacts::read_evaluation_summary_fresh(workspace_root, artifact_cutoff);
+    let outcome_verification_summary =
+        harness_artifacts::read_outcome_verification_summary_fresh(workspace_root, artifact_cutoff);
+    let feature_list_summary = harness_artifacts::read_feature_list_summary_fresh(workspace_root, artifact_cutoff);
 
     let recent_git_log = gather_recent_git_log(workspace_root);
 

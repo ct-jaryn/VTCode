@@ -369,14 +369,132 @@ pub fn command_words_after_environment_prefix(words: &[String]) -> &[String] {
     &words[start..]
 }
 
-/// Return whether a parsed command uses an option that can turn an otherwise
-/// read-only inspection program into a writer or command launcher.
+/// Exact environment keys that can inject config, load foreign code, or launch
+/// helpers into an otherwise read-only program.
+const ENV_INJECTION_KEYS: &[&str] = &[
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_TEXTCONV",
+    "GIT_DIFF_OPTS",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_EXEC_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "PERL5OPT",
+    "PYTHONSTARTUP",
+    "NODE_OPTIONS",
+    "RUBYOPT",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+];
+
+/// Prefix families that always carry injection payload (`GIT_CONFIG_KEY_n` /
+/// `GIT_CONFIG_VALUE_n` pair with `GIT_CONFIG_COUNT`).
+const ENV_INJECTION_KEY_PREFIXES: &[&str] = &["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
+
+fn env_assignment_key(word: &str) -> Option<&str> {
+    if word.starts_with('-') {
+        return None;
+    }
+    let (key, _) = word.split_once('=')?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(key)
+}
+
+fn is_env_injection_key(key: &str) -> bool {
+    ENV_INJECTION_KEYS.contains(&key) || ENV_INJECTION_KEY_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
+
+/// Returns whether an `env` / leading-assignment prefix sets a known
+/// config-injection or loader-injection key.
 ///
-/// This is deliberately option-focused; the read-only executable/subcommand
+/// `command_words_after_environment_prefix` strips these assignments so the
+/// executable can be classified; the values themselves must still be checked.
+/// Unset (`env -u KEY`) is not an assignment. Unknown keys stay allowed so
+/// ordinary exploration (`LANG=C rg …`) keeps working.
+pub fn environment_prefix_has_injection_keys(words: &[String]) -> bool {
+    let mut start = 0;
+    loop {
+        if words.get(start).is_some_and(|word| word == "env") {
+            start += 1;
+            while let Some(word) = words.get(start) {
+                if word == "--" {
+                    start += 1;
+                    break;
+                }
+                let is_split_string = word == "-S"
+                    || word == "--split-string"
+                    || word.starts_with("-S")
+                    || word.starts_with("--split-string=");
+                let consumes_next = matches!(word.as_str(), "-u" | "--unset" | "-C" | "--chdir");
+                start += 1;
+                if is_split_string {
+                    // Split-string re-parses the rest at runtime; cannot audit
+                    // assignments. Treat as unsafe.
+                    return true;
+                }
+                if consumes_next {
+                    // `-u/--unset` removes a key; `-C/--chdir` takes a path.
+                    if words.get(start).is_some() {
+                        start += 1;
+                    }
+                    continue;
+                }
+                if let Some(key) = env_assignment_key(word) {
+                    if is_env_injection_key(key) {
+                        return true;
+                    }
+                    continue;
+                }
+                if word.starts_with('-') {
+                    continue;
+                }
+                start -= 1;
+                break;
+            }
+            continue;
+        }
+        if let Some(key) = words.get(start).and_then(|word| env_assignment_key(word)) {
+            if is_env_injection_key(key) {
+                return true;
+            }
+            start += 1;
+            continue;
+        }
+        break;
+    }
+    false
+}
+
+/// Return whether a parsed command uses an option or environment assignment
+/// that can turn an otherwise read-only inspection program into a writer or
+/// command launcher.
+///
+/// This is deliberately option/env focused; the read-only executable/subcommand
 /// allow-list remains in `tool_intent::readonly`. Keeping the unsafe option
 /// rules here lets raw argument validation and activity classification share
 /// the same token-aware guard without searching quoted text.
 pub(crate) fn has_unsafe_readonly_options(words: &[String]) -> bool {
+    if environment_prefix_has_injection_keys(words) {
+        return true;
+    }
     let command_words = command_words_after_environment_prefix(words);
     let Some(program) = command_words
         .first()
@@ -389,7 +507,13 @@ pub(crate) fn has_unsafe_readonly_options(words: &[String]) -> bool {
 
     match program.as_str() {
         "git" => command_words.iter().skip(1).any(|word| {
-            crate::command_safety::git_global_option_requires_prompt(word)
+            // `-C <dir>` (bare or inline `-C<dir>`) only redirects which
+            // repository is read; the subcommand allow-list still gates every
+            // git call, so it cannot turn an inspection into a writer. `-c
+            // key=value` stays prompt-requiring: config injection is a
+            // command-execution vector (fsmonitor/pager hooks).
+            let is_dir_redirect = word == "-C" || (word.starts_with("-C") && word.len() > 2);
+            (!is_dir_redirect && crate::command_safety::git_global_option_requires_prompt(word))
                 || word == "--ext-diff"
                 || word == "--textconv"
                 || word == "-o"
@@ -996,10 +1120,11 @@ pub fn normalize_shell_args(args: &Value) -> Result<Value, &'static str> {
 mod tests {
     use super::{
         WriteStdinDispatch, command_session_missing_required_args, command_session_requires_command_safety,
-        command_text, command_words, contains_dynamic_shell_syntax, extract_command_text_with_key,
-        has_indexed_command_parts, interactive_input_text, is_readonly_command_string, normalize_indexed_command_args,
-        normalize_shell_args, normalized_command_value, parse_indexed_command_parts, raw_command_text, session_id_text,
-        session_id_text_from_payload, working_dir_text, working_dir_text_from_payload, write_stdin_dispatch,
+        command_text, command_words, contains_dynamic_shell_syntax, environment_prefix_has_injection_keys,
+        extract_command_text_with_key, has_indexed_command_parts, interactive_input_text, is_readonly_command_string,
+        normalize_indexed_command_args, normalize_shell_args, normalized_command_value, parse_indexed_command_parts,
+        raw_command_text, session_id_text, session_id_text_from_payload, working_dir_text,
+        working_dir_text_from_payload, write_stdin_dispatch,
     };
     use serde_json::{Value, json};
 
@@ -1267,6 +1392,35 @@ mod tests {
     }
 
     #[test]
+    fn env_prefix_injection_keys_are_detected() {
+        let words = |command: &str| -> Vec<String> { shell_words::split(command).expect("split command") };
+
+        // The A4 vector: config injection via env values reopens the blocked
+        // `git -c` path without any `-c` token.
+        assert!(environment_prefix_has_injection_keys(&words(
+            "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=touch git status"
+        )));
+        assert!(environment_prefix_has_injection_keys(&words(
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=touch git status"
+        )));
+        assert!(environment_prefix_has_injection_keys(&words("env GIT_EXTERNAL_DIFF=evil git diff")));
+        assert!(environment_prefix_has_injection_keys(&words("env GIT_TEXTCONV=evil git log")));
+        assert!(environment_prefix_has_injection_keys(&words("env LD_PRELOAD=./evil.so ls")));
+        assert!(environment_prefix_has_injection_keys(&words("env BASH_ENV=./evil.sh bash -lc 'echo hi'")));
+        assert!(environment_prefix_has_injection_keys(&words("env NODE_OPTIONS=--require ./evil.js node --version")));
+        // `env -S` re-parses at runtime; cannot audit.
+        assert!(environment_prefix_has_injection_keys(&words("env -S 'GIT_CONFIG_COUNT=1 git status'")));
+
+        // Benign env stays allowed.
+        assert!(!environment_prefix_has_injection_keys(&words("env LANG=C.UTF-8 rg foo")));
+        assert!(!environment_prefix_has_injection_keys(&words("FOO=bar git status")));
+        assert!(!environment_prefix_has_injection_keys(&words("env FOO=bar git status")));
+        // Unset is not an assignment.
+        assert!(!environment_prefix_has_injection_keys(&words("env -u GIT_CONFIG_COUNT git status")));
+        assert!(!environment_prefix_has_injection_keys(&words("git status")));
+    }
+
+    #[test]
     fn is_readonly_command_string_allows_inspection_commands() {
         for cmd in [
             "diff a.rs b.rs",
@@ -1328,7 +1482,10 @@ mod tests {
             "git diff -oout.txt",
             "git log --output=out.txt",
             "git -c diff.external=sh diff",
-            "git -C /external/repo=alt status",
+            // `git -C <dir> <read-only sub>` is intentionally admitted now:
+            // the redirect only changes which repository is read, while the
+            // subcommand allow-list still gates the call. Config and helper
+            // redirects below stay rejected.
             "git --git-dir=.evil-git diff",
             "git --exec-path=.evil-git diff",
             "find . -fprint output.txt",

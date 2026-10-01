@@ -52,6 +52,7 @@ EXCLUDE_DIRS = [
 
 # Patterns to exclude from topics
 EXCLUDE_TOPIC_PATTERNS = [
+    r"Table of Contents",
     r"Common Issues",
     r"Getting Help",
     r"Next Steps",

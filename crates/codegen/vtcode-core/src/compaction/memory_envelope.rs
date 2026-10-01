@@ -21,7 +21,10 @@ use vtcode_config::loader::VTCodeConfig;
 use crate::compaction::CompactionConfig;
 use crate::config::constants::tools as tool_names;
 use crate::context::history_files::{HistoryFileManager, messages_to_history_messages};
-use crate::core::agent::harness_artifacts::{current_task_path, read_evaluation_summary, read_spec_summary};
+use crate::core::agent::harness_artifacts::{
+    artifact_is_stale, current_evaluation_path, current_spec_path, current_task_path, read_evaluation_summary_fresh,
+    read_spec_summary_fresh, session_artifact_cutoff,
+};
 use crate::core::agent::steering::{
     MAX_APPLIED_FOLLOW_UP_INTENT_IDS, MAX_QUEUED_FOLLOW_UP_INTENTS, QueuedFollowUpIntent,
 };
@@ -173,10 +176,18 @@ fn merge_applied_intent_ids(prior: &[String], updates: &[String]) -> Vec<String>
 
 fn extract_constraints_from_summary(text: Option<&str>) -> Vec<String> {
     text.into_iter()
-        .flat_map(|value| value.lines())
+        .flat_map(|value| value.split(" | "))
         .map(normalize_whitespace)
         .filter(|line| !line.is_empty())
         .filter_map(|line| {
+            let line = line.as_str();
+            // Artifact summaries join their lines as "Spec: - a | - b"; strip
+            // the label only when the payload keeps the bullet so ordinary
+            // "key: value" lines are never misread as constraint bullets.
+            let line = match line.split_once(": ") {
+                Some((_, rest)) if rest.starts_with("- ") || rest.starts_with("* ") => rest,
+                _ => line,
+            };
             if let Some(rest) = line.strip_prefix("- ") {
                 return Some(rest.trim().to_string());
             }
@@ -271,14 +282,36 @@ pub fn build_session_memory_envelope(
     envelope_update: Option<&SessionMemoryEnvelopeUpdate>,
 ) -> SessionMemoryEnvelope {
     let pe = prior_envelope;
-    let spec_summary = read_spec_summary(workspace_root).or_else(|| pe.and_then(|e| e.spec_summary.clone()));
-    let evaluation_summary =
-        read_evaluation_summary(workspace_root).or_else(|| pe.and_then(|e| e.evaluation_summary.clone()));
+    let artifact_cutoff = session_artifact_cutoff(workspace_root, session_id);
+    // A present-but-stale artifact must not fall back to a prior envelope's
+    // copy (that re-adopts the same leftover). Only inherit prior when the
+    // file is absent.
+    let spec_present = current_spec_path(workspace_root).exists();
+    let evaluation_present = current_evaluation_path(workspace_root).exists();
+    let spec_summary = if spec_present {
+        read_spec_summary_fresh(workspace_root, artifact_cutoff)
+    } else {
+        pe.and_then(|e| e.spec_summary.clone())
+    };
+    let evaluation_summary = if evaluation_present {
+        read_evaluation_summary_fresh(workspace_root, artifact_cutoff)
+    } else {
+        pe.and_then(|e| e.evaluation_summary.clone())
+    };
     let merge = |prior: &[String], updates: &[String]| merge_recent_strings(prior, updates, MEMORY_LIST_LIMIT);
-    let constraints = merge(
-        pe.map(|e| e.constraints.as_slice()).unwrap_or(&[]),
-        &extract_constraints_from_summary(spec_summary.as_deref()),
-    );
+    // Constraints extracted from a dropped stale artifact must not re-enter via
+    // the prior envelope: a present artifact that failed the freshness check
+    // resets the channel. Fresh artifacts (or no artifact files) keep the
+    // continuity merge of inherited constraints.
+    let artifact_channel_reset = (spec_present
+        && artifact_is_stale(&current_spec_path(workspace_root), artifact_cutoff))
+        || (evaluation_present && artifact_is_stale(&current_evaluation_path(workspace_root), artifact_cutoff));
+    let prior_constraints: &[String] = if artifact_channel_reset {
+        &[]
+    } else {
+        pe.map(|e| e.constraints.as_slice()).unwrap_or(&[])
+    };
+    let constraints = merge(prior_constraints, &extract_constraints_from_summary(spec_summary.as_deref()));
     let constraints = merge(&constraints, &extract_constraints_from_summary(evaluation_summary.as_deref()));
     let update = envelope_update.cloned().unwrap_or_default();
     let pending_intents = update
@@ -685,7 +718,10 @@ fn extract_compaction_summary(compacted: &[Message], original_history: &[Message
     }
 }
 
-fn sanitize_session_id(session_id: &str) -> String {
+/// Sanitize a session id the same way history envelope filenames do
+/// (32-char ASCII-safe prefix). Callers that match envelope names must use
+/// this, not the raw session id.
+pub fn sanitize_session_id(session_id: &str) -> String {
     session_id
         .chars()
         .map(|c| {
@@ -699,7 +735,12 @@ fn sanitize_session_id(session_id: &str) -> String {
         .collect()
 }
 
-fn memory_envelope_file_matches_session(name: &str, session_id: &str) -> bool {
+/// Whether a history envelope filename belongs to `session_id`.
+///
+/// Envelope names use the 32-char sanitized id, with optional `_<n>`
+/// suffixes. Matching must use this exact rule — a loose `starts_with` on
+/// the raw id over-preserves unrelated sessions.
+pub fn memory_envelope_file_matches_session(name: &str, session_id: &str) -> bool {
     let session_prefix = sanitize_session_id(session_id);
     name == format!("{session_prefix}{MEMORY_ENVELOPE_SUFFIX}")
         || (name.starts_with(&format!("{session_prefix}_")) && name.ends_with(MEMORY_ENVELOPE_SUFFIX))
@@ -770,6 +811,33 @@ fn extract_verification_summary(content: &str, checklist: &[String]) -> Option<S
     (!fallback_lines.is_empty()).then(|| fallback_lines.join("\n"))
 }
 
+/// Split the tail of a `verify:` line into clean commands.
+///
+/// Plan writers sometimes emit `verify: [a] and verify: [b]` on one line.
+/// Strip at most one matching outer `[`…`]` pair per piece and drop empties so
+/// a spliced marker can never leak into `verification_summary`.
+fn split_verify_command_tail(rest: &str) -> Vec<String> {
+    rest.split(" and verify:")
+        .map(str::trim)
+        .map(strip_one_outer_bracket_pair)
+        .filter(|piece| !piece.is_empty())
+        .map(normalize_whitespace)
+        .filter(|piece| !piece.is_empty())
+        .collect()
+}
+
+fn strip_one_outer_bracket_pair(piece: &str) -> &str {
+    let trimmed = piece.trim();
+    // Plan splices can leave the closing bracket off (`verify: [cmd`).
+    let Some(inner) = trimmed.strip_prefix('[').map(str::trim_start) else {
+        return trimmed;
+    };
+    match inner.strip_suffix(']') {
+        Some(stripped) => stripped.trim_end(),
+        None => inner,
+    }
+}
+
 fn collect_structured_verify_commands(content: &str) -> Vec<String> {
     let mut commands = Vec::new();
     let mut in_verify_block = false;
@@ -777,13 +845,10 @@ fn collect_structured_verify_commands(content: &str) -> Vec<String> {
     for line in content.lines() {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("verify:") {
-            let command = normalize_whitespace(rest);
-            if command.is_empty() {
-                in_verify_block = true;
-            } else {
+            for command in split_verify_command_tail(rest) {
                 commands.push(command);
-                in_verify_block = false;
             }
+            in_verify_block = rest.trim().is_empty();
             continue;
         }
 
@@ -1342,7 +1407,16 @@ pub fn resolve_compaction_threshold_with_reserve(
         return configured;
     }
     let prompt_budget = context_size.saturating_sub(reserved_output_tokens).max(1) as u64;
-    Some(configured.map_or(prompt_budget, |value| value.min(prompt_budget)))
+    // Default trigger is a ratio of the prompt budget so long runs compact
+    // before the expensive near-full zone (HarnessTax / session-efficiency).
+    // An explicit `auto_compaction_threshold_tokens` still wins, capped at the
+    // prompt budget so compaction never exceeds the usable window.
+    // Integer percent avoids f64→u64 cast lint; `default_compaction_trigger_uses_ratio_of_prompt_budget`
+    // pins this to `DEFAULT_COMPACTION_TRIGGER_RATIO`.
+    const TRIGGER_RATIO_PERCENT: u64 = 75;
+    let default_trigger = prompt_budget.saturating_mul(TRIGGER_RATIO_PERCENT) / 100;
+    let default_trigger = default_trigger.clamp(1, prompt_budget);
+    Some(configured.map_or(default_trigger, |value| value.min(prompt_budget)))
 }
 
 /// Explicit trigger overrides can reduce, but never bypass, the session ceiling.
@@ -1431,9 +1505,26 @@ mod tests {
     use super::extract_compaction_summary;
     use super::{
         SessionMemoryEnvelope, TaskTrackerSnapshot, build_session_memory_envelope, parse_task_tracker_snapshot,
+        resolve_compaction_threshold_with_reserve,
     };
     use crate::llm::provider::Message;
     use std::path::Path;
+
+    #[test]
+    fn default_compaction_trigger_uses_ratio_of_prompt_budget() {
+        // 100_000 context, 4_096 reserve → prompt budget 95_904.
+        // Default trigger is 75% of the prompt budget, not the full budget.
+        let threshold = resolve_compaction_threshold_with_reserve(None, 100_000, 4_096).expect("threshold");
+        let prompt_budget = 100_000u64 - 4_096;
+        let expected = prompt_budget * 75 / 100;
+        assert_eq!(threshold, expected);
+        // Keep the integer percent in sync with the shared ratio constant.
+        assert!((vtcode_config::constants::context::DEFAULT_COMPACTION_TRIGGER_RATIO - 0.75).abs() < f64::EPSILON);
+        assert!(threshold < prompt_budget, "default trigger must fire before the full prompt budget");
+        // Explicit config still wins and is capped at the prompt budget.
+        assert_eq!(resolve_compaction_threshold_with_reserve(Some(10_000), 100_000, 4_096), Some(10_000));
+        assert_eq!(resolve_compaction_threshold_with_reserve(Some(200_000), 100_000, 4_096), Some(prompt_budget));
+    }
 
     fn tracker_snapshot(summary: &str, objective: &str, todo: &[&str]) -> TaskTrackerSnapshot {
         let markdown = format!("# {objective}\n\n- [ ] {}\n", todo.join("\n- [ ] "));
@@ -1537,6 +1628,85 @@ mod tests {
     }
 
     #[test]
+    fn envelope_stale_artifact_resets_prior_constraints() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let tasks_dir = workspace.path().join(".vtcode").join("tasks");
+        std::fs::create_dir_all(&tasks_dir).expect("tasks dir");
+        std::fs::create_dir_all(workspace.path().join(".vtcode").join("sessions").join("sess-stale"))
+            .expect("session dir anchors the artifact cutoff");
+        let spec_path = tasks_dir.join("current_spec.md");
+        std::fs::write(&spec_path, "# Spec\n- Do not touch prod config\n").expect("write stale spec");
+        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
+        let file = std::fs::File::options().write(true).open(&spec_path).expect("open");
+        file.set_modified(stale).expect("set mtime");
+
+        let prior = SessionMemoryEnvelope {
+            session_id: "sess-stale".to_string(),
+            constraints: vec!["Do not touch prod config".to_string(), "Keep user budget".to_string()],
+            ..Default::default()
+        };
+
+        let envelope = build_session_memory_envelope(
+            "sess-stale",
+            workspace.path(),
+            &[],
+            &[],
+            "summary".to_string(),
+            None,
+            Some(&prior),
+            &tracker_snapshot("continuing", "sess-stale", &["cargo check"]),
+            None,
+        );
+
+        assert!(envelope.spec_summary.is_none(), "stale spec must not describe the session");
+        assert!(
+            envelope.constraints.is_empty(),
+            "a stale artifact resets the constraints channel so its lines cannot re-enter: {:?}",
+            envelope.constraints
+        );
+    }
+
+    #[test]
+    fn envelope_fresh_artifact_merges_prior_constraints() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let tasks_dir = workspace.path().join(".vtcode").join("tasks");
+        std::fs::create_dir_all(&tasks_dir).expect("tasks dir");
+        std::fs::create_dir_all(workspace.path().join(".vtcode").join("sessions").join("sess-fresh"))
+            .expect("session dir anchors the artifact cutoff");
+        std::fs::write(tasks_dir.join("current_spec.md"), "# Spec\n- Keep coverage at 70%\n")
+            .expect("write fresh spec");
+
+        let prior = SessionMemoryEnvelope {
+            session_id: "sess-fresh".to_string(),
+            constraints: vec!["Do not redesign the harness".to_string()],
+            ..Default::default()
+        };
+
+        let envelope = build_session_memory_envelope(
+            "sess-fresh",
+            workspace.path(),
+            &[],
+            &[],
+            "summary".to_string(),
+            None,
+            Some(&prior),
+            &tracker_snapshot("continuing", "sess-fresh", &["cargo check"]),
+            None,
+        );
+
+        assert!(
+            envelope.constraints.contains(&"Do not redesign the harness".to_string()),
+            "fresh artifacts keep the continuity merge of inherited constraints: {:?}",
+            envelope.constraints
+        );
+        assert!(
+            envelope.constraints.contains(&"Keep coverage at 70%".to_string()),
+            "fresh artifact constraints are extracted: {:?}",
+            envelope.constraints
+        );
+    }
+
+    #[test]
     fn local_summary_takes_precedence_over_retained_provider_detail() {
         let compacted = vec![
             Message::system("Previous conversation summary:\nnew local summary".to_string()),
@@ -1548,5 +1718,37 @@ mod tests {
         ];
 
         assert_eq!(extract_compaction_summary(&compacted, &[]), "new local summary");
+    }
+
+    #[test]
+    fn split_verify_command_tail_splits_and_strips_brackets() {
+        let tail = " [cargo nextest run -E 'test(turn_loop_helpers) or test(tool_outcomes) or test(blocked_handoff)'] and verify: [cargo check --locked";
+        let commands = super::split_verify_command_tail(tail);
+        assert_eq!(
+            commands,
+            vec![
+                "cargo nextest run -E 'test(turn_loop_helpers) or test(tool_outcomes) or test(blocked_handoff)'"
+                    .to_string(),
+                "cargo check --locked".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_verify_command_tail_keeps_legitimate_inner_brackets() {
+        // Only one outer pair is stripped; array/subscript syntax inside the
+        // command must survive.
+        let commands = super::split_verify_command_tail(" cargo test --features 'a[b]' ");
+        assert_eq!(commands, vec!["cargo test --features 'a[b]'".to_string()]);
+    }
+
+    #[test]
+    fn structured_verify_commands_do_not_splice_bracketed_pairs() {
+        let content =
+            "# Fix\n\n- [x] step\n  files: src/x.rs\n  verify: [cargo check --locked] and verify: [cargo fmt --check\n";
+        let commands = super::collect_structured_verify_commands(content);
+        assert_eq!(commands, vec!["cargo check --locked".to_string(), "cargo fmt --check".to_string()]);
+        let summary = super::extract_verification_summary(content, &[]).expect("summary");
+        assert!(!summary.contains("] and verify:"), "splice marker must not leak: {summary}");
     }
 }

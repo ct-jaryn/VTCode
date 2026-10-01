@@ -185,6 +185,8 @@ fn edit_not_found_error(
     } else {
         current_content.to_owned()
     };
+    // The model already has old_str; keep only a disambiguating head/tail.
+    let old_preview = vtcode_commons::preview::condense_error_echo(effective_old_str);
 
     let numbering_note = if stripped_old || stripped_new {
         "\n\nNote: line-number prefixes were stripped before matching."
@@ -193,7 +195,7 @@ fn edit_not_found_error(
     };
 
     anyhow!(
-        "Could not find text to replace in file.\n\nExpected to replace:\n{effective_old_str}\n\nFile content preview:\n{content_preview}\n\nFix: old_str must match the file content exactly, including whitespace, newlines, and indentation. Re-read the target lines with `exec_command` to get the exact text, then copy it into old_str without adding newlines or changing indentation.{numbering_note}"
+        "Could not find text to replace in file.\n\nExpected to replace:\n{old_preview}\n\nFile content preview:\n{content_preview}\n\nFix: old_str must match the file content exactly, including whitespace, newlines, and indentation. Re-read the target lines with `exec_command` to get the exact text, then copy it into old_str without adding newlines or changing indentation.{numbering_note}"
     )
 }
 
@@ -332,5 +334,18 @@ mod tests {
         ));
         assert!(!message.contains("read_file"));
         assert!(!message.contains("line-number prefixes were stripped"));
+    }
+
+    #[test]
+    fn edit_not_found_error_condenses_large_old_str() {
+        let old_str = "x".repeat(4_000);
+        let message = edit_not_found_error("short file\n", &old_str, false, false).to_string();
+
+        assert!(message.len() < 2_500, "error must not re-echo the full old_str, got {} bytes", message.len());
+        assert!(message.contains('x'), "kept a disambiguating head/tail of old_str");
+        assert!(
+            message.contains("omitted") || message.contains("…") || message.contains("..."),
+            "condensed marker present"
+        );
     }
 }

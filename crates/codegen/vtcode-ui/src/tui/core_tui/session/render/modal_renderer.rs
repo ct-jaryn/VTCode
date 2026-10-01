@@ -204,7 +204,7 @@ pub fn split_inline_modal_area(session: &Session, area: Rect) -> (Rect, Option<R
         let (list_rows, summary_rows) = wizard
             .steps
             .get(wizard.current_step)
-            .map(|step| (list_desired_rows(&step.list), step.list.summary_line_rows(None)))
+            .map(|step| (list_desired_rows(&step.list), step.list.summary_line_rows(None, false)))
             .unwrap_or((1, 0));
         lines = lines.saturating_add(list_rows);
         lines = lines.saturating_add(summary_rows);
@@ -243,7 +243,7 @@ pub fn split_inline_modal_area(session: &Session, area: Rect) -> (Rect, Option<R
         }
         if let Some(list) = modal.list.as_ref() {
             lines = lines.saturating_add(list_desired_rows(list));
-            lines = lines.saturating_add(list.summary_line_rows(modal.footer_hint.as_deref()));
+            lines = lines.saturating_add(list.summary_line_rows(modal.footer_hint.as_deref(), modal.status.is_some()));
         } else {
             lines = lines.saturating_add(1);
         }
@@ -319,7 +319,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
 
     let styles = modal_render_styles(session);
     let input_styles = input_styles_from_theme(&session.theme);
-    render_modal_background(frame, area, styles.selectable);
+    render_modal_background(frame, area, styles.background);
     let link_style = session.styles.transcript_link_style().add_modifier(Modifier::UNDERLINED);
     let hovered_link_style = link_style.add_modifier(Modifier::BOLD);
     let workspace_root = session.workspace_root.clone();
@@ -350,7 +350,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
             hovered_link_style,
         );
         title_link_targets = link_targets;
-        render_modal_background(frame, title_area, styles.selectable);
+        render_modal_background(frame, title_area, styles.background);
         frame.render_widget(Paragraph::new(decorated_title).style(styles.title).wrap(Wrap { trim: true }), title_area);
         render_modal_divider(frame, top_divider_area, styles.border);
         render_modal_divider(frame, bottom_divider_area, styles.border);
@@ -358,7 +358,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
     };
 
     if let Some(wizard) = session.wizard_overlay_mut() {
-        render_modal_background(frame, body_area, styles.selectable);
+        render_modal_background(frame, body_area, styles.background);
         if body_area.width == 0 || body_area.height == 0 {
             session.set_modal_list_area(None);
             session.set_modal_text_areas(Vec::new());
@@ -395,7 +395,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
         return;
     };
 
-    render_modal_background(frame, body_area, styles.selectable);
+    render_modal_background(frame, body_area, styles.background);
     if body_area.width == 0 || body_area.height == 0 {
         session.set_modal_list_area(None);
         session.set_modal_text_areas(Vec::new());
@@ -474,6 +474,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
         ModalBodyContext {
             instructions: &modal.lines,
             footer_hint: modal.footer_hint.as_deref(),
+            status: modal.status.as_ref(),
             list: modal.list.as_mut(),
             styles: &styles,
             secure_prompt: modal.secure_prompt.as_ref(),
@@ -500,27 +501,46 @@ pub(crate) fn modal_render_styles(session: &Session) -> ModalRenderStyles {
     let default_style = modal_base_style(session);
     let header_style = modal_heading_style(session);
     let chrome_style = modal_chrome_style(session);
+    let muted_style = session.styles.muted_text_style();
     let chrome_border_style = session
         .styles
         .border_style()
         .fg(ratatui_color_from_ansi(resolve_modal_chrome_ansi_color(session)))
         .remove_modifier(Modifier::DIM)
         .add_modifier(Modifier::BOLD);
+    // Secondary text (labels, subtitles, hints, dividers, badges) recedes via
+    // an explicit muted color — never `Modifier::DIM`: ratatui's
+    // `Cell::set_style` only inserts modifiers, so any DIM painted as an area
+    // background clings to every glyph drawn on top (the whole popup used to
+    // render dimmed). Option titles stay at full foreground so every choice
+    // reads; the selected row pops through `highlight` (accent + bold).
     ModalRenderStyles {
         border: chrome_border_style,
         highlight: modal_list_highlight_style(session),
-        badge: default_style.add_modifier(Modifier::DIM | Modifier::BOLD),
+        badge: muted_style.add_modifier(Modifier::BOLD),
         header: header_style,
-        selectable: default_style.add_modifier(Modifier::DIM),
-        detail: default_style.add_modifier(Modifier::DIM),
+        selectable: default_style,
+        detail: muted_style,
         search_match: header_style.add_modifier(Modifier::UNDERLINED),
         title: chrome_style,
-        divider: default_style.add_modifier(Modifier::DIM),
+        divider: muted_style,
+        background: default_style,
         instruction_border: chrome_border_style,
         instruction_title: header_style,
         instruction_bullet: header_style,
         instruction_body: default_style,
-        hint: default_style.add_modifier(Modifier::DIM | Modifier::ITALIC),
+        hint: muted_style.add_modifier(Modifier::ITALIC),
+        success: session.styles.accent_style().add_modifier(Modifier::BOLD),
+        warning: session.styles.warning_style().add_modifier(Modifier::BOLD),
+        danger: {
+            let color = session.styles.text_fallback(InlineMessageKind::Error);
+            let mut style = session.styles.default_style();
+            if let Some(color) = color {
+                style = style.fg(ratatui_color_from_ansi(color));
+            }
+            style.add_modifier(Modifier::BOLD)
+        },
+        accent: session.styles.modal_list_highlight_style(),
     }
 }
 
@@ -600,6 +620,50 @@ mod tests {
         assert_eq!(styles.instruction_title.fg, Some(Color::Indexed(117)));
         assert_eq!(styles.instruction_title.bg, Some(Color::Indexed(231)));
         assert!(styles.header.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn modal_render_styles_keep_popup_text_readable_without_dim() {
+        let theme = InlineTheme {
+            foreground: Some(AnsiColorEnum::Ansi256(Ansi256Color(252))),
+            background: Some(AnsiColorEnum::Ansi256(Ansi256Color(235))),
+            secondary: Some(AnsiColorEnum::Ansi256(Ansi256Color(245))),
+            ..InlineTheme::default()
+        };
+        let session = Session::new(theme, None, 20);
+        let styles = modal_render_styles(&session);
+        let foreground = Some(Color::Indexed(252));
+        let muted = Some(Color::Indexed(245));
+
+        // The modal background must be modifier-free: ratatui's `Cell::set_style`
+        // only *inserts* modifiers, so a DIM painted as the area background
+        // sticks to every glyph later drawn inside the popup (the whole HITL
+        // approval popup used to render dimmed).
+        assert!(!styles.background.add_modifier.contains(Modifier::DIM));
+        assert_eq!(styles.background.fg, foreground);
+
+        // Body text and option titles stay at full foreground so every choice
+        // reads; emphasis comes from the selected row's highlight instead.
+        for (name, style) in [
+            ("selectable", styles.selectable),
+            ("instruction_body", styles.instruction_body),
+            ("header", styles.header),
+            ("title", styles.title),
+        ] {
+            assert!(!style.add_modifier.contains(Modifier::DIM), "{name} must not carry DIM: {style:?}");
+        }
+        assert_eq!(styles.selectable.fg, styles.background.fg);
+
+        // Secondary text recedes by explicit muted color, never by intensity.
+        for (name, style) in [
+            ("detail", styles.detail),
+            ("hint", styles.hint),
+            ("divider", styles.divider),
+            ("badge", styles.badge),
+        ] {
+            assert!(!style.add_modifier.contains(Modifier::DIM), "{name} must recede by color, got: {style:?}");
+            assert_eq!(style.fg, muted, "{name} needs the muted foreground token");
+        }
     }
 
     #[test]

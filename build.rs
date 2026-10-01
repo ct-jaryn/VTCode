@@ -58,11 +58,19 @@ fn main() {
     // macOS: the `vtcode` binary's `__eh_frame` exceeds ld64's 16 MiB
     // compact-unwind limit, so every dev link warns `__eh_frame section too
     // large ... performance of exception handling might be affected`
-    // (rust-lang/rust#159105). Passing `-no_compact_unwind` selects the DWARF
-    // fallback explicitly — the same fallback ld uses after warning — so the
-    // warning disappears with no behavior change. Release builds use
-    // `panic = "abort"` and strip symbols, so unwind tables are unaffected.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        println!("cargo:rustc-link-arg=-Wl,-no_compact_unwind");
-    }
+    // (rust-lang/rust#159105). That warning is cosmetic — do NOT silence it
+    // with `-Wl,-no_compact_unwind`: forcing the DWARF fallback breaks panic
+    // unwinding entirely for this binary (any panicking test aborts with
+    // `fatal runtime error: failed to initiate panic, error 5`, SIGABRT;
+    // cf. rust-lang/rust#156812). Release builds use `panic = "abort"` and
+    // strip symbols, so unwind tables are unaffected there.
+    //
+    // Instead, the warning is silenced at the lint level:
+    // `#![cfg_attr(target_os = "macos", allow(linker_messages, ...))]` in
+    // `src/main.rs` (the lint can only be controlled at a linked crate root).
+    //
+    // (A `-no_compact_unwind` workaround lived here until 2026-09-25, when it
+    // was found to be the root cause of the SIGABRT failures in
+    // `from_validated_debug_asserts_on_non_ready_report` and
+    // `planning_preview_budget_keeps_midsize_payload_exec_strips_it`.)
 }

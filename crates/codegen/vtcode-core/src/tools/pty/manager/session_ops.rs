@@ -255,13 +255,13 @@ impl PtyManager {
         // This uses SIGTERM first, then SIGKILL after a grace period
         handle.graceful_terminate();
 
-        // 3. Join reader thread
+        // 3. Join reader thread with the same bounded helper Drop uses.
+        // An unbounded join here blocked the async runloop whenever the PTY
+        // reader stayed stuck on `read`, freezing stop/close and the composer.
         {
             let mut thread_guard = handle.reader_thread.lock();
-            if let Some(reader_thread) = thread_guard.take()
-                && let Err(panic) = reader_thread.join()
-            {
-                warn!("PTY session '{}' reader thread panicked: {:?}", session_id, panic);
+            if let Some(reader_thread) = thread_guard.take() {
+                super::super::session::join_reader_thread_bounded(reader_thread);
             }
         }
 

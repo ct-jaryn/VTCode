@@ -172,6 +172,8 @@ The following commit patterns are automatically excluded from the changelog:
 - `release v*` - Release tag commits
 - `update homebrew` - Homebrew formula updates
 - `update changelog` - Changelog update commits
+- `update TODO` / `update TODOs` / `update project TODO` (any case) - Owner-only `docs/project/TODO.md` churn
+- `update project` (exact, any case) - Owner-only project-file churn
 
 ## Customization
 

@@ -54,8 +54,14 @@ When VT Code is running in alternate-screen mode, the transcript and composer us
 | :-------------- | :------------------------------------------------------------ |
 | `PgUp` / `PgDn` | Scroll the live transcript by half a page.                    |
 | `Ctrl+Home`     | Jump to the oldest transcript content.                        |
-| `Ctrl+End`      | Jump to the latest transcript content and resume auto-follow. |
+| `Ctrl+End`      | Jump to the last transcript change and resume auto-follow.    |
 | Mouse wheel     | Scroll the live transcript when mouse capture is enabled.     |
+| Click sticky prompt | Jump to the original user message; auto-follow stays paused unless the destination is at the bottom. |
+
+When a turn’s user message has scrolled above the visible transcript, a
+one-line prompt preview stays at the top, including during live output. It
+uses retained live history and hides when the original first row is visible
+or fewer than four transcript rows are available. The composer stays pinned.
 
 ### Diff Preview Navigation
 
@@ -118,8 +124,8 @@ ANSI-free conversation text.
 ### Mouse Capture, Copy, and tmux
 
 - `ui.fullscreen.mouse_capture = false` keeps fullscreen rendering but returns click-and-drag selection to the terminal. This also disables in-app wheel scrolling, click-to-expand, click-to-position, and link activation.
-- `ui.fullscreen.copy_on_select = false` disables automatic clipboard copy after an in-app text selection. Manual copy shortcuts still work.
-- A selection is dismissed by clicking any UI target — a file link, an overlay control, the bottom panel, a jump affordance, or the transcript itself — and by pressing `Esc` while no turn is running. Dismissing through `Esc` does not arm the rewind double-press, and `Esc` still interrupts a running turn first, so a selection never shadows turn control.
+- `ui.fullscreen.copy_on_select = false` (or `/config` → **Interface & Terminal** → Copy On Select) disables automatic clipboard copy when an in-app text selection ends. Manual copy still works: `Ctrl+C` copies a transcript or composer selection, and `Ctrl+O` copies the last agent response.
+- A selection is dismissed by clicking any UI target — a file link, an overlay control, or the bottom panel — and by pressing `Esc` while no turn is running. Dismissing through `Esc` does not arm the rewind double-press, and `Esc` still interrupts a running turn first, so a selection never shadows turn control.
 - Copying prefers native clipboard helpers (`pbcopy` on macOS, `xclip`/`xsel`/`wl-copy` on Linux, `clip.exe` on Windows) and falls back to the OSC 52 escape sequence. When no strategy succeeds, the input status row shows a `Copy failed` notice instead of a false success.
 - Dragging a selection to the top or bottom edge of the transcript auto-scrolls it, extending the selection onto newly revealed lines.
 - `ui.fullscreen.scroll_speed` multiplies mouse-wheel scrolling without affecting `PgUp`/`PgDn`.
@@ -130,13 +136,16 @@ The compact presentation and review affordances are configurable with
 `ui.transcript_review.show_shortcut_guide`, `ui.transcript_review.show_close_button`,
 and the existing `ui.keybindings.open_transcript_review` and
 `ui.keybindings.toggle_transcript_render_mode` entries. All review controls
-are enabled and compact display is the default.
+are enabled and compact display is the default. While a command runs in
+compact mode, its latest output line streams into the input status line so
+long-running commands stay visibly live; the full output remains available in
+Transcript Review.
 - Avoid fullscreen rendering in `tmux -CC` sessions. iTerm2's control-mode integration does not handle alternate-screen mouse capture reliably.
 
 ### Session Context Commands
 
-- `/continue` resumes the most recently archived session in a new conversation. Equivalent to `vtcode --continue` from the CLI.
-- When a turn is blocked (repeated tool denials hit the fuse), the TUI shows a `Blocked` header badge, `Blocked • continue to retry • /resume • details: .vtcode/tasks/current_blocked.md` footer hint, and a transcript banner. Type `continue` with new guidance, describe alternative instructions, or run `vtcode --resume <session>` from a terminal. One attempt before the fuse trips, the runtime warns with the remaining attempts and a per-tool remedy hint.
+- `/resume` opens the archived-session picker. Equivalent to `vtcode --resume` from the CLI; `vtcode --continue` resumes the most recent session non-interactively.
+- When a turn is blocked (repeated tool denials hit the fuse), the TUI shows a `Blocked` header badge, `Blocked • continue to retry • /resume • details: .vtcode/tasks/current_blocked.md` footer hint, and a two-line transcript banner (short stop marker + one action). Recoverable blocked ends (budgets, safety caps, the fuse, tool-free recovery) auto-continue a bounded follow-up turn first — in every mode, even with an empty task tracker — so you only need to act once that budget (`agent.harness.continuation.cross_turn_turns`) is exhausted or the block is not recoverable. Then type `continue` with new guidance, describe alternative instructions, or run `vtcode --resume <session>` from a terminal. Full reason, archive path, and last-turn forensics stay in `.vtcode/tasks/current_blocked.md`. One attempt before the fuse trips, the runtime warns with the remaining attempts and a per-tool remedy hint.
 - `/compact` compacts the current session history immediately when you want to shed context manually. The status line shows `Compacting context...` with live elapsed time while the engine summarizes, then the transcript records `Context compacted · {duration} ({orig} -> {compacted} messages, {mode} compaction)`. Automatic and recovery compaction use the same indicator; the turn then continues from the compacted handoff (summary + memory envelope + continuity tail) without stalling.
 - `/compact edit-prompt` and `/compact reset-prompt` manage the saved default prompt for manual compaction requests.
 - For providers with native Responses compaction, VT Code uses the provider-owned compacted state.
@@ -152,7 +161,7 @@ are enabled and compact display is the default.
 - On an empty idle composer, `Shift+Tab` cycles primary agents and wraps back to the first agent.
 - The active primary agent is displayed in the session header badge and influences the session's instructions, model, granular permission policy, and tool access.
 - Mode switches are locked while a turn is actively processing. Pressing `Shift+Tab`/`BackTab` (or running `/mode`/`/plan`) during a turn is dropped with a notice and applies only once the turn finishes. This keeps the agent's mode and tool-access state consistent for the duration of a turn; the in-turn automatic planning intent detection is unaffected.
-- `/subprocesses` opens the Local Agents drawer for delegated agents and managed background subprocesses.
+- `/config subprocess` opens the Local Agents drawer for delegated agents and managed background subprocesses.
 - `/feedback` opens a new GitHub issue form in your browser so you can report a bug or request a feature.
 
 ## Scheduled Prompts And Reminders
@@ -178,20 +187,20 @@ VT Code supports an optional Vim-style prompt editor.
 - VT Code routes prompt suggestion generation through `agent.prompt_suggestions` and falls back to deterministic local suggestions when the provider, model, or endpoint cannot service the request.
 - LLM-backed prompt suggestions can consume tokens. When `agent.prompt_suggestions.show_cost_notice = true`, VT Code shows a one-time reminder in the session before the first LLM-backed inline suggestion.
 - Picking a suggestion inserts it into the composer. Empty drafts are replaced; non-empty drafts keep their content and append the suggestion after a blank line.
-- `/tasks` toggles the dedicated TODO panel. It is fed directly from `task_tracker` output. Display mode controls the transcript: compact shows header such as `• Release 3/8` plus the single current-task row (`  ▶ …`, bold theme `primary` accent), expanded shows header plus truncated tree (max 30 rows + `… N more`) so each task item is visible inline, while the panel body keeps the full tree when opened with per-row status styling (done rows struck-through, italic, dimmed; current row bold accent; blocked rows warning). Every visible row is bounded to one short description (about 96 bytes, `…` when longer) so a step carrying a long `Action -> files: [...] -> verify: [...]` body cannot wrap across lines; the full step text stays in the structured tracker payload. The TODO panel header uses a descriptive title derived from the plan summary instead of the generated plan codename. Panel rows render inline markdown (code spans, emphasis, file paths) instead of raw source; inline `-> files:` / `-> verify:` suffixes are stripped into structured tracker metadata; generated plan IDs (`1789108823046-kind-lagoon`) display humanized (`Kind Lagoon`) in the progress line and panel header. Identical transcript repeats collapse to one progress line. Tool blocks render borderless without leading/trailing pipe framing. The panel header carries the checklist title and `completed/total` progress while step metadata remains available in structured tracker data (not shown in the transcript). `Alt+G` toggles the panel from anywhere, and `ui.show_task_panel` controls whether it auto-shows when a plan is approved.
-- While Planning workflow is active, user-facing status stays compact: production currently emits `• Plan — research/synthesis` when a planning turn ends without an approval-ready plan (helper also supports `open decisions: N` and `ready for approval (M steps)` when those counts are available). Incomplete planning auto-continues only on recoverable **blocked** ends (budget/safety-cap/tool-free recovery) when no validated plan is ready; completed planning turns wait for the user. Approval remains a user gate.
-- `/jobs` toggles the unified Local Agents drawer for delegated agents, managed background subagents, and retained background `exec-session` rows.
-- In `/jobs`, `Enter` inspects the selected item; raw `exec-session` rows use `Ctrl+R` for stdin focus, `Ctrl+P` for a bounded-output preview, `Ctrl+K` for graceful termination, and `Ctrl+X` to force-terminate or close the session.
-- Pressing `Enter` on an empty draft opens `/jobs` when active jobs exist; otherwise VT Code keeps the normal empty-enter behavior.
+- `/config tasks` toggles the dedicated TODO panel. It is fed directly from `task_tracker` output. Display mode controls the transcript: compact shows header such as `• Release 3/8` plus the single current-task row (`  ▶ …`, bold theme `primary` accent), expanded shows header plus truncated tree (max 30 rows + `… N more`) so each task item is visible inline, while the panel body keeps the full tree when opened with per-row status styling (done rows struck-through, italic, dimmed; current row bold accent; blocked rows warning). Every visible row is bounded to one short description (about 96 bytes, `…` when longer) so a step carrying a long `Action -> files: [...] -> verify: [...]` body cannot wrap across lines; the full step text stays in the structured tracker payload. The TODO panel header uses a descriptive title derived from the plan summary instead of the generated plan codename. Panel rows render inline markdown (code spans, emphasis, file paths) instead of raw source; inline `-> files:` / `-> verify:` suffixes are stripped into structured tracker metadata; generated plan IDs (`1789108823046-kind-lagoon`) display humanized (`Kind Lagoon`) in the progress line and panel header. Identical transcript repeats collapse to one progress line. Tool blocks render borderless without leading/trailing pipe framing. The panel header carries the checklist title and `completed/total` progress while step metadata remains available in structured tracker data (not shown in the transcript). `Alt+G` toggles the panel from anywhere, and `ui.show_task_panel` controls whether it auto-shows when a plan is approved.
+- While Planning workflow is active, user-facing status stays compact: production currently emits `• Plan — research/synthesis` when a planning turn ends without an approval-ready plan (helper also supports `open decisions: N` and `ready for approval (M steps)` when those counts are available). Incomplete planning auto-continues only on recoverable **blocked** ends (budget/safety-cap/tool-free recovery, including blocked-tool fuse trips and turns ending without a harness-visible final assistant response) when no validated plan is ready; completed planning turns wait for the user. Approval remains a user gate.
+- `/config jobs` toggles the unified Local Agents drawer for delegated agents, managed background subagents, and retained background `exec-session` rows.
+- In `/config jobs`, `Enter` inspects the selected item; raw `exec-session` rows use `Ctrl+R` for stdin focus, `Ctrl+P` for a bounded-output preview, `Ctrl+K` for graceful termination, and `Ctrl+X` to force-terminate or close the session.
+- Pressing `Enter` on an empty draft opens `/config jobs` when active jobs exist; otherwise VT Code keeps the normal empty-enter behavior.
 
 ## Active Run Steering
 
 When a task is already running, VT Code keeps the active turn alive and lets you queue or steer input:
 
-- `Enter` steers the active turn: the message is injected into the conversation right after the current tool-call batch, so the model sees it on its next request within the same turn. If the turn ends before another tool call runs, the steered message is delivered at the next turn boundary instead — nothing is lost. The transcript confirms delivery with a `Steered into active turn: …` status line.
-- `Ctrl+Enter` queues the current draft as a *batchable* message. Consecutive text-only Ctrl+Enter messages queued while a turn runs are joined into a single combined prompt for the next turn. Slash commands other than `/stop`, `/pause`, `/resume`, `/model`, and `/effort` are queued non-batchable so their intent is preserved; `/stop`, `/pause`, and `/resume` take effect immediately instead of being queued.
-- `/model` and `/effort` (including the `Ctrl+M` model picker and `Tab`/`Ctrl+Enter` drafts) are accepted while a turn is running. The selection is shown immediately as pending the next request, and it applies at the next model-request boundary: the in-flight request finishes with its original provider, model, and effort, and the following request uses the new settings (the same turn when it makes another request, otherwise the next turn). A failed selection leaves the effective settings unchanged and shows the error. For a model switch, the existing switch compaction runs against the active turn's history at that boundary. `/model` persistence and `/effort --persist` behavior are unchanged.
-- Queued inputs appear in an overlay above the composer in FIFO order (oldest on top, newest directly above the input), numbered `[i/n]` so dispatch order is explicit. `Shift+Left` (tmux) or `Alt+Up` pops the newest queued message back into the composer for editing. Up to five messages are shown, plus a `+N more queued (M total)` line when more are pending. Interrupts preserve queued inputs and report the preserved count instead of clearing the queue.
+- `Enter` steers the active turn: the message is injected into the conversation right after the current tool-call batch, so the model sees it on its next request within the same turn. If the turn ends before another tool call runs, the steered message is delivered at the next turn boundary instead — nothing is lost. When live steering is unavailable (for example before the steering channel is wired, or after it closes), the message is queued and processed once the agent is ready rather than dropped. The transcript confirms genuine user steering with a `Steered into active turn: …` status line. Harness-generated continuations (tracker/plan auto-continue, recoverable blocked-end resume, background completion, verification recovery) stay quiet and never echo their full internal prompt.
+- `Ctrl+Enter` queues the current draft as a *batchable* message. Consecutive text-only Ctrl+Enter messages queued while a turn runs are joined into a single combined prompt for the next turn. Slash commands other than `/stop`, `/pause`, `/resume`, and `/model` are queued non-batchable so their intent is preserved; `/stop`, `/pause`, and `/resume` take effect immediately instead of being queued.
+- `/model` (including the `Ctrl+M` model picker and `Tab`/`Ctrl+Enter` drafts) is accepted while a turn is running, with reasoning-effort selection built into the picker. The selection is shown immediately as pending the next request, and it applies at the next model-request boundary: the in-flight request finishes with its original provider, model, and effort, and the following request uses the new settings (the same turn when it makes another request, otherwise the next turn). A failed selection leaves the effective settings unchanged and shows the error. For a model switch, the existing switch compaction runs against the active turn's history at that boundary. Persisted model defaults are managed through `/config model`.
+- Queued inputs appear in an overlay above the composer in FIFO order (oldest on top, newest directly above the input), numbered `[i/n]` so dispatch order is explicit. `Shift+Left` (tmux) or `Alt+Up` pops the newest queued message back into the composer for editing. Up to five messages are shown, plus a `+N more queued (M total)` line when more are pending. Interrupts preserve queued inputs and report the preserved count instead of clearing the queue. The queue is capped (oldest entries drop under extreme burst load) and overlay updates are batched so rapid submissions never flicker or disappear mid-drain.
 - `/pause` pauses the active run at the next model/tool/approval boundary.
 - `/resume` resumes a paused run while it is active. When idle, `/resume` still opens archived sessions.
 - `/stop` still cancels the active run immediately.
@@ -200,8 +209,8 @@ When a task is already running, VT Code keeps the active turn alive and lets you
 - `/fork` is available while idle and creates a new archived session, leaving the current session unchanged.
 - `Ctrl+B` has foreground-command priority: while a foreground PTY or pipe command is running, it hands that session to the retained background-session manager without killing it. The command keeps its stable `session_id` and can later be waited, polled, written to, inspected, terminated, or closed. If no foreground command is active, `Ctrl+B` keeps its background-subagent behavior and opens the Local Agents setup when that feature is not configured.
 - `Alt+S` opens or focuses the Local Agents drawer.
-- `/jobs` is a compatibility alias for the same drawer. It combines delegated agents, managed background subagents, and promoted or explicitly background raw exec sessions; foreground sessions stay hidden until Ctrl+B promotes them.
-- When the composer is empty and local agents exist, `Down` opens the Local Agents drawer. `Up` and `Down` keep normal history navigation once history traversal is active.
+- `/config jobs` opens the same drawer (`/jobs` still works as a hidden alias). It combines delegated agents, managed background subagents, and promoted or explicitly background raw exec sessions; foreground sessions stay hidden until Ctrl+B promotes them.
+- When the composer is empty and local agents exist, `Down` opens the Local Agents drawer. `Up` and `Down` keep normal history navigation once history traversal is active, as long as the recalled entry fits on a single row; multi-row entries keep the arrow keys inside the draft (use `Ctrl+P`/`Ctrl+N` to keep traversing).
 - For `exec-session` rows, `Enter` inspects the command and bounded output, `Ctrl+R` toggles stdin focus, `Ctrl+P` previews the snapshot, `Ctrl+K` requests graceful termination, and `Ctrl+X` force-terminates an active session or closes an exited one.
 - In the active-agent and subprocess inspectors, `Esc` closes the overlay, `Ctrl+R` reloads it, `Ctrl+K` requests a graceful stop, and `Ctrl+X` force-cancels the selected subprocess.
 - Foreground `!` commands keep their status in the input/status area, and `Esc` collapses verbose output without killing the job.
@@ -219,7 +228,7 @@ When a task is already running, VT Code keeps the active turn alive and lets you
 - The agent emits planning output in `<proposed_plan>...</proposed_plan>` blocks.
 - `task_tracker` mirrors checklist state with plan sidecars where planning artefacts are enabled.
 - When you are ready to implement, switch to a build-oriented primary agent such as `build` or `auto`.
-- During the planning workflow the footer shows a `Planning...` stage status, and while an approved plan executes it shows `Building...`. These stage states keep the composer usable so you can queue or steer input between turns; the animated spinner continues while tools execute underneath.
+- During the planning workflow the footer shows a `Planning...` stage status once the first planning turn starts (entering Plan mode alone stays idle until you send a request), and while an approved plan executes it shows `Building...`. These stage states keep the composer usable so you can queue or steer input between turns; the animated spinner continues while tools execute underneath. During plan synthesis the transcript also shows live progress rows — `❋ Drafting plan — researching codebase...`, `❋ Validating plan...`, `❋ Persisting plan...` — with a whole-line shimmer across the active row (suppressed by Reduced Motion), while the input status line mirrors the current phase (`Drafting plan...`, `Validating plan...`, `Persisting plan...`, `Preparing approval...`).
 - Plan approval offers three choices: implement in the current context, clear transient context
   and implement with a fresh thread, or stay in Plan mode. Both implementation choices preserve
   the session's existing confirmation policy. The fresh path preserves the plan and task tracker
@@ -230,7 +239,7 @@ When a task is already running, VT Code keeps the active turn alive and lets you
 VT Code keeps a command history scoped to the working directory. The history resets when you clear it manually or start a new directory session.
 
 - Cleared with the `/clear` command.
-- Use the arrow keys to navigate between entries.
+- Use the arrow keys to navigate between entries when the composer fits on a single row. When the draft wraps or spans multiple rows, `Up`/`Down` move within the draft instead (`Ctrl+P`/`Ctrl+N` still traverse history).
 - History expansion via `!` is disabled by default to prevent accidental execution.
 
 ### Reverse Search with `Ctrl+R`

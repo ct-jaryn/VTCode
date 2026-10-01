@@ -83,14 +83,21 @@ Output-token caps, yield windows, and the raw stdin payload are not rendered;
 the model still receives the full arguments and result.
 
 The captured stdin/stdout body is capped at 10 visible rows, taken from the
-tail, followed by the same `… +N lines (/share html for full transcript)` notice
-used for bounded command previews. A session body is terminal text, so it renders
-plain in the subdued PTY body color from the active theme: git-diff detection and
-`LS_COLORS` per-line styling are skipped, because both misfire on build logs
-(`PASS … .rs` picked up file-type colors). The spooled branch already bounds to
-six rows (three head, three tail). Complete output stays in the session-local
-Transcript Review and the spool file referenced in the spool message; only the
-rendered preview is bounded.
+tail (streaming polls keep the newest output — head+tail excerpts are reserved
+for finished command previews). Overflow shows a trailing
+`… +N lines · click to expand` notice instead of the command-preview share
+hint. The action phrase is underlined so it is a click target: activating it
+opens the Tool Output Viewer on that call's recorded complete capture. A
+session body is terminal text, so it renders plain in the theme's PTY body
+color plus `DIMMED`, matching the design-system dim tier used by reasoning:
+git-diff detection and `LS_COLORS` per-line styling are skipped, because both
+misfire on build logs (`PASS … .rs` picked up file-type colors). Stdin echo
+rows (`$ …`) sit on the same dim tier. Headers (`• Send command input`,
+`└ Session …`) keep normal tool brightness so the call stays identifiable.
+The spooled branch already bounds to six rows (three head, three tail).
+Complete output stays in the tool-output viewer, Transcript Review, and the
+spool file referenced in the spool message; only the rendered preview is
+bounded.
 
 The redundant stream label is only dropped for the generic capture label
 (`output`), which repeats the body already shown below the row. Diagnostic labels
@@ -124,6 +131,8 @@ commands remain fail-closed; they cannot opt out of normal spooling.
 
 | Signal | Expected behavior | Where it is defined |
 | --- | --- | --- |
+| `spool_line_count` | Completed spool's exact physical line count, including an unterminated last line; read missing ranges within this extent and stop at EOF. Pending spools have no final count. | `tools/output_spooler.rs`, shared pipe/PTY integrity metadata |
+| Encoded task updates in `items` | Reject without changing progress; update a step directly or send a complete checklist with descriptions and statuses. | Shared `handlers/task_tracking.rs` validation |
 | `preview_budget_exhausted` | Trust preserved metadata, run one `&&` verifier, then synthesize; never repeat an equivalent call | `RUNTIME_GUIDANCE_SECTION` in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs` |
 | `turn.blocked` | Resumable stop with streak and counter metadata; one tool-free synthesis, then checkpoint resume | `ThreadEvent::TurnBlocked` in `crates/common/vtcode-exec-events`, `docs/guides/agent-loop-contract.md` |
 | Mid-execution replan | Keep scopes, add falsifiers, continue the run on existing `plan.delta` events | `docs/guides/planning-workflow.md` |

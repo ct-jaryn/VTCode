@@ -11,6 +11,34 @@ pub(super) const DIRECT_FUNCTION_ALIASES: &[&str] = &[
     "terminalcommand",
 ];
 
+// Tool-name hygiene is shared infrastructure (`vtcode_commons::text_fence`).
+pub(crate) use vtcode_commons::text_fence::{is_clean_tool_name, is_dispatchable_tool_name};
+
+/// Map well-known shell aliases used by gateway models onto `exec_command`.
+///
+/// Returns `None` when the name is not a shell alias (leave it unchanged).
+/// Intentionally does **not** map PTY-family names (`run_pty_cmd`,
+/// `create_pty_session`, …) — those keep their own tool identity.
+pub(crate) fn canonicalize_shell_tool_alias(raw: &str) -> Option<String> {
+    let normalized = canonicalize_normalized_name(raw)?;
+    matches!(
+        normalized.as_str(),
+        "run"
+            | "runcmd"
+            | "runcommand"
+            | "terminalrun"
+            | "terminalcmd"
+            | "terminalcommand"
+            | "command"
+            | "shell"
+            | "bash"
+            | "container_exec"
+            | "exec"
+            | "exec_command"
+    )
+    .then(|| tools::EXEC_COMMAND.to_string())
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct ExecCommandDefaults {
     pub(super) action: &'static str,

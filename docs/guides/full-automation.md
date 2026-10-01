@@ -40,6 +40,7 @@ budgets, and recovery limits remain unchanged.
 - Explicit denies and policy blocks are honoured before full-auto review.
 - Promptable allow-listed actions are reviewed automatically instead of interrupting for user input.
 - Tool-loop and session tool-call limit increases are granted automatically (same per-grant increments and hard caps as manual approvals) instead of showing an interactive prompt. Session auto-grants share a bounded `2000`-call headroom per session before failing closed. Set `auto_grant_tool_limits = false` to restore the prompts.
+- Informational or read-only requests (summarize, explain, compare, explore — no imperative action clause) end the run once answered instead of triggering another autonomous continuation provider call. Action requests remain on the continuation path.
 - Non allow-listed tools are rejected before execution, and their attempts are logged.
 - If the acknowledgement profile is missing while required, the CLI aborts before launching.
 

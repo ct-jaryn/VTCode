@@ -68,6 +68,7 @@ pub(crate) async fn prompt_workspace_hook_approval<S: UiSession + ?Sized>(
             indent: 0,
             selection: Some(InlineListSelection::ToolApproval(true)),
             search_value: Some("approve allow yes run 1".to_string()),
+            ..Default::default()
         },
         InlineListItem {
             title: "Deny".to_string(),
@@ -76,6 +77,7 @@ pub(crate) async fn prompt_workspace_hook_approval<S: UiSession + ?Sized>(
             indent: 0,
             selection: Some(InlineListSelection::ToolApproval(false)),
             search_value: Some("deny no skip block 2".to_string()),
+            ..Default::default()
         },
     ];
 
@@ -90,6 +92,7 @@ pub(crate) async fn prompt_workspace_hook_approval<S: UiSession + ?Sized>(
             selected: Some(InlineListSelection::ToolApproval(false)),
             search: None,
             hotkeys: Vec::new(),
+            status: None,
         }),
         ctrl_c_state,
         ctrl_c_notify,

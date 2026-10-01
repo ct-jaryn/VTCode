@@ -44,7 +44,7 @@ VT Code implements a defense-in-depth security model for command execution to pr
   Layer 5: Human-in-the-Loop                                 
   • Approve Once (no persistence)                            
   • Allow for Session (memory only)                          
-  • Always Allow (saved to policy)                           
+  • Always approve (saved for this workspace)                           
 
                               
                               

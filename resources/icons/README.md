@@ -29,11 +29,19 @@ once per terminal:
 - iTerm2 (automatic): run `/terminal-setup install-iterm2-icon` inside
   VT Code — or just launch VT Code under iTerm2, which installs the
   profile on first run and prints a notice. It installs a `VT Code`
-  dynamic profile (custom icon + auto-switch while `vtcode` runs) under
+  dynamic profile (custom icon) under
   `~/Library/Application Support/iTerm2/DynamicProfiles/vtcode.json`
-  with artwork in the VT Code data dir. New tabs pick it up immediately;
-  deleting `vtcode.json` uninstalls. VT Code switches to the profile
-  once at TUI startup, only when the file exists.
+  with artwork in the VT Code data dir. New tabs pick it up immediately.
+  The installer also runs on every interactive iTerm2 launch and rewrites
+  the profile file whenever it is missing or the bundled profile/artwork
+  changed, so deleting `vtcode.json` is not a persistent opt-out — it
+  reappears on the next launch (there is no config key to disable this;
+  `--quiet` suppresses only the install notice). VT Code switches the
+  session to the profile once at TUI startup, only when the file exists,
+  and switches back to the session's original profile on exit — so the
+  icon is shown only while the TUI runs. If a tab is already stuck showing
+  the icon from an older build, run `/terminal-setup reset-iterm2-icon`
+  in it or open a new tab.
 - iTerm2 (manual): Settings > Profiles > General > Icon, choose
   `vtcode-profile-120.png` (Retina) or `vtcode-profile-32.png`.
 - Windows Terminal: set the profile `"icon"` to

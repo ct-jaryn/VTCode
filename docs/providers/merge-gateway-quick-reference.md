@@ -23,6 +23,7 @@ openai/gpt-5.5
 anthropic/claude-opus-5
 anthropic/claude-opus-5-5
 anthropic/claude-sonnet-5
+anthropic/claude-sonnet-5-5
 google/gemini-3.6-flash
 google/gemini-3.7-flash
 deepseek/deepseek-v4-pro-0813
@@ -40,6 +41,7 @@ openai/gpt-5.6-sol
 openai/gpt-5.6-terra
 openai/gpt-6-astra
 openai/gpt-6-sol
+openai/gpt-6.1-sol
 openai/gpt-6-luna
 ```
 

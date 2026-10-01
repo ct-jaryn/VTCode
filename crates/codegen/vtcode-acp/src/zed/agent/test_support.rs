@@ -17,7 +17,7 @@ use super::ZedAgent;
 use crate::zed::helpers::PrimaryAgentCatalog;
 
 pub(super) async fn build_agent(workspace: &Path) -> ZedAgent {
-    build_agent_with_default_primary_agent(workspace, "duck").await
+    build_agent_with_default_primary_agent(workspace, "build").await
 }
 
 pub(super) async fn build_agent_with_default_primary_agent(workspace: &Path, default_primary_agent: &str) -> ZedAgent {

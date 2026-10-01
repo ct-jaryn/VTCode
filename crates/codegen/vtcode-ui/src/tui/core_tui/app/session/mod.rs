@@ -7,6 +7,7 @@ pub(super) use ratatui::prelude::*;
 pub(super) use ratatui::widgets::Clear;
 pub(super) use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use crate::tui::config::constants::ui;
 use crate::tui::core_tui::app::types::{
     CompactActivityMetadata, DiffOverlayRequest, DiffPreviewMode, DiffPreviewState, InlineCommand, InlineEvent,
     InlineMessageKind, InlineSegment, LocalAgentsTransientRequest, SlashCommandItem, TaskPanelMetadata,
@@ -562,9 +563,16 @@ impl AppSession {
         self.core.mark_dirty();
     }
 
-    fn record_tool_output_block(&mut self, id: ToolOutputId, lines: Vec<String>) {
+    pub(crate) fn record_tool_output_block(&mut self, id: ToolOutputId, mut lines: Vec<String>) {
         if lines.is_empty() {
             return;
+        }
+        // Bound retained capture size so long-running floods cannot grow the
+        // TUI heap without limit. Keep the tail — that is what review shows.
+        let max_lines = ui::TUI_TOOL_OUTPUT_CAPTURE_MAX_LINES;
+        if lines.len() > max_lines {
+            let drop = lines.len() - max_lines;
+            lines.drain(..drop);
         }
 
         // A non-PTY capture is recorded after the live PTY stream has rendered
@@ -591,8 +599,36 @@ impl AppSession {
             recorded_at_line: Some(recorded_at_line),
             lines,
         });
+        self.trim_tool_output_blocks();
         self.tool_output_revision = self.tool_output_revision.wrapping_add(1);
         self.core.mark_dirty();
+    }
+
+    /// FIFO-bound capture blocks. Blocks shown in an open tool-output viewer
+    /// are pinned so review does not lose content mid-read; the newest block
+    /// is never dropped. Call again after the viewer closes to re-trim.
+    fn trim_tool_output_blocks(&mut self) {
+        let max_blocks = ui::TUI_TOOL_OUTPUT_BLOCKS_MAX;
+        if self.tool_output_blocks.len() <= max_blocks {
+            return;
+        }
+        let pinned = self
+            .tool_output_viewer_state
+            .as_ref()
+            .map(|viewer| viewer.retained_tool_ids())
+            .unwrap_or_default();
+        while self.tool_output_blocks.len() > max_blocks {
+            let newest = self.tool_output_blocks.len() - 1;
+            let Some(pos) = self
+                .tool_output_blocks
+                .iter()
+                .take(newest)
+                .position(|block| !pinned.contains(&block.id))
+            else {
+                break;
+            };
+            self.tool_output_blocks.remove(pos);
+        }
     }
 
     fn find_live_pty_anchor(&self, header: Option<&String>, search_start: usize) -> Option<usize> {
@@ -639,8 +675,15 @@ impl AppSession {
     fn append_tool_output_line(&mut self, id: ToolOutputId, kind: InlineMessageKind, segments: Vec<InlineSegment>) {
         self.handle_core_command(crate::tui::core_tui::types::InlineCommand::AppendLine { kind, segments });
         let line_index = self.core.lines.len().saturating_sub(1);
+        // An expand notice must win over an earlier live-PTY header anchor:
+        // the notice is the row the user clicks to open this capture.
+        let is_expand_notice = self
+            .core
+            .lines
+            .get(line_index)
+            .is_some_and(|line| line.segments.iter().any(|segment| segment.text.contains("click to expand")));
         if let Some(block) = self.tool_output_blocks.iter_mut().find(|block| block.id == id)
-            && block.anchor_line.is_none()
+            && (block.anchor_line.is_none() || is_expand_notice)
         {
             block.anchor_line = Some(line_index);
             self.tool_output_revision = self.tool_output_revision.wrapping_add(1);
@@ -686,6 +729,11 @@ impl AppSession {
         self.core.invalidate_scroll_metrics();
     }
 
+    /// Visual-only redraw (cursor, scroll, hover). Does not drop header/sidebar caches.
+    pub(crate) fn mark_visual_dirty(&mut self) {
+        self.core.mark_visual_dirty();
+    }
+
     fn append_compact_activity(&mut self, metadata: CompactActivityMetadata) {
         let segments = tool_output_viewer::compact_activity_segments(self, &metadata);
         self.handle_core_command(crate::tui::core_tui::types::InlineCommand::AppendLine {
@@ -695,6 +743,11 @@ impl AppSession {
         let line_index = self.core.lines.len().saturating_sub(1);
         self.compact_activity_entries
             .push(CompactActivityEntry { line_index, metadata: metadata.clone() });
+        let max_entries = ui::TUI_COMPACT_ACTIVITY_MAX_ENTRIES;
+        if self.compact_activity_entries.len() > max_entries {
+            let drop = self.compact_activity_entries.len() - max_entries;
+            self.compact_activity_entries.drain(..drop);
+        }
         self.update_tool_output_anchors(&metadata, line_index);
     }
 
@@ -776,6 +829,8 @@ impl AppSession {
         }
         self.tool_output_viewer_state = None;
         self.close_transient_surface(TransientSurface::ToolOutputViewer);
+        // Unpin and drop any over-cap blocks that were held for the viewer.
+        self.trim_tool_output_blocks();
         self.core.mark_dirty();
     }
 
@@ -998,14 +1053,22 @@ impl AppSession {
                 let has_delegated_entries = entries
                     .iter()
                     .any(|entry| entry.kind == crate::tui::core_tui::types::LocalAgentKind::Delegated);
+                // Auto-open is for live delegated work attention. Finished rows
+                // stay listed for history, so close the auto-opened window when
+                // nothing delegated is still loading (not when the list empties).
+                let has_live_delegated = entries.iter().any(|entry| {
+                    entry.kind == crate::tui::core_tui::types::LocalAgentKind::Delegated && entry.is_loading()
+                });
                 let update = self.local_agents_state.set_entries(entries.clone());
                 let background_count = self.local_agents_state.loading_count();
+                let finished_count = self.local_agents_state.finished_count();
                 self.core.set_local_agents(entries);
                 self.core.set_background_activity_count(background_count);
+                self.core.set_background_finished_count(finished_count);
                 if update.has_new_delegated_entries && self.should_auto_open_local_agents() {
                     self.ensure_inline_lists_visible_for_trigger();
                     self.open_local_agents_drawer(true);
-                } else if self.local_agents_auto_opened && !has_delegated_entries {
+                } else if self.local_agents_auto_opened && !has_live_delegated {
                     self.close_local_agents_drawer(true);
                 } else if !self.local_agents_visible() && !has_delegated_entries {
                     self.local_agents_auto_opened = false;
@@ -1082,6 +1145,11 @@ impl AppSession {
             InlineCommand::SetAppearance { appearance } => {
                 self.handle_core_command(crate::tui::core_tui::types::InlineCommand::SetAppearance { appearance });
                 self.refresh_compact_activity_presentations();
+            }
+            InlineCommand::SetFullscreenInteraction { interaction } => {
+                self.handle_core_command(crate::tui::core_tui::types::InlineCommand::SetFullscreenInteraction {
+                    interaction,
+                });
             }
             InlineCommand::ReplaceLast { count, kind, lines, link_ranges } => {
                 let remove_count = count.min(self.core.lines.len());
@@ -1224,6 +1292,9 @@ fn to_core_command(command: &InlineCommand) -> Option<crate::tui::core_tui::type
         InlineCommand::SetTheme { theme } => CoreCommand::SetTheme { theme: theme.clone() },
         InlineCommand::SetColorSchemeAuto { enabled } => CoreCommand::SetColorSchemeAuto { enabled: *enabled },
         InlineCommand::SetAppearance { appearance } => CoreCommand::SetAppearance { appearance: appearance.clone() },
+        InlineCommand::SetFullscreenInteraction { interaction } => {
+            CoreCommand::SetFullscreenInteraction { interaction: *interaction }
+        }
         InlineCommand::SetVimModeEnabled(enabled) => CoreCommand::SetVimModeEnabled(*enabled),
         InlineCommand::SetQueuedInputs { entries } => CoreCommand::SetQueuedInputs { entries: entries.clone() },
         InlineCommand::SetSubprocessEntries { entries } => {

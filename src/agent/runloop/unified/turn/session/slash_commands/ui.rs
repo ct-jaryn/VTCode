@@ -129,12 +129,6 @@ pub(crate) async fn handle_start_session_palette(
     Ok(SlashCommandControl::Continue)
 }
 
-pub(crate) fn handle_continue_latest(_ctx: SlashCommandContext<'_>, show_all: bool) -> Result<SlashCommandControl> {
-    // Session existence and loading are handled downstream by the
-    // ResumeLatest control flow handler, avoiding a redundant query.
-    Ok(SlashCommandControl::ResumeLatest { show_all })
-}
-
 pub(crate) async fn handle_start_history_picker(mut ctx: SlashCommandContext<'_>) -> Result<SlashCommandControl> {
     if !ctx.renderer.supports_inline_ui() {
         ctx.renderer.line(
@@ -185,6 +179,7 @@ fn config_action_item(
         indent,
         selection: Some(InlineListSelection::ConfigAction(action.into())),
         search_value: Some(search_value.into()),
+        ..Default::default()
     }
 }
 

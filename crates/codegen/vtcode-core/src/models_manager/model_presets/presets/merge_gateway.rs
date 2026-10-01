@@ -64,6 +64,13 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             false,
         ),
         (
+            models::merge_gateway::ANTHROPIC_CLAUDE_SONNET_5_5,
+            "Claude Sonnet 5.5 (Merge Gateway)",
+            "Anthropic Claude Sonnet 5.5 through Merge Gateway",
+            1_000_000,
+            false,
+        ),
+        (
             models::merge_gateway::ANTHROPIC_CLAUDE_FABLE_5_1,
             "Claude Fable 5.1 (Merge Gateway)",
             "Anthropic Claude Fable 5.1 through Merge Gateway",
@@ -179,6 +186,13 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             models::merge_gateway::OPENAI_GPT_6_SOL,
             "GPT-6 Sol (Merge Gateway)",
             "OpenAI GPT-6 Sol through Merge Gateway",
+            1_050_000,
+            false,
+        ),
+        (
+            models::merge_gateway::OPENAI_GPT_6_1_SOL,
+            "GPT-6.1 Sol (Merge Gateway)",
+            "OpenAI GPT-6.1 Sol through Merge Gateway",
             1_050_000,
             false,
         ),

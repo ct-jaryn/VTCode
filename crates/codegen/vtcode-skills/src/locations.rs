@@ -11,6 +11,30 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use vtcode_commons::VtCodePaths;
 
+/// Maximum recursion depth when walking a skill location.
+///
+/// The Agent Skills client guide recommends 4-6 levels; kept at 10 for backward
+/// compatibility with deeply nested plugin layouts. Dependency and build-output
+/// trees are excluded separately via [`SKIPPED_DISCOVERY_DIRS`].
+pub const MAX_DISCOVERY_DEPTH: usize = 10;
+
+/// Maximum directories visited per discovery walk.
+///
+/// Bounds runaway scans of huge trees (monorepos, home directories) per the
+/// Agent Skills client guide's directory budget.
+pub const MAX_DISCOVERY_DIRS: usize = 2000;
+
+/// Directory names never descended into during skill discovery.
+///
+/// Build output, VCS metadata, and dependency trees cannot contain skills and
+/// dominate scan time in large repos (notably `node_modules`).
+pub const SKIPPED_DISCOVERY_DIRS: &[&str] = &[".git", ".hg", ".svn", "node_modules", "target"];
+
+/// Whether a directory name is skipped during skill discovery.
+pub fn discovery_dir_skipped(file_name: &str) -> bool {
+    SKIPPED_DISCOVERY_DIRS.contains(&file_name)
+}
+
 /// Skill location types with precedence ordering
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SkillLocationType {
@@ -249,12 +273,18 @@ fn walk_directory(
     stats: &mut DiscoveryStats,
     depth: usize,
 ) -> Result<()> {
-    if depth > 10 {
+    if depth > MAX_DISCOVERY_DEPTH {
         // Prevent infinite recursion
         return Ok(());
     }
 
     if !dir.exists() || !dir.is_dir() {
+        return Ok(());
+    }
+
+    stats.dirs_visited += 1;
+    if stats.dirs_visited > MAX_DISCOVERY_DIRS {
+        debug!("skill discovery dir budget ({MAX_DISCOVERY_DIRS}) exhausted under {}", location.base_path.display());
         return Ok(());
     }
 
@@ -299,13 +329,22 @@ fn walk_directory(
         }
     }
 
-    // Continue walking subdirectories
+    // Continue walking subdirectories, skipping dependency, build-output,
+    // and VCS trees that cannot contain skills.
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                walk_directory(&path, location, discovered, stats, depth + 1)?;
+            if !path.is_dir() {
+                continue;
             }
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(discovery_dir_skipped)
+            {
+                continue;
+            }
+            walk_directory(&path, location, discovered, stats, depth + 1)?;
         }
     }
 
@@ -402,6 +441,7 @@ pub struct DiscoveryStats {
     skips_due_to_precedence: usize,
     skills_with_higher_precedence: usize,
     parse_errors: usize,
+    dirs_visited: usize,
 }
 
 impl Default for SkillLocations {
@@ -438,6 +478,38 @@ mod tests {
         let skill_md =
             format!("---\nname: {name}\ndescription: Test skill {name}\n---\n# {name}\n\nTest instructions.\n");
         std::fs::write(skill_dir.join("SKILL.md"), skill_md).unwrap();
+    }
+
+    #[test]
+    fn test_discovery_dir_skip_list() {
+        for skipped in [".git", ".hg", ".svn", "node_modules", "target"] {
+            assert!(discovery_dir_skipped(skipped), "{skipped} must be skipped");
+        }
+        for scanned in ["my-skill", "skills", ".agents", "docs"] {
+            assert!(!discovery_dir_skipped(scanned), "{scanned} must be scanned");
+        }
+    }
+
+    #[test]
+    fn test_walk_skips_dependency_and_vcs_trees() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+
+        create_test_skill(base_path, "real-skill", "real-skill");
+        // Skills nested under dependency/VCS/build trees must not be found.
+        create_test_skill(base_path, "node_modules/hidden-skill", "hidden-skill");
+        create_test_skill(base_path, ".git/hidden-git-skill", "hidden-git-skill");
+        create_test_skill(base_path, "target/hidden-target-skill", "hidden-target-skill");
+
+        let locations = SkillLocations::with_locations(vec![SkillLocation::new(
+            SkillLocationType::VtcodeProject,
+            base_path.to_path_buf(),
+            true,
+        )]);
+
+        let discovered = locations.discover_skills().unwrap();
+        let names: Vec<String> = discovered.iter().map(|d| d.skill_context.manifest().name.clone()).collect();
+        assert_eq!(names, vec!["real-skill".to_string()]);
     }
 
     #[test]

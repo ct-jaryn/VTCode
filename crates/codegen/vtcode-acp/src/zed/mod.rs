@@ -98,7 +98,7 @@ mod tests {
         let mut discovery_input = SubagentDiscoveryInput::new(workspace.to_path_buf());
         discovery_input.include_user_agents = false;
         let discovered = discover_subagents(&discovery_input).expect("discover primary agents");
-        let primary_agents = PrimaryAgentCatalog::from_specs_with_default(&discovered.effective, "duck");
+        let primary_agents = PrimaryAgentCatalog::from_specs_with_default(&discovered.effective, "build");
 
         ZedAgent::new(
             core_config,
@@ -299,7 +299,7 @@ mod tests {
                     &option.kind,
                     SessionConfigKind::Select(select)
                         if select.current_value
-                            == crate::acp::SessionConfigValueId::new("duck")
+                            == crate::acp::SessionConfigValueId::new("build")
                 )
         }));
         assert!(config_options.iter().any(|option| {

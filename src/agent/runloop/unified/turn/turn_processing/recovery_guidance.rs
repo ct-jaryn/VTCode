@@ -86,25 +86,14 @@ fn recovery_empty_response_fallback_guidance(mode: RecoveryMode) -> &'static str
     }
 }
 
-pub(super) fn recovery_empty_response_fallback_message(
-    history: &[uni::Message],
-    workspace_root: &Path,
-    mode: RecoveryMode,
-) -> String {
+/// User-facing empty-response fallback answer. Stays concise (spec
+/// tui-diagnostics-cleanup S2D): no embedded multi-line evidence dumps.
+/// Tool outputs already live in conversation history; planning synthesis
+/// directives carry bounded previews separately when needed.
+pub(super) fn recovery_empty_response_fallback_message(mode: RecoveryMode) -> String {
     let intro = recovery_empty_response_fallback_intro(mode);
     let guidance = recovery_empty_response_fallback_guidance(mode);
-
-    let previews = crate::agent::runloop::unified::turn::compaction::build_recovery_context_previews_with_workspace(
-        history,
-        Some(workspace_root),
-    );
-    if previews.is_empty() {
-        format!("{intro}\n\n{guidance}")
-    } else if previews.len() == 1 {
-        format!("{intro}\n\n{}\n\n{guidance}", previews[0])
-    } else {
-        format!("{intro}\n\n{}\n\n{guidance}", previews.join("\n"))
-    }
+    format!("{intro}\n\n{guidance}")
 }
 
 /// Last-resort fallback used when `recovery_empty_response_fallback_message`
@@ -208,5 +197,23 @@ mod tests {
         assert!(directive.contains("git diff --check"));
         assert!(PLANNING_EMPTY_RESPONSE_VERIFY_EXAMPLES.contains("sed -n"));
         assert!(directive.len() < 4 * 1024);
+
+        use crate::agent::runloop::unified::turn::turn_loop_helpers::restore_fresh_turn_tool_guidance;
+
+        for directive in [
+            directive,
+            empty_response_recovery_reason(RecoveryMode::ToolFreeSynthesis).to_owned(),
+        ] {
+            let mut history = vec![uni::Message::system(directive)];
+            restore_fresh_turn_tool_guidance(&mut history, false);
+            assert_eq!(history.len(), 2, "the emitted synthesis directive must expire at a fresh turn");
+            restore_fresh_turn_tool_guidance(&mut history, false);
+            assert_eq!(history.len(), 2, "later fresh turns must not repeat restoration");
+        }
+        let mut enabled = vec![uni::Message::system(
+            empty_response_recovery_reason(RecoveryMode::ToolEnabledRetry).to_owned(),
+        )];
+        restore_fresh_turn_tool_guidance(&mut enabled, false);
+        assert_eq!(enabled.len(), 1, "tool-enabled recovery needs no restoration");
     }
 }

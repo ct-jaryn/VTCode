@@ -16,7 +16,7 @@ use crate::agent::runloop::unified::planning_workflow::{
     plan_repair_directive_for_error, resolve_plan_execution_target,
 };
 use crate::agent::runloop::unified::planning_workflow_state::{
-    PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT, PlanningWorkflowSessionState, short_confirmation_hint_with_fallback,
+    PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT, PlanningWorkflowSessionState, short_confirmation_hint,
 };
 use crate::agent::runloop::unified::state::CtrlCState;
 use crate::agent::runloop::unified::turn::context::{TurnHandlerOutcome, TurnLoopResult};
@@ -263,11 +263,11 @@ pub(crate) async fn maybe_handle_planning_exit_trigger(
         }
         PlanningIntent::StayInPlanning => {
             let hint = if load_plan_text_for_approval(tool_registry).await.is_ok() {
-                short_confirmation_hint_with_fallback()
+                short_confirmation_hint()
             } else {
-                PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT.to_string()
+                PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT
             };
-            display_status(renderer, &hint)?;
+            display_status(renderer, hint)?;
             super::resolve_plan_approval(
                 plan_session,
                 exit_context.telemetry.emitter,

@@ -97,7 +97,13 @@ pub(crate) async fn render_terminal_command_panel(
         let stdin_trimmed = stdin.trim();
         if stdin_trimmed != command.trim() {
             let prompt = format!("$ {stdin_trimmed}");
-            renderer.line(MessageStyle::ToolDetail, &prompt)?;
+            // Stdin echoes are secondary plumbing: keep them on the dim tool-detail
+            // tier so the captured stdout body remains the readable surface.
+            renderer.line_with_override_style(
+                MessageStyle::ToolDetail,
+                MessageStyle::ToolDetail.style().effects(anstyle::Effects::DIMMED),
+                &prompt,
+            )?;
         }
     }
 

@@ -15,6 +15,7 @@ Guide for switching VT Code between Claude model versions. This covers both end-
 | Claude Mythos Preview | Claude Fable 5 or Claude Mythos 5 | [Mythos Preview → Fable/Mythos 5](#mythos-preview--fablemuthos-5) |
 | Claude Opus 5 | Claude Fable 5 or Claude Mythos 5 | [Opus 5 → Fable/Mythos 5](#opus-5--fablemuthos-5) |
 | Claude Opus 5 | Claude Opus 5.5 | [Opus 5 → Opus 5.5](/docs/build-with-claude/migrating-to-claude-opus-5-5.md#opus-5--opus-55) |
+| Claude Sonnet 5 | Claude Sonnet 5.5 | [Sonnet 5 → Sonnet 5.5](/docs/build-with-claude/migrating-to-claude-sonnet-5-5.md#sonnet-5--sonnet-55) |
 | Claude Opus 4.8 | Claude Fable 5 or Claude Mythos 5 | [Opus 4.8 → Fable/Mythos 5](#opus-48--fablemuthos-5) |
 | Claude Opus 4.8 | Claude Opus 5 | [Opus 4.8 → Opus 5](#opus-48--opus-5) |
 | Claude Opus 4.7 | Claude Opus 5 | [Opus 4.7 → Opus 5](#opus-47--opus-5) |
@@ -30,23 +31,23 @@ Guide for switching VT Code between Claude model versions. This covers both end-
 
 Quick reference for Claude models in VT Code.
 
-| Feature | Claude Fable 5 | Claude Mythos 5 | Claude Opus 5.5 | Claude Opus 5 | Claude Sonnet 5 | Claude Haiku 4.5 |
-|---|---|---|---|---|---|---|
-| `ModelId` variant | `ClaudeFable5` | `ClaudeMythos5` | `ClaudeOpus55` | `ClaudeOpus5` | `ClaudeSonnet5` | `ClaudeSonnet5` |
-| Default model | No | No | No | No | **Yes** (`[default]`) | No |
-| Context window | 1M | 1M | 1M | 1M | 1M | 200k |
-| Max output | 128k | 128k | 128k | 128k | 128k | 64k |
-| Thinking mode | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Manual extended |
-| Effort parameter | — | — | low/medium/high/xhigh/max | low/medium/high/xhigh/max | low/medium/high/xhigh/max | — |
-| Manual extended thinking | Not supported | Not supported | Not supported | Not supported | Not supported | Supported |
-| Thinking can be disabled | **No** (400) | **No** (400) | **No** (400) | Yes, effort ≤ high | Yes | Yes |
-| Prefill | Not supported | Not supported | Not supported | Not supported | Not supported | Supported |
-| Sampling params | Default only | Default only | Default only | Default only | Default only | temp OR top_p |
-| Data retention | 30-day required | 30-day required | Standard | Standard | Standard | Standard |
-| Safety classifiers (refusal) | Yes | No | Yes (cyber, bio, reasoning_extraction) | Yes (cyber) | Yes (cyber) | No |
-| Priority Tier | Yes | No | — | No | No | Yes |
-| Effort default in VT Code | `high` | `high` | `medium` | `high` | `high` | N/A |
-| `thinking_display` default | `omitted` | `omitted` | `omitted` | `omitted` | `omitted` | `summarized` |
+| Feature | Claude Fable 5 | Claude Mythos 5 | Claude Opus 5.5 | Claude Opus 5 | Claude Sonnet 5.5 | Claude Sonnet 5 | Claude Haiku 4.5 |
+|---|---|---|---|---|---|---|---|
+| `ModelId` variant | `ClaudeFable5` | `ClaudeMythos5` | `ClaudeOpus55` | `ClaudeOpus5` | `ClaudeSonnet55` | `ClaudeSonnet5` | `ClaudeSonnet5` |
+| Default model | No | No | No | No | No | **Yes** (`[default]`) | No |
+| Context window | 1M | 1M | 1M | 1M | 1M | 1M | 200k |
+| Max output | 128k | 128k | 128k | 128k | 128k | 128k | 64k |
+| Thinking mode | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Adaptive (always on) | Manual extended |
+| Effort parameter | — | — | low/medium/high/xhigh/max | low/medium/high/xhigh/max | low/medium/high/xhigh/max | low/medium/high/xhigh/max | — |
+| Manual extended thinking | Not supported | Not supported | Not supported | Not supported | Not supported | Not supported | Supported |
+| Thinking can be disabled | **No** (400) | **No** (400) | **No** (400) | Yes, effort ≤ high | `between_tools` only | Yes | Yes |
+| Prefill | Not supported | Not supported | Not supported | Not supported | Not supported | Not supported | Supported |
+| Sampling params | Default only | Default only | Default only | Default only | Default only | Default only | temp OR top_p |
+| Data retention | 30-day required | 30-day required | Standard | Standard | Standard | Standard | Standard |
+| Safety classifiers (refusal) | Yes | No | Yes (cyber, bio, reasoning_extraction) | Yes (cyber) | Yes (cyber, bio, frontier_llm, reasoning_extraction, general_harms) | Yes (cyber) | No |
+| Priority Tier | Yes | No | — | No | — | No | Yes |
+| Effort default in VT Code | `high` | `high` | `medium` | `high` | `high` | `high` | N/A |
+| `thinking_display` default | `omitted` | `omitted` | `omitted` | `omitted` | `omitted` | `omitted` | `summarized` |
 
 
 ---
@@ -645,7 +646,8 @@ Use this when migrating across any model generation.
 - [ ] **Effort reviewed:** `provider.anthropic.effort` matches target model's supported levels; `xhigh`/`max` only used with `max_tokens >= 64k`
 - [ ] **Thinking config cleaned:** `extended_thinking_enabled` and `interleaved_thinking_budget_tokens` removed for adaptive-only models (Fable 5, Mythos 5, Opus 5, Opus 5.5, Sonnet 5); kept only for Haiku 4.5
 - [ ] **Thinking display set:** `thinking_display = "summarized"` if UI shows reasoning; defaults to `"omitted"` on Opus 4.7+ and Sonnet 5
-- [ ] **Thinking disable removed or capped:** Removed for Fable/Mythos 5 and Opus 5.5; effort ≤ `high` for Opus 5 / Sonnet 5
+- [ ] **Thinking disable removed or capped:** Removed for Fable/Mythos 5 and Opus 5.5; `between_tools` for Sonnet 5.5; effort ≤ `high` for Opus 5 / Sonnet 5
+- [ ] **Forced tool choice removed:** `tool_choice` reduced to `auto` for Sonnet 5.5, Opus 5.5 and Fable 5.1
 - [ ] **`max_tokens` revisited:** Raised for workloads that now run with adaptive thinking; accounts for new tokenizer (~30% more on Sonnet 5, Opus 4.7+)
 - [ ] **Prefill removed:** Replaced with structured outputs (`output_config.format`) or system prompt instructions
 - [ ] **Sampling parameters removed:** `temperature`, `top_p`, `top_k` removed for Opus 4.7+, Sonnet 5, Fable 5, Mythos 5
@@ -701,6 +703,7 @@ You rarely need to touch steps 3–5; the provider handles model differences int
 ## Get help
 
 - [Migrating to Claude Opus 5.5](/docs/build-with-claude/migrating-to-claude-opus-5-5.md) — Opus 5 → Opus 5.5 hop
+- [Migrating to Claude Sonnet 5.5](/docs/build-with-claude/migrating-to-claude-sonnet-5-5.md) — Sonnet 5 → Sonnet 5.5 hop
 - [VT Code config reference](/docs/config/CONFIG_FIELD_REFERENCE.md) — all `[provider.anthropic]` fields
 - [Extended thinking in VT Code](/docs/development/EXTENDED_THINKING.md) — thinking matrix and budget selection
 - [Adding models](/docs/development/ADDING_MODELS.md) — developer workflow for new model IDs

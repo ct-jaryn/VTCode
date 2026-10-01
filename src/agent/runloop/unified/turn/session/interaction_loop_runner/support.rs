@@ -20,7 +20,7 @@ use vtcode_core::tools::continuation::{PtyContinuationArgs, ReadChunkContinuatio
 use vtcode_core::tools::terminal_app::{EditorLaunchConfig, TerminalAppLauncher};
 use vtcode_core::tools::tool_intent::{VERIFIER_SHELL_FORM_NOTE, verifier_reference};
 use vtcode_core::ui::theme;
-use vtcode_core::ui::{inline_theme_from_core_styles, to_tui_appearance};
+use vtcode_core::ui::{inline_theme_from_core_styles, to_tui_appearance, to_tui_fullscreen};
 use vtcode_core::utils::ansi::MessageStyle;
 use vtcode_ui::tui::app::{ContentPart as UiContentPart, SubmittedInput};
 
@@ -244,6 +244,11 @@ fn show_tool_output_in_scrollback(text: &str, mouse_capture: bool) -> Result<()>
     };
 
     let mut stderr = io::stderr();
+    // Purge the alternate viewport before leaving so the fullscreen TUI frame
+    // is never revealed in the main scrollback (mirrors the canonical
+    // `panic_hook::restore_tui` ordering).
+    // Best-effort: a failed clear must not block the native scrollback view.
+    let _ = execute!(stderr, Clear(ClearType::All));
     execute!(stderr, LeaveAlternateScreen)?;
     if mouse_capture {
         let _ = execute!(stderr, DisableMouseCapture);
@@ -692,6 +697,7 @@ pub(super) fn apply_live_theme_and_appearance(
     let styles = theme::active_styles();
     handle.set_theme(inline_theme_from_core_styles(&styles));
     handle.set_appearance(to_tui_appearance(cfg));
+    handle.set_fullscreen_interaction(to_tui_fullscreen(cfg));
     handle.set_key_bindings(session_bootstrap.effective_key_bindings(cfg));
     crate::agent::runloop::unified::palettes::apply_prompt_style(handle);
     handle.force_redraw();
@@ -746,44 +752,6 @@ pub(super) fn refresh_live_ide_context_update(
             }
         }
     }
-}
-
-/// Load the most recent archived session and return an `InteractionOutcome::Resume`.
-///
-/// Queries `list_recent_sessions_in_scope(1, ...)`, loads the session, and
-/// returns the resume outcome. Returns `Ok(None)` if no sessions are found or
-/// the session cannot be loaded (error is rendered to the user).
-pub(crate) async fn try_resume_latest_session(
-    renderer: &mut vtcode_core::utils::ansi::AnsiRenderer,
-    workspace: &Path,
-    show_all: bool,
-) -> Result<Option<InteractionOutcome>> {
-    use vtcode_core::core::threads::{SessionQueryScope, list_recent_sessions_in_scope};
-
-    let scope = if show_all {
-        SessionQueryScope::All
-    } else {
-        SessionQueryScope::CurrentWorkspace(workspace.to_path_buf())
-    };
-
-    let Some(listing) = list_recent_sessions_in_scope(1, &scope)
-        .await
-        .context("failed to load recent sessions")?
-        .pop()
-    else {
-        renderer.line(MessageStyle::Info, "No archived sessions found.")?;
-        return Ok(None);
-    };
-
-    let identifier = listing.identifier().to_string();
-    try_resume_archived_session(
-        renderer,
-        &identifier,
-        ArchivedSessionIntent::ResumeInPlace,
-        "Resuming session",
-        "Resuming session",
-    )
-    .await
 }
 
 async fn try_resume_archived_session(
@@ -1001,7 +969,8 @@ pub(crate) async fn handle_select_primary_agent(
             sync_primary_agent_runtime(ctx, state).await?;
             set_primary_agent_display(ctx, display_name);
             // Activating the plan agent also enters the planning workflow so
-            // both "plan" concepts stay unified.
+            // both "plan" concepts stay unified. No researching indicator
+            // here: no request exists yet; the turn start renders it.
             if is_plan_agent && !ctx.tool_registry.is_planning_active() {
                 transition_to_planning_workflow(
                     ctx.tool_registry,

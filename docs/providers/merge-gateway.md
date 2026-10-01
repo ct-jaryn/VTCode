@@ -57,6 +57,7 @@ vtcode --provider merge-gateway --model anthropic/claude-opus-5
 | `anthropic/claude-opus-5` | 1M | Yes | Anthropic route |
 | `anthropic/claude-opus-5-5` | 1M | Yes | Anthropic route |
 | `anthropic/claude-sonnet-5` | 1M | Yes | Anthropic route |
+| `anthropic/claude-sonnet-5-5` | 1M | Yes | Anthropic route, adaptive thinking on by default, forced `tool_choice` rejected |
 | `google/gemini-3.6-flash` | 1M | Yes | Google route |
 | `google/gemini-3.7-flash` | 1M | Yes | Google route |
 | `deepseek/deepseek-v4-pro-0813` | 1M | No | DeepSeek route |
@@ -74,6 +75,7 @@ vtcode --provider merge-gateway --model anthropic/claude-opus-5
 | `openai/gpt-5.6-terra` | 1.1M | Yes | OpenAI route |
 | `openai/gpt-6-astra` | 1.05M | Yes | OpenAI route |
 | `openai/gpt-6-sol` | 1.05M | Yes | OpenAI route |
+| `openai/gpt-6.1-sol` | 1.05M | Yes | OpenAI route |
 | `openai/gpt-6-luna` | 1.05M | Yes | OpenAI route |
 
 These are the models shown in VT Code's picker. Merge model IDs are not a
@@ -159,6 +161,19 @@ through its existing response contract.
 - A model is rejected by Merge: confirm the exact vendor-prefixed route ID in
   Merge's catalog. VT Code deliberately does not reject unknown Merge IDs
   locally.
+- `capability_unavailable` (no vendor supports `streaming_tools`/`tools`):
+  brand-new routes may have no vendor serving streaming tool use yet. VT Code
+  retries streaming tool requests once without streaming; if the route has no
+  tool vendor at all the request fails closed — use `default_routing` or
+  another model until the route gains tool vendors. A proven no-tool-vendor
+  verdict is cached per session so later turns fail fast without burning
+  calls; tool-free requests always bypass the cache.
+- `service_tier` `422`/`400`: Merge only accepts `standard`/`flex`/`priority`,
+  and serves `flex` solely on routes priced for it (GPT-5.4/5.5/5.6 and Gemini
+  flash routes); `priority` is priced nowhere and always fails closed. VT Code
+  maps OpenAI tiers onto this vocabulary, drops unmapped ones (e.g.
+  `ultrafast`) with a warning, and retries a priced-out tier once without it
+  (serving standard) instead of failing.
 - Reasoning output is absent: Merge reasoning controls are route-specific and
   are not projected into the generic VT Code reasoning fields; the reasoning
   effort is still honored on reasoning-capable routes.

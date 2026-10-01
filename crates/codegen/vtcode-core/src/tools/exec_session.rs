@@ -18,7 +18,7 @@ use vtcode_bash_runner::{
 
 use crate::sandboxing::build_sanitized_env;
 use crate::tools::ExecSessionId;
-use crate::tools::output_spooler::{SpoolIntegrity, encode_digest_hex};
+use crate::tools::output_spooler::{SpoolIntegrity, SpoolLineCounter, encode_digest_hex};
 use crate::tools::pty::PtySize;
 use crate::tools::registry::{PtySessionGuard, PtySessionManager};
 use crate::tools::types::VTCodeExecSession;
@@ -32,6 +32,28 @@ const EXEC_SESSION_PREVIEW_TAIL_BYTES: usize = 8 * 1024;
 const EXEC_SESSION_COMPLETION_COMMAND_MAX_BYTES: usize = 512;
 const EXEC_SESSION_COMPLETION_DRAIN_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
 const EXEC_SESSION_COMPLETION_DRAIN_POLL: tokio::time::Duration = tokio::time::Duration::from_millis(15);
+/// Upper bound for watcher abort + backend close. Must cover the sum of inner
+/// bounds (2s watch abort x2 + 2s child reap + 5s reader join) plus margin so
+/// the outer timeout is not spurious while `spawn_blocking` finishes residual work.
+const EXEC_SESSION_CLOSE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(12);
+/// Budget for aborting a lifecycle watcher before abandoning it.
+const EXEC_SESSION_WATCH_ABORT_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+/// Budget for acquiring the output-read lock during close. An in-flight peek
+/// that never releases must not park close (and therefore the runloop).
+const EXEC_SESSION_OUTPUT_READ_LOCK_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+
+/// A missing runtime handle does not establish whether its command failed.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`. If completion is recorded, reuse its output. Missing session state does not prove failure; rerun only if fresh execution is still needed."
+)]
+pub(crate) struct ExecSessionNotFound {
+    pub(crate) session_id: crate::types::CompactStr,
+}
+
+fn missing_exec_session_error(session_id: &str) -> anyhow::Error {
+    ExecSessionNotFound { session_id: session_id.into() }.into()
+}
 
 /// Maximum number of live background command sessions owned by one runtime.
 pub const MAX_BACKGROUND_PROCESSES: usize = 3;
@@ -352,6 +374,7 @@ impl PipeSessionManager {
             let mut spool_redactor = vtcode_commons::sanitizer::StreamingSecretRedactor::default();
             let mut spool_hasher = Sha256::new();
             let mut spool_byte_count = 0_u64;
+            let mut spool_lines = SpoolLineCounter::default();
             loop {
                 match tokio::time::timeout(tokio::time::Duration::from_millis(15), output_rx.recv()).await {
                     Ok(Some(chunk)) => {
@@ -368,6 +391,7 @@ impl PipeSessionManager {
                                     spool_file = None;
                                 } else {
                                     spool_hasher.update(sanitized.as_bytes());
+                                    spool_lines.append(sanitized.as_bytes());
                                     spool_byte_count = spool_byte_count.saturating_add(sanitized.len() as u64);
                                 }
                             }
@@ -387,6 +411,7 @@ impl PipeSessionManager {
                 let write_failed = !sanitized.is_empty() && file.write_all(sanitized.as_bytes()).await.is_err();
                 if !write_failed && !sanitized.is_empty() {
                     spool_hasher.update(sanitized.as_bytes());
+                    spool_lines.append(sanitized.as_bytes());
                     spool_byte_count = spool_byte_count.saturating_add(sanitized.len() as u64);
                 }
                 // Spool files are live-read while the session runs, so every
@@ -397,6 +422,7 @@ impl PipeSessionManager {
                 } else {
                     *spool_integrity_for_task.lock() = Some(SpoolIntegrity {
                         byte_count: spool_byte_count,
+                        line_count: spool_lines.line_count(),
                         sha256: encode_digest_hex(spool_hasher.finalize()),
                     });
                 }
@@ -514,7 +540,7 @@ impl PipeSessionManager {
             let mut sessions = self.sessions.write().await;
             sessions
                 .remove(session_id)
-                .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))?
+                .ok_or_else(|| missing_exec_session_error(session_id))?
         };
 
         // Kill the whole process group even when the direct child has already
@@ -577,7 +603,7 @@ impl PipeSessionManager {
         sessions
             .get(session_id)
             .cloned()
-            .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))
+            .ok_or_else(|| missing_exec_session_error(session_id))
     }
 
     fn ensure_within_workspace(&self, candidate: &Path) -> Result<()> {
@@ -1266,7 +1292,13 @@ impl ExecSessionManager {
         record.termination_requested.store(true, Ordering::Release);
         let result = match record.backend {
             ExecSessionBackend::Pipe => self.pipe_sessions.terminate_session(session_id).await,
-            ExecSessionBackend::Pty => self.pty_sessions.manager().terminate_session(session_id),
+            ExecSessionBackend::Pty => {
+                let manager = self.pty_sessions.manager().clone();
+                let id = session_id.to_string();
+                tokio::task::spawn_blocking(move || manager.terminate_session(&id))
+                    .await
+                    .map_err(|join_error| anyhow!("exec session terminate task failed: {join_error}"))?
+            }
         };
         if result.is_err() {
             record.termination_requested.store(false, Ordering::Release);
@@ -1280,7 +1312,16 @@ impl ExecSessionManager {
         record.termination_requested.store(true, Ordering::Release);
         let result = match record.backend {
             ExecSessionBackend::Pipe => self.pipe_sessions.force_terminate_session(session_id).await,
-            ExecSessionBackend::Pty => self.pty_sessions.manager().force_terminate_session(session_id),
+            ExecSessionBackend::Pty => {
+                // PTY terminate performs a bounded child reap that sleeps;
+                // keep it off the async worker so ForceCancel over N sessions
+                // cannot stall the runloop.
+                let manager = self.pty_sessions.manager().clone();
+                let id = session_id.to_string();
+                tokio::task::spawn_blocking(move || manager.force_terminate_session(&id))
+                    .await
+                    .map_err(|join_error| anyhow!("exec session force-terminate task failed: {join_error}"))?
+            }
         };
         if result.is_err() {
             record.termination_requested.store(false, Ordering::Release);
@@ -1298,7 +1339,7 @@ impl ExecSessionManager {
                 let mut sessions = self.sessions.write().await;
                 sessions
                     .remove(session_id)
-                    .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))?
+                    .ok_or_else(|| missing_exec_session_error(session_id))?
             };
 
             let pending_background_request = self.clear_foreground_and_take_pending_request(session_id);
@@ -1306,44 +1347,11 @@ impl ExecSessionManager {
             (record, pending_background_request)
         };
 
-        let background_watch = record.background_watch.lock().take();
-        if let Some(watch) = background_watch {
-            watch.abort();
-            let _ = watch.await;
-        }
-        let foreground_watch = record.foreground_watch.lock().take();
-        if let Some(watch) = foreground_watch {
-            watch.abort();
-            let _ = watch.await;
-        }
+        // Capacity release must happen even if backend close times out: the
+        // record is already detached, so leaving counters elevated pins
+        // `Running PTY command...` and the composer lock forever.
+        let close_result = self.close_session_backend_bounded(session_id, &record).await;
 
-        // Do not close the backend while an output peek/drain is still using
-        // it. The unified record has already been removed, so this lock only
-        // waits for in-flight readers acquired before close.
-        let _output_read_guard = record.output_read_lock.lock().await;
-        let metadata = match record.backend {
-            ExecSessionBackend::Pipe => self.pipe_sessions.close_session(session_id).await,
-            ExecSessionBackend::Pty => self
-                .pty_sessions
-                .manager()
-                .close_session(session_id)
-                .map(VTCodeExecSession::from),
-        };
-        let metadata = match metadata {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                // Both backend close paths issue group termination before
-                // reporting their cleanup error, so do not strand capacity
-                // after the unified record has been removed.
-                self.release_foreground_pty_count(&record);
-                if pending_background_request {
-                    self.release_reserved_background_slot(true);
-                } else {
-                    self.release_background_slot(&record);
-                }
-                return Err(error);
-            }
-        };
         self.release_foreground_pty_count(&record);
         if pending_background_request {
             self.release_reserved_background_slot(true);
@@ -1351,9 +1359,84 @@ impl ExecSessionManager {
             self.release_background_slot(&record);
         }
 
-        let mut metadata = metadata;
+        let mut metadata = close_result?;
         metadata.background = record.background.load(Ordering::Acquire);
         Ok(metadata)
+    }
+
+    /// Abort lifecycle watchers and close the backend under a hard timeout.
+    ///
+    /// Watcher abort and the blocking PTY close are themselves the hang sites
+    /// (unbounded `join`/`wait`, or a watcher stuck in a sync section), so
+    /// this entire unit is time-bounded and the PTY close runs on
+    /// `spawn_blocking` to keep the async worker responsive. Pipe close stays
+    /// on the runtime (already async and internally timed).
+    async fn close_session_backend_bounded(
+        &self,
+        session_id: &str,
+        record: &Arc<ExecSessionRecord>,
+    ) -> Result<VTCodeExecSession> {
+        let background_watch = record.background_watch.lock().take();
+        if let Some(watch) = background_watch {
+            watch.abort();
+            if tokio::time::timeout(EXEC_SESSION_WATCH_ABORT_TIMEOUT, watch).await.is_err() {
+                tracing::warn!(%session_id, "background watcher did not stop within abort timeout");
+            }
+        }
+        let foreground_watch = record.foreground_watch.lock().take();
+        if let Some(watch) = foreground_watch {
+            watch.abort();
+            if tokio::time::timeout(EXEC_SESSION_WATCH_ABORT_TIMEOUT, watch).await.is_err() {
+                tracing::warn!(%session_id, "foreground watcher did not stop within abort timeout");
+            }
+        }
+
+        // Do not close the backend while an output peek/drain is still using
+        // it. The unified record has already been removed, so this lock only
+        // waits for in-flight readers acquired before close. The acquire is
+        // itself time-bounded: an abandoned peek holding the lock must not
+        // make close (and the runloop) wait forever.
+        let _output_read_guard =
+            match tokio::time::timeout(EXEC_SESSION_OUTPUT_READ_LOCK_TIMEOUT, record.output_read_lock.lock()).await {
+                Ok(guard) => Some(guard),
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        %session_id,
+                        "output read lock not available within timeout; closing session anyway"
+                    );
+                    None
+                }
+            };
+        let metadata = match record.backend {
+            ExecSessionBackend::Pipe => {
+                let pipe_sessions = self.pipe_sessions.clone();
+                let session_id_owned = session_id.to_string();
+                tokio::time::timeout(EXEC_SESSION_CLOSE_TIMEOUT, async move {
+                    pipe_sessions.close_session(&session_id_owned).await
+                })
+                .await
+            }
+            ExecSessionBackend::Pty => {
+                let pty_manager = self.pty_sessions.manager().clone();
+                let session_id_owned = session_id.to_string();
+                tokio::time::timeout(EXEC_SESSION_CLOSE_TIMEOUT, async move {
+                    tokio::task::spawn_blocking(move || {
+                        pty_manager.close_session(&session_id_owned).map(VTCodeExecSession::from)
+                    })
+                    .await
+                    .map_err(|join_error| anyhow!("exec session close task failed: {join_error}"))?
+                })
+                .await
+            }
+        };
+
+        match metadata {
+            Ok(result) => result,
+            Err(_elapsed) => Err(anyhow!(
+                "exec session '{session_id}' close timed out after {}s; record detached and counters released",
+                EXEC_SESSION_CLOSE_TIMEOUT.as_secs()
+            )),
+        }
     }
 
     /// Force-stop an active session, or close it when it has already exited.
@@ -1465,6 +1548,51 @@ impl ExecSessionManager {
         } else {
             Err(anyhow!("failed to terminate active exec sessions: {}", failures.join("; ")))
         }
+    }
+
+    /// Force-stop every foreground exec session and close it. Used by the TUI
+    /// ForceCancel escape hatch so a stuck PTY cannot keep the composer locked.
+    /// Closing after the kill is intentional: `force_terminate_or_close` alone
+    /// leaves live sessions attached ("remains visible until closed"), which
+    /// would keep the foreground counter elevated. Background sessions are
+    /// user-owned and are left alone. Returns `(stopped, closed, failed)`
+    /// counts where `stopped` are live kills and `closed` are already-exited
+    /// sessions removed from the map.
+    pub async fn force_cancel_foreground_sessions(&self) -> (usize, usize, usize) {
+        let ids = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .values()
+                .filter(|record| !record.background.load(Ordering::Acquire))
+                .map(|record| record.metadata.id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let mut stopped = 0usize;
+        let mut closed = 0usize;
+        let mut failed = 0usize;
+        for session_id in ids {
+            let was_running = self.is_session_completed(session_id.as_str()).await.ok().flatten().is_none();
+            if was_running {
+                if let Err(error) = self.force_terminate_session(session_id.as_str()).await {
+                    tracing::warn!(%session_id, %error, "force-cancel terminate failed");
+                }
+            }
+            match self.close_session(session_id.as_str()).await {
+                Ok(_) => {
+                    if was_running {
+                        stopped += 1;
+                    } else {
+                        closed += 1;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%session_id, %error, "force-cancel close failed");
+                    failed += 1;
+                }
+            }
+        }
+        (stopped, closed, failed)
     }
 
     /// Return the number of currently live background process reservations.
@@ -1798,7 +1926,7 @@ impl ExecSessionManager {
         sessions
             .get(session_id)
             .cloned()
-            .ok_or_else(|| anyhow!("exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`; do not invent or reuse an older session id. If the session already exited, re-run the command instead of waiting"))
+            .ok_or_else(|| missing_exec_session_error(session_id))
     }
 }
 
@@ -2538,6 +2666,147 @@ mod tests {
         Ok(())
     }
 
+    /// Regression: an already-exited session must close under a bounded wait
+    /// and always drop the foreground counter. An unbounded reader join here
+    /// used to freeze ForceTerminateOrClose and lock the composer.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn force_terminate_or_close_exited_pty_releases_foreground_count() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let foreground_count = Arc::new(AtomicUsize::new(0));
+        manager.set_foreground_pty_counter(Arc::clone(&foreground_count));
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        manager
+            .create_pty_session(
+                "pty-exit-close".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "exit 101".to_string()],
+                workspace_root,
+                size,
+                HashMap::new(),
+                None,
+            )
+            .await?;
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 1);
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.is_session_completed("pty-exit-close").await.ok().flatten().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("pty session should exit");
+
+        let closed = timeout(Duration::from_secs(8), manager.force_terminate_or_close("pty-exit-close"))
+            .await
+            .expect("force_terminate_or_close must return within the close timeout bound")?;
+        assert!(closed, "exited session should report already_exited=true");
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    /// ForceCancel must stop and detach foreground sessions and leave
+    /// background ones alone, so the foreground counter cannot stay elevated.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn force_cancel_foreground_sessions_skips_background() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let foreground_count = Arc::new(AtomicUsize::new(0));
+        manager.set_foreground_pty_counter(Arc::clone(&foreground_count));
+
+        manager
+            .create_pipe_session(
+                "force-cancel-fg".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
+                workspace_root.clone(),
+                HashMap::new(),
+            )
+            .await?;
+        manager
+            .create_pipe_session_with_sandbox_and_background(
+                "force-cancel-bg".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
+                workspace_root,
+                HashMap::new(),
+                false,
+                true,
+            )
+            .await?;
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 1);
+
+        let (stopped, closed, failed) = manager.force_cancel_foreground_sessions().await;
+        assert_eq!(failed, 0);
+        assert_eq!(closed, 0);
+        assert_eq!(stopped, 1);
+        assert!(
+            manager.session_record("force-cancel-bg").await.is_ok(),
+            "background session must remain after force-cancel"
+        );
+        assert!(manager.session_record("force-cancel-fg").await.is_err());
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 0);
+        manager.close_session("force-cancel-bg").await?;
+        Ok(())
+    }
+
+    /// Regression: force_terminate on a live PTY child must return within the
+    /// bounded reap budget and observe an exit status via try_wait (the child
+    /// is reaped, not abandoned).
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn force_terminate_reaps_live_pty_child() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        manager
+            .create_pty_session(
+                "pty-live-reap".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
+                workspace_root,
+                size,
+                HashMap::new(),
+                None,
+            )
+            .await?;
+
+        timeout(Duration::from_secs(8), manager.force_terminate_session("pty-live-reap"))
+            .await
+            .expect("force_terminate_session must return within the bounded reap budget")?;
+
+        // try_wait after kill must observe the child exited (i.e. it was reaped),
+        // not merely that the terminate call returned.
+        let exit = timeout(Duration::from_secs(2), manager.is_session_completed("pty-live-reap"))
+            .await
+            .expect("completion poll must not hang")?;
+        assert!(exit.is_some(), "force_terminate must reap the child to an exit status, got {exit:?}");
+
+        timeout(Duration::from_secs(8), manager.close_session("pty-live-reap"))
+            .await
+            .expect("close_session must return after force-terminate")?;
+        Ok(())
+    }
+
     #[tokio::test]
     #[cfg(all(unix, feature = "tui"))]
     async fn foreground_watcher_promotes_requested_pty_without_wait_polling() -> anyhow::Result<()> {
@@ -2827,5 +3096,42 @@ mod tests {
         let (total_bytes, truncated) = buffer.stats().await;
         assert_eq!(total_bytes, chunk.len() as u64);
         assert!(truncated);
+    }
+
+    /// Close must not deadlock or panic when a reader still holds
+    /// `output_read_lock` past `EXEC_SESSION_OUTPUT_READ_LOCK_TIMEOUT`.
+    /// Post-close reads must fail with a normal error, not a panic.
+    #[tokio::test]
+    async fn close_proceeds_cleanly_when_output_read_lock_is_held() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+
+        manager
+            .create_pipe_session(
+                "lock-race".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "printf hello".to_string()],
+                workspace_root,
+                HashMap::new(),
+            )
+            .await?;
+
+        let record = manager.session_record("lock-race").await?;
+        let _held = record.output_read_lock.lock().await;
+
+        // Close waits at most EXEC_SESSION_OUTPUT_READ_LOCK_TIMEOUT (1s) for
+        // the lock, then proceeds; bound the whole call so a hang fails fast.
+        let closed = timeout(Duration::from_secs(5), manager.close_session("lock-race")).await;
+        let session = closed
+            .expect("close_session must finish while the read lock is held")
+            .expect("close_session must succeed after the lock acquire timeout");
+        assert_eq!(session.id.as_str(), "lock-race");
+
+        drop(_held);
+
+        let after = manager.read_session_output("lock-race", true).await;
+        assert!(after.is_err(), "post-close read must be a clean error, got {after:?}");
+        Ok(())
     }
 }

@@ -756,7 +756,11 @@ function renderProposal(): void {
   if (!proposal) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.innerHTML = "<strong>No changes staged</strong><small>Edit a buffer, then review the draft.</small>";
+    const emptyTitle = document.createElement("strong");
+    emptyTitle.textContent = "No changes staged";
+    const emptyHint = document.createElement("small");
+    emptyHint.textContent = "Edit a buffer, then review the draft.";
+    empty.append(emptyTitle, emptyHint);
     view.append(empty);
     $("proposalState").textContent = "No proposal";
     $("proposalState").className = "state-badge";

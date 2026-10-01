@@ -34,7 +34,7 @@ pub(super) fn handle_paste(session: &mut Session, content: &str) {
     if let Some(modal) = session.modal_state_mut() {
         if let (Some(list), Some(search)) = (modal.list.as_mut(), modal.search.as_mut()) {
             search.insert(content);
-            list.apply_search(&search.query);
+            list.apply_search(&search.query, search.fuzzy);
             session.mark_dirty();
             return;
         }
@@ -45,7 +45,7 @@ pub(super) fn handle_paste(session: &mut Session, content: &str) {
         if let Some(search) = wizard.search.as_mut() {
             search.insert(content);
             if let Some(step) = wizard.steps.get_mut(wizard.current_step) {
-                step.list.apply_search(&search.query);
+                step.list.apply_search(&search.query, search.fuzzy);
             }
             session.mark_dirty();
             return;
@@ -213,6 +213,28 @@ pub(crate) fn dispatch_rebindable_action(session: &mut Session, action: Action) 
             session.mark_dirty();
             Some(InlineEvent::RequestInlinePromptSuggestion(session.input_manager.content().to_string()))
         }
+        Action::JumpToLastChange => {
+            // Only jump while scrolled away from the change. At the live bottom
+            // the legacy Ctrl+End cursor/scroll behavior wins, so a stale tracked
+            // change cannot turn the key into a no-op.
+            if session.should_show_jump_to_last_change() && session.jump_to_last_change() {
+                Some(InlineEvent::JumpToLastChange)
+            } else if session.user_scrolled {
+                // Scrolled up but no live target (fresh/cleared transcript):
+                // fall back to the legacy bottom jump.
+                session.scroll_to_bottom();
+                Some(InlineEvent::JumpToLastChange)
+            } else if session.input_enabled {
+                // Not scrolled and nothing to jump to: preserve legacy cursor-end
+                // instead of swallowing the key.
+                session.clear_inline_prompt_suggestion();
+                session.move_to_end();
+                session.mark_dirty();
+                None
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -349,9 +371,11 @@ pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<Inline
         }
     }
 
-    // Arrow-Up/Down move within multiline input first; history traversal
-    // only happens at the first/last logical line. Ctrl+P/N remain
-    // unconditional history shortcuts via the hardcoded paths below.
+    // Arrow-Up/Down navigate history only for single-row input. A multi-row
+    // composer (soft-wrapped or logical lines) always consumes Up/Down as
+    // intra-buffer cursor moves (no-op at the first/last visual row).
+    // Ctrl+P/N remain unconditional history shortcuts via the hardcoded
+    // paths below.
     // Shift is excluded so Shift+Up/Down keep their prior fallback behavior
     // instead of being consumed as plain cursor moves (which would discard
     // selection semantics). Rebound or explicitly unbound Up/Down fall through
@@ -371,6 +395,18 @@ pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<Inline
             _ => false,
         };
         if cursor_move_claims_key {
+            if session.is_multi_row_composer() {
+                // Multi-row composer (soft-wrapped or logical lines) consumes
+                // Up/Down as intra-buffer moves (no-op at the first/last
+                // visual row) and never traverses history.
+                if matches!(key.code, KeyCode::Up) {
+                    let _ = session.move_up_within_composer();
+                } else {
+                    let _ = session.move_down_within_composer();
+                }
+                session.mark_dirty();
+                return None;
+            }
             match key.code {
                 KeyCode::Up => {
                     if session.move_cursor_up_for_history() {

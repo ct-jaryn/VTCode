@@ -242,10 +242,10 @@ impl Tool for StartPlanningTool {
 
         Ok(json!({
             "status": "success",
-            "message": "Entered Planning workflow. Mutating actions are disabled for exploration and planning.",
+            "message": "Entered Planning workflow. Mutating actions are disabled for exploration and planning. Continue this turn with read-only research only; do not attempt apply_patch, write_file, or other mutations — they will be rejected and can end the turn as blocked.",
             "plan_file": self.display_path(&plan_file),
             "instructions": [
-                "1. Explore files and capture repository facts before drafting the plan",
+                "1. Explore files and capture repository facts before drafting the plan (read-only tools only)",
                 "2. Ask or close only material blocking decisions",
                 "3. Emit one compact <proposed_plan> spec (fit ~1500 tokens; steps as `Action -> files: [path] -> verify: [command]`, file:symbol refs over prose) and persist it to the plan file"
             ],

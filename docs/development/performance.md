@@ -131,6 +131,74 @@ measurements still work when `sccache` is configured but unavailable. Set
 
 Use this loop for any non-trivial performance change. Change one thing at a time so the comparison stays attributable.
 
+## TUI hotpath profiling
+
+The `vtcode-ui` crate is instrumented with [hotpath](https://hotpath.rs/) for
+function timing and allocation attribution. Profile the TUI hot paths **from
+this workspace** (the `profiling` feature lives on `vtcode-ui`):
+
+```bash
+# From the repo root of this branch (not a checkout without the feature):
+cargo run -p vtcode-ui --features vtcode-ui/profiling --example tui_hotpath
+```
+
+If you see `the package 'vtcode-ui' does not contain this feature: profiling`,
+you are in a tree that predates the feature — switch to the branch/worktree
+that has `profiling` in `crates/codegen/vtcode-ui/Cargo.toml`.
+
+This prints a timing + alloc report on exit (reflow, wrap, render, input).
+Root `--features profiling` also forwards `vtcode-ui/profiling` so the full
+binary runloop and TUI can be profiled together.
+
+TUI invariants found via hotpath (keep these):
+
+- Bottom-follow (`offset == 0`) appends never force a transcript reflow for
+  scroll adjust; scrolled-up views still recompute to keep the view stable.
+- Predecessor reflow is limited to Tool/Pty block edges and Info/Warning/Error
+  group heads — plain Agent↔Agent streaming must not double-reflow.
+- Link projection fast-rejects when `may_contain_link_candidate_text` is false
+  (no path chars and no `.`); bare workspace filenames still match via `.`.
+- Eviction uses `TranscriptReflowCache::evict_prefix`, never a full wipe.
+- Single-style ASCII prose uses `wrap_ascii_word_boundaries` (no grapheme
+  clustering / `clip_line`); other lines keep the full wrapper.
+- Transcript lines are pre-wrapped to `content_width`; `TranscriptWidget` must
+  not re-wrap in `Paragraph` every frame.
+- Common transcript frames (no queue overlay, no links, no indicator shimmer)
+  paint via `paint_pre_wrapped_lines` (`Buffer::set_span`) — do not clone
+  `Line`s into `Paragraph`. Bottom padding is empty space, not a reason to
+  clone/pad the line list.
+- Header content paints via `Buffer::set_span`; the block title is cached
+  (`header_block_title_cache`) and invalidated with `header_lines_cache`.
+  Do not rebuild `Paragraph` + `Block::title(...)` every frame.
+- `build_input_render` is fingerprint-cached (size/content_len/cursor/flags).
+
+## TUI frame metrics
+
+Steady-state TUI jank (frame drops, input lag under streaming tool/PTY load) is
+diagnosed with an opt-in sampler in `vtcode-ui` (`tui/frame_metrics.rs`):
+
+```bash
+VTCODE_TUI_FRAME_METRICS=1 vtcode
+```
+
+When enabled, `render_if_dirty` records draw and input-to-draw durations into a
+256-sample ring and logs a windowed summary (p50/p95/max, slow counts, frames
+drawn/skipped) every 5s on the `vtcode.tui.latency` target. When the flag is
+unset the sampler is a no-op.
+
+Slow thresholds match the existing debug logs: draw ≥ 8ms, input-to-draw ≥ 16ms.
+
+Related TUI invariants to preserve when optimizing the render path:
+
+- Streaming appends use `mark_transcript_line_dirty` (not `mark_dirty`) so header
+  and sidebar caches survive every chunk.
+- Transcript eviction drops only the evicted prefix of the reflow cache
+  (`TranscriptReflowCache::evict_prefix`); do not call full
+  `invalidate_transcript_cache` on eviction.
+- Hover and scroll use `mark_visual_dirty`; only content changes drop caches.
+- Capture retention is bounded (`TUI_TOOL_OUTPUT_CAPTURE_MAX_LINES`,
+  `TUI_TOOL_OUTPUT_BLOCKS_MAX`, `TUI_COMPACT_ACTIVITY_MAX_ENTRIES`).
+
 ## Standalone startup benchmark
 
 Startup policy is defined by the command case and launch state, not by one
@@ -246,12 +314,15 @@ early startup work is observable without adding work to normal launches.
   `run_harness_retention`, spawned only after `initialize_session_ui` returns
   (first paint is available), never inside `initialize_harness`. iTerm2 icon
   ensure is `spawn_blocking`.
-- **Palette probe must not block first paint.** The OSC probe (50 ms timeout)
-  is started in bootstrap. `initialize_session_ui` only calls
-  `note_crossterm_raw_mode()` before `spawn_session_with_options` so a late
-  `RawModeGuard` restore cannot undo crossterm raw mode; it does **not** await
-  the probe before spawn. `await_terminal_palette_probe()` runs after spawn to
-  drain TTY replies and settle theme before the first model turn.
+- **Palette probe is awaited before TUI spawn (bounded, usually instant).** The
+  OSC probe (50 ms timeout) is started in bootstrap and overlaps
+  startup-context resolution. `initialize_session_shell` awaits it before
+  `spawn_session_with_options` so late `OSC 10/11/4` replies cannot race the
+  TUI event loop for `/dev/tty` bytes and leak as `10;rgb:...` input;
+  `note_crossterm_raw_mode()` is still called before spawn so a late
+  `RawModeGuard` restore cannot undo crossterm raw mode. `await_terminal_palette_probe()`
+  after spawn settles theme before the first model turn. Stragglers from slow
+  terminals are swallowed by the vendored crossterm `parse_osc` backstop.
 - **Reuse the loaded session config.** `ToolRegistry::new_with_loaded_config`
   reuses the merged `VTCodeConfig` snapshot instead of a second
   `ConfigManager::load_from_workspace` parse; `ToolRegistry::new` remains for

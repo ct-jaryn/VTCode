@@ -12,6 +12,8 @@ During planning, the agent can:
 - run explicitly safe inspection or validation commands when the active permission policy allows them
 - ask clarifying questions through `request_user_input`
 
+The footer shows `Planning...` only while a planning turn is active; a completed or rejected draft returns to idle while Plan mode remains selected. Canonical step metadata uses `-> files:` and `-> verify:`; arrows inside action prose or quoted verification patterns remain content. List separate verification commands as comma-separated entries rather than semicolon chains. Documentation checks such as `npx markdownlint-cli2 README.md` are valid verification commands. Markdown-only steps may use `verify: [skip Markdown lint if unavailable]` as their sole check; code or mixed-target steps still require an ordinary command or observable check. If the Markdown linter is unavailable, skip that optional check, report it as skipped, and continue with a diff and local-link review using available tools. Do not install tooling solely for this check. Lint errors from an available tool are failures to fix, not grounds to skip validation.
+
 The planning agent does not implement changes, shell-write plan files, or use file-writing tools for plan persistence. It emits exactly one final `<proposed_plan>` block when the plan is ready. The runtime validates and persists that plan, then exposes approval controls. During an approved handoff, the runtime creates and persists the `task_tracker` before handing off to the write-capable `build` agent or configured `auto` workflow.
 
 The built-in `plan` agent's permission rules allow `read`, `request_user_input`, and `bash` so its wire catalog keeps `exec_command`, `code_search`, `grep_file`, and the interview tool visible. Read-only enforcement is not delegated to those permissions: the planning dispatch gate hard-blocks every mutating tool call (and non-allow-listed shell command) before execution, so granting `bash` admits the tool without weakening plan-mode safety. The `plan` agent is also excluded by name from approved-plan execution routing — selecting it always re-enters planning, never implementation.
@@ -20,7 +22,7 @@ The built-in `plan` agent's permission rules allow `read`, `request_user_input`,
 
 Blocked and denied tool calls are bounded per turn to prevent retry churn. The configured `tools.max_consecutive_blocked_tool_calls_per_turn` value remains the consecutive-call cap. The total fuse is two times that cap in normal mode, four times that cap in Plan Mode, and the consecutive cap in recovery mode. The fuse is strict: with a cap of `3`, Plan Mode permits 12 non-consecutive blocked calls and stops on call 13. A successful or otherwise allowed call resets the consecutive streak, but not the turn's total blocked-call count.
 
-When a turn stops because of blocked behavior, VT Code forces a session-history checkpoint before writing the blocked handoff. The handoff advertises `vtcode --resume <archive-id>` only after that archive is successfully persisted and its identifier is verified. If history persistence is disabled or the checkpoint fails, the handoff explains that resume is unavailable and does not advertise a misleading command. Interactive sessions return to the next input after the handoff.
+When a turn stops because of blocked behavior, VT Code forces a session-history checkpoint before writing the blocked handoff. The handoff advertises `vtcode --resume <archive-id>` only after that archive is successfully persisted and its identifier is verified. If history persistence is disabled or the checkpoint fails, the handoff explains that resume is unavailable and does not advertise a misleading command. Interactive sessions return to the next input after the handoff — except for recoverable blocked ends (budgets, safety caps, blocked-tool fuse, tool-free recovery), which auto-continue a bounded follow-up turn in every mode before control returns to you; manual `continue` matters once that budget (`agent.harness.continuation.cross_turn_turns`) is exhausted.
 
 Runner paths that do not create session archives also omit the resume command and state that limitation in the handoff.
 
@@ -42,7 +44,10 @@ Shell commands in plan mode are validated against a read-only allow-list. Allowe
 - inspection base commands: `rg`, `ls`, `cat`, `sed`, `grep`, `find`, `head`, `tail`, `fd`, `tree`, `stat`, `file`, `which`, `jq`, and similar
 - discovery commands must remain static: use literal `find` paths with quoted patterns, or prefer `rg --files`; dynamic `find` option/predicate expansion such as `$()`, backticks, variables, or brace expansion is rejected by the command-safety gate
 - `cd` prefixes: `cd <dir> && <read-only command>` (changing directory mutates nothing)
-- read-only subcommands: `git status|log|diff|show|blame|ls-files|rev-parse|describe|shortlog|grep`, `cargo check|test|clippy|metadata|tree|nextest run`, `npm|pnpm|yarn test`
+- read-only subcommands: `git status|log|diff|show|blame|ls-files|rev-parse|describe|shortlog|grep|rev-list|ls-tree|cat-file|diff-tree|merge-base|range-diff|whatchanged|count-objects|var|version|help`, `cargo check|test|clippy|metadata|tree|nextest run`, `npm|pnpm|yarn test`
+- git repository redirects: `git -C <dir> <read-only subcommand>` (only changes which repository is read; `-c` config injection stays rejected)
+- git list-form subcommands: bare/flag-only `git tag`, `git branch`, `git remote`, `git reflog`, plus `git stash list|show` and `git worktree list` (operand forms such as `git tag v1`, `git branch -D x`, `git stash pop`, `git remote add` are rejected, as are upstream/description mutators like `git branch --set-upstream-to=<ref>`)
+- version/help probes for any program: `cargo --version`, `python3 -V`, `bash --help` — every trailing word must be a probe flag (`-h`, `--help`, `-V`, `--version`)
 - `&&` chains and `|` pipelines where every segment is itself read-only
 - static `;` chains where every segment is independently read-only; literal-output `printf` is allowed as an inspection-output separator
 - `2>&1` stderr merges (no file is written)
@@ -58,7 +63,12 @@ positive and 1-based; the compatibility form `index: 0` is reserved for
 checklist-level completion with `status: "completed"`. Planning workflow
 updates accept positive flat indices or positive hierarchical `index_path`
 values such as `2.1`. Use `items` for bulk synchronization rather than an
-item index.
+item index. Bulk synchronization replaces the full checklist, including its
+progress and metadata. Send complete descriptions with status prefixes or
+actual objects such as `{"description":"Review links","status":"completed"}`.
+JSON-encoded update commands inside strings are rejected before changing the
+tracker. To change one existing step while preserving its description and
+metadata, use `{"action":"update","index_path":"1","status":"completed"}`.
 
 Successful tracker updates honor display mode: compact shows header plus the
 single current task (`  ▶ …`, first `in_progress` leaf else first
@@ -89,7 +99,11 @@ You can also press `Tab` on an empty idle composer to cycle to the `plan` primar
 
 ### Use `/plan`
 
-`/plan` starts or continues the planning workflow. It is a workflow command, not a session state selector.
+`/plan` starts or continues the planning workflow. Entering planning is a full
+switch to the built-in `plan` primary agent: the session header badge shows
+Plan, and the prompt, tool catalog, and permissions match plan mode. `/plan off`
+finishes planning and restores the previous execution agent (`build`/`auto`)
+when one was recorded.
 
 While a turn is actively processing, `/plan` is dropped with a notice (mode switches are locked for the duration of a turn). The automatic in-turn planning intent detection still engages on its own; only explicit `/plan` entry while busy is deferred.
 
@@ -111,8 +125,11 @@ Enter Planning workflow?
 ```
 
 - **Enter Planning workflow** — starts planning; read-only research begins and
-  mutating tools stay disabled until you approve execution. The runtime persists
-  the validated plan after the final `<proposed_plan>` is emitted.
+  mutating tools stay disabled until you approve execution. The header badge
+  switches to Plan immediately, and the plan primary agent is selected after
+  the turn so prompt/tools match. Research continues in the same turn (the
+  entry does not stop the turn). The runtime persists the validated plan after
+  the final `<proposed_plan>` is emitted.
 - **Continue without Planning workflow** — the agent proceeds without planning
   (mutating tools remain enabled).
 
@@ -120,10 +137,16 @@ This gate prevents the agent from silently switching into plan mode; you decide
 whether to plan before any edits begin. Full-auto and skip-confirmations
 policies accept the suggestion directly, including in an interactive UI.
 
+Mode-switch failures are recoverable and logged under the
+`vtcode.planning_workflow` target with a `switch_path` field (`plan_entry`,
+`plan_approval`, `plan_exit`, `startup_plan_entry`). A failed plan-agent
+selection keeps Planning active and the Plan header visible; a failed
+approval handoff keeps the approved plan and allows retry.
+
 Execution agents such as `build`, `auto`, and `duck` can invoke the
 `start_planning` tool when a request is demanding, ambiguous, or has multiple
 phases. The tool only presents the entry prompt; it does not silently change
-mode. Straightforward requests continue directly in the active execution
+mode until you confirm. Straightforward requests continue directly in the active execution
 agent. In a headless session without an automatic execution policy, the
 suggestion is reported as pending and the turn stops safely; use `/plan` on the
 next turn to confirm entry. Full-auto or skip-confirmations policies may accept
@@ -595,7 +618,11 @@ the pending call in the same turn, emits `session_tool_limit_increased`, and
 preserves the granted session fuse across runtime limit refreshes and the next
 turn. A denial remains an explicit denial. The analogous tool-loop prompt emits
 `tool_loop_limit_increased` and keeps tools enabled for the current agent; it
-does not enter tool-free recovery. Transient bridge submissions, including
+does not enter tool-free recovery. Only the first tool-loop grant in a session
+prompts: after one manual grant, later tool-loop limit hits auto-grant the
+remaining increment without a prompt (a denial never latches that
+preauthorization, so the prompt returns if you previously denied). Full-auto
+auto-grants regardless, and the hard cap still applies. Transient bridge submissions, including
 mode-switch input, are deferred or ignored while the prompt owns input and are
 not interpreted as a denial.
 

@@ -40,6 +40,10 @@ pub const SPACING_NORMAL: u16 = 2;
 /// Loose spacing (4 cells).
 pub const SPACING_LOOSE: u16 = 4;
 
+/// Target column width before a trailing `value` in list rows (settings,
+/// model capabilities). Shorter titles are padded so values line up.
+pub const VALUE_COL: usize = 28;
+
 #[cfg(test)]
 mod tests {
     use super::*;

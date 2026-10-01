@@ -1,3 +1,4 @@
+use crate::agent::runloop::ui_list;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -5,7 +6,7 @@ use chrono::Local;
 
 use vtcode_core::config::loader::{ConfigManager, VTCodeConfig};
 use vtcode_core::ui::theme;
-use vtcode_core::ui::{inline_theme_from_core_styles, to_tui_appearance};
+use vtcode_core::ui::{inline_theme_from_core_styles, to_tui_appearance, to_tui_fullscreen};
 use vtcode_core::utils::ansi::{AnsiRenderer, MessageStyle};
 use vtcode_core::utils::session_archive::SessionListing;
 use vtcode_ui::tui::app::{InlineHandle, InlineListItem, InlineListSearchConfig, InlineListSelection};
@@ -80,14 +81,14 @@ pub(crate) fn show_theme_palette(renderer: &mut AnsiRenderer, mode: ThemePalette
             None
         };
         let scheme_hint = if theme::is_light_theme(id) { "light" } else { "dark" };
-        items.push(InlineListItem {
-            title: label.to_string(),
-            subtitle: Some(format!("id: {id} • {scheme_hint}")),
-            badge,
-            indent: 0,
-            selection: Some(InlineListSelection::Theme(id.to_string())),
-            search_value: Some(theme_search_value(id, label)),
-        });
+        let mut row = ui_list::choice(
+            label.to_string(),
+            Some(format!("id: {id} • {scheme_hint}")),
+            Some(InlineListSelection::Theme(id.to_string())),
+        );
+        row.badge = badge;
+        row.search_value = Some(theme_search_value(id, label));
+        items.push(row);
     }
 
     if items.is_empty() {
@@ -104,6 +105,7 @@ pub(crate) fn show_theme_palette(renderer: &mut AnsiRenderer, mode: ThemePalette
         Some(InlineListSearchConfig {
             label: String::new(),
             placeholder: Some(THEME_SEARCH_PLACEHOLDER.to_string()),
+            fuzzy: false,
         }),
     );
 
@@ -146,6 +148,7 @@ pub(crate) fn show_mode_palette(
             indent: 0,
             selection: Some(InlineListSelection::ConfigAction(format!("{}{}", MODE_ACTION_PREFIX, spec.name))),
             search_value: Some(format!("{} {} agent mode", spec.name, spec.description)),
+            ..Default::default()
         });
     }
 
@@ -157,6 +160,7 @@ pub(crate) fn show_mode_palette(
         Some(InlineListSearchConfig {
             label: String::new(),
             placeholder: Some(MODE_SEARCH_PLACEHOLDER.to_string()),
+            fuzzy: false,
         }),
     );
 
@@ -228,6 +232,7 @@ pub(crate) fn show_sessions_palette(
             indent: 0,
             selection: Some(InlineListSelection::Session(listing.identifier())),
             search_value: Some(session_search_value(listing, &ended_local.to_string(), &duration_label, tool_count)),
+            ..Default::default()
         });
     }
 
@@ -255,6 +260,7 @@ pub(crate) fn show_sessions_palette(
         Some(InlineListSearchConfig {
             label: String::new(),
             placeholder: Some(SESSIONS_SEARCH_PLACEHOLDER.to_string()),
+            fuzzy: false,
         }),
     );
     Ok(true)
@@ -262,28 +268,24 @@ pub(crate) fn show_sessions_palette(
 
 pub(crate) fn show_fork_mode_palette(renderer: &mut AnsiRenderer, session_id: &str) -> Result<bool> {
     let items = vec![
-        InlineListItem {
-            title: "Copy full history".to_string(),
-            subtitle: Some("Start the fork with the full archived transcript.".to_string()),
-            badge: Some("Default".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::SessionForkMode {
+        ui_list::choice(
+            "Copy full history",
+            Some("Start the fork with the full archived transcript.".to_string()),
+            Some(InlineListSelection::SessionForkMode {
                 session_id: session_id.to_string(),
                 summarize: false,
             }),
-            search_value: Some("copy full history fork transcript".to_string()),
-        },
-        InlineListItem {
-            title: "Start summarized fork".to_string(),
-            subtitle: Some("Compact the source session into summary plus retained user prompts.".to_string()),
-            badge: Some("Summary".to_string()),
-            indent: 0,
-            selection: Some(InlineListSelection::SessionForkMode {
+        )
+        .with_search_value("copy full history fork transcript".to_string()),
+        ui_list::choice(
+            "Start summarized fork",
+            Some("Compact the source session into summary plus retained user prompts.".to_string()),
+            Some(InlineListSelection::SessionForkMode {
                 session_id: session_id.to_string(),
                 summarize: true,
             }),
-            search_value: Some("summary summarized compact fork handoff".to_string()),
-        },
+        )
+        .with_search_value("summary summarized compact fork handoff".to_string()),
     ];
 
     let lines = vec![format!("This fork starts from session {session_id}.")];
@@ -339,6 +341,7 @@ pub(crate) async fn refresh_runtime_config_from_manager(
     let styles = theme::active_styles();
     handle.set_theme(inline_theme_from_core_styles(&styles));
     handle.set_appearance(to_tui_appearance(&runtime_config));
+    handle.set_fullscreen_interaction(to_tui_fullscreen(&runtime_config));
     handle.set_key_bindings(session_bootstrap.effective_key_bindings(&runtime_config));
 
     let provider_label = {
@@ -431,7 +434,13 @@ pub(crate) async fn handle_palette_selection(
                 match apply_settings_action(state.as_mut(), action) {
                     Ok(outcome) => {
                         if let Some(message) = outcome.message {
-                            renderer.line(MessageStyle::Info, &message)?;
+                            let tone = outcome.tone.unwrap_or(if outcome.saved {
+                                vtcode_commons::ui_protocol::InlineTone::Success
+                            } else {
+                                vtcode_commons::ui_protocol::InlineTone::Accent
+                            });
+                            state.status = Some(vtcode_commons::ui_protocol::InlineStatus::new(tone, message.clone()));
+                            renderer.line(MessageStyle::Info, &format!("Settings: {message}"))?;
                         }
                         if outcome.saved
                             && let Err(err) = refresh_runtime_config_from_manager(
@@ -445,17 +454,18 @@ pub(crate) async fn handle_palette_selection(
                             )
                             .await
                         {
-                            renderer.line(
-                                MessageStyle::Warning,
-                                &format!("Settings saved, but the running session kept its last valid runtime config: {err:#}"),
-                            )?;
+                            let warning = format!(
+                                "Settings saved, but the running session kept its last valid runtime config: {err:#}"
+                            );
+                            state.status = Some(vtcode_commons::ui_protocol::InlineStatus::warning(warning.clone()));
+                            renderer.line(MessageStyle::Warning, &warning)?;
                         }
                     }
                     Err(err) => {
-                        renderer.line(
-                            MessageStyle::Warning,
-                            &format!("Could not apply settings change; keeping the last valid configuration: {err:#}"),
-                        )?;
+                        let warning =
+                            format!("Could not apply settings change; keeping the last valid configuration: {err:#}");
+                        state.status = Some(vtcode_commons::ui_protocol::InlineStatus::error(warning.clone()));
+                        renderer.line(MessageStyle::Error, &warning)?;
                     }
                 }
             }

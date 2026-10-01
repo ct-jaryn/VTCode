@@ -13,7 +13,7 @@ pub use metric::{
     EvalMetric, aggregate_metrics, compute_metric, compute_metric_with_k, pass_all_k, pass_at_k, pass_at_k_with_k,
     pass_power_k,
 };
-pub use report::{EvalReport, SuiteReport, TaskReport, build_task_report};
+pub use report::{CostEfficiency, EvalReport, SuiteReport, TaskReport, build_task_report, priced_cost};
 pub use suite::EvalSuite;
 pub use task::{EvalCategory, EvalRunResult, EvalTask, RunOutcome};
 pub use test_quality::{TestQualitySummary, analyze_test_source};

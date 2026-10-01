@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 /// user profile with a generic name.
 pub const ITERM2_PROFILE_NAME: &str = "VT Code";
 
+/// Name of iTerm2's built-in default profile, used as the restore fallback
+/// when the session's original profile cannot be determined.
+pub const ITERM2_DEFAULT_PROFILE_NAME: &str = "Default";
+
 /// Filename of the shipped iTerm2 dynamic profile.
 pub const ITERM2_DYNAMIC_PROFILE_FILENAME: &str = "vtcode.json";
 
@@ -58,6 +62,23 @@ pub fn should_apply_iterm2_profile_now() -> bool {
         .map(|path| path.exists())
         .unwrap_or(false);
     should_apply_iterm2_profile(iterm_session, tmux_session, installed)
+}
+
+/// The profile name to restore after VT Code's one-shot icon switch.
+///
+/// Reads iTerm2's `ITERM_PROFILE`, which is fixed at session creation and is
+/// **not** updated by `OSC 1337;SetProfile=`, so it still names the session's
+/// original profile after the switch. Returns `None` when the value is unset,
+/// empty, or already [`ITERM2_PROFILE_NAME`]: in that case there is nothing to
+/// restore (the session already uses the shipped profile, or we cannot tell
+/// what to revert to without hijacking an unrelated profile).
+pub fn original_iterm2_profile_name() -> Option<String> {
+    let name = env::var("ITERM_PROFILE").ok()?;
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed == ITERM2_PROFILE_NAME {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// Supported terminal emulators.
@@ -470,5 +491,29 @@ mod tests {
         assert!(!should_apply_iterm2_profile(true, true, true));
         assert!(!should_apply_iterm2_profile(true, false, false));
         assert!(!should_apply_iterm2_profile(false, false, false));
+    }
+
+    #[test]
+    fn original_iterm2_profile_name_returns_session_profile() {
+        let env = crate::env_lock::lock();
+        let previous = env::var_os("ITERM_PROFILE");
+        env.set_var("ITERM_PROFILE", "  Solarized Dark  ");
+        assert_eq!(original_iterm2_profile_name().as_deref(), Some("Solarized Dark"));
+        env.restore_var("ITERM_PROFILE", previous);
+    }
+
+    #[test]
+    fn original_iterm2_profile_name_skips_shipped_profile() {
+        let env = crate::env_lock::lock();
+        let previous = env::var_os("ITERM_PROFILE");
+        env.set_var("ITERM_PROFILE", ITERM2_PROFILE_NAME);
+        assert_eq!(original_iterm2_profile_name(), None);
+
+        env.set_var("ITERM_PROFILE", "   ");
+        assert_eq!(original_iterm2_profile_name(), None);
+
+        env.remove_var("ITERM_PROFILE");
+        assert_eq!(original_iterm2_profile_name(), None);
+        env.restore_var("ITERM_PROFILE", previous);
     }
 }

@@ -1,15 +1,10 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ratatui::{
     Terminal,
     backend::{Backend, ClearType as BackendClearType},
-    crossterm::{
-        cursor::{MoveToColumn, SetCursorStyle},
-        execute,
-        terminal::{Clear, ClearType as CrosstermClearType},
-    },
 };
 
 /// Mouse pointer shape states, mirroring standard text editor cursors.
@@ -73,11 +68,11 @@ pub(super) fn finalize_terminal<B: Backend>(terminal: &mut Terminal<B>, use_alte
         return Ok(());
     }
 
-    execute!(io::stderr(), MoveToColumn(0), Clear(CrosstermClearType::CurrentLine))
-        .context("failed to clear the terminal line after session")?;
-    execute!(io::stderr(), SetCursorStyle::DefaultUserShape)
-        .context("failed to restore cursor style after inline session")?;
-    reset_mouse_pointer_shape();
+    // Minimal final paint: show the cursor and flush. All mode restores
+    // (line clear for `^C`, cursor style, mouse pointer, bracketed paste,
+    // focus/mouse, keyboard flags, raw mode, alternate leave) live in the
+    // canonical `restore_tui()` path so Ctrl+C exits emit each sequence once.
+    // Emitting them here too doubled escape traffic and caused flicker/noise.
     terminal
         .show_cursor()
         .map_err(|e| anyhow::anyhow!("failed to show cursor after inline session: {e}"))?;

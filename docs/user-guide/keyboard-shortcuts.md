@@ -17,7 +17,7 @@ Single source of truth for VT Code terminal keyboard shortcuts. Press `?` on an 
 | `Ctrl+Enter` or `Tab` | Submit draft; empty draft processes newest queued message. | Queue draft (`QueueSubmit`); plain text is batchable, slash stays one-per-turn. App handles `/stop`, `/pause`, `/resume` immediately. |
 | `Tab` (first) | Accept visible ghost suggestion. | Same accept-first priority. |
 | `Shift+Enter` / `Alt+Enter` / `\`+`Enter` / `Ctrl+J` | Insert newline. | Same. |
-| `Enter` on empty draft with active jobs | Submit `/jobs`. | Same. |
+| `Enter` on empty draft with active jobs | Submit `/config jobs`. | Same. |
 
 Palettes consume `Tab`/`Enter`/`Esc` first: agent/file palettes select best match on `Tab`, slash navigation autocompletes on `Tab`, history picker consumes navigation keys.
 
@@ -39,7 +39,7 @@ On terminals that send the legacy control-code aliases, the same behavior is rea
 | `Ctrl+A` / `Ctrl+E` | Current line start / end (buffer edges when single-line; legacy `Cmd+Left`/`Cmd+Right`). |
 | `Ctrl+F` / `Ctrl+B` | `Ctrl+F` moves forward. `Ctrl+B` hands an active foreground command to the background session manager; when no command is active, it runs the configured background-operation action. |
 | `Alt+F` / `Alt+B`, `Alt+Left/Right` | Word forward / back. |
-| `Ctrl+P` / `Ctrl+N`, `Up`/`Down` | History previous / next (`Up`/`Down` move within multiline first). |
+| `Ctrl+P` / `Ctrl+N`, `Up`/`Down` | History previous / next (`Up`/`Down` stay inside a multi-row composer and never traverse history; `Ctrl+P`/`Ctrl+N` always traverse history). |
 | `Ctrl+W`, `Alt+D` | Delete previous / next word. |
 | `Ctrl+U` / `Ctrl+K` | Clear current line / delete to line end (legacy `Cmd+Backspace`/`Cmd+Delete`). |
 | `Ctrl+T` | Transpose chars (when Transcript Review is unbound; otherwise opens review). |
@@ -62,10 +62,10 @@ On terminals that send the legacy control-code aliases, the same behavior is rea
 
 | Context | Keys |
 | :-- | :-- |
-| Agent/file palette | `Up`/`Down` move, `Tab` select best match, `Enter` apply, `Esc` close. |
+| Agent/file palette | `Up`/`Down` move, `Tab` select best match, `Enter` open/apply, `Esc` close. In the `@` file picker, `PageUp`/`PageDown` jump a page, `←` ascends a directory, and `Alt+Enter` references the highlighted folder (`@dir/`) instead of opening it. |
 | Slash palette | `Tab` autocomplete, navigation via slash keys. |
-| History picker (`Ctrl+R`/`Ctrl+S`) | Type to filter, `Tab`/`Esc`/`Enter` accept, `Ctrl+C` or empty `Backspace` cancel. |
-| Modal list | `Tab`/`BackTab` move per modal, `Esc`/`Enter` cancel/submit per overlay. |
+| History picker (`Ctrl+R`/`Ctrl+S`) | Type to filter, `Tab`/`Esc`/`Enter` accept, `Ctrl+C`/`Ctrl+G` or empty `Backspace` cancel; Ctrl-modified characters are always shortcuts, never search text. |
+| Modal list | `Tab`/`BackTab` move per modal, `Esc`/`Enter` cancel/submit per overlay. Modals and multi-step wizards without a search box number their options when nine or fewer are visible: `1`–`9` jumps to an option (`Enter` still confirms, except wizards confirm immediately). In numbered modals, out-of-range digits are swallowed, never typed into the composer. |
 | Local agents drawer | `Down` opens on empty composer; `Alt+S` focuses. `Enter` inspects; `Ctrl+K` stops; `Ctrl+X` force-terminates or closes. For `exec-session` rows, `Ctrl+R` toggles stdin focus and `Ctrl+P` previews the bounded snapshot. |
 | Queued-input edit | `Alt+Up` (or `Shift+Left` in tmux) pops newest queued message into composer. |
 
@@ -88,7 +88,8 @@ On terminals that send the legacy control-code aliases, the same behavior is rea
 | macOS default | `Option+Enter` |
 | Native/configured | `Shift+Enter` (Ghostty, Kitty, WezTerm, iTerm2, Warp natively; `/terminal-setup` for VS Code, Alacritty, Zed) |
 | Control sequence | `Ctrl+J` |
-| Paste | Paste directly (large pastes collapse to `[Pasted Content N chars]`; one `Backspace` at block end removes the block) |
+| Paste | Paste directly (large inputs collapse to `[Pasted Content N chars, M lines, K images, J files]` once text reaches 10+ lines, 1000+ chars, 3+ images, or 5+ `@file` tokens; shows head + tail snippets, click or paste again to expand for editing; one `Backspace` at block end removes the block) |
+| `Shift+Ctrl+V` | Paste clipboard text as raw full content, bypassing the collapse marker entirely |
 
 ## Quick commands
 
@@ -102,4 +103,4 @@ On terminals that send the legacy control-code aliases, the same behavior is rea
 
 ## Custom keybindings
 
-Rebindable actions (`open_transcript_review`, `toggle_transcript_render_mode`, `toggle_tool_display_mode`, `toggle_task_panel`, `scroll_page_up/down`, `interrupt`, `exit`, history, queue edit) live under `ui.keybindings` (`KeyBindingConfig::bindings` / `UserPreferences::keybindings`, `cmd`/`super` = Command). Composer editing keys above (`Tab`, `Esc`, `Cmd+A`, arrows, readline) are intentionally hardcoded in `session/events.rs` and not rebindable. See [Configuration](../config/config.md) and [Interactive Mode](./interactive-mode.md).
+Rebindable actions (`open_transcript_review`, `toggle_transcript_render_mode`, `toggle_tool_display_mode`, `toggle_task_panel`, `scroll_page_up/down`, `jump_to_last_change`, `interrupt`, `exit`, history, queue edit) live under `ui.keybindings` (`KeyBindingConfig::bindings` / `UserPreferences::keybindings`, `cmd`/`super` = Command). Composer editing keys above (`Tab`, `Esc`, `Cmd+A`, arrows, readline) are intentionally hardcoded in `session/events.rs` and not rebindable. See [Configuration](../config/config.md) and [Interactive Mode](./interactive-mode.md).

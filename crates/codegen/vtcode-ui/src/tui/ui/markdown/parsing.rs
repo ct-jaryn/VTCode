@@ -134,7 +134,10 @@ pub(crate) fn handle_start_tag(tag: &Tag<'_>, ctx: &mut MarkdownContext<'_>) {
             ctx.style_stack.push(style);
             ctx.ensure_prefix();
         }
-        Tag::BlockQuote(_) => *ctx.blockquote_depth += 1,
+        Tag::BlockQuote(_) => {
+            *ctx.blockquote_depth += 1;
+            ctx.push_style(Style::italic);
+        }
         Tag::List(start) => {
             let depth = ctx.list_stack.len();
             let kind = start
@@ -245,6 +248,7 @@ pub(crate) fn handle_end_tag(tag: TagEnd, ctx: &mut MarkdownContext<'_>) {
         TagEnd::BlockQuote(_) => {
             ctx.flush_line();
             *ctx.blockquote_depth = ctx.blockquote_depth.saturating_sub(1);
+            ctx.pop_style();
             push_blank_line(ctx.lines);
         }
         TagEnd::List(_) => {
@@ -630,17 +634,13 @@ fn file_link_style(current: Style, theme_styles: &ThemeStyles, base_style: Style
 
 fn ensure_prefix(
     current_line: &mut MarkdownLine,
-    blockquote_depth: usize,
+    _blockquote_depth: usize,
     list_continuation_prefix: &str,
     pending_list_prefix: &mut Option<String>,
     base_style: Style,
 ) {
     if !current_line.segments.is_empty() {
         return;
-    }
-
-    for _ in 0..blockquote_depth {
-        current_line.push_segment(base_style.dimmed().italic(), "│ ");
     }
 
     if let Some(prefix) = pending_list_prefix.take() {

@@ -5,7 +5,7 @@ use anstyle::{Color, Reset, Style as AnsiStyle};
 use anyhow::Result;
 use serde_json::Value;
 use vtcode_commons::color_policy;
-use vtcode_commons::formatting::wrap_text_words;
+use vtcode_commons::formatting::{wrap_shell_command_lines, wrap_shell_command_with_continuations};
 use vtcode_commons::ui_protocol::{CompactToolSummaryLine, CompactToolSummaryLineKind};
 
 use vtcode_core::config::ToolDisplayMode;
@@ -19,10 +19,11 @@ use vtcode_ui::tui::ui::syntax_highlight;
 
 use crate::agent::runloop::tool_output::render_tree_detail;
 use crate::agent::runloop::unified::tool_summary_helpers::{
-    collect_param_details, command_line_for_args, describe_code_search, describe_fetch_action, describe_grep_file,
-    describe_list_files, describe_path_action, describe_shell_command, display_command_text, exec_session_param_detail,
-    highlight_texts_for_summary, is_exec_session_call, relativize_command_paths, relativize_to_workspace,
-    should_render_command_line, truncate_path_middle,
+    RAN_COMMAND_CONTINUATION_WIDTH, RAN_COMMAND_FIRST_WIDTH, collect_param_details, command_line_for_args,
+    describe_code_search, describe_fetch_action, describe_grep_file, describe_list_files, describe_path_action,
+    describe_shell_command, display_command_text, exec_session_param_detail, highlight_texts_for_summary,
+    is_exec_session_call, relativize_command_paths, relativize_to_workspace, should_render_command_line,
+    truncate_path_middle,
 };
 
 /// Ambient context required to render tool-call summaries.
@@ -34,9 +35,6 @@ use crate::agent::runloop::unified::tool_summary_helpers::{
 pub(crate) struct ToolSummaryRenderContext<'a> {
     pub workspace_root: Option<&'a Path>,
 }
-
-const RUN_SUMMARY_FIRST_WIDTH: usize = 62;
-const RUN_SUMMARY_CONTINUATION_WIDTH: usize = 58;
 
 /// Infer the action string for an internal file-operation call from its arguments.
 /// This is the single source of truth for action inference — all three call sites
@@ -64,6 +62,24 @@ fn file_operation_action(args: &Value) -> &'static str {
     } else {
         "read"
     }
+}
+
+/// Transcript indicator shown immediately when plan synthesis starts.
+///
+/// Plan synthesis can run for a long time with no tool calls (research is
+/// done, the model is writing one `<proposed_plan>` block). Without a
+/// transcript row the TUI looks stalled: only the footer status moves. This
+/// mirrors the `❋ Applying patch to …` pre-execution indicator so the user
+/// sees plan work start, and the TUI sweeps a shimmer across the row while
+/// the footer status (`Drafting plan...`, `Validating plan...`, …) stays
+/// live. Sends are non-blocking (`renderer.line` → unbounded inline channel)
+/// and planning stays a foreground non-busy stage, so input remains enabled.
+pub(crate) const PLANNING_RESEARCHING_INDICATOR: &str = "❋ Drafting plan — researching codebase...";
+pub(crate) const PLANNING_VALIDATING_INDICATOR: &str = "❋ Validating plan...";
+pub(crate) const PLANNING_PERSISTING_INDICATOR: &str = "❋ Persisting plan...";
+
+pub(crate) fn render_planning_progress_indicator(renderer: &mut AnsiRenderer, text: &str) -> Result<()> {
+    renderer.line(MessageStyle::Tool, text)
 }
 
 /// Pre-execution indicators for file modification operations
@@ -224,7 +240,8 @@ struct SummaryData {
 fn compact_summary_expanded_lines(data: &SummaryData) -> Vec<CompactToolSummaryLine> {
     let mut lines = Vec::new();
     if let Some(command) = data.summary.strip_prefix("Ran ") {
-        let wrapped = wrap_text_words(command, RUN_SUMMARY_FIRST_WIDTH, RUN_SUMMARY_CONTINUATION_WIDTH);
+        let wrapped =
+            wrap_shell_command_with_continuations(command, RAN_COMMAND_FIRST_WIDTH, RAN_COMMAND_CONTINUATION_WIDTH);
         let first = wrapped.first().map(String::as_str).unwrap_or("command");
         lines.push(CompactToolSummaryLine {
             kind: CompactToolSummaryLineKind::Info,
@@ -358,12 +375,16 @@ fn render_bullet_line(
 ) -> Option<Vec<String>> {
     let mut wrapped_run_segments: Option<Vec<String>> = None;
     if let Some(command) = data.summary.strip_prefix("Ran ") {
-        let wrapped = wrap_text_words(command, RUN_SUMMARY_FIRST_WIDTH, RUN_SUMMARY_CONTINUATION_WIDTH);
+        let wrapped = wrap_shell_command_lines(command, RAN_COMMAND_FIRST_WIDTH, RAN_COMMAND_CONTINUATION_WIDTH);
         let first_segment = wrapped.first().cloned().unwrap_or_else(|| "command".to_string());
+        let is_multiline = wrapped.len() > 1;
         wrapped_run_segments = Some(wrapped);
         line.push_str(&render_styled("Ran", main_color, Some("bold".to_string())));
         line.push(' ');
         line.push_str(&render_command_segment(&first_segment, main_color, palette.muted, true));
+        if is_multiline {
+            line.push_str(&render_styled(" \\", palette.muted, Some("dim".to_string())));
+        }
     } else {
         line.push_str(&render_summary_with_highlights(
             &data.summary,
@@ -388,12 +409,19 @@ fn render_continuation_lines(
     palette: &ColorPalette,
 ) -> Result<()> {
     if let Some(wrapped) = wrapped_run_segments {
-        for segment in wrapped.iter().skip(1) {
+        let total = wrapped.len();
+        for (idx, segment) in wrapped.iter().skip(1).enumerate() {
             let mut continuation = String::with_capacity(segment.len() + 32);
             continuation.push_str("  ");
             continuation.push_str(&render_styled("│", palette.muted, Some("dim".to_string())));
             continuation.push(' ');
             continuation.push_str(&render_command_segment(segment, main_color, palette.muted, false));
+            // All wrapped lines except the final one end with an explicit
+            // shell continuation so the multi-line header reads as one command.
+            let is_last = idx + 1 >= total - 1;
+            if !is_last {
+                continuation.push_str(&render_styled(" \\", palette.muted, Some("dim".to_string())));
+            }
             renderer.line(MessageStyle::Info, &continuation)?;
         }
     }
@@ -1357,6 +1385,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(activities.len(), 2);
         assert!(activities.iter().all(|activity| activity.command_count == 1));
+    }
+
+    #[test]
+    fn planning_indicators_carry_spinner_marker() {
+        // The TUI transcript spinner matches indicator rows by their `❋`
+        // text prefix (`transcript.rs::FILE_OPERATION_INDICATORS`). If an
+        // indicator loses the marker, the planning row goes static while the
+        // long synthesis runs — the exact stall this feature fixes.
+        for indicator in [
+            super::PLANNING_RESEARCHING_INDICATOR,
+            super::PLANNING_VALIDATING_INDICATOR,
+            super::PLANNING_PERSISTING_INDICATOR,
+        ] {
+            assert!(indicator.contains('❋'), "missing spinner marker in {indicator:?}");
+            assert!(
+                indicator.to_ascii_lowercase().contains("plan"),
+                "indicator must name the plan phase: {indicator:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_planning_progress_indicator_emits_transcript_line() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(sender);
+        let mut renderer = AnsiRenderer::with_inline_ui(handle, Default::default());
+
+        super::render_planning_progress_indicator(&mut renderer, super::PLANNING_RESEARCHING_INDICATOR)
+            .expect("planning indicator should render");
+
+        let text = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter_map(|command| match command {
+                InlineCommand::AppendLine { segments, .. } => {
+                    Some(segments.into_iter().map(|s| s.text).collect::<String>())
+                }
+                InlineCommand::Inline { segment, .. } => Some(segment.text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Drafting plan"), "got: {text:?}");
     }
 
     #[test]

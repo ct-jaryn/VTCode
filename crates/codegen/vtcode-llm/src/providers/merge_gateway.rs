@@ -19,10 +19,10 @@ use crate::providers::shared::{
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::Client as HttpClient;
+use reqwest::{Client as HttpClient, StatusCode};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vtcode_config::TimeoutsConfig;
 use vtcode_config::constants::{env_vars, models, urls};
 use vtcode_config::core::{AnthropicConfig, ModelConfig, PromptCachingConfig};
@@ -57,11 +57,19 @@ impl OpenAiCompatSpec for MergeGatewaySpec {
 
     fn insert_tool_choice(_core: &OpenAiCompatCore<Self>, request: &LLMRequest, payload: &mut Map<String, Value>) {
         // Merge routes that terminate at Anthropic Bedrock reject
-        // `tool_choice: "none"`. Removing the serialized tool definitions as
-        // well preserves the request's no-tool behavior on the legacy
-        // chat-completions surface.
+        // `tool_choice: "none"`. Keep the serialized tool definitions on the
+        // wire so the provider prefix stays cache-stable across recovery turns
+        // (OpenAI guidance: disable tool use with `tool_choice: "none"` rather
+        // than removing definitions). Only the choice field is omitted; the
+        // harness rejects tool calls during tool-free recovery.
         if matches!(request.tool_choice, Some(ToolChoice::None)) {
-            payload.remove("tools");
+            static OMITTED_CHOICE_ADVISORY: std::sync::Once = std::sync::Once::new();
+            OMITTED_CHOICE_ADVISORY.call_once(|| {
+                tracing::debug!(
+                    "Merge Gateway omits tool_choice for ToolChoice::None (Bedrock rejects none); \
+                     tool definitions stay on the wire for prompt-cache stability"
+                );
+            });
             return;
         }
 
@@ -85,6 +93,77 @@ fn is_legacy_openai_base_url(base_url: &str) -> bool {
         .next()
         .unwrap_or(normalized)
         .ends_with("/v1/openai")
+}
+
+/// Whether the request will put tool definitions on the wire. Tool-free
+/// recovery keeps definitions for cache stability unless the route has no
+/// tool-capable vendor (then definitions are omitted so synthesis can still
+/// run). Only requests that actually send tools consult the no-tool-vendor
+/// cache.
+fn native_request_sends_tools(request: &LLMRequest, tool_vendor_missing: bool) -> bool {
+    let tools_present = request.tools.as_ref().is_some_and(|tools| !tools.is_empty());
+    let recovery_without_vendor = matches!(request.tool_choice, Some(ToolChoice::None)) && tool_vendor_missing;
+    tools_present && !recovery_without_vendor
+}
+
+/// Builds the terminal error for a failed Merge Gateway request, appending
+/// routing guidance when the route itself lacks a capable vendor: the fix is
+/// a different route (e.g. `default_routing`), not a different request.
+fn merge_request_error(status: StatusCode, body: &str) -> LLMError {
+    if is_capability_unavailable(status, body) {
+        provider_error(format!(
+            "HTTP {status}: {body} Hint: Merge Gateway has no vendor serving this model with the requested capabilities yet; use default_routing or another model until the route gains one."
+        ))
+    } else {
+        provider_error(format!("HTTP {status}: {body}"))
+    }
+}
+
+/// Detects Merge Gateway `capability_unavailable` rejections: the resolved
+/// route has no vendor serving the requested capability set (e.g. a brand-new
+/// model with no streaming-tool vendor yet). Gateway fails these closed with
+/// 400/422 instead of serving a downgraded request.
+fn is_capability_unavailable(status: StatusCode, body: &str) -> bool {
+    if !matches!(status, StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY) {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    lower.contains("capability_unavailable") || lower.contains("has no vendor that supports")
+}
+
+/// Detects Merge Gateway tier-pricing rejections: the value is valid but the
+/// route is not priced for it ("model does not support service tier 'flex'";
+/// `priority` is priced nowhere and always fails). Fails closed with 400;
+/// retrying without the tier serves standard. Disjoint from
+/// [`is_capability_unavailable`]: capability bodies name capabilities, never
+/// the tier field.
+fn is_merge_tier_pricing_rejection(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    (lower.contains("service_tier") || lower.contains("service tier"))
+        && (lower.contains("does not support")
+            || lower.contains("not priced")
+            || lower.contains("fail closed")
+            || lower.contains("fail-closed")
+            || lower.contains("not available"))
+}
+
+/// Maps an OpenAI `service_tier` value onto Merge Gateway's tier vocabulary
+/// (`standard`/`flex`/`priority`). OpenAI-only tiers (e.g. `ultrafast`) have
+/// no Merge equivalent and map to `None` so the caller omits the field and
+/// the gateway default applies instead of 422ing on `literal_error`.
+fn map_openai_service_tier_for_merge(tier: &str) -> Option<&'static str> {
+    if tier.eq_ignore_ascii_case("standard") {
+        Some("standard")
+    } else if tier.eq_ignore_ascii_case("flex") {
+        Some("flex")
+    } else if tier.eq_ignore_ascii_case("priority") {
+        Some("priority")
+    } else {
+        None
+    }
 }
 
 /// How a Merge Gateway route exposes reasoning controls. Merge Gateway routes
@@ -168,6 +247,12 @@ struct NativeMergeGatewayCore {
 pub struct MergeGatewayProvider {
     native: NativeMergeGatewayCore,
     legacy_core: Option<OpenAiCompatCore<MergeGatewaySpec>>,
+    /// Models that already failed a non-streaming tool request with
+    /// `capability_unavailable`: no vendor serves tools for them, so further
+    /// tool turns fail fast without burning calls. Session-scoped (like the
+    /// OpenAI tier-unsupported cache): a fresh session re-probes in case
+    /// vendors onboarded, and tool-free requests always bypass the cache.
+    no_tool_vendor_cache: Mutex<HashSet<String>>,
 }
 
 impl MergeGatewayProvider {
@@ -229,6 +314,7 @@ impl MergeGatewayProvider {
                 model_behavior,
             },
             legacy_core,
+            no_tool_vendor_cache: Mutex::new(HashSet::new()),
         }
     }
 
@@ -248,6 +334,7 @@ impl MergeGatewayProvider {
                 model_behavior: None,
             },
             legacy_core,
+            no_tool_vendor_cache: Mutex::new(HashSet::new()),
         }
     }
 
@@ -255,6 +342,25 @@ impl MergeGatewayProvider {
         if request.model.trim().is_empty() {
             request.model = self.native.model.clone();
         }
+    }
+
+    fn tool_vendor_known_missing(&self, model: &str) -> bool {
+        self.no_tool_vendor_cache
+            .lock()
+            .map(|guard| guard.contains(model))
+            .unwrap_or(false)
+    }
+
+    fn mark_tool_vendor_missing(&self, model: &str) {
+        if let Ok(mut guard) = self.no_tool_vendor_cache.lock() {
+            guard.insert(model.to_owned());
+        }
+    }
+
+    fn no_tool_vendor_cached_error(model: &str) -> LLMError {
+        provider_error(format!(
+            "Model '{model}' has no vendor serving tools on Merge Gateway (cached from an earlier capability_unavailable rejection). Hint: use default_routing or another model until the route gains a tool-capable vendor."
+        ))
     }
 
     fn responses_url(&self) -> String {
@@ -391,11 +497,13 @@ impl MergeGatewayProvider {
         payload.insert("input".to_owned(), Value::Array(input));
 
         // Some Merge routes terminate at Anthropic Bedrock, which rejects
-        // `tool_choice: "none"`. A request that explicitly disables tools
-        // does not need either the choice or the definitions on the wire, so
-        // omit both while preserving the no-tool behavior across routes.
+        // `tool_choice: "none"`. Keep tool definitions on the wire even when
+        // tools are disabled so the rendered prefix stays cache-stable across
+        // recovery turns; only the choice field is omitted. If the route has
+        // no tool vendor at all, omit definitions so synthesis can still run.
         let tools_disabled = matches!(request.tool_choice, Some(ToolChoice::None));
-        if !tools_disabled
+        let omit_tools_for_missing_vendor = tools_disabled && self.tool_vendor_known_missing(&request.model);
+        if !omit_tools_for_missing_vendor
             && let Some(tools) = request
                 .tools
                 .as_ref()
@@ -423,7 +531,18 @@ impl MergeGatewayProvider {
             payload.insert("response_format".to_owned(), output_format.clone());
         }
         if let Some(service_tier) = request.service_tier.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-            payload.insert("service_tier".to_owned(), Value::String(service_tier.to_owned()));
+            match map_openai_service_tier_for_merge(service_tier) {
+                Some(mapped) => {
+                    payload.insert("service_tier".to_owned(), Value::String(mapped.to_owned()));
+                }
+                None => {
+                    tracing::warn!(
+                        model = %request.model,
+                        service_tier = %service_tier,
+                        "Merge Gateway has no equivalent for service_tier; omitting it and using gateway default routing"
+                    );
+                }
+            }
         }
         if let Some(cache_key) = request
             .prompt_cache_key
@@ -465,6 +584,14 @@ impl MergeGatewayProvider {
     async fn generate_native(&self, mut request: LLMRequest) -> Result<LLMResponse, LLMError> {
         self.prepare_native_request(&mut request);
         LLMProvider::validate_request(self, &request)?;
+        // Fail fast only when this request would put tools on the wire and the
+        // route has no tool vendor. Recovery (ToolChoice::None) can still
+        // synthesize without tools.
+        if self.tool_vendor_known_missing(&request.model)
+            && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+        {
+            return Err(Self::no_tool_vendor_cached_error(&request.model));
+        }
         let payload = self.build_native_payload(&request, false)?;
         let session_id = merge_session_identity(&request);
         let mut http = self
@@ -484,7 +611,28 @@ impl MergeGatewayProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = crate::providers::common::read_provider_error_body(response).await;
-            return Err(provider_error(format!("HTTP {status}: {body}")));
+            // The route accepts the tier vocabulary but is not priced for this
+            // tier: retry once without it and serve standard. Terminates:
+            // re-entry has no tier so this branch cannot refire.
+            if is_merge_tier_pricing_rejection(status, &body) && request.service_tier.is_some() {
+                tracing::warn!(
+                    model = %request.model,
+                    status = %status,
+                    "Merge Gateway route is not priced for service_tier; retrying once without it"
+                );
+                request.service_tier = None;
+                return Box::pin(self.generate_native(request)).await;
+            }
+            // Non-streaming tool requests fail here only when no vendor serves
+            // tools at all: remember the verdict so later turns fail fast.
+            // Streaming-capability misses never reach this point (the stream
+            // path downgrades first), and tool-free requests bypass the cache.
+            if is_capability_unavailable(status, &body)
+                && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+            {
+                self.mark_tool_vendor_missing(&request.model);
+            }
+            return Err(merge_request_error(status, &body));
         }
 
         let json: Value = response.json().await.map_err(|e| format_parse_error("Merge Gateway", &e))?;
@@ -494,6 +642,11 @@ impl MergeGatewayProvider {
     async fn stream_native_normalized(&self, mut request: LLMRequest) -> Result<LLMNormalizedStream, LLMError> {
         self.prepare_native_request(&mut request);
         LLMProvider::validate_request(self, &request)?;
+        if self.tool_vendor_known_missing(&request.model)
+            && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+        {
+            return Err(Self::no_tool_vendor_cached_error(&request.model));
+        }
         request.stream = true;
 
         let payload = self.build_native_payload(&request, true)?;
@@ -515,7 +668,40 @@ impl MergeGatewayProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = crate::providers::common::read_provider_error_body(response).await;
-            return Err(provider_error(format!("HTTP {status}: {body}")));
+            // A streaming request can fail capability routing while a plain
+            // non-streaming request with the same tools routes fine (the
+            // failing combo is `streaming_tools`, not `tools`). Retry once
+            // without streaming; tool definitions are preserved. If the route
+            // has no tool vendor at all the retry fails too and its error —
+            // naming exactly what is missing — is surfaced.
+            if is_capability_unavailable(status, &body) {
+                tracing::warn!(
+                    model = %request.model,
+                    status = %status,
+                    "Merge Gateway rejected streaming capabilities; retrying once without streaming"
+                );
+                request.stream = false;
+                let fallback = self.generate_native(request).await?;
+                let completed = LLMStreamEvent::Completed { response: Box::new(fallback) };
+                let stream = try_stream! {
+                    for event in completed.into_normalized() {
+                        yield event;
+                    }
+                };
+                return Ok(Box::pin(stream));
+            }
+            // Same pricing fallback as the non-streaming path, preserving
+            // streaming: re-entry has no tier so this branch cannot refire.
+            if is_merge_tier_pricing_rejection(status, &body) && request.service_tier.is_some() {
+                tracing::warn!(
+                    model = %request.model,
+                    status = %status,
+                    "Merge Gateway route is not priced for service_tier; retrying once without it"
+                );
+                request.service_tier = None;
+                return Box::pin(self.stream_native_normalized(request)).await;
+            }
+            return Err(merge_request_error(status, &body));
         }
 
         let model = request.model.clone();
@@ -1583,6 +1769,7 @@ impl LLMProvider for MergeGatewayProvider {
             models::merge_gateway::ANTHROPIC_CLAUDE_OPUS_5
                 | models::merge_gateway::ANTHROPIC_CLAUDE_OPUS_5_5
                 | models::merge_gateway::ANTHROPIC_CLAUDE_SONNET_5
+                | models::merge_gateway::ANTHROPIC_CLAUDE_SONNET_5_5
                 | models::merge_gateway::ANTHROPIC_CLAUDE_FABLE_5_1
                 | models::merge_gateway::GOOGLE_GEMINI_3_6_FLASH
                 | models::merge_gateway::GOOGLE_GEMINI_3_7_FLASH
@@ -1662,6 +1849,273 @@ mod tests {
                 "route {model} must advertise non-streaming fallback capability"
             );
         }
+    }
+
+    #[test]
+    fn native_payload_maps_openai_service_tiers_and_omits_ultrafast() {
+        // Merge Gateway only accepts `standard`/`flex`/`priority`; OpenAI's
+        // `ultrafast` has no equivalent and must be omitted (gateway default
+        // routing) rather than 422ing on `literal_error`.
+        assert_eq!(map_openai_service_tier_for_merge("flex"), Some("flex"));
+        assert_eq!(map_openai_service_tier_for_merge("priority"), Some("priority"));
+        assert_eq!(map_openai_service_tier_for_merge("standard"), Some("standard"));
+        assert_eq!(map_openai_service_tier_for_merge("Flex"), Some("flex"));
+        assert_eq!(map_openai_service_tier_for_merge("ultrafast"), None);
+
+        let provider = MergeGatewayProvider::with_model(
+            "test-key".to_string(),
+            models::merge_gateway::OPENAI_GPT_6_1_SOL.to_string(),
+        );
+        let mut ultrafast = LLMRequest {
+            messages: vec![Message::user("hello".to_string())].into(),
+            model: models::merge_gateway::OPENAI_GPT_6_1_SOL.to_string(),
+            service_tier: Some("ultrafast".to_string()),
+            ..Default::default()
+        };
+        let payload = provider.build_native_payload(&ultrafast, false).expect("payload");
+        assert!(payload.get("service_tier").is_none(), "ultrafast must be omitted for Merge Gateway routes");
+
+        ultrafast.service_tier = Some("priority".to_string());
+        let payload = provider.build_native_payload(&ultrafast, false).expect("payload");
+        assert_eq!(payload.get("service_tier").and_then(Value::as_str), Some("priority"));
+    }
+
+    #[test]
+    fn tier_pricing_rejection_matches_unpriced_route_body() {
+        // Merge fail-closed 400 for valid-but-unpriced tiers (service-tiers docs).
+        let body = r#"{"error":{"type":"invalid_request_error","message":"Model 'openai/gpt-6.1-sol' does not support service tier 'flex'.","source":"gateway"}}"#;
+        assert!(is_merge_tier_pricing_rejection(StatusCode::BAD_REQUEST, body));
+        assert!(is_merge_tier_pricing_rejection(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Model 'openai/gpt-6-sol' does not support service tier 'priority'.","source":"gateway"}}"#
+        ));
+        // Disjoint from capability routing: capability bodies never name the tier field.
+        assert!(!is_merge_tier_pricing_rejection(
+            StatusCode::BAD_REQUEST,
+            "has no vendor that supports the requested capabilities (['tools'])"
+        ));
+        assert!(!is_merge_tier_pricing_rejection(StatusCode::UNPROCESSABLE_ENTITY, body));
+        assert!(!is_merge_tier_pricing_rejection(StatusCode::BAD_REQUEST, ""));
+    }
+
+    #[tokio::test]
+    async fn native_generate_retries_without_tier_on_pricing_rejection() {
+        use std::sync::Mutex;
+
+        let server = MockServer::start().await;
+        let provider = test_provider(&server.uri());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_mock = Arc::clone(&seen);
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(move |req: &wiremock::Request| {
+                let payload: Value = serde_json::from_slice(&req.body).expect("valid json body");
+                let tier = payload.get("service_tier").and_then(Value::as_str).map(ToOwned::to_owned);
+                seen_for_mock.lock().expect("mutex not poisoned").push(tier.clone());
+                match tier.as_deref() {
+                    Some("flex") => ResponseTemplate::new(400).set_body_json(json!({
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "Model 'openai/gpt-6.1-sol' does not support service tier 'flex'.",
+                            "source": "gateway"
+                        }
+                    })),
+                    None => ResponseTemplate::new(200).set_body_json(json!({
+                        "id": "resp_retry",
+                        "object": "response",
+                        "created_at": "2026-03-23T12:03:00Z",
+                        "model": "openai/gpt-6.1-sol",
+                        "output": [{
+                            "type": "message",
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Hello"}],
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cost": 0.01}
+                    })),
+                    other => ResponseTemplate::new(500).set_body_string(format!("unexpected tier: {other:?}")),
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let response = provider
+            .generate(LLMRequest {
+                messages: vec![Message::user("hello".to_string())].into(),
+                model: models::merge_gateway::OPENAI_GPT_6_1_SOL.to_string(),
+                service_tier: Some("flex".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("pricing retry without tier should succeed");
+        assert_eq!(response.content.as_deref(), Some("Hello"));
+        assert_eq!(seen.lock().expect("mutex not poisoned").as_slice(), &[Some("flex".to_string()), None]);
+    }
+
+    #[test]
+    fn capability_unavailable_detection_matches_gateway_body() {
+        let body = r#"{"error":{"type":"invalid_request_error","message":"Model 'openai/gpt-6.1-sol' has no vendor that supports the requested capabilities (['streaming_tools', 'tools']).","source":"gateway","code":"capability_unavailable","param":"model"}}"#;
+        assert!(is_capability_unavailable(StatusCode::BAD_REQUEST, body));
+        assert!(is_capability_unavailable(StatusCode::UNPROCESSABLE_ENTITY, body));
+        assert!(!is_capability_unavailable(StatusCode::BAD_REQUEST, r#"{"error":{"code":"invalid_parameter"}}"#));
+        assert!(!is_capability_unavailable(StatusCode::INTERNAL_SERVER_ERROR, body));
+        assert!(!is_capability_unavailable(StatusCode::BAD_REQUEST, ""));
+    }
+
+    #[tokio::test]
+    async fn native_stream_retries_without_streaming_on_capability_unavailable() {
+        use std::sync::Mutex;
+
+        let server = MockServer::start().await;
+        let provider = test_provider(&server.uri());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_mock = Arc::clone(&seen);
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(move |req: &wiremock::Request| {
+                let payload: Value = serde_json::from_slice(&req.body).expect("valid json body");
+                let streaming = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
+                let has_tools = payload.get("tools").is_some();
+                seen_for_mock.lock().expect("mutex not poisoned").push((streaming, has_tools));
+                if streaming {
+                    ResponseTemplate::new(400).set_body_json(json!({
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "Model 'openai/gpt-6.1-sol' has no vendor that supports the requested capabilities (['streaming_tools', 'tools']).",
+                            "source": "gateway",
+                            "code": "capability_unavailable",
+                            "param": "model"
+                        }
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": "resp_retry",
+                        "object": "response",
+                        "created_at": "2026-03-23T12:03:00Z",
+                        "model": "openai/gpt-6.1-sol",
+                        "output": [{
+                            "type": "message",
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Hello"}],
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cost": 0.01}
+                    }))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let request = LLMRequest {
+            messages: vec![Message::user("hello".to_string())].into(),
+            model: models::merge_gateway::OPENAI_GPT_6_1_SOL.to_string(),
+            tools: Some(Arc::new(vec![ToolDefinition::function(
+                "get_weather".to_string(),
+                "Get weather".to_string(),
+                json!({"type": "object", "properties": {}}),
+            )])),
+            ..Default::default()
+        };
+        let stream = provider.stream(request).await.expect("stream with fallback");
+        let events = stream.collect::<Vec<_>>().await;
+        let completed = events
+            .into_iter()
+            .find_map(|event| match event.expect("stream event") {
+                LLMStreamEvent::Completed { response } => Some(response),
+                _ => None,
+            })
+            .expect("fallback stream must complete");
+        assert_eq!(completed.content.as_deref(), Some("Hello"));
+
+        // First attempt streams with tools; the retry keeps tools but drops streaming.
+        assert_eq!(seen.lock().expect("mutex not poisoned").as_slice(), &[(true, true), (false, true)]);
+    }
+
+    #[tokio::test]
+    async fn repeated_tool_turns_fail_fast_after_first_capability_rejection() {
+        use std::sync::Mutex;
+
+        // The first turn burns one call proving the route has no tool vendor;
+        // later turns must fail fast without touching the network.
+        let server = MockServer::start().await;
+        let provider = test_provider(&server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Model 'openai/gpt-6.1-sol' has no vendor that supports the requested capabilities (['tools']).",
+                    "source": "gateway",
+                    "code": "capability_unavailable",
+                    "param": "model"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let tool_request = || LLMRequest {
+            messages: vec![Message::user("hello".to_string())].into(),
+            model: models::merge_gateway::OPENAI_GPT_6_1_SOL.to_string(),
+            tools: Some(Arc::new(vec![ToolDefinition::function(
+                "get_weather".to_string(),
+                "Get weather".to_string(),
+                json!({"type": "object", "properties": {}}),
+            )])),
+            ..Default::default()
+        };
+        let first = provider.generate(tool_request()).await.expect_err("no tool vendor must fail");
+        assert!(first.to_string().contains("default_routing"));
+
+        let second = provider.generate(tool_request()).await.expect_err("second turn must fail fast");
+        assert!(second.to_string().contains("cached"), "fast-fail must say the verdict is cached, got: {second}");
+    }
+
+    #[tokio::test]
+    async fn terminal_capability_error_names_a_working_route() {
+        // When even the non-streaming retry finds no tool vendor, the surfaced
+        // error must tell the user the route (not the request) is at fault.
+        let server = MockServer::start().await;
+        let provider = test_provider(&server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Model 'openai/gpt-6.1-sol' has no vendor that supports the requested capabilities (['tools']).",
+                    "source": "gateway",
+                    "code": "capability_unavailable",
+                    "param": "model"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let err = provider
+            .generate(LLMRequest {
+                messages: vec![Message::user("hello".to_string())].into(),
+                model: models::merge_gateway::OPENAI_GPT_6_1_SOL.to_string(),
+                tools: Some(Arc::new(vec![ToolDefinition::function(
+                    "get_weather".to_string(),
+                    "Get weather".to_string(),
+                    json!({"type": "object", "properties": {}}),
+                )])),
+                ..Default::default()
+            })
+            .await
+            .expect_err("route with no tool vendor must fail closed");
+        let text = err.to_string();
+        assert!(text.contains("capability"), "error must preserve the gateway diagnostic, got: {text}");
+        assert!(text.contains("default_routing"), "error must name a working route, got: {text}");
     }
 
     #[test]
@@ -1813,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn native_payload_omits_tool_choice_none_for_all_routes() {
+    fn native_payload_omits_tool_choice_none_but_keeps_tools_for_cache() {
         for model in models::merge_gateway::SUPPORTED_MODELS {
             let provider = MergeGatewayProvider::with_model("test-key".to_string(), (*model).to_string());
             let mut request = LLMRequest {
@@ -1829,7 +2283,9 @@ mod tests {
             };
 
             let payload = provider.build_native_payload(&request, false).expect("payload");
-            assert!(payload.get("tools").is_none(), "disabled tools must not be sent for route {model}");
+            // Definitions stay on the wire so recovery turns can reuse the
+            // same cached prefix as tool-enabled turns.
+            assert!(payload.get("tools").is_some(), "tools must stay on the wire for route {model}");
             assert!(payload.get("tool_choice").is_none(), "tool_choice=none must not be sent for route {model}");
 
             // The no-tool normalization must not suppress an explicit
@@ -1842,7 +2298,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_payload_omits_tool_choice_none_for_all_routes() {
+    fn legacy_payload_omits_tool_choice_none_but_keeps_tools_for_cache() {
         let provider = MergeGatewayProvider::from_config(
             Some("test-key".to_string()),
             Some(models::merge_gateway::DEFAULT_ROUTING.to_string()),
@@ -1868,7 +2324,7 @@ mod tests {
             };
 
             let payload = core.convert_request(&request).expect("legacy payload");
-            assert!(payload.get("tools").is_none(), "disabled tools must not be sent for route {model}");
+            assert!(payload.get("tools").is_some(), "tools must stay on the wire for route {model}");
             assert!(payload.get("tool_choice").is_none(), "tool_choice=none must not be sent for route {model}");
 
             request.tool_choice = Some(ToolChoice::Auto);
@@ -1876,6 +2332,41 @@ mod tests {
             assert!(enabled_payload.get("tools").is_some(), "tools must be preserved for route {model}");
             assert_eq!(enabled_payload["tool_choice"], json!("auto"));
         }
+    }
+
+    #[test]
+    fn native_payload_keeps_tools_for_tool_choice_none_but_omits_them_without_tool_vendor() {
+        let provider = MergeGatewayProvider::with_model(
+            "test-key".to_string(),
+            models::merge_gateway::DEFAULT_ROUTING.to_string(),
+        );
+        let mut request = LLMRequest {
+            model: models::merge_gateway::DEFAULT_ROUTING.to_string(),
+            messages: vec![Message::user("Summarize.".to_string())].into(),
+            tools: Some(Arc::new(vec![ToolDefinition::function(
+                "read_file".to_string(),
+                "Read a file".to_string(),
+                json!({"type": "object"}),
+            )])),
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+
+        // Default: recovery keeps tools for cache stability.
+        let payload = provider.build_native_payload(&request, false).expect("payload");
+        assert!(payload.get("tools").is_some());
+
+        // Once the route is known to lack a tool vendor, recovery omits tools
+        // so synthesis can still run (cache is secondary on that route).
+        provider.mark_tool_vendor_missing(&request.model);
+        let recovered = provider.build_native_payload(&request, false).expect("recovery payload");
+        assert!(recovered.get("tools").is_none(), "tools omitted when no tool vendor can serve them");
+        assert!(recovered.get("tool_choice").is_none());
+
+        // Tool-enabled requests still send tools (and fail fast upstream).
+        request.tool_choice = Some(ToolChoice::Auto);
+        let enabled = provider.build_native_payload(&request, false).expect("enabled payload");
+        assert!(enabled.get("tools").is_some());
     }
 
     #[test]

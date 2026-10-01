@@ -16,10 +16,10 @@ pub use protocol::{
     InlineMessageKind, InlineSession, PreviewCallback, SubmittedInput,
 };
 pub use selection::{
-    InlineListItem, InlineListSearchConfig, InlineListSelection, OpenAIServiceTierChoice, RewindAction,
+    InlineItemKind, InlineListItem, InlineListSearchConfig, InlineListSelection, OpenAIServiceTierChoice, RewindAction,
     SecurePromptConfig, WizardModalMode, WizardStep,
 };
 pub use style::{
     InlineHeaderBadge, InlineHeaderContext, InlineHeaderHighlight, InlineHeaderStatusBadge, InlineHeaderStatusTone,
-    InlineLinkRange, InlineLinkTarget, InlineSegment, InlineTextStyle, InlineTheme,
+    InlineLinkRange, InlineLinkTarget, InlineSegment, InlineStatus, InlineTextStyle, InlineTheme, InlineTone,
 };

@@ -32,6 +32,10 @@ pub const INLINE_CONTENT_MIN_WIDTH: u16 = 48;
 pub const INLINE_STACKED_NAVIGATION_PERCENT: u16 = INLINE_NAVIGATION_PERCENT;
 pub const INLINE_SCROLLBAR_EDGE_PADDING: u16 = 1;
 pub const INLINE_TRANSCRIPT_BOTTOM_PADDING: u16 = 2;
+pub(crate) const INLINE_TRANSCRIPT_WIDE_GUTTER_MIN_WIDTH: u16 = 120;
+pub(crate) const INLINE_TRANSCRIPT_STANDARD_GUTTER_MIN_WIDTH: u16 = 60;
+pub(crate) const INLINE_TRANSCRIPT_WIDE_GUTTER_COLUMNS: u16 = 2;
+pub(crate) const INLINE_TRANSCRIPT_STANDARD_GUTTER_COLUMNS: u16 = 1;
 
 /// Effective transcript bottom padding rows for a viewport, clamped so at
 /// least one content row stays visible. Single source of truth for the four
@@ -43,6 +47,18 @@ pub fn effective_transcript_bottom_padding(viewport_rows: usize) -> usize {
 pub const INLINE_PREVIEW_MAX_CHARS: usize = 56;
 pub const INLINE_PREVIEW_ELLIPSIS: &str = crate::design::constants::INLINE_PREVIEW_ELLIPSIS;
 pub const INLINE_PASTE_COLLAPSE_LINE_THRESHOLD: usize = 10;
+/// Collapse the composer when pasted/typed text reaches this char count,
+/// even when the line count stays below the paste threshold (e.g. minified
+/// JSON, base64 image data, long single-line file-token lists).
+pub const INLINE_INPUT_COMPACT_CHAR_THRESHOLD: usize = 1000;
+/// Collapse the composer when this many image tokens/attachments are present
+/// (`[Image #N]`, `data:image/…`, or image file paths).
+pub const INLINE_INPUT_COMPACT_IMAGE_THRESHOLD: usize = 3;
+/// Collapse the composer when this many `@file` reference tokens are present.
+pub const INLINE_INPUT_COMPACT_FILE_TOKEN_THRESHOLD: usize = 5;
+/// Head/tail snippet sizes for the generic large-input summary preview.
+pub const INLINE_INPUT_COMPACT_PREVIEW_HEAD_CHARS: usize = 120;
+pub const INLINE_INPUT_COMPACT_PREVIEW_TAIL_CHARS: usize = 120;
 pub const INLINE_JSON_TAIL_LINES: usize = 30;
 pub const INLINE_JSON_COLLAPSE_LINE_THRESHOLD: usize = 200;
 pub const HEADER_HIGHLIGHT_PREVIEW_MAX_CHARS: usize = 48;
@@ -69,6 +85,18 @@ pub const TUI_TRANSCRIPT_MAX_MSGS: usize = 5000;
 /// Number of oldest message lines removed per eviction pass.
 pub const TUI_TRANSCRIPT_EVICT_CHUNK: usize = 1000;
 
+/// Maximum full PTY/tool capture lines retained per `ToolOutputBlock` for the
+/// review overlay. Older capture lines are dropped from the head so a flood
+/// cannot grow without bound; the live transcript is already capped separately.
+pub const TUI_TOOL_OUTPUT_CAPTURE_MAX_LINES: usize = 20_000;
+/// Maximum number of retained full tool/PTY capture blocks.
+pub const TUI_TOOL_OUTPUT_BLOCKS_MAX: usize = 64;
+/// Maximum compact-activity rows retained (FIFO).
+pub const TUI_COMPACT_ACTIVITY_MAX_ENTRIES: usize = 512;
+/// Maximum UTF-8 bytes retained for a collapsed paste's expand payload. Larger
+/// pastes keep a tail so review/expand stays bounded under paste floods.
+pub const TUI_COLLAPSED_PASTE_MAX_BYTES: usize = 256 * 1024;
+
 /// Scroll percentage format in status bar
 pub const SCROLL_INDICATOR_FORMAT: &str = "↕";
 
@@ -92,8 +120,8 @@ pub const INLINE_PTY_STATUS_DONE: &str = "DONE";
 pub const INLINE_PTY_PLACEHOLDER: &str = vtcode_config::constants::ui::INLINE_PTY_PLACEHOLDER;
 pub const MODAL_LIST_HIGHLIGHT_SYMBOL: &str = "│";
 pub const MODAL_LIST_HIGHLIGHT_FULL: &str = "│ ";
-pub const INLINE_FILE_PICKER_TREE_PREFIX: &str = "▸ ";
-pub const INLINE_FILE_PICKER_TREE_INDENT: &str = "  ";
+/// Prefix for the synthetic `..` row that ascends one directory. Row kind
+/// glyphs (`▸` dir, `▧` image, `⚙` executable) come from `FileKind::glyph`.
 pub const INLINE_FILE_PICKER_PARENT_PREFIX: &str = "↑ ";
 pub const INLINE_LIST_PANEL_MIN_HEIGHT: u16 = 8;
 pub const INLINE_LIST_SCROLL_PADDING: u16 = 1;
@@ -107,7 +135,7 @@ pub const MODAL_LIST_SUMMARY_NO_MATCHES: &str = "No matches";
 pub const MODAL_LIST_SUMMARY_RESET_HINT: &str = "Press Esc to reset";
 pub const MODAL_LIST_NO_RESULTS_MESSAGE: &str = "No matching options";
 pub const HEADER_VERSION_PROMPT: &str = "> ";
-pub const HEADER_VERSION_PREFIX: &str = "App";
+pub const HEADER_VERSION_PREFIX: &str = vtcode_config::constants::ui::HEADER_VERSION_PREFIX;
 pub const HEADER_VERSION_LEFT_DELIMITER: &str = "(";
 pub const HEADER_VERSION_RIGHT_DELIMITER: &str = ")";
 pub const HEADER_PRIMARY_SEPARATOR: &str = " | ";
@@ -305,5 +333,17 @@ mod tests {
         assert_eq!(effective_transcript_bottom_padding(1), 0);
         assert_eq!(effective_transcript_bottom_padding(2), 1);
         assert_eq!(effective_transcript_bottom_padding(100), usize::from(INLINE_TRANSCRIPT_BOTTOM_PADDING));
+    }
+
+    /// Ratchet for the instant-launch placeholder: the header fallback and the
+    /// shell default must match the canonical product name. `vtcode-commons`
+    /// cannot depend on `vtcode-config`, so this test (in a crate that sees
+    /// both) guards against future divergence.
+    #[test]
+    fn header_placeholder_app_name_matches_product() {
+        let display_name = vtcode_config::constants::app::DISPLAY_NAME;
+        assert_eq!(HEADER_VERSION_PREFIX, display_name);
+        assert_eq!(HEADER_VERSION_PREFIX, vtcode_config::constants::ui::HEADER_VERSION_PREFIX);
+        assert_eq!(crate::tui::core_tui::types::InlineHeaderContext::default().app_name, display_name);
     }
 }

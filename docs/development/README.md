@@ -6,6 +6,8 @@ Entry point for VT Code contributor workflows.
 
 - [Development Setup](./DEVELOPMENT_SETUP.md) - Canonical local setup and quality loop.
 - [Testing Guide](./testing.md) - Test commands, structure, and benchmark coverage, including the startup launch benchmark.
+- [TUI design system](./tui-design-system.md) - Canonical list rows, keyboard copy, and group spacing in `vtcode-ui::design`.
+- [TUI list search](./tui-list-search.md) - Shared live filter for modal and standalone pickers (labels, descriptions, keywords).
 - [C++ Core Guidelines Adoption](./CPP_CORE_GUIDELINES_ADOPTION.md) - Policy for any C/C++ code introduced in this repository.
 - [CI/CD](./ci-cd.md) - Pipeline behavior and verification stages.
 - [Cross Compilation](./cross-compilation.md) - Multi-target build workflows.

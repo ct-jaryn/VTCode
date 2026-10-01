@@ -20,6 +20,9 @@ source "$SCRIPT_DIR/common.sh"
 # Legacy updater compatibility bridge helpers (.tar.gz.compat raw exec assets).
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/release-assets.sh"
+# Shared macOS Developer ID signing and notarization helpers.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/macos-release-signing.sh"
 
 # Temporary file to store release notes
 RELEASE_NOTES_FILE=$(mktemp)
@@ -34,6 +37,9 @@ package_release_archive() {
 	local binary_name=$2
 	local archive_path=$3
 	local release_dir="target/$target/release"
+	if [[ "$target" == *-apple-darwin ]]; then
+		sign_and_notarize_macos_binary "$release_dir/$binary_name"
+	fi
 
 	# Stage the binary plus the shared man page set into a temp dir so the
 	# archive layout matches what install.sh expects (vtcode at root,
@@ -46,6 +52,9 @@ package_release_archive() {
 	fi
 	tar -C "$stage_dir" -czf "$archive_path" .
 	rm -rf "$stage_dir"
+	if [[ "$target" == *-apple-darwin ]]; then
+		verify_macos_release_archive "$archive_path"
+	fi
 }
 
 # Get GitHub username from commit author email
@@ -297,8 +306,13 @@ generate_structured_changelog() {
 		local clean_msg
 		clean_msg=$(clean_commit_message "$message")
 
-		# Skip excluded patterns
-		if [[ "$message" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog) ]]; then
+		# Skip excluded patterns (case-insensitive via lowercased copy).
+		# Covers owner-only TODO churn ("Update TODO", "Update TODOs",
+		# "docs: update project TODO", "docs(todo): ...") which only touches
+		# docs/project/TODO.md.
+		local lower_msg
+		lower_msg=$(echo "$message" | tr '[:upper:]' '[:lower:]')
+		if [[ "$lower_msg" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog|update.*todo|docs\(todo\)|docs\(project\).*todo|^update project$) ]]; then
 			continue
 		fi
 
@@ -1278,6 +1292,7 @@ main() {
 
 		# Build macOS binaries in parallel
 		print_info "Building macOS binaries in parallel..."
+		macos_release_signing_preflight
 
 		# Binary size directly impacts cold-start time (dyld page-faults on the
 		# Mach-O).  [profile.release] uses opt-level="z" + LTO + codegen-units=1
@@ -1471,6 +1486,12 @@ main() {
 			if ! create_compatibility_asset "$normal_archive" "$compat_path"; then
 				print_error "Failed to generate compatibility asset from $normal_archive"
 				exit 1
+			fi
+			if [[ "$ctarget" == *-apple-darwin ]]; then
+				if ! verify_macos_release_binary "$compat_path"; then
+					print_error "macOS compatibility asset failed Gatekeeper verification: $compat_path"
+					exit 1
+				fi
 			fi
 			compat_assets+=("$compat_path")
 		done

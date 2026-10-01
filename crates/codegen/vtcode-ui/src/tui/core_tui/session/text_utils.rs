@@ -141,6 +141,17 @@ fn wrap_line_internal(
         return vec![Line::default()];
     }
 
+    // Fast path: single-style ASCII prose (the common transcript case). Avoids
+    // grapheme clustering, f64 clip_line, and per-token String rebuilds
+    // (hotpath: wrap_line was ~45% of TUI reflow time).
+    if prefer_word_boundaries && continuation_prefix.is_empty() && line.spans.len() == 1 {
+        let span = &line.spans[0];
+        let text = span.content.as_ref();
+        if text.is_ascii() && !text.contains('\n') && !text.contains('\r') {
+            return wrap_ascii_word_boundaries(text, span.style, max_width);
+        }
+    }
+
     line.spans = coalesce_adjacent_spans(line.spans);
     let derived_continuation_prefix = if prefer_word_boundaries && continuation_prefix.is_empty() {
         wrapped_continuation_prefix(&line)
@@ -187,12 +198,27 @@ fn wrap_line_internal(
     // Diff rows carry a tinted bg on every span; paint the hanging-indent
     // prefix with the same bg so wrapped continuation rows don't start with
     // an unpainted strip. Non-diff lines keep the default prefix style.
-    let continuation_prefix_style = line
-        .spans
-        .iter()
-        .find_map(|span| span.style.bg)
-        .map(|bg| Style::default().bg(bg))
-        .unwrap_or_default();
+    // Blockquote continuations (`│ `) keep the bar's own style so the wrapped
+    // bar matches the first row's dimmed gutter instead of rendering bright.
+    let continuation_prefix_style = if continuation_prefix.contains('│') {
+        line.spans
+            .iter()
+            .find(|span| span.content.contains('│'))
+            .map(|span| span.style)
+            .unwrap_or_else(|| {
+                line.spans
+                    .iter()
+                    .find_map(|span| span.style.bg)
+                    .map(|bg| Style::default().bg(bg))
+                    .unwrap_or_default()
+            })
+    } else {
+        line.spans
+            .iter()
+            .find_map(|span| span.style.bg)
+            .map(|bg| Style::default().bg(bg))
+            .unwrap_or_default()
+    };
 
     let mut rows = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
@@ -385,6 +411,65 @@ fn wrap_line_internal(
     rows
 }
 
+/// Word-wrap a single-style ASCII string at spaces. Each output row is one
+/// `Span` sliced from the source (no per-token reallocation). Long words hard-
+/// break at `max_width` cells (ASCII ⇒ bytes == cells).
+fn wrap_ascii_word_boundaries(text: &str, style: Style, max_width: usize) -> Vec<Line<'static>> {
+    if text.len() <= max_width {
+        return vec![Line::from(Span::styled(text.to_owned(), style))];
+    }
+
+    let mut rows = Vec::with_capacity(text.len() / max_width + 1);
+    let bytes = text.as_bytes();
+    let mut line_start = 0usize;
+
+    while line_start < text.len() {
+        let remaining = text.len() - line_start;
+        if remaining <= max_width {
+            rows.push(Line::from(Span::styled(text[line_start..].to_owned(), style)));
+            break;
+        }
+
+        // Prefer breaking at the last space within the window.
+        let window_end = line_start + max_width;
+        let mut break_at = None;
+        let mut i = window_end;
+        while i > line_start {
+            i -= 1;
+            if bytes[i] == b' ' {
+                break_at = Some(i);
+                break;
+            }
+        }
+
+        match break_at {
+            Some(space) if space > line_start => {
+                let row = text[line_start..space].trim_end_matches(char::is_whitespace);
+                rows.push(Line::from(Span::styled(row.to_owned(), style)));
+                line_start = space + 1; // drop the break space
+            }
+            _ => {
+                // Hard break a long word.
+                let row = text[line_start..window_end].trim_end_matches(char::is_whitespace);
+                rows.push(Line::from(Span::styled(row.to_owned(), style)));
+                line_start = window_end;
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        rows.push(Line::default());
+    }
+    // Last row: match wrap_line_internal's flush trim.
+    if let Some(last) = rows.last_mut() {
+        if let Some(span) = last.spans.first_mut() {
+            let trimmed = span.content.as_ref().trim_end_matches(char::is_whitespace).to_owned();
+            span.content = trimmed.into();
+        }
+    }
+    rows
+}
+
 fn coalesce_adjacent_spans(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     if spans.is_empty() {
         return spans;
@@ -432,7 +517,7 @@ fn structural_continuation_prefix(text: &str) -> String {
     let text = stripped.as_ref();
     let bytes = text.as_bytes();
     let mut index = 0usize;
-    let mut width = 0usize;
+    let mut leading_width = 0usize;
 
     while index < bytes.len() {
         let Some(ch) = text[index..].chars().next() else {
@@ -441,12 +526,13 @@ fn structural_continuation_prefix(text: &str) -> String {
         if !ch.is_whitespace() || ch == '\n' || ch == '\r' {
             break;
         }
-        width += UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]) as &str);
+        leading_width += UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]) as &str);
         index += ch.len_utf8();
     }
 
+    let mut blockquote_depth = 0usize;
     while text[index..].starts_with("│ ") {
-        width += UnicodeWidthStr::width("│ ");
+        blockquote_depth += 1;
         index += "│ ".len();
     }
 
@@ -497,10 +583,32 @@ fn structural_continuation_prefix(text: &str) -> String {
     };
 
     if let Some(marker_width) = marker_width {
-        return " ".repeat(width + marker_width);
+        let mut prefix = String::new();
+        if leading_width > 0 {
+            prefix.push_str(&" ".repeat(leading_width));
+        }
+        for _ in 0..blockquote_depth {
+            prefix.push_str("│ ");
+        }
+        prefix.push_str(&" ".repeat(marker_width));
+        return prefix;
     }
 
-    if width > 0 { " ".repeat(width) } else { String::new() }
+    if blockquote_depth == 0 {
+        if leading_width > 0 {
+            return " ".repeat(leading_width);
+        }
+        return String::new();
+    }
+
+    let mut prefix = String::new();
+    if leading_width > 0 {
+        prefix.push_str(&" ".repeat(leading_width));
+    }
+    for _ in 0..blockquote_depth {
+        prefix.push_str("│ ");
+    }
+    prefix
 }
 
 fn numbered_list_marker_width(text: &str) -> Option<usize> {
@@ -641,6 +749,27 @@ pub fn justify_plain_text(text: &str, max_width: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_ascii_fits_single_row() {
+        let rows = wrap_ascii_word_boundaries("hello world", Style::default(), 20);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].spans[0].content.as_ref(), "hello world");
+    }
+
+    #[test]
+    fn wrap_ascii_breaks_on_spaces() {
+        let rows = wrap_ascii_word_boundaries("hello brave new world", Style::default(), 10);
+        let texts: Vec<&str> = rows.iter().map(|r| r.spans[0].content.as_ref()).collect();
+        assert_eq!(texts, vec!["hello", "brave new", "world"]);
+    }
+
+    #[test]
+    fn wrap_ascii_hard_breaks_long_word() {
+        let rows = wrap_ascii_word_boundaries("abcdefghijklmnop", Style::default(), 5);
+        let texts: Vec<&str> = rows.iter().map(|r| r.spans[0].content.as_ref()).collect();
+        assert_eq!(texts, vec!["abcde", "fghij", "klmno", "p"]);
+    }
 
     #[test]
     fn test_strip_ansi_codes() {
@@ -784,5 +913,33 @@ mod tests {
         let wrapped = wrap_line_with_hanging_prefix(line, 20, "  ");
         assert!(wrapped.len() > 1, "narrow width must wrap");
         assert_eq!(wrapped[1].spans[0].style.bg, None);
+    }
+
+    #[test]
+    fn test_blockquote_continuation_preserves_bar() {
+        assert_eq!(structural_continuation_prefix("│ quote"), "│ ");
+        assert_eq!(structural_continuation_prefix("│ │ nested"), "│ │ ");
+        assert_eq!(structural_continuation_prefix("│ • item"), "│   ");
+        assert_eq!(structural_continuation_prefix("  │ indented"), "  │ ");
+        assert_eq!(structural_continuation_prefix("• item"), "  ");
+        assert_eq!(structural_continuation_prefix("plain"), String::new());
+    }
+
+    #[test]
+    fn test_wrap_line_preserves_blockquote_bar() {
+        let line = Line::from("│ alpha beta gamma delta epsilon zeta eta theta");
+        let wrapped = wrap_line(line, 12);
+        assert!(wrapped.len() > 1, "narrow width must wrap, got {wrapped:?}");
+        let rendered: Vec<String> = wrapped
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert!(rendered[0].starts_with("│ "), "first row keeps bar, got {:?}", rendered[0]);
+        for (idx, text) in rendered.iter().enumerate().skip(1) {
+            assert!(
+                text.starts_with("│ "),
+                "wrapped blockquote continuation {idx} must keep bar, got {text:?} in {rendered:?}"
+            );
+        }
     }
 }

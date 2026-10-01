@@ -56,6 +56,21 @@ pub(super) async fn apply_primary_agent_tool_policy_overrides(
     }
 }
 
+/// Shared failure report for approved-plan agent selection. Keeps the
+/// `switch_path=plan_approval` log fields and the user-facing message
+/// identical across every orchestration call site so recoverable selection
+/// failures cannot drift into hard-abort behavior again.
+pub(super) fn report_plan_approval_selection_failure(requested_agent: &str, err: &anyhow::Error) -> String {
+    tracing::error!(
+        target: "vtcode.planning_workflow",
+        switch_path = "plan_approval",
+        requested_agent = %requested_agent,
+        error = %err,
+        "Could not select write-capable agent after plan approval; plan remains approved and can be retried"
+    );
+    format!("Could not switch to an implementation agent after plan approval: {err}")
+}
+
 /// Select the write-capable agent that must own an approved-plan execution.
 ///
 /// Approval is a hard runtime boundary. If discovery returns a stale or
@@ -98,6 +113,14 @@ pub(super) async fn select_approved_plan_execution_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_approval_selection_failure_message_is_recoverable() {
+        let err = anyhow::anyhow!("no write-capable agent");
+        let msg = report_plan_approval_selection_failure("build", &err);
+        assert!(msg.contains("Could not switch to an implementation agent"));
+        assert!(msg.contains("no write-capable agent"));
+    }
 
     #[test]
     fn fresh_execution_prompt_starts_with_fresh_context_header() {

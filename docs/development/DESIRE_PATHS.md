@@ -115,7 +115,6 @@ When implementing a new desire path:
 ## Related Documentation
 
 - **AGENTS.md**: Agent UX & Desire Paths section for quick reference
-- **CLAUDE.md**: Development guidelines (includes Desire Paths philosophy)
 - **docs/ARCHITECTURE.md**: System architecture
 
 ## Examples in Practice

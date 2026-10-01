@@ -269,7 +269,17 @@ pub(crate) async fn initialize_session_ui(
         workspace_for_palette.clone(),
         vtcode_ui::tui::core_tui::app::session::file_palette::DirLister::new({
             let ws = workspace_for_palette.clone();
-            move |dir| vtcode_core::SimpleIndexer::new(ws.clone()).discover_dir_entries(dir)
+            move |dir| {
+                // Symlink target and kind metadata are captured once per child
+                // here, so the render path never touches the filesystem.
+                vtcode_core::SimpleIndexer::new(ws.clone())
+                    .discover_dir_entries(dir)
+                    .into_iter()
+                    .map(|(path, is_dir)| {
+                        vtcode_ui::tui::core_tui::app::session::file_palette::DirEntryInfo::from_path(path, is_dir)
+                    })
+                    .collect()
+            }
         }),
     );
     let workspace_for_search = config.workspace.clone();
@@ -281,11 +291,12 @@ pub(crate) async fn initialize_session_ui(
         .await
         {
             Ok(files) => {
-                if !files.is_empty() {
-                    handle_for_search.set_file_palette_search_index(files);
-                } else {
+                if files.is_empty() {
                     tracing::debug!("No files found in workspace for file palette");
                 }
+                // Deliver even an empty result so the picker can distinguish a
+                // finished (empty/fully-ignored) workspace from still indexing.
+                handle_for_search.set_file_palette_search_index(files);
             }
             Err(err) => {
                 tracing::warn!("Failed to load workspace files for file palette: {}", err);

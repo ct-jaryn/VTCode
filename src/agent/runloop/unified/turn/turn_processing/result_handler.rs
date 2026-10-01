@@ -654,11 +654,7 @@ pub(crate) async fn handle_turn_processing_result<'a>(
                 } else {
                     "Recovery retry requested another autonomous pass, but the model still returned no answer."
                 };
-                let fallback_message = recovery_empty_response_fallback_message(
-                    params.ctx.working_history,
-                    params.ctx.tool_registry.workspace_root().as_path(),
-                    recovery_mode,
-                );
+                let fallback_message = recovery_empty_response_fallback_message(recovery_mode);
 
                 let final_fallback = if fallback_message.trim().is_empty() {
                     recovery_empty_fallback_safety_message(recovery_mode)
@@ -1423,7 +1419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_empty_response_fallback_includes_user_request_and_recent_tool_outputs() {
+    async fn recovery_empty_response_fallback_stays_concise_without_evidence_dump() {
         let mut backing = TestTurnProcessingBacking::new(4).await;
         let mut ctx = backing.turn_processing_context();
         ctx.working_history.push(uni::Message::user("tell me more".to_string()));
@@ -1454,13 +1450,18 @@ mod tests {
             outcome,
             TurnHandlerOutcome::Break(TurnLoopResult::Completed { plan_approved_execution_pending: _ })
         ));
-        assert!(backing.last_history_message_contains("Latest user request: tell me more"));
-        assert!(backing.last_history_message_contains("Tool output 1: second tool output"));
-        assert!(backing.last_history_message_contains("Tool output 2: first tool output"));
+        // Spec tui-diagnostics-cleanup S2D: user-facing fallback stays concise;
+        // evidence dumps stay in tool history, not the assistant answer.
+        // `activate_recovery` defaults to ToolFreeSynthesis.
+        assert!(backing.last_history_message_contains(
+            "I couldn't produce a final synthesis because the model returned no answer on the recovery pass."
+        ));
+        assert!(!backing.last_history_message_contains("Latest user request:"));
+        assert!(!backing.last_history_message_contains("Tool output 1:"));
     }
 
     #[tokio::test]
-    async fn recovery_empty_response_fallback_uses_spool_excerpt_when_available() {
+    async fn recovery_empty_response_fallback_omits_spool_excerpt() {
         let mut backing = TestTurnProcessingBacking::new(4).await;
         let mut ctx = backing.turn_processing_context();
 
@@ -1498,9 +1499,11 @@ mod tests {
             outcome,
             TurnHandlerOutcome::Break(TurnLoopResult::Completed { plan_approved_execution_pending: _ })
         ));
-        assert!(backing.last_history_message_contains("source_path: src/main.rs"));
-        assert!(backing.last_history_message_contains("fallback-line-1"));
-        assert!(backing.last_history_message_contains("Spool excerpt:"));
+        assert!(backing.last_history_message_contains(
+            "I couldn't produce a final synthesis because the model returned no answer on the recovery pass."
+        ));
+        assert!(!backing.last_history_message_contains("Spool excerpt:"));
+        assert!(!backing.last_history_message_contains("fallback-line-1"));
     }
 
     #[tokio::test]

@@ -1214,8 +1214,27 @@ mod unified_action_error_tests {
         let (preview, truncated) = build_exec_output_preview("a🙂b", 1);
 
         assert!(truncated);
-        assert_eq!(preview, "a\n[Output truncated]");
+        // The byte window is head+tail, so the last output content survives
+        // the cut (the part that carries build/test summaries).
+        assert!(preview.starts_with('a'));
+        assert!(preview.ends_with('b'));
+        assert!(preview.contains("bytes omitted"));
         std::str::from_utf8(preview.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn exec_output_preview_keeps_tail_of_long_output_within_budget() {
+        let lines: String = (0..1000).map(|idx| format!("line {idx}\n")).collect();
+        let (preview, truncated) = build_exec_output_preview(&lines, 1000);
+
+        assert!(truncated);
+        // Head shows the first line, tail shows the last — a head-only cut
+        // lost the tail where build/test summaries live.
+        assert!(preview.starts_with("line 0\n"));
+        assert!(preview.trim_end().ends_with("line 999"));
+        assert!(preview.contains("bytes omitted"));
+        // The inline budget stays essentially intact (marker bytes aside).
+        assert!(preview.len() <= 1000 * 4 + 64, "preview {} must stay near the 4000-byte budget", preview.len());
     }
 
     #[test]

@@ -19,13 +19,13 @@ pub use vtcode_commons::reasoning::ReasoningEffortLevel;
 pub enum SystemPromptMode {
     /// Minimal prompt (~500 tokens base) - Pi-inspired, modern models need less guidance
     /// Best for: Power users, token-constrained contexts, fast responses
+    #[default]
     Minimal,
     /// Lightweight prompt (~750 tokens base) - Essential guidance only
     /// Best for: Resource-constrained operations, simple tasks
     Lightweight,
     /// Default prompt (~900 tokens base) - Full guidance with all features
     /// Best for: General usage, comprehensive error handling
-    #[default]
     Default,
     /// Specialized prompt (~900 tokens base) - Complex refactoring and analysis
     /// Best for: Multi-file changes, sophisticated code analysis
@@ -97,7 +97,8 @@ pub enum ToolDocumentationMode {
     /// Best for: Maximum efficiency, experienced users, token-constrained contexts
     Minimal,
     /// Complete tool and parameter descriptions; only unusually long tails are
-    /// trimmed at a sentence boundary (~1,800 tokens for the builtin catalog)
+    /// trimmed at a sentence boundary (measured ~1,793 tokens for the default
+    /// catalog; budgeted ≤ 2,000 in `emitted_model_tool_schema_fits_within_first_request_budget`)
     /// Best for: General usage (recommended)
     #[default]
     Progressive,

@@ -132,14 +132,11 @@ fn render_markdown_code_block_table(
 }
 
 fn build_prefix_segments(
-    blockquote_depth: usize,
+    _blockquote_depth: usize,
     list_continuation_prefix: &str,
     base_style: Style,
 ) -> Vec<MarkdownSegment> {
-    let mut segments = Vec::with_capacity(blockquote_depth + usize::from(!list_continuation_prefix.is_empty()));
-    for _ in 0..blockquote_depth {
-        segments.push(MarkdownSegment::new(base_style.dimmed().italic(), "│ "));
-    }
+    let mut segments = Vec::with_capacity(usize::from(!list_continuation_prefix.is_empty()));
     if !list_continuation_prefix.is_empty() {
         segments.push(MarkdownSegment::new(base_style, list_continuation_prefix));
     }

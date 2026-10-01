@@ -21,7 +21,7 @@ progress invariant. It complements [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 | **Harness** | The runtime that makes reasoning useful: instruction memory, continuation, hooks, guard rails. | `crates/codegen/vtcode-core/src/core/agent/` + `src/agent/runloop/`; `crates/codegen/vtcode-core/src/prompts/`; `continuation.rs` (`ContinuationController`). |
 | **Context** | Finite attention budget, curated each turn. | `crates/codegen/vtcode-core/src/context/`; `crates/codegen/vtcode-core/src/compaction/` (`memory_envelope.rs`); `context.dynamic` spooling. |
 | **Tools** | External capability surface. | `crates/codegen/vtcode-core/src/tools/`; `vtcode-utility-tool-specs/`; `vtcode-mcp/`; `vtcode-skills/`. |
-| **Evals** | Closing the loop on quality. | `scripts/evals/` (Python `eval_engine.py`, `metrics.py`); `crates/codegen/vtcode-core/src/llm/rl/` (`signal`/`ledger`/`engine`/`eval`: reward → RL). |
+| **Evals** | Closing the loop on quality. | `scripts/evals/` (Python `eval_engine.py`, `metrics.py`); `crates/codegen/vtcode-eval/` (pass@k/pass^k metrics, capability/regression evals). |
 | **Sandbox** | The controlled, changing environment. | `vtcode-bash-runner/`; `vtcode-safety/` (`command_safety`, `exec_policy`, `sandboxing`). |
 | **State management** | Durable, resumable, cross-session. | `vtcode-memory/`; `vtcode-exec-events/` (`ThreadEvent`); `crates/codegen/vtcode-core/src/loop_state.rs`, `persistent_memory`. |
 
@@ -65,9 +65,6 @@ VT Code enforces this at several layers:
   `memories/progress.md` (proactive context grounding, P3).
 - **Stagnation / escalation** handling reroutes a stalled run toward
   compaction → replan → escalation.
-- **RL action selection** (`crates/codegen/vtcode-core/src/llm/rl/`) prefers low-latency,
-  high-success actions and is fed by eval outcomes, so the *system* gets
-  better at making progress, not just the model.
 - **Budget guardrails** (`SessionBudget` in `usage_cost.rs`) pause or escalate
   long runs at cost thresholds so progress does not come at unbounded spend.
 
@@ -76,7 +73,7 @@ VT Code enforces this at several layers:
 ```
         model ──► harness ──► tools ──► sandbox (changing env)
                      │            │
-                context ◄───────┘   evals ──► rl (better actions)
+                context ◄───────┘   evals (quality loop)
                      │
                 state (resume / progress ledger)
                      │
@@ -85,6 +82,6 @@ VT Code enforces this at several layers:
 
 A long task survives a crash because the `ProgressLedger` and
 `ThreadEvent` log are on disk; it makes progress because the continuation
-controller refuses premature completion; it adapts because eval outcomes feed
-the RL loop; it stays bounded because budget guardrails exist. No single
-component delivers long-horizon capability — the composition does.
+controller refuses premature completion; it stays bounded because budget
+guardrails exist. No single component delivers long-horizon capability — the
+composition does.

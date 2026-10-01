@@ -47,6 +47,13 @@ fn extract_command(args: &Value) -> Option<(String, &'static str)> {
 pub(super) const SUMMARY_PREVIEW_LEN: usize = 70;
 pub(super) const COMPACT_PREVIEW_LEN: usize = 120;
 
+/// Shared `• Ran` header wrap widths so expanded summaries and live PTY headers
+/// stay in sync. Canonical values live in `vtcode_commons::formatting` so
+/// every surface (expanded summaries, live PTY headers, compact rows,
+/// plain-text fallback) wraps identically; TUI reflow owns any residual
+/// viewport overflow.
+pub(super) use vtcode_commons::formatting::{RAN_COMMAND_CONTINUATION_WIDTH, RAN_COMMAND_FIRST_WIDTH};
+
 /// Exact flag tokens that introduce an inline script for a runner.
 /// Token-exact (not substring) so `grep -c` / `--code-review` never match.
 const SCRIPT_RUNNER_FLAGS: &[&str] = &["-c", "-e", "--code"];

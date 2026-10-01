@@ -165,6 +165,8 @@ Normal forks keep the full archived transcript unchanged.
 VT Code provides several quick actions directly in the chat input for faster workflow:
 
 -   **File Picker (`@`)** — Type `@` anywhere in your input to open the file picker and select files to reference in your message. This allows you to quickly mention files without typing full paths.
+
+    The picker is hierarchical: with an empty query it browses one directory at a time (`Enter` opens a folder, `←` ascends, `PageUp`/`PageDown` jump a page), and once you type it switches to a fuzzy search across the workspace. Rows show a type glyph (`▸` folder, `▧` image, `⚙` executable) and symlinks render their target, with dangling links flagged as `(broken)`. Press `Alt+Enter` on a folder to reference it (`@dir/`) instead of opening it. Files and folders ignored by `.gitignore`, `.vtcodegitignore`, and the built-in sensitive-file list are never shown.
 -   **Slash Commands (`/`)** — Type `/` at the start of input to access all available slash commands including `/files`, `/status`, and many more.
 
 ## Configuration quick reference
@@ -198,7 +200,7 @@ Configure the behaviour under **Settings › Extensions › VT Code**:
 
 - Slash commands are skill-backed. Each command routes through a namespaced command skill such as `cmd-status` or `cmd-review`.
 - The `/name` form remains the compatibility alias. You can also inspect or execute the same behavior through `/skills info cmd-name` and `/skills use cmd-name ...`.
-- Prompt-oriented slash commands such as `/review` and `/analyze` are shipped as bundled system skills in the release binary.
+- Prompt-oriented slash commands such as `/review` are shipped as bundled system skills in the release binary.
 - `/review` accepts free-form instructions (`/review Review the full diff for correctness and regressions`) or legacy flags (`--last-diff`, `--target <expr>`, `--file <path>`, positional files, `--style <style>`). Instructions describe focus only and are never used as shell arguments. The command stays read-only unless the text explicitly asks to implement fixes.
 - To keep the default prompt lean, command skills are not injected into the runtime `## Skills` prompt section; use slash completion or `/skills` discovery when you need them.
 - `/resume` opens archived sessions when the current run is idle.
@@ -206,9 +208,9 @@ Configure the behaviour under **Settings › Extensions › VT Code**:
 - `/compact` manually compacts the current conversation context immediately. The UI shows `Compacting context...` async with elapsed time, then `Context compacted · {duration} ({orig} -> {compacted} messages, {mode} compaction)`. Use `/compact edit-prompt` or `/compact reset-prompt` to manage the saved default prompt for manual compaction requests. On the local fallback path, VT Code keeps a structured summary plus retained user prompts instead of a mixed recent tail.
 - `/agent` inspects agent definitions and delegated child runs. `@agent-name` remains a delegated child-agent control. Primary agents are switched from the TUI with `Shift+Tab` (see [Keyboard Shortcuts](./keyboard-shortcuts.md#agent-and-mode-switching)). The active primary agent is shown in the session header badge and influences the session's instructions, model, granular permission policy, and tool access.
 - `/agent list` shows all agent definitions with their availability (`mode: primary`, `mode: subagent`, or `mode: all`). `/agent create` scaffolds a new agent definition in `.vtcode/agents/`.
-- `/plan` starts or continues the planning workflow. It is a workflow command, not a state selector. Execution agents may also suggest it for demanding or multi-phase tasks; interactive policies confirm the suggestion, while full-auto and skip-confirmations policies accept it automatically. When the plan agent needs a material clarification, the inline interview wizard presents selectable answers and resumes planning with the chosen answer. Use `/plan off` to cancel an active planning workflow without implementing its draft.
-- `/checkup` runs configuration diagnostics and suggests reversible optimizations. Use `/checkup [--quick|--full]` (defaults to a full pass); optimizations are confirmed via the selection modal before any config is mutated.
-- `/model` and `/effort` work while a turn is running, including the model picker. The selection is shown immediately as pending the next request; the in-flight request keeps its original settings and the next model request uses the new provider, model, context budget, and reasoning effort (the same turn when it makes another request, otherwise the next turn). Header, session metadata, and persisted defaults reflect the effective selection once applied.
+- `/plan` starts or continues the planning workflow and switches to the `plan` primary agent so the header badge, prompt, and tools match Plan mode. Execution agents may also suggest it for demanding or multi-phase tasks; interactive policies confirm the suggestion, while full-auto and skip-confirmations policies accept it automatically. After confirmation the header shows Plan immediately. When the plan agent needs a material clarification, the inline interview wizard presents selectable answers and resumes planning with the chosen answer. Use `/plan off` to cancel an active planning workflow without implementing its draft and restore the previous execution agent (`build`/`auto`).
+- `/config checkup` runs configuration diagnostics and suggests reversible optimizations. Use `/config checkup [--quick|--full]` (defaults to a full pass); optimizations are confirmed via the selection modal before any config is mutated. The old `/checkup` name still works as a hidden alias.
+- `/model` works while a turn is running, including reasoning-effort selection in the model picker. The selection is shown immediately as pending the next request; the in-flight request keeps its original settings and the next model request uses the new provider, model, context budget, and reasoning effort (the same turn when it makes another request, otherwise the next turn). Header, session metadata, and persisted defaults reflect the effective selection once applied.
 - `/feedback` opens the VT Code GitHub issue form in your browser to report a bug or request a feature.
 
 ## WebMCP browser bridge
@@ -508,7 +510,7 @@ Resume the most recent archived session:
 ```bash
 vtcode --continue
 # or in interactive mode:
-# /continue
+# /resume
 ```
 
 This starts a fresh conversation with the context preserved from the last session. Use it to pick up where you left off after closing VT Code.

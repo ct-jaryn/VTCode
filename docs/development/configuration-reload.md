@@ -51,6 +51,35 @@ current values, and options. Direct nested paths remain supported so links and
 slash-command workflows do not lose access to uncommon or provider-specific
 settings.
 
+### Visual hierarchy and feedback
+
+Setting rows render **title + accent value + dimmed description**. The live
+value lives in `InlineListItem::value` (never packed into the subtitle), and
+badges carry a semantic `InlineTone`:
+
+| Badge | Tone | Meaning |
+| --- | --- | --- |
+| `On` / `Off` | Success / Neutral | Boolean state |
+| `Pick` / `Edit` / `Step` / `List` | Accent | Interaction kind |
+| `Destructive` | Danger | Reset confirmation |
+| `Cancel` / `Back` | Neutral | Safe exit |
+
+Nested views start with a `← Back` row. `Esc` backs out of a nested view and
+closes the palette at root. The reset confirmation defaults selection to
+**Keep settings**.
+
+Every apply/save/cancel sets an in-modal **status strip** (`InlineStatus` with
+Success / Warning / Danger / Accent tone) that persists while the palette is
+open, and emits one short chat line (`Settings: …`) for the durable record.
+The keyboard footer is `Navigation: ↑/↓ select • Enter/Space apply • ←/→
+change value • type to filter • Esc back/close`.
+
+The model picker (`/model`) follows the same presentation contract: step
+progress in the header (`Step 1 · Model`), provider section headers, a
+`Current` badge (`InlineTone::Current`) on the active model, capability
+metadata as dimmed subtitle text, and a completion chat line of the form
+`Model: {provider}/{model} · reasoning {level} · tier {tier}`.
+
 Normal startup and live reload also use a repair-capable loader for legacy
 repository files. If an otherwise parseable workspace or project file still
 contains protected provider definitions or endpoint/credential overrides from

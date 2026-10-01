@@ -1,5 +1,5 @@
 # vtcode-exec-events
-[Root AGENTS.md](../AGENTS.md) | Authoritative `ThreadEvent` contract. All runtime events flow through this crate.
+[Root AGENTS.md](../../../AGENTS.md) | Authoritative `ThreadEvent` contract. All runtime events flow through this crate.
 
 ## Key Types
 

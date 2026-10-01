@@ -304,7 +304,7 @@ fn normalize_turn_balancer_tool_name(name: &str) -> Cow<'_, str> {
 
 /// Shared plan-format suffix for planning synthesis recovery reasons.
 ///
-/// All three planning convergence guards (low-signal, preview-budget,
+/// Planning convergence guards (low-signal,
 /// repeated-navigation) schedule the same single tool-free synthesis pass, so
 /// they must instruct the same `<proposed_plan>` contract. Without the format
 /// the model emits research prose that fails validation and the turn ends
@@ -429,35 +429,6 @@ pub(crate) async fn handle_turn_balancer(
                 .line(
                     MessageStyle::Info,
                     "[!] Planning recovery: low-signal research reached the adaptive synthesis threshold.",
-                )
-                .unwrap_or(());
-            ctx.working_history.push(uni::Message::system(recovery_reason));
-        }
-        return apply_balancer_recovery(repeated_tool_attempts);
-    }
-
-    // Planning preview blindness: once the per-turn model-visible preview
-    // budget is exhausted, every further tool response is stored as a metadata
-    // stub without body content (spool pointers aside, the model cannot see
-    // new evidence). Blind retries only inflate the request — observed as a
-    // ~360k-token turn of contentless grep stubs ending in an empty synthesis.
-    // Converge on the same single tool-free synthesis pass instead, while the
-    // evidence gathered before exhaustion is still fresh. Execution mode is
-    // untouched: verifier exit codes survive in stub metadata, so builds and
-    // checks remain meaningful after exhaustion.
-    if ctx.is_planning_active()
-        && !repeated_tool_attempts.planning_low_signal_synthesis_triggered
-        && ctx.harness_state.model_visible_preview_budget_exhausted()
-    {
-        let recovery_reason = format!(
-            "Planning tool preview budget exhausted the model-visible allowance; further inspection returns metadata stubs without content. Tools are disabled on the next pass. Trust preserved outcome metadata (tool, spool_path, byte_count, completion_state); re-reading or repeating exhausted calls only returns more stubs. Verification, task_tracker, session polling, spool paging, and plan-draft re-reads stay open until the synthesis pass. {PLANNING_SYNTHESIS_FORMAT_HINT}"
-        );
-        if ctx.activate_recovery(recovery_reason.clone()) {
-            repeated_tool_attempts.planning_low_signal_synthesis_triggered = true;
-            ctx.renderer
-                .line(
-                    MessageStyle::Info,
-                    "[!] Planning recovery: tool preview budget exhausted; synthesizing plan from collected evidence.",
                 )
                 .unwrap_or(());
             ctx.working_history.push(uni::Message::system(recovery_reason));
@@ -721,6 +692,16 @@ mod tests {
         assert!(guidance.contains("task_tracker"));
     }
 
+    fn assert_recovery_expires_at_fresh_turn(history: &[vtcode_core::llm::provider::Message]) {
+        use crate::agent::runloop::unified::turn::turn_loop_helpers::restore_fresh_turn_tool_guidance;
+
+        let mut restored = history.to_vec();
+        restore_fresh_turn_tool_guidance(&mut restored, false);
+        assert_eq!(restored.len(), history.len() + 1, "the guard's emitted directive must be superseded");
+        restore_fresh_turn_tool_guidance(&mut restored, false);
+        assert_eq!(restored.len(), history.len() + 1, "restoration must not duplicate itself");
+    }
+
     #[test]
     fn navigation_loop_guidance_uses_generic_text_outside_planning_workflow() {
         let guidance = navigation_loop_guidance(false, 1);
@@ -774,6 +755,7 @@ mod tests {
                 || message.content.as_text().contains("synthesize the plan")
                 || message.content.as_text().contains("<proposed_plan>")
         }));
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
     }
 
     #[tokio::test]
@@ -854,66 +836,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn planning_preview_exhaustion_schedules_synthesis_once() {
-        use vtcode_config::constants::output_limits::TURN_PREVIEW_BUDGET_BYTES_PLANNING;
-        use vtcode_core::llm::provider as uni;
-
+    async fn many_productive_planning_previews_do_not_force_recovery() {
         let mut backing = TestTurnProcessingBacking::new(120).await;
         backing.activate_planning_for_test();
         let mut ctx = backing.turn_processing_context();
-        // Blind the model: one over-budget response flips the per-turn
-        // preview budget, so every later inspection is a contentless stub.
-        ctx.push_tool_response("call-blind", Some("exec_command"), "x".repeat(TURN_PREVIEW_BUDGET_BYTES_PLANNING + 1));
-        assert!(ctx.harness_state.model_visible_preview_budget_exhausted());
-
+        for index in 0..24 {
+            ctx.push_tool_response(
+                format!("call-{index}"),
+                Some("exec_command"),
+                format!("evidence-{index} {}", "x".repeat(8_000)),
+            );
+        }
         let mut tracker = LoopTracker::new();
-        let first = super::handle_turn_balancer(&mut ctx, 6, &mut tracker, 120, 3).await;
-        assert!(matches!(first, TurnHandlerOutcome::Continue));
-        assert!(ctx.is_recovery_active());
-        assert!(tracker.planning_low_signal_synthesis_triggered);
-
-        // Even with low-signal counters also at threshold, the shared
-        // once-per-turn flag must prevent a second recovery scheduling.
-        tracker.consecutive_low_signal_navigations = PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD;
-        tracker.total_low_signal_navigations = PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD;
-        let second = super::handle_turn_balancer(&mut ctx, 12, &mut tracker, 120, usize::MAX).await;
-        assert!(matches!(second, TurnHandlerOutcome::Continue));
-        let synthesis_messages = ctx
-            .working_history
-            .iter()
-            .filter(|message| {
-                message.role == uni::MessageRole::System && message.content.as_text().contains("preview budget")
-            })
-            .count();
-        assert_eq!(synthesis_messages, 1, "preview-exhaustion synthesis must fire exactly once per turn");
+        let result = super::handle_turn_balancer(&mut ctx, 6, &mut tracker, 120, usize::MAX).await;
+        assert!(matches!(result, TurnHandlerOutcome::Continue));
+        assert!(!ctx.is_recovery_active());
+        assert!(!tracker.planning_low_signal_synthesis_triggered);
         assert!(
-            ctx.working_history.iter().any(|message| {
-                message.role == uni::MessageRole::System
-                    && message.content.as_text().contains("<proposed_plan>")
-                    && message.content.as_text().contains("Action -> files")
-            }),
-            "preview-exhaustion recovery must instruct plan-format synthesis from preserved metadata"
+            ctx.working_history
+                .iter()
+                .any(|message| message.content.as_text().contains("evidence-23"))
         );
-        let recovery_prompt = ctx
-            .working_history
-            .iter()
-            .find(|message| {
-                message.role == uni::MessageRole::System && message.content.as_text().contains("preview budget")
-            })
-            .expect("preview exhaustion must record one recovery prompt")
-            .content
-            .as_text();
-        assert!(recovery_prompt.contains("Valid examples: `verify: [cargo nextest run -p vtcode]`"));
         assert!(
-            recovery_prompt.contains("verify: [sed -n '1,40p' docs/file.md]")
-                && recovery_prompt.contains("verify: [grep -n 'symbol' src/file.rs]"),
-            "synthesis hint must include inspection-command valid examples: {recovery_prompt}"
+            !ctx.working_history
+                .iter()
+                .any(|message| message.content.as_text().contains("preview_budget_exhausted"))
         );
-        assert!(recovery_prompt.contains("git diff --check"));
-        assert!(recovery_prompt.contains("Invalid examples: `verify: [run checks]`"));
-        assert!(recovery_prompt.contains("observable check"));
-        assert_eq!(tracker.consecutive_low_signal_navigations, PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD);
-        assert_eq!(tracker.total_low_signal_navigations, PLANNING_TOTAL_LOW_SIGNAL_THRESHOLD);
     }
 
     #[tokio::test]
@@ -1040,13 +988,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_exhaustion_does_not_trigger_synthesis_outside_planning() {
+    async fn oversized_preview_does_not_trigger_synthesis_outside_planning() {
         use vtcode_config::constants::output_limits::TURN_PREVIEW_BUDGET_BYTES;
 
         let mut backing = TestTurnProcessingBacking::new(120).await;
         let mut ctx = backing.turn_processing_context();
         ctx.push_tool_response("call-blind", Some("exec_command"), "x".repeat(TURN_PREVIEW_BUDGET_BYTES + 1));
-        assert!(ctx.harness_state.model_visible_preview_budget_exhausted());
+        assert!(!ctx.harness_state.model_visible_preview_budget_exhausted());
 
         let mut tracker = LoopTracker::new();
         let outcome = super::handle_turn_balancer(&mut ctx, 6, &mut tracker, 120, 3).await;
@@ -1173,6 +1121,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn planning_empty_search_pipelines_schedule_bounded_synthesis() {
+        let mut backing = TestTurnProcessingBacking::new(120).await;
+        backing.activate_planning_for_test();
+        let mut ctx = backing.turn_processing_context();
+        let mut tracker = LoopTracker::new();
+        let empty = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"exit_code": 0, "output": "", "total_output_bytes": 0}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for index in 0..PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD {
+            let command = format!("rg --files --hidden | rg 'optional-lint-{index}' | head -10");
+            update_repetition_tracker(&mut tracker, &empty, tool_names::EXEC_COMMAND, &json!({"cmd": command}));
+            if index + 1 < PLANNING_CONSECUTIVE_LOW_SIGNAL_THRESHOLD {
+                let outcome = super::handle_turn_balancer(&mut ctx, index as usize + 1, &mut tracker, 120, 3).await;
+                assert!(matches!(outcome, TurnHandlerOutcome::Continue));
+                assert!(!ctx.is_recovery_active());
+            }
+        }
+        assert_eq!(tracker.max_low_signal_count(), 1);
+        let outcome = super::handle_turn_balancer(&mut ctx, 6, &mut tracker, 120, 3).await;
+        assert!(matches!(outcome, TurnHandlerOutcome::Continue));
+        assert!(ctx.is_recovery_active());
+        assert!(tracker.planning_low_signal_synthesis_triggered);
+        assert!(ctx.working_history.iter().any(|message| {
+            let text = message.content.as_text();
+            text.contains("<proposed_plan>") && text.contains("Action -> files")
+        }));
+    }
+
+    #[tokio::test]
     async fn planning_listing_triplet_stays_below_early_recovery() {
         // Planning owns dedicated convergence guards (6/10 low-signal, 12-step
         // nav synthesis), so three successful same-base listings are legitimate
@@ -1239,6 +1219,7 @@ mod tests {
                 .iter()
                 .any(|message| { message.content.as_text().contains("Navigation loop detected") })
         );
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
         assert!(ctx.consume_recovery_pass());
 
         let recovery_outcome = ctx
@@ -1322,6 +1303,7 @@ mod tests {
                 .as_text()
                 .contains("Repeated low-signal navigation calls reached the per-turn fast-path cap")
         }));
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
     }
 
     #[tokio::test]
@@ -1523,6 +1505,7 @@ mod tests {
         assert!(ctx.is_recovery_active());
         let reason = ctx.recovery_reason().unwrap_or_default();
         assert!(reason.contains("Diverse low-signal navigation reached 12"));
+        assert_recovery_expires_at_fresh_turn(ctx.working_history);
     }
 
     #[tokio::test]

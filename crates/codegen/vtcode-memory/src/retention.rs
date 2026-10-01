@@ -59,9 +59,24 @@ pub fn apply_retention_preserving(
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
         return Ok(0);
     }
+    // Crashed/killed threads never emit thread.completed; surface those
+    // abandoned `active` stores as completed so the eviction phases can
+    // reclaim them. Live sessions stay `active` and remain unpinned.
+    mark_abandoned_active_sessions(workspace, policy.max_age_days, preserve_session_id)?;
     let preserve_path = preserve_session_id.map(|session_id| crate::session_dir(workspace, session_id));
-    let mut sessions = retention_candidates(&root, preserve_path.as_deref())?;
+    let sessions = retention_candidates(&root, preserve_path.as_deref())?;
     let mut removed = 0usize;
+
+    // Phase 0: drop empty completed shells immediately. A 0-turn store is only
+    // `thread.started` + `thread.completed` noise; it never held work the user
+    // can resume. Age/count caps would otherwise keep these around for weeks.
+    let (empty, mut sessions): (Vec<_>, Vec<_>) = sessions
+        .into_iter()
+        .partition(|s| s.summary.turn_count == 0 && s.summary.status != "active");
+    for s in &empty {
+        remove_session(&root, &s.path)?;
+        removed += 1;
+    }
 
     // Phase 1: evict oldest sessions beyond the count cap.
     if sessions.len() > policy.max_sessions {
@@ -91,10 +106,81 @@ pub fn apply_retention_preserving(
 /// because an unresolved blocker archive references it.
 pub const RETENTION_PIN_FILE: &str = "retention-pin.json";
 
+/// Delete a 0-turn completed session store immediately (close-path hygiene).
+///
+/// Empty shells (`thread.started` + `thread.completed` only) never held work
+/// the user can resume; keeping them pollutes `.vtcode/sessions/` and hides
+/// real sessions. No-op when the store has turns, is still active, is pinned,
+/// is live in another process, or the id is not a validated direct child.
+/// Returns whether the store was removed.
+pub fn evict_zero_turn_completed_store(workspace: &Path, session_id: &str) -> Result<bool, SessionStoreError> {
+    let root = sessions_root(workspace);
+    let dir = crate::session_dir(workspace, session_id);
+    if dir.parent() != Some(&root) {
+        return Ok(false);
+    }
+    if session_retention_pinned(&dir) || session_dir_is_live(&dir) {
+        return Ok(false);
+    }
+    let manifest_path = dir.join("manifest.json");
+    let Ok(bytes) = std::fs::read(&manifest_path) else {
+        return Ok(false);
+    };
+    let Ok(summary) = serde_json::from_slice::<SessionSummary>(&bytes) else {
+        return Ok(false);
+    };
+    if summary.turn_count > 0 || summary.status == "active" {
+        return Ok(false);
+    }
+    remove_session(&root, &dir)?;
+    Ok(true)
+}
+
 /// Whether a session directory is pinned against ordinary retention eviction.
 #[must_use]
 pub fn session_retention_pinned(session_dir: &Path) -> bool {
     session_dir.join(RETENTION_PIN_FILE).is_file()
+}
+
+/// Whether a live process still holds the session's event-log handles open.
+///
+/// `session.lock` is flock-held for as long as any event-log handle to the
+/// session exists (see `event_log::acquire_liveness_lock`). `WouldBlock`
+/// proves a live holder; a missing lock file (older or crashed sessions) or
+/// an acquirable lock means nothing alive keeps the session open. Unreadable
+/// lock files count as live: deletion paths must not evict what they cannot
+/// inspect.
+pub(crate) fn session_dir_is_live(session_dir: &Path) -> bool {
+    use crate::event_log::SESSION_LOCK_FILE;
+
+    let lock_path = session_dir.join(SESSION_LOCK_FILE);
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(&lock_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    file.try_lock()
+        .map_err(std::io::Error::from)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+/// Session ids whose stores are retention-pinned against ordinary eviction.
+///
+/// Companion to [`session_retention_pinned`]: a blocked session pins its store
+/// so ordinary retention cannot erase its evidence. Callers pruning other
+/// session-derived data (e.g. legacy history envelopes) must exclude these ids
+/// or they would erase through a different path what the pin protects.
+#[must_use]
+pub fn retention_pinned_session_ids(workspace: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(sessions_root(workspace)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|file_type| file_type.is_dir()).unwrap_or(false))
+        .filter(|entry| session_retention_pinned(&entry.path()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
 }
 
 /// Write a retention pin for a session (best-effort path check by caller).
@@ -140,6 +226,12 @@ fn retention_candidates(
         if session_retention_pinned(&path) {
             continue;
         }
+        // A session still open in a live process must not be evicted even
+        // when its manifest says completed: the user may resume or keep
+        // reading it.
+        if session_dir_is_live(&path) {
+            continue;
+        }
         let manifest_path = path.join("manifest.json");
         let Ok(bytes) = std::fs::read(&manifest_path) else {
             continue;
@@ -153,6 +245,88 @@ fn retention_candidates(
         candidates.push(RetentionCandidate { path, summary });
     }
     Ok(candidates)
+}
+
+/// Flip `active` manifests that have been idle past `max_age_days` to
+/// `completed` so ordinary retention can evict them.
+///
+/// A crashed or killed thread never emits `thread.completed`, so its manifest
+/// stays `active` forever and would otherwise pin the store. Live sessions are
+/// younger than the cutoff and are left untouched. `max_age_days == 0` disables
+/// the sweep (the hard "never evict active" contract used by force-evict tests).
+/// Returns how many manifests were marked abandoned.
+pub fn mark_abandoned_active_sessions(
+    workspace: &Path,
+    max_age_days: u64,
+    preserve_session_id: Option<&str>,
+) -> Result<usize, SessionStoreError> {
+    if max_age_days == 0 {
+        return Ok(0);
+    }
+    let root = sessions_root(workspace);
+    let preserve_path = preserve_session_id.map(|session_id| crate::session_dir(workspace, session_id));
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Ok(0);
+    };
+    let cutoff = age_cutoff(max_age_days);
+    let mut marked = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        // Same symlink-safe enumeration as `retention_candidates`: never
+        // rewrite a manifest through a planted symlink.
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        if preserve_path.as_deref() == Some(path.as_path()) {
+            continue;
+        }
+        if session_retention_pinned(&path) {
+            continue;
+        }
+        // A live process still holds this session open (open-but-idle):
+        // marking it completed would let phase-2 evict a session the user
+        // may still resume.
+        if session_dir_is_live(&path) {
+            continue;
+        }
+        let manifest_path = path.join("manifest.json");
+        let Ok(bytes) = std::fs::read(&manifest_path) else {
+            continue;
+        };
+        let Ok(mut summary) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let is_active = summary.get("status").and_then(serde_json::Value::as_str) == Some("active");
+        if !is_active {
+            continue;
+        }
+        let updated_at = summary
+            .get("updated_at")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !older_than(updated_at, cutoff) {
+            continue;
+        }
+        if let Some(object) = summary.as_object_mut() {
+            object.insert("status".to_string(), serde_json::Value::String("completed".to_string()));
+        } else {
+            continue;
+        }
+        let body = serde_json::to_vec_pretty(&summary)
+            .map_err(|error| SessionStoreError::io(manifest_path.clone(), std::io::Error::other(error)))?;
+        // Same primitive as ManifestStore: 0600 private temp + fsync + rename,
+        // so a crash cannot leave a truncated manifest, the rewritten manifest
+        // keeps session-file permissions, and a planted symlink cannot be
+        // followed to an outside destination.
+        vtcode_commons::VtCodePaths::write_private_file_atomic(&manifest_path, &body)
+            .map_err(|error| SessionStoreError::io(manifest_path.clone(), std::io::Error::other(error)))?;
+        marked += 1;
+    }
+    Ok(marked)
 }
 
 /// Remove the legacy `history/` and `logs/` directories after they have been

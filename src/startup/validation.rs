@@ -251,7 +251,7 @@ fn collect_token_overhead_warnings(config: &VTCodeConfig) -> Vec<String> {
 
     if matches!(config.agent.system_prompt_mode, SystemPromptMode::Specialized) {
         warnings.push(
-            "agent.system_prompt_mode = 'specialized' sends a larger base system prompt on every request. Prefer 'minimal' or 'lightweight' (default) to reduce token cost.".to_string(),
+            "agent.system_prompt_mode = 'specialized' sends a larger base system prompt on every request. Prefer 'minimal' (default) or 'lightweight' to reduce token cost.".to_string(),
         );
     }
 

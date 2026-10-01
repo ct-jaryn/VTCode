@@ -67,8 +67,31 @@ pub(crate) struct PreparedAssistantToolCall {
     is_command_execution: bool,
 }
 
+/// Preflight args_error for non-dispatchable (prose-blob) tool names.
+/// Matched, lowercased, by `preflight_failure_is_llm_mistake`; rewording this
+/// string changes preflight circuit classification.
+pub(crate) const TOOL_NAME_NOT_CLEAN_IDENTIFIER_ERROR: &str = "tool name is not a clean identifier";
+
 impl PreparedAssistantToolCall {
     pub(crate) fn new(raw_call: uni::ToolCall) -> Self {
+        let mut raw_call = raw_call;
+        if let Some(function) = raw_call.function.as_mut() {
+            if let Some(mapped) = crate::agent::runloop::text_tools::canonicalize_shell_tool_alias(&function.name) {
+                function.name = mapped;
+            }
+            // Prose-blob names (model put analysis text in the name field)
+            // must not reach the registry as dispatchable calls.
+            if !crate::agent::runloop::text_tools::is_dispatchable_tool_name(&function.name) {
+                let name = function.name.clone();
+                return Self {
+                    raw_call,
+                    parsed_args: None,
+                    args_error: Some(format!("{TOOL_NAME_NOT_CLEAN_IDENTIFIER_ERROR}: {name}")),
+                    is_parallel_safe: false,
+                    is_command_execution: false,
+                };
+            }
+        }
         let tool_name = raw_call.tool_name().unwrap_or(raw_call.call_type.as_str());
 
         let (parsed_args, args_error, is_parallel_safe, is_command_execution) = if raw_call.function.is_none() {
@@ -192,8 +215,13 @@ impl<'a> TurnProcessingContext<'a> {
         self.harness_state.is_recovery_active()
     }
 
+    #[cfg(test)]
     pub(crate) fn recovery_reason(&self) -> Option<&str> {
         self.harness_state.recovery_reason()
+    }
+
+    pub(crate) fn recovery_prompt_reason(&self) -> Option<&str> {
+        self.harness_state.recovery_prompt_reason()
     }
 
     pub(crate) fn recovery_pass_used(&self) -> bool {

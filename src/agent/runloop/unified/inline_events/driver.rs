@@ -183,6 +183,10 @@ impl<'a> InlineEventLoop<'a> {
                 tokio::task::yield_now().await;
             }
         }
+        // Publish one consistent overlay snapshot after the drain batch so
+        // intermediate partial lists cannot wipe optimistic UI entries that
+        // are still sitting in the event channel.
+        self.queue.flush_sync();
         if let Some(err) = drain_error {
             return Err(err);
         }
@@ -302,6 +306,7 @@ impl<'a> InlineEventLoop<'a> {
             context.set_exec_session_manager(exec_sessions);
         }
         let action = context.process_event(event, &mut self.queue).await?;
+        self.queue.flush_sync();
         if let Some((source, image_count)) = interjection
             && matches!(&action, InlineLoopAction::Submit(_) | InlineLoopAction::SubmitPrompt(_))
         {
@@ -311,13 +316,15 @@ impl<'a> InlineEventLoop<'a> {
     }
 
     fn ensure_interrupt_notice(&mut self) -> Result<Option<InlineLoopAction>> {
-        if self.interrupts.ensure_notice_displayed(
+        let handled = self.interrupts.ensure_notice_displayed(
             self.ctrl_c_notice_displayed,
             self.renderer,
             self.handle,
             self.default_placeholder,
             &mut self.queue,
-        )? {
+        )?;
+        self.queue.flush_sync();
+        if handled {
             return Ok(Some(InlineLoopAction::Continue));
         }
 
@@ -339,6 +346,7 @@ impl<'a> InlineEventLoop<'a> {
 
     fn take_queued_submission(&mut self) -> Option<InlineLoopAction> {
         let queued = self.queue.take_batched_submission()?;
+        self.queue.flush_sync();
         if queued.input.is_empty() {
             return Some(InlineLoopAction::Continue);
         }

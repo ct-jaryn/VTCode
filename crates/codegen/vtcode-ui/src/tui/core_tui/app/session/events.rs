@@ -13,7 +13,9 @@ use crate::tui::core_tui::runner::TuiSessionDriver;
 use crate::tui::core_tui::session::action::{
     Action, is_double_escape_press, is_readline_editing_key, normalize_terminal_control_event,
 };
-use crate::tui::core_tui::session::clipboard_image::{ClipboardImageError, read_clipboard_image};
+use crate::tui::core_tui::session::clipboard_image::{
+    ClipboardImageError, ClipboardTextError, read_clipboard_image, read_clipboard_text,
+};
 use crate::tui::core_tui::session::modal;
 use crate::tui::core_tui::session::modal::{ModalKeyModifiers, ModalListKeyResult};
 use crate::tui::core_tui::session::mode_switch_guard::{self};
@@ -101,14 +103,14 @@ pub(super) fn handle_paste(session: &mut Session, content: &str) -> Option<Inlin
         && let (Some(list), Some(search)) = (modal.list.as_mut(), modal.search.as_mut())
     {
         search.insert(content);
-        list.apply_search(&search.query);
+        list.apply_search(&search.query, search.fuzzy);
         session.mark_dirty();
     } else if let Some(wizard) = session.wizard_overlay_mut()
         && let Some(search) = wizard.search.as_mut()
     {
         search.insert(content);
         if let Some(step) = wizard.steps.get_mut(wizard.current_step) {
-            step.list.apply_search(&search.query);
+            step.list.apply_search(&search.query, search.fuzzy);
         }
         session.mark_dirty();
     } else if let Some(wizard) = session.wizard_overlay_mut()
@@ -139,6 +141,14 @@ pub(super) fn handle_paste(session: &mut Session, content: &str) -> Option<Inlin
 }
 
 fn copy_selected_input_if_requested(session: &mut Session, key: &KeyEvent, has_command: bool) -> bool {
+    // Composer selection must not pre-empt modal/picker Ctrl+C handling.
+    // While the history picker (or any modal surface) owns input, the
+    // composer selection is stale — let the overlay dismiss path run so
+    // Ctrl+C closes the popup instead of being swallowed as a copy.
+    // Mirrors the `!input_enabled()` gate in core `session/events.rs`.
+    if !session.core.input_enabled() {
+        return false;
+    }
     if has_command && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')) {
         if session.core.copy_input_selection_to_clipboard() {
             session.mark_dirty();
@@ -187,10 +197,56 @@ fn push_warning_line(session: &mut Session, text: &'static str) {
     session.mark_dirty();
 }
 
-fn is_image_paste_shortcut(key: &KeyEvent, has_control: bool, has_alt: bool, has_command: bool) -> bool {
+fn is_image_paste_shortcut(
+    key: &KeyEvent,
+    has_control: bool,
+    has_alt: bool,
+    has_command: bool,
+    has_shift: bool,
+) -> bool {
     matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
         && !has_command
+        && !has_shift
         && ((has_control && !has_alt) || (has_alt && !has_control))
+}
+
+fn raw_text_paste_warning(error: ClipboardTextError) -> &'static str {
+    match error {
+        ClipboardTextError::NoText => "No text found in clipboard.",
+        ClipboardTextError::ClipboardUnavailable => {
+            "Clipboard text paste is unavailable in this terminal or desktop session."
+        }
+        ClipboardTextError::WslFallbackFailure => "Could not read clipboard text from Windows via PowerShell.",
+    }
+}
+
+/// Shift+Ctrl+V (or Shift+Alt+V) pastes clipboard text verbatim: full raw
+/// content with no collapse marker, even for large pastes.
+fn is_raw_text_paste_shortcut(
+    key: &KeyEvent,
+    has_control: bool,
+    has_alt: bool,
+    has_command: bool,
+    has_shift: bool,
+) -> bool {
+    matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+        && has_shift
+        && !has_command
+        && ((has_control && !has_alt) || (has_alt && !has_control))
+}
+
+fn handle_raw_text_paste_shortcut_with(
+    session: &mut Session,
+    mut text_reader: impl FnMut() -> Result<String, ClipboardTextError>,
+) {
+    match text_reader() {
+        Ok(text) => {
+            session.core.insert_raw_paste_text(&text);
+            session.update_input_triggers();
+            session.mark_dirty();
+        }
+        Err(error) => push_warning_line(session, raw_text_paste_warning(error)),
+    }
 }
 
 fn handle_image_paste_shortcut_with(
@@ -218,7 +274,7 @@ fn handle_image_paste_shortcut_with(
 }
 
 pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<InlineEvent> {
-    process_key_with_clipboard_image_reader(session, key, read_clipboard_image)
+    process_key_with_clipboard_readers(session, key, read_clipboard_image, read_clipboard_text)
 }
 
 /// Key handler for a secure-prompt modal (text-only, masked input such as an
@@ -390,6 +446,24 @@ pub(super) fn process_key_with_clipboard_image_reader(
     key: KeyEvent,
     image_reader: impl FnMut() -> Result<ContentPart, ClipboardImageError>,
 ) -> Option<InlineEvent> {
+    process_key_with_clipboard_readers(session, key, image_reader, read_clipboard_text)
+}
+
+#[cfg(test)]
+pub(super) fn process_key_with_clipboard_text_reader(
+    session: &mut Session,
+    key: KeyEvent,
+    text_reader: impl FnMut() -> Result<String, ClipboardTextError>,
+) -> Option<InlineEvent> {
+    process_key_with_clipboard_readers(session, key, read_clipboard_image, text_reader)
+}
+
+fn process_key_with_clipboard_readers(
+    session: &mut Session,
+    key: KeyEvent,
+    image_reader: impl FnMut() -> Result<ContentPart, ClipboardImageError>,
+    text_reader: impl FnMut() -> Result<String, ClipboardTextError>,
+) -> Option<InlineEvent> {
     let key = normalize_terminal_control_event(key);
     let modifiers = key.modifiers;
     let has_control = modifiers.contains(KeyModifiers::CONTROL);
@@ -411,7 +485,14 @@ pub(super) fn process_key_with_clipboard_image_reader(
         return None;
     }
 
-    if is_image_paste_shortcut(&key, has_control, has_alt, has_command) {
+    if is_raw_text_paste_shortcut(&key, has_control, has_alt, has_command, has_shift) {
+        if session.core.input_enabled() {
+            handle_raw_text_paste_shortcut_with(session, text_reader);
+        }
+        return None;
+    }
+
+    if is_image_paste_shortcut(&key, has_control, has_alt, has_command, has_shift) {
         if session.core.input_enabled() {
             handle_image_paste_shortcut_with(session, image_reader);
         }
@@ -984,6 +1065,14 @@ pub(super) fn process_key_with_clipboard_image_reader(
                 }
                 session.mark_dirty();
                 Some(InlineEvent::EditQueue)
+            } else if !has_control && !has_alt && !has_command && !has_shift && session.is_multi_row_composer() {
+                // Multi-row composer consumes Up as an intra-buffer visual
+                // move (no-op at the first row) and never traverses history.
+                // Single-row history follows below; Ctrl+P remains the
+                // unconditional history shortcut.
+                let _ = session.move_up_within_composer();
+                session.mark_dirty();
+                None
             } else if !has_control && !has_alt && !has_command && !has_shift && session.move_cursor_up_for_history() {
                 session.mark_dirty();
                 None
@@ -1000,7 +1089,15 @@ pub(super) fn process_key_with_clipboard_image_reader(
                 session.mark_dirty();
                 return None;
             }
-            if !has_control && !has_alt && !has_command && !has_shift && session.move_cursor_down_for_history() {
+            if !has_control && !has_alt && !has_command && !has_shift && session.is_multi_row_composer() {
+                // Multi-row composer consumes Down as an intra-buffer visual
+                // move (no-op at the last row) and never traverses history.
+                // Single-row history follows below; Ctrl+N remains the
+                // unconditional history shortcut.
+                let _ = session.move_down_within_composer();
+                session.mark_dirty();
+                None
+            } else if !has_control && !has_alt && !has_command && !has_shift && session.move_cursor_down_for_history() {
                 session.mark_dirty();
                 None
             } else if session.navigate_history_next() {
@@ -2011,10 +2108,12 @@ mod tests {
                 indent: 0,
                 selection: Some(InlineListSelection::Theme("ciapre".to_string())),
                 search_value: None,
+                ..Default::default()
             }],
             selected: Some(InlineListSelection::Theme("ciapre".to_string())),
             search: None,
             hotkeys: Vec::new(),
+            status: None,
         }));
 
         let event = session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -2046,11 +2145,17 @@ mod tests {
                         indent: 0,
                         selection: Some(InlineListSelection::SlashCommand(title.to_string())),
                         search_value: Some(title.to_string()),
+                        ..Default::default()
                     })
                     .collect(),
                 selected: None,
-                search: searchable.then(|| InlineListSearchConfig { label: "Filter".to_string(), placeholder: None }),
+                search: searchable.then(|| InlineListSearchConfig {
+                    label: "Filter".to_string(),
+                    placeholder: None,
+                    fuzzy: false,
+                }),
                 hotkeys: Vec::new(),
+                status: None,
             }));
             session.core.set_input_enabled(true);
             let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -2158,6 +2263,44 @@ mod tests {
                 .expect("viewer")
                 .status_label()
                 .contains("search 'beta'")
+        );
+    }
+
+    #[test]
+    fn capture_fifo_keeps_open_viewer_blocks() {
+        let mut session = build_session();
+        session.record_tool_output_block(1, vec!["first-capture".to_string()]);
+        session.open_tool_output_viewer(40, 10, Some(1));
+        assert!(session.tool_output_viewer_state().is_some());
+
+        let overflow = ui::TUI_TOOL_OUTPUT_BLOCKS_MAX as u64 + 8;
+        for id in 2..=overflow {
+            session.record_tool_output_block(id, vec![format!("capture-{id}")]);
+        }
+
+        assert!(
+            session.tool_output_blocks.iter().any(|block| block.id == 1),
+            "open viewer's capture must stay pinned against FIFO eviction"
+        );
+        assert!(session.tool_output_blocks.len() <= ui::TUI_TOOL_OUTPUT_BLOCKS_MAX + 1);
+    }
+
+    #[test]
+    fn capture_fifo_keeps_newest_block_even_when_viewer_pins_cap() {
+        let mut session = build_session();
+        let cap = ui::TUI_TOOL_OUTPUT_BLOCKS_MAX as u64;
+        for id in 1..=cap {
+            session.record_tool_output_block(id, vec![format!("capture-{id}")]);
+        }
+        // Open a viewer that retains every existing capture.
+        session.open_tool_output_viewer(40, 10, None);
+        assert!(session.tool_output_viewer_state().is_some());
+
+        let newest_id = cap + 1;
+        session.record_tool_output_block(newest_id, vec!["newest".to_string()]);
+        assert!(
+            session.tool_output_blocks.iter().any(|block| block.id == newest_id),
+            "the just-recorded capture must never be FIFO-dropped"
         );
     }
 
@@ -2564,6 +2707,59 @@ mod tests {
                 .is_none()
         );
         assert!(session.tool_output_viewer_state().is_some());
+    }
+
+    #[test]
+    fn sticky_prompt_keeps_compact_review_hint_hit_regions_aligned() {
+        let mut session = build_session();
+        session
+            .core
+            .push_line(InlineMessageKind::User, vec![text_segment("original prompt")]);
+        for _ in 0..24 {
+            session.core.push_line(InlineMessageKind::Agent, vec![text_segment("answer")]);
+        }
+        add_compact_activity(&mut session, 42, "printf sticky");
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|frame| session.render(frame)).expect("render sticky activity");
+        let body = session.core.transcript_area().unwrap();
+        let region = session
+            .compact_activity_hit_regions
+            .first()
+            .copied()
+            .expect("review hint below header");
+        assert_eq!(region.review_anchor, 42);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(body.x, body.y - 1)].symbol(), "o", "sticky prompt is visible");
+        assert!(buffer[(region.area.x, region.area.y)].modifier.contains(Modifier::UNDERLINED));
+        let original_top = session.core.transcript_view_top;
+        for _ in 0..3 {
+            terminal.draw(|frame| session.render(frame)).expect("repeat frame");
+            assert_eq!(session.core.transcript_view_top, original_top);
+            assert_eq!(session.core.transcript_area(), Some(body));
+        }
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+        session.handle_event(
+            CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: region.area.x,
+                row: region.area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &events,
+            None,
+        );
+        assert!(session.tool_output_viewer_state().is_some());
+        terminal.draw(|frame| session.render(frame)).expect("render covering viewer");
+        assert!(
+            !session.core.handle_sticky_prompt_click(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: body.x,
+                row: body.y - 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            "covered header target is invalidated"
+        );
     }
 
     #[test]
@@ -3091,10 +3287,12 @@ mod tests {
                 indent: 0,
                 selection: None,
                 search_value: None,
+                ..Default::default()
             }],
             selected: None,
             search: None,
             hotkeys: Vec::new(),
+            status: None,
         }));
 
         let backend = ratatui::backend::TestBackend::new(80, 24);
@@ -3135,6 +3333,7 @@ mod tests {
                 indent: 0,
                 selection: Some(InlineListSelection::PlanApprovalExecute),
                 search_value: None,
+                ..Default::default()
             }],
             selected: Some(InlineListSelection::PlanApprovalExecute),
             search: None,
@@ -3142,6 +3341,7 @@ mod tests {
                 key: TransientHotkeyKey::CtrlChar('g'),
                 action: TransientHotkeyAction::LaunchEditor,
             }],
+            status: None,
         }));
         assert!(session.has_active_overlay(), "plan approval overlay should be open");
         assert!(

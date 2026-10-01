@@ -31,6 +31,7 @@ fn service_tier_message_label(service_tier: Option<vtcode_config::OpenAIServiceT
     match service_tier {
         Some(vtcode_config::OpenAIServiceTier::Flex) => "flex",
         Some(vtcode_config::OpenAIServiceTier::Priority) => "priority",
+        Some(vtcode_config::OpenAIServiceTier::Ultrafast) => "ultrafast",
         None => "project default",
     }
 }
@@ -133,7 +134,13 @@ pub(crate) async fn finalize_model_selection(
 
     // Persist to disk only after provider creation succeeds, so a failure
     // cannot leave vtcode.toml with a partially-updated provider config.
-    let updated_cfg = picker.persist_selection(&workspace, &selection).await?;
+    let updated_cfg = match picker.persist_selection(&workspace, &selection).await {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            renderer.line(MessageStyle::Error, &format!("Could not save model selection: {err:#}"))?;
+            return Err(err);
+        }
+    };
     *vt_cfg = Some(updated_cfg);
 
     if let Some(new_client) = new_client {
@@ -179,10 +186,17 @@ pub(crate) async fn finalize_model_selection(
     header_context.clone_from(&next_header_context);
     handle.set_header_context(next_header_context);
 
-    renderer.line(
-        MessageStyle::Info,
-        &format!("Model set to {} ({}) via {}.", selection.model_display, selection.model, selection.provider_label),
-    )?;
+    let mut parts = vec![format!("{}/{}", selection.provider, selection.model)];
+    if selection.reasoning_supported {
+        parts.push(format!("reasoning {}", selection.reasoning));
+    }
+    if selection.service_tier_supported {
+        parts.push(format!("tier {}", service_tier_message_label(selection.service_tier)));
+    }
+    if selection.model_display != selection.model {
+        parts.push(selection.model_display.clone());
+    }
+    renderer.line(MessageStyle::Info, &format!("Model: {}", parts.join(" · ")))?;
 
     let compact_on_model_switch_enabled = vt_cfg
         .as_ref()
@@ -443,7 +457,7 @@ fn selected_provider_config(
     openai_chatgpt_auth: Option<vtcode_config::auth::OpenAIChatGptAuthHandle>,
 ) -> ProviderConfig {
     let mut openai = auth_cfg.provider.openai.clone();
-    if selection.provider_enum == Some(Provider::OpenAI) && selection.service_tier_supported {
+    if selection.service_tier_supported {
         openai.service_tier = selection.service_tier;
     }
     ProviderConfig {

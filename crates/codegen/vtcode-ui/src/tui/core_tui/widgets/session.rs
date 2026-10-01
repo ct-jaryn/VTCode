@@ -36,7 +36,7 @@ use crate::tui::ui::tui::session::{Session, pulse_spinner_frame_for_phase};
 /// ```
 pub struct SessionWidget<'a> {
     session: &'a mut Session,
-    header_lines: Option<Vec<ratatui::text::Line<'static>>>,
+    header_lines: Option<std::sync::Arc<Vec<ratatui::text::Line<'static>>>>,
     header_area: Option<Rect>,
     transcript_area: Option<Rect>,
     navigation_area: Option<Rect>,
@@ -61,6 +61,13 @@ impl<'a> SessionWidget<'a> {
     /// Set the header lines to render
     #[must_use]
     pub(crate) fn header_lines(mut self, lines: Vec<ratatui::text::Line<'static>>) -> Self {
+        self.header_lines = Some(std::sync::Arc::new(lines));
+        self
+    }
+
+    /// Set pre-built header lines without cloning the `Vec`.
+    #[must_use]
+    pub(crate) fn header_lines_arc(mut self, lines: std::sync::Arc<Vec<ratatui::text::Line<'static>>>) -> Self {
         self.header_lines = Some(lines);
         self
     }
@@ -106,14 +113,14 @@ impl<'a> SessionWidget<'a> {
         let footer_h = mode.footer_height();
         let max_header_pct = mode.max_header_percent();
 
-        // Compute header height
+        // Compute header height (no Vec clone — borrow the Arc slice)
         let header_lines = if let Some(lines) = self.header_lines.as_ref() {
-            lines.clone()
+            std::sync::Arc::clone(lines)
         } else {
             self.session.header_lines()
         };
 
-        let natural_header_h = self.session.header_height_from_lines(area.width, &header_lines);
+        let natural_header_h = self.session.header_height_from_lines(area.width, header_lines.as_slice());
         let max_header_h = ((area.height as f32) * max_header_pct) as u16;
         let header_h = natural_header_h.min(max_header_h).max(1);
 
@@ -172,6 +179,7 @@ struct SessionLayout {
 }
 
 impl Widget for &mut SessionWidget<'_> {
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
             return;
@@ -185,7 +193,7 @@ impl Widget for &mut SessionWidget<'_> {
 
             if header_area.width > 0 && header_area.height > 0 {
                 let header_lines = if let Some(lines) = self.header_lines.as_ref() {
-                    lines.clone()
+                    std::sync::Arc::clone(lines)
                 } else {
                     self.session.header_lines()
                 };
@@ -247,7 +255,7 @@ impl Widget for &mut SessionWidget<'_> {
 
         // Render header
         let header_lines = if let Some(lines) = self.header_lines.as_ref() {
-            lines.clone()
+            std::sync::Arc::clone(lines)
         } else {
             self.session.header_lines()
         };

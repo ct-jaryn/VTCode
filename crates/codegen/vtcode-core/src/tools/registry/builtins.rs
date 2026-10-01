@@ -980,25 +980,26 @@ mod tests {
 
         // Progressive mode sends complete builtin tool descriptions and keeps
         // parameter descriptions (trimming only long tails), because models
-        // that follow tool definitions literally act on the whole text. That
-        // raised this measurement from 603 tokens (first sentence only, no
-        // parameter descriptions) to 1,844. The cap leaves ~20% headroom and
-        // the combined first-request budget below still enforces the overall
-        // 12k/15k ceilings.
+        // that follow tool definitions literally act on the whole text. The
+        // cap is the harness-tax gate (HarnessTax): keep the emitted schema
+        // envelope tight so first-call fixed overhead stays low. Measured
+        // ~1,793 on the Codex-4 default profile; 2,000 leaves ~10% headroom
+        // for small description tweaks without re-opening the tax.
         assert!(
-            total_tokens <= 2_200,
-            "emitted model tool schema tokens in Progressive mode is {total_tokens}; expected <= 2_200"
+            total_tokens <= 2_000,
+            "emitted model tool schema tokens in Progressive mode is {total_tokens}; expected <= 2_000"
         );
     }
 
     /// End-to-end regression for the combined first-request token budget:
-    /// the default system prompt plus Progressive tool schemas, instruction
-    /// appendix, and welcome addendum must stay under 12k tokens with no MCP,
-    /// and under 15k tokens with 5 simulated MCP servers (25% growth ceiling).
+    /// the effective-default system prompt (Minimal) plus Progressive tool
+    /// schemas, instruction appendix, and welcome addendum must stay under
+    /// 6k tokens with no MCP, and under 8k tokens with 5 simulated MCP servers.
     #[test]
     fn first_request_total_token_budget_within_limit() {
         use crate::config::ToolDocumentationMode;
-        use crate::prompts::system::default_system_prompt;
+        use crate::config::types::SystemPromptMode;
+        use crate::prompts::system::static_profile_prompt;
         use crate::tools::handlers::{SessionSurface, SessionToolCatalog, SessionToolsConfig, ToolModelCapabilities};
         use serde::Serialize;
 
@@ -1031,7 +1032,8 @@ mod tests {
             })
             .sum();
 
-        let system_prompt = default_system_prompt();
+        // Measure the configured default profile (Minimal after lean-defaults).
+        let system_prompt = static_profile_prompt(SystemPromptMode::default());
         let system_prompt_tokens = system_prompt.len() / 4;
 
         let instruction_appendix_tokens = 250;
@@ -1041,8 +1043,8 @@ mod tests {
             system_prompt_tokens + tool_schema_tokens + instruction_appendix_tokens + welcome_addendum_tokens;
 
         assert!(
-            total_no_mcp <= 12_000,
-            "first-request token budget exceeded: {total_no_mcp} tokens (system={system_prompt_tokens}, tools={tool_schema_tokens}, instructions={instruction_appendix_tokens}, addendum={welcome_addendum_tokens}); expected <= 12_000"
+            total_no_mcp <= 6_000,
+            "first-request token budget exceeded: {total_no_mcp} tokens (system={system_prompt_tokens}, tools={tool_schema_tokens}, instructions={instruction_appendix_tokens}, addendum={welcome_addendum_tokens}); expected <= 6_000"
         );
 
         let mcp_tool_count = 5;
@@ -1050,8 +1052,18 @@ mod tests {
         let total_with_mcp = total_no_mcp + estimated_mcp_schema_tokens;
 
         assert!(
-            total_with_mcp <= 15_000,
-            "first-request token budget with MCP exceeded: {total_with_mcp} tokens; expected <= 15_000 (25% growth ceiling)"
+            total_with_mcp <= 8_000,
+            "first-request token budget with MCP exceeded: {total_with_mcp} tokens; expected <= 8_000"
+        );
+
+        // Explicit Default-mode profile must also stay inside the no-MCP
+        // ceiling when selected (S2-prompt).
+        let default_prompt = static_profile_prompt(SystemPromptMode::Default);
+        let total_default_mode =
+            default_prompt.len() / 4 + tool_schema_tokens + instruction_appendix_tokens + welcome_addendum_tokens;
+        assert!(
+            total_default_mode <= 6_000,
+            "Default-mode first-request budget exceeded: {total_default_mode} tokens; expected <= 6_000"
         );
     }
 

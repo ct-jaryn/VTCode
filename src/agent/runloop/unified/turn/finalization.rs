@@ -28,10 +28,15 @@ pub(super) struct FinalizationOutput {
 /// Restore terminal to a clean state after session exit
 /// This ensures that raw mode is disabled and the terminal is left in a usable state
 /// even if the TUI didn't exit cleanly (e.g., due to Ctrl+C)
+///
+/// Raw mode is deliberately kept on here: the graceful exit path still has
+/// teardown work left, and a cooked tty would echo any late input (the kitty
+/// key-release report for the exiting Ctrl+C) onto the screen. The exit
+/// postamble finishes the transition as its final step.
 fn restore_terminal_on_exit() -> io::Result<()> {
     // Use the centralized TUI restoration logic from vtcode-core
     // This handles draining events, clearing the line, and proper restoration order
-    vtcode_ui::tui::panic_hook::restore_tui()
+    vtcode_ui::tui::panic_hook::restore_tui_keep_raw_mode()
 }
 
 pub(super) async fn finalize_session(
@@ -84,13 +89,19 @@ pub(super) async fn finalize_session(
         }
     }
 
+    // A user-requested exit (Ctrl+C / /exit / Ctrl+D) must not park the shell
+    // on maintenance work: session-end hooks and MCP shutdown are best-effort
+    // here (the OS reaps MCP children at process exit), so bound them tightly
+    // instead of the 3s/2s they get on a normal session end.
+    let interrupt_exit = matches!(session_end_reason, SessionEndReason::Exit | SessionEndReason::Cancelled);
+
     if let Some(hooks) = lifecycle_hooks {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            hooks.run_session_end(turn_id, session_end_reason),
-        )
-        .await
-        {
+        let hook_budget = if interrupt_exit {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_secs(3)
+        };
+        match tokio::time::timeout(hook_budget, hooks.run_session_end(turn_id, session_end_reason)).await {
             Ok(Ok(messages)) => {
                 render_hook_messages(renderer, &messages)?;
             }
@@ -104,7 +115,12 @@ pub(super) async fn finalize_session(
     }
 
     if let Some(mcp_manager) = async_mcp_manager {
-        match tokio::time::timeout(std::time::Duration::from_secs(2), mcp_manager.shutdown()).await {
+        let mcp_budget = if interrupt_exit {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_secs(2)
+        };
+        match tokio::time::timeout(mcp_budget, mcp_manager.shutdown()).await {
             Ok(Err(e)) => {
                 let error_msg = e.to_string();
                 if error_msg.contains("EPIPE") || error_msg.contains("Broken pipe") || error_msg.contains("write EPIPE")

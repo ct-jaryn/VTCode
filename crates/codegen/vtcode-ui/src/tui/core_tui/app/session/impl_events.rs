@@ -26,6 +26,15 @@ impl Session {
         events::process_key_with_clipboard_image_reader(self, key, image_reader)
     }
 
+    #[cfg(test)]
+    pub(crate) fn process_key_with_clipboard_text_reader(
+        &mut self,
+        key: KeyEvent,
+        text_reader: impl FnMut() -> Result<String, crate::tui::core_tui::session::clipboard_image::ClipboardTextError>,
+    ) -> Option<InlineEvent> {
+        events::process_key_with_clipboard_text_reader(self, key, text_reader)
+    }
+
     fn input_area_contains(&self, column: u16, row: u16) -> bool {
         self.core.input_area().is_some_and(|area| {
             row >= area.y
@@ -155,13 +164,31 @@ impl Session {
             // Render passes the inline custom-note editor, which appends one row
             // to its item; the shared helper measures the same heights.
             let inline_editor = modal::inline_editor_for_step(step);
-            return modal::visible_index_at_row(&step.list, None, inline_editor.as_ref(), &styles, area, row);
+            return modal::visible_index_at_row(
+                &step.list,
+                None,
+                inline_editor.as_ref(),
+                &styles,
+                area,
+                row,
+                wizard.numbered_shortcuts(),
+                false,
+            );
         }
 
         let modal = self.modal_state()?;
         let list = modal.list.as_ref()?;
         // Plain modals never render an inline editor (render passes `None`).
-        modal::visible_index_at_row(list, modal.footer_hint.as_deref(), None, &styles, area, row)
+        modal::visible_index_at_row(
+            list,
+            modal.footer_hint.as_deref(),
+            None,
+            &styles,
+            area,
+            row,
+            modal.search.is_none(),
+            modal.status.is_some(),
+        )
     }
 
     fn handle_active_overlay_click(
@@ -249,6 +276,18 @@ impl Session {
     }
 
     fn handle_bottom_panel_scroll(&mut self, down: bool) -> bool {
+        if self.local_agents_visible() {
+            let changed = if down {
+                self.local_agents_state.move_selection_down()
+            } else {
+                self.local_agents_state.move_selection_up()
+            };
+            if changed {
+                self.mark_dirty();
+            }
+            return true;
+        }
+
         if self.core.bottom_panel_area().is_none() {
             return false;
         }
@@ -289,18 +328,6 @@ impl Session {
             return true;
         }
 
-        if self.local_agents_visible() {
-            let changed = if down {
-                self.local_agents_state.move_selection_down()
-            } else {
-                self.local_agents_state.move_selection_up()
-            };
-            if changed {
-                self.mark_dirty();
-            }
-            return true;
-        }
-
         if slash::slash_navigation_available(self) {
             if down {
                 slash::move_slash_selection_down(self);
@@ -316,6 +343,25 @@ impl Session {
     fn handle_bottom_panel_click(&mut self, mouse_event: MouseEvent) -> bool {
         let column = mouse_event.column;
         let row = mouse_event.row;
+        if self.local_agents_visible() {
+            let pos = Position { x: column, y: row };
+            let Some(window) = self.local_agents_state.window_area() else {
+                return false;
+            };
+            if !window.contains(pos) {
+                return false;
+            }
+            if let Some(list_area) = self.local_agents_state.list_area()
+                && list_area.contains(pos)
+            {
+                let local_index = usize::from(row.saturating_sub(list_area.y));
+                let actual_index = self.local_agents_state.scroll_offset().saturating_add(local_index);
+                if self.local_agents_state.select_index(actual_index) {
+                    self.mark_dirty();
+                }
+            }
+            return true;
+        }
         if !self.bottom_panel_contains(column, row) {
             return false;
         }
@@ -417,19 +463,6 @@ impl Session {
             return true;
         }
 
-        if self.local_agents_visible() {
-            let Some(layout) = render::local_agents_panel_layout(self) else {
-                return true;
-            };
-            if let Some(local_index) = self.panel_row_index(&layout, column, row) {
-                let actual_index = self.local_agents_state.scroll_offset().saturating_add(local_index);
-                if self.local_agents_state.select_index(actual_index) {
-                    self.mark_dirty();
-                }
-            }
-            return true;
-        }
-
         if slash::slash_navigation_available(self) {
             let Some(layout) = slash::slash_panel_layout(self) else {
                 return true;
@@ -448,6 +481,7 @@ impl Session {
         true
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub fn handle_event(
         &mut self,
         event: CrosstermEvent,
@@ -485,7 +519,7 @@ impl Session {
                             self.update_transcript_file_link_hover(mouse_event.column, mouse_event.row)
                         };
                         if mode_hover_changed || close_hover_changed || link_hover_changed {
-                            self.mark_dirty();
+                            self.mark_visual_dirty();
                         }
                     }
                     MouseEventKind::ScrollDown => {
@@ -496,7 +530,7 @@ impl Session {
                             && !self.handle_bottom_panel_scroll(true)
                         {
                             self.scroll_line_down();
-                            self.mark_dirty();
+                            self.mark_visual_dirty();
                         }
                     }
                     MouseEventKind::ScrollUp => {
@@ -507,7 +541,7 @@ impl Session {
                             && !self.handle_bottom_panel_scroll(false)
                         {
                             self.scroll_line_up();
-                            self.mark_dirty();
+                            self.mark_visual_dirty();
                         }
                     }
                     MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
@@ -540,8 +574,19 @@ impl Session {
                             {
                                 self.core.mouse_drag_target = MouseDragTarget::Transcript;
                                 self.core.cancel_drag_auto_scroll();
-                                self.core.mouse_selection.start_selection(mouse_event.column, mouse_event.row);
+                                self.core
+                                    .mouse_selection
+                                    .start_overlay_selection(mouse_event.column, mouse_event.row);
                             }
+                            self.mark_dirty();
+                            return;
+                        }
+
+                        if !self.has_active_overlay()
+                            && !self.local_agents_visible()
+                            && self.diff_preview_state().is_none()
+                            && self.core.handle_sticky_prompt_click(mouse_event)
+                        {
                             self.mark_dirty();
                             return;
                         }
@@ -601,7 +646,9 @@ impl Session {
                                 }
 
                                 self.core.mouse_drag_target = MouseDragTarget::ModalText;
-                                self.core.mouse_selection.start_selection(mouse_event.column, mouse_event.row);
+                                self.core
+                                    .mouse_selection
+                                    .start_overlay_selection(mouse_event.column, mouse_event.row);
                                 self.mark_dirty();
                                 return;
                             }
@@ -853,6 +900,17 @@ impl Session {
     fn handle_input_click(&mut self, mouse_event: MouseEvent) -> bool {
         if !matches!(mouse_event.kind, MouseEventKind::Down(crossterm::event::MouseButton::Left)) {
             return false;
+        }
+
+        if self.core.background_indicator_contains(mouse_event.column, mouse_event.row) {
+            if self.local_agents_visible() {
+                self.close_local_agents_drawer(true);
+            } else {
+                self.ensure_inline_lists_visible_for_trigger();
+                self.open_local_agents_drawer(false);
+            }
+            self.mark_dirty();
+            return true;
         }
 
         if !self.input_area_contains(mouse_event.column, mouse_event.row) {

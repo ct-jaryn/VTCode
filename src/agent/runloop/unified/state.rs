@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn is_local_llm_provider(provider_name: &str) -> bool {
@@ -88,6 +88,11 @@ pub(crate) struct SessionStats {
     /// This survives a blocked turn so a later `continue` cannot claim
     /// completion from inspection-only work.
     verification_pending: bool,
+    /// Whether the user granted a tool-loop increase at least once this
+    /// session. After that first successful grant, later tool-loop limit hits
+    /// auto-grant the maximum increment without another HITL prompt. Denials
+    /// leave this false so the prompt remains available.
+    tool_loop_grant_preauthorized: bool,
     /// Bounded fix-up edits remaining while `verification_pending` is true.
     /// Granted by a failed verifier so a broken build can be repaired across
     /// `continue` turns; consumed by successful fix-up mutations.
@@ -106,8 +111,8 @@ pub(crate) struct SessionStats {
     /// clears, and when a tracker step completes (progress-reset) — not by
     /// `reset_verification_recovery_episode`.
     tracker_continuation_turns: u8,
-    /// Last observed completed checklist count for tracker progress-reset.
-    tracker_completed_count_last: u32,
+    /// Highest completed checklist count in the current user-request episode.
+    tracker_completed_count_high_water: u32,
     /// Cached incomplete tracker items used when the live probe fails so a
     /// transient tracker read error does not drop auto-queue.
     last_incomplete_tracker_items: Option<Vec<String>>,
@@ -141,6 +146,8 @@ pub(crate) struct SessionStats {
     last_prompt_cache_model: Option<String>,
     last_stable_prefix_hash: Option<u64>,
     last_tool_catalog_hash: Option<u64>,
+    last_wire_tool_count: Option<usize>,
+    last_recovery_prompt_reason: Option<String>,
     last_prompt_cache_change_reason: Option<String>,
     prompt_cache_observations: usize,
     prompt_cache_model_changes: usize,
@@ -181,6 +188,30 @@ pub(crate) struct SessionStats {
     /// other values gate automatic compaction until cleared by success, model
     /// switch, or explicit `/compact`.
     pub auto_compact_suppressed: u8,
+    /// Composition of the session's first assembled LLM request. Captured once
+    /// so the exit summary can surface the per-call harness tax (instructions
+    /// + tool schemas) without re-reading the trajectory log.
+    first_call_composition: Option<FirstCallComposition>,
+}
+
+/// First-request token composition (HarnessTax-style harness-tax breakdown).
+///
+/// `fixed_overhead_tokens` is the per-call harness tax paid before the task
+/// prompt: system instructions plus on-wire tool schemas. On the session's
+/// first request this is the paper's "initial harness context" excluding the
+/// task itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FirstCallComposition {
+    pub system_prompt_tokens: usize,
+    pub tool_schema_tokens: usize,
+    pub message_history_tokens: usize,
+    pub on_wire_tools: usize,
+}
+
+impl FirstCallComposition {
+    pub(crate) fn fixed_overhead_tokens(&self) -> usize {
+        self.system_prompt_tokens.saturating_add(self.tool_schema_tokens)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +454,22 @@ impl SessionStats {
         self.total_usage.clone()
     }
 
+    /// Capture the session's first assembled request composition. Returns
+    /// `true` when this call stored the value (first capture wins; later
+    /// builds leave the original composition untouched).
+    pub(crate) fn record_first_call_composition(&mut self, composition: FirstCallComposition) -> bool {
+        if self.first_call_composition.is_some() {
+            return false;
+        }
+        self.first_call_composition = Some(composition);
+        true
+    }
+
+    /// The captured first-call composition, when a request has been assembled.
+    pub(crate) fn first_call_composition(&self) -> Option<FirstCallComposition> {
+        self.first_call_composition
+    }
+
     /// Add one turn's cost to the session total and update the display value.
     /// An unpriced turn makes the complete session total unknown and keeps it
     /// unknown for subsequent turns, so callers cannot accidentally present a
@@ -524,6 +571,8 @@ impl SessionStats {
         self.last_prompt_cache_model = None;
         self.last_stable_prefix_hash = None;
         self.last_tool_catalog_hash = None;
+        self.last_wire_tool_count = None;
+        self.last_recovery_prompt_reason = None;
         self.last_prompt_cache_change_reason = None;
         self.prompt_cache_observations = 0;
         self.prompt_cache_model_changes = 0;
@@ -544,6 +593,12 @@ impl SessionStats {
     }
 
     pub(crate) fn register_follow_up_prompt(&mut self, input: &str) -> FollowUpPromptAction {
+        // Internal continuations belong to the existing recovery episode.
+        // Treating their verbose text as fresh user input resets the budget
+        // on every retry and makes the cross-turn limit unreachable.
+        if crate::agent::runloop::unified::turn::is_internal_harness_follow_up(input) {
+            return FollowUpPromptAction::None;
+        }
         let suppression_active = self.consume_follow_up_prompt_suppression();
         let is_follow_up = is_follow_up_prompt_like(input);
 
@@ -558,6 +613,7 @@ impl SessionStats {
             self.turn_stall_reason = None;
             self.reset_verification_recovery_episode();
             self.reset_tracker_continuation_budget();
+            self.tracker_completed_count_high_water = 0;
             return FollowUpPromptAction::None;
         }
 
@@ -649,15 +705,14 @@ impl SessionStats {
         )
     }
 
-    /// Observe the live completed checklist count. Returns `true` when progress
-    /// increased **or** the checklist was replaced with a lower completed
-    /// count (tracker recreate) — either restores the auto-continue episode.
+    /// Only new completion progress restores the auto-continue episode.
+    /// Recreating a checklist or toggling statuses must not refresh retries.
     pub(crate) fn note_tracker_completed_count(&mut self, completed: u32) -> bool {
-        let changed = completed != self.tracker_completed_count_last;
-        if changed {
-            self.tracker_completed_count_last = completed;
+        let progressed = completed > self.tracker_completed_count_high_water;
+        if progressed {
+            self.tracker_completed_count_high_water = completed;
         }
-        changed
+        progressed
     }
 
     /// Record one plan-mode auto-continue turn against its own budget.
@@ -803,14 +858,39 @@ impl SessionStats {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn record_prompt_cache_fingerprint(
         &mut self,
         model: &str,
         stable_prefix_hash: u64,
         tool_catalog_hash: Option<u64>,
     ) -> &'static str {
+        self.record_prompt_cache_fingerprint_with_context(model, stable_prefix_hash, tool_catalog_hash, None, None)
+    }
+
+    /// Fingerprint with recovery/wire context so cache misses can be
+    /// attributed to tool-catalog omission or `[Recovery Mode]` reason churn
+    /// instead of a generic stable-prefix change.
+    pub(crate) fn record_prompt_cache_fingerprint_with_context(
+        &mut self,
+        model: &str,
+        stable_prefix_hash: u64,
+        tool_catalog_hash: Option<u64>,
+        wire_tool_count: Option<usize>,
+        recovery_prompt_reason: Option<&str>,
+    ) -> &'static str {
         let reason = if self.last_prompt_cache_model.as_deref() != Some(model) {
             "model"
+        } else if matches!(
+            (self.last_wire_tool_count, wire_tool_count),
+            (Some(prev), Some(curr)) if prev > 0 && curr == 0
+        ) {
+            "tools_omitted"
+        } else if self.last_recovery_prompt_reason.as_deref() != recovery_prompt_reason
+            && recovery_prompt_reason.is_some()
+            && self.last_recovery_prompt_reason.is_some()
+        {
+            "recovery_reason"
         } else {
             match (
                 self.last_stable_prefix_hash == Some(stable_prefix_hash),
@@ -829,6 +909,8 @@ impl SessionStats {
         self.last_prompt_cache_model = Some(model.to_string());
         self.last_stable_prefix_hash = Some(stable_prefix_hash);
         self.last_tool_catalog_hash = tool_catalog_hash;
+        self.last_wire_tool_count = wire_tool_count;
+        self.last_recovery_prompt_reason = recovery_prompt_reason.map(str::to_string);
         self.last_prompt_cache_change_reason = Some(reason.to_string());
 
         reason
@@ -882,6 +964,9 @@ impl SessionStats {
             "stable_prefix" => &mut self.prompt_cache_stable_prefix_changes,
             "tool_catalog" => &mut self.prompt_cache_tool_catalog_changes,
             "stable_prefix+tool_catalog" => &mut self.prompt_cache_combined_changes,
+            // Attributed miss causes: tool definitions dropped from the wire,
+            // or the frozen `[Recovery Mode]` reason rotated mid-activation.
+            "tools_omitted" | "recovery_reason" => &mut self.prompt_cache_stable_prefix_changes,
             _ => &mut self.prompt_cache_unchanged,
         }
     }
@@ -954,6 +1039,19 @@ impl SessionStats {
 
     pub(crate) fn recent_touched_files(&self) -> Vec<String> {
         self.recent_touched_files.iter().cloned().collect()
+    }
+
+    /// Whether later tool-loop limit hits may skip the HITL prompt and
+    /// auto-grant the maximum increment. Set only after the first successful
+    /// interactive grant in this process session.
+    pub(crate) fn tool_loop_grant_preauthorized(&self) -> bool {
+        self.tool_loop_grant_preauthorized
+    }
+
+    /// Latch session-preauthorized tool-loop auto-grants after a successful
+    /// interactive grant. Idempotent; denials never call this.
+    pub(crate) fn mark_tool_loop_grant_preauthorized(&mut self) {
+        self.tool_loop_grant_preauthorized = true;
     }
 
     pub(crate) fn auto_permission_prompt_fallback_active(&self) -> bool {
@@ -1163,6 +1261,16 @@ impl CtrlCPhase {
 pub(crate) struct CtrlCState {
     phase: AtomicU8,
     last_signal_time: AtomicU64,
+    /// Shared event-delivery counter: incremented by the UI event callback
+    /// each time a Steer input is accepted by the live steering channel,
+    /// decremented by the runloop Steer handler. Callback and handler run
+    /// sequentially per event (callback first, then the channel), so an
+    /// undelivered steer falls through to the durable queue instead of
+    /// vanishing when the agent is temporarily unavailable (no steering
+    /// sender, closed channel). A counter — not a flag — so a burst of
+    /// steers delivered before the runloop drains does not double-queue the
+    /// second and later messages.
+    steer_delivered: AtomicUsize,
 }
 
 const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_millis(1000);
@@ -1244,6 +1352,23 @@ impl CtrlCState {
     pub(crate) fn reset(&self) {
         self.set_phase(CtrlCPhase::Idle);
         self.last_signal_time.store(0, Ordering::SeqCst);
+    }
+
+    /// Record that the UI event callback accepted a Steer input on the live
+    /// steering channel. Called from the callback before the event reaches
+    /// the runloop. Safe to call once per delivered steer in a burst.
+    pub(crate) fn mark_steer_delivered(&self) {
+        self.steer_delivered.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Consume one steer-delivery credit. `true` means the matching Steer
+    /// event was already handed to the steering channel and must not be
+    /// queued again; `false` means it fell through and should be queued so
+    /// the message is processed once the agent is ready.
+    pub(crate) fn take_steer_delivered(&self) -> bool {
+        self.steer_delivered
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |pending| Some(pending.saturating_sub(1)))
+            .is_ok_and(|prev| prev > 0)
     }
 
     pub(crate) fn mark_cancel_handled(&self) {
@@ -1490,6 +1615,62 @@ mod tests {
     }
 
     #[test]
+    fn first_call_composition_captures_once() {
+        use super::FirstCallComposition;
+        let mut stats = SessionStats::default();
+        assert!(stats.first_call_composition().is_none());
+        let first = FirstCallComposition {
+            system_prompt_tokens: 1_100,
+            tool_schema_tokens: 2_100,
+            message_history_tokens: 40,
+            on_wire_tools: 4,
+        };
+        assert!(stats.record_first_call_composition(first));
+        assert_eq!(stats.first_call_composition(), Some(first));
+        // Later assemblies must not overwrite the first-call snapshot.
+        let later = FirstCallComposition {
+            system_prompt_tokens: 9_000,
+            tool_schema_tokens: 9_000,
+            message_history_tokens: 9_000,
+            on_wire_tools: 40,
+        };
+        assert!(!stats.record_first_call_composition(later));
+        assert_eq!(stats.first_call_composition(), Some(first));
+        assert_eq!(first.fixed_overhead_tokens(), 3_200);
+    }
+
+    #[test]
+    fn internal_continuations_cannot_reset_cross_turn_budgets() {
+        use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
+            plan_mode_continue_follow_up, recoverable_blocked_continue_follow_up, tracker_continue_follow_up,
+        };
+
+        let prompts = [
+            tracker_continue_follow_up(&["#1 README (blocked)".to_owned()]),
+            plan_mode_continue_follow_up(),
+            recoverable_blocked_continue_follow_up("preview budget exhausted"),
+        ];
+        for prompt in prompts {
+            let mut stats = SessionStats::default();
+            for turn in 1..=3 {
+                assert!(stats.record_tracker_continuation_turn_with_limit(3));
+                assert!(stats.record_plan_continuation_turn_with_limit(3));
+                assert!(stats.record_verification_auto_recovery_turn_with_limit(3));
+                assert_eq!(stats.register_follow_up_prompt(&prompt), FollowUpPromptAction::None);
+                assert_eq!(stats.tracker_continuation_turns(), turn);
+                assert_eq!(stats.plan_continuation_turns(), turn);
+                assert_eq!(stats.verification_auto_recovery_turns(), turn);
+            }
+            assert!(!stats.record_tracker_continuation_turn_with_limit(3));
+            assert!(!stats.record_plan_continuation_turn_with_limit(3));
+            assert!(!stats.record_verification_auto_recovery_turn_with_limit(3));
+            assert_eq!(stats.register_follow_up_prompt("Fix the README links"), FollowUpPromptAction::None);
+            assert_eq!(stats.tracker_continuation_turns(), 0);
+            assert_eq!(stats.verification_auto_recovery_turns(), 0);
+        }
+    }
+
+    #[test]
     fn record_tool_normalizes_exec_aliases() {
         let mut stats = SessionStats::default();
         stats.record_tool(tools::UNIFIED_EXEC);
@@ -1539,6 +1720,30 @@ mod tests {
         assert!(stats.verification_snapshot().0);
         stats.set_verification_snapshot((false, 0));
         assert!(!stats.verification_snapshot().0);
+    }
+
+    #[test]
+    fn tool_loop_grant_preauthorized_latches_only_after_explicit_grant() {
+        let mut stats = SessionStats::default();
+        assert!(!stats.tool_loop_grant_preauthorized(), "session starts unlatched");
+
+        stats.mark_tool_loop_grant_preauthorized();
+        assert!(stats.tool_loop_grant_preauthorized());
+
+        // Idempotent: later grants do not flip it back.
+        stats.mark_tool_loop_grant_preauthorized();
+        assert!(stats.tool_loop_grant_preauthorized());
+    }
+
+    #[test]
+    fn tool_loop_grant_preauthorized_survives_fresh_execution_in_session() {
+        let mut stats = SessionStats::default();
+        stats.mark_tool_loop_grant_preauthorized();
+        stats.reset_for_fresh_execution();
+        assert!(
+            stats.tool_loop_grant_preauthorized(),
+            "the one-time HITL latch is process-session scoped, not conversation-context scoped"
+        );
     }
 
     #[test]
@@ -1750,6 +1955,37 @@ mod tests {
                 last_stable_prefix_hash: Some(55),
                 last_tool_catalog_hash: Some(66),
             }
+        );
+    }
+
+    #[test]
+    fn prompt_cache_fingerprint_attributes_tools_omitted_and_recovery_reason() {
+        let mut stats = SessionStats::default();
+
+        assert_eq!(stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(10), None), "model");
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(10), None),
+            "unchanged"
+        );
+        // Dropping every tool from the wire is its own miss cause.
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(0), None),
+            "tools_omitted"
+        );
+        // Restoring tools then rotating the frozen recovery reason is next.
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context("gpt-6", 1, Some(2), Some(10), Some("loop detector")),
+            "unchanged"
+        );
+        assert_eq!(
+            stats.record_prompt_cache_fingerprint_with_context(
+                "gpt-6",
+                1,
+                Some(2),
+                Some(10),
+                Some("blocked tool-call fuse tripped")
+            ),
+            "recovery_reason"
         );
     }
 

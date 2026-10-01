@@ -6,7 +6,9 @@ use crate::tui::config::constants::ui;
 use super::Session;
 
 use vtcode_commons::ansi_codes::{set_iterm2_profile, set_terminal_title_and_icon};
-use vtcode_commons::terminal_detection::{ITERM2_PROFILE_NAME, should_apply_iterm2_profile_now};
+use vtcode_commons::terminal_detection::{
+    ITERM2_PROFILE_NAME, original_iterm2_profile_name, should_apply_iterm2_profile_now,
+};
 
 const MAX_TITLE_LENGTH: usize = 128;
 
@@ -264,6 +266,12 @@ fn write_terminal_title(title: &str) -> std::io::Result<()> {
 /// the tab icon, and repeated switches would fight manual profile changes
 /// mid-session. Sessions without the installed profile file are untouched,
 /// so deleting it uninstalls the behavior.
+///
+/// `OSC 1337;SetProfile=` is a sticky session-profile change with no automatic
+/// reversion, so the session's original profile is recorded here and restored
+/// by the canonical teardown path ([`restore_tui`](super::super::panic_hook::restore_tui)).
+/// Sessions whose original profile is unknown or already [`ITERM2_PROFILE_NAME`]
+/// are skipped rather than left switched.
 pub(crate) fn apply_iterm2_profile_once() {
     if !cfg!(target_os = "macos") {
         return;
@@ -271,9 +279,14 @@ pub(crate) fn apply_iterm2_profile_once() {
     if !should_apply_iterm2_profile_now() {
         return;
     }
+    let Some(original) = original_iterm2_profile_name() else {
+        return;
+    };
     if let Err(error) = write_iterm2_profile_switch() {
         tracing::debug!(%error, "failed to switch to iTerm2 profile");
+        return;
     }
+    super::super::panic_hook::state::mark_iterm2_profile_switched(original);
 }
 
 fn write_iterm2_profile_switch() -> std::io::Result<()> {

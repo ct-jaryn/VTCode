@@ -1,9 +1,7 @@
 use super::*;
-use crate::tui::config::constants::ui;
 use crate::tui::core_tui::ThemeConfigParser;
 use crate::tui::core_tui::session::list_panel::{
-    ListPanelLayout, SharedListPanelSections, SharedListPanelStyles, fixed_section_rows_with_divider,
-    input_styles_from_theme, render_shared_list_panel, rows_to_u16,
+    SharedListPanelSections, SharedListPanelStyles, input_styles_from_theme, render_shared_list_panel,
 };
 use crate::tui::core_tui::session::{
     inline_list::{InlineListRow, list_cursor},
@@ -11,7 +9,7 @@ use crate::tui::core_tui::session::{
 };
 use crate::tui::core_tui::style::ratatui_color_from_ansi;
 use crate::tui::core_tui::types::{LocalAgentEntry, LocalAgentKind};
-use ratatui::widgets::{Clear, Fill, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use tracing::warn;
 use tui_shimmer::shimmer_spans_with_style_at_phase;
 
@@ -20,8 +18,11 @@ struct LocalAgentsPanelModel {
     selected: Option<usize>,
     offset: usize,
     visible_rows: usize,
-    base_style: Style,
     highlight_style: Style,
+    /// Muted-by-color row style (theme secondary), never `Modifier::DIM` —
+    /// ratatui's `Cell::set_style` only inserts modifiers, so a DIM painted
+    /// over the panel sticks to every glyph drawn on top of it.
+    muted_style: Style,
 }
 
 impl SharedListWidgetModel for LocalAgentsPanelModel {
@@ -31,15 +32,15 @@ impl SharedListWidgetModel for LocalAgentsPanelModel {
                 InlineListRow::single(
                     Line::from(Span::styled(
                         "No local agents yet".to_owned(),
-                        self.base_style.add_modifier(Modifier::DIM | Modifier::ITALIC),
+                        self.muted_style.add_modifier(Modifier::ITALIC),
                     )),
-                    self.base_style.add_modifier(Modifier::DIM),
+                    self.muted_style,
                 ),
                 1_u16,
             )];
         }
 
-        let dim_style = self.base_style.add_modifier(Modifier::DIM);
+        let muted_style = self.muted_style;
         let max_chars = width.saturating_sub(3) as usize;
         self.entries
             .iter()
@@ -51,12 +52,12 @@ impl SharedListWidgetModel for LocalAgentsPanelModel {
                     max_chars,
                 );
                 let cursor = list_cursor(is_selected);
-                let cursor_style = if is_selected { self.highlight_style } else { dim_style };
-                let text_style = if is_selected { self.highlight_style } else { dim_style };
+                let cursor_style = if is_selected { self.highlight_style } else { muted_style };
+                let text_style = if is_selected { self.highlight_style } else { muted_style };
                 (
                     InlineListRow::single(
                         Line::from(vec![Span::styled(cursor, cursor_style), Span::styled(row_text, text_style)]),
-                        dim_style,
+                        muted_style,
                     ),
                     1_u16,
                 )
@@ -81,51 +82,59 @@ impl SharedListWidgetModel for LocalAgentsPanelModel {
     }
 }
 
-pub(crate) fn local_agents_panel_layout(session: &Session) -> Option<ListPanelLayout> {
-    if !session.local_agents_visible() || !session.inline_lists_visible() {
-        return None;
+/// Centered floating window for multi-agent / background-process management.
+/// Roughly 82% x 78% of the viewport so live activity stays readable.
+pub(crate) fn local_agents_window_area(viewport: Rect) -> Rect {
+    if viewport.width == 0 || viewport.height == 0 {
+        return viewport;
     }
-
-    let visible_entries = session.local_agents_state.entries().len().max(1);
-    let fixed_rows = fixed_section_rows_with_divider(1, 1, 0, true);
-    let desired_rows = rows_to_u16(visible_entries.min(ui::INLINE_LIST_MAX_ROWS));
-    Some(ListPanelLayout::new(fixed_rows, desired_rows))
+    let width = ((viewport.width as u32 * 82) / 100).clamp(20, u32::from(viewport.width)) as u16;
+    let height = ((viewport.height as u32 * 78) / 100).clamp(8, u32::from(viewport.height)) as u16;
+    let x = viewport.x + (viewport.width.saturating_sub(width) / 2);
+    let y = viewport.y + (viewport.height.saturating_sub(height) / 2);
+    Rect::new(x, y, width, height)
 }
 
-pub fn split_inline_local_agents_area(session: &mut Session, area: Rect) -> (Rect, Option<Rect>) {
-    if area.height == 0 || area.width == 0 {
-        session.local_agents_state.set_visible_rows(0);
-        return (area, None);
+fn local_agents_header_summary(live: usize, finished: usize) -> String {
+    match (live, finished) {
+        (0, 0) => "No background agents yet".to_string(),
+        (0, finished) => {
+            let suffix = if finished == 1 { "" } else { "s" };
+            format!("{finished} agent{suffix} finished")
+        }
+        (live, 0) => format!("{live} running"),
+        (live, finished) => format!("{live} running · {finished} finished"),
     }
-
-    let Some(layout) = local_agents_panel_layout(session) else {
-        session.local_agents_state.set_visible_rows(0);
-        return (area, None);
-    };
-
-    let (transcript_area, panel_area) = layout.split(area);
-    if panel_area.is_none() {
-        session.local_agents_state.set_visible_rows(0);
-        return (transcript_area, None);
-    }
-
-    (transcript_area, panel_area)
 }
 
-pub fn render_local_agents(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
-    if area.height == 0 || area.width == 0 || !session.inline_lists_visible() || !session.local_agents_visible() {
+pub fn render_local_agents(session: &mut Session, frame: &mut Frame<'_>, viewport: Rect) {
+    if viewport.height == 0 || viewport.width == 0 || !session.inline_lists_visible() || !session.local_agents_visible()
+    {
         session.local_agents_state.set_visible_rows(0);
+        session.local_agents_state.set_list_area(None);
+        session.local_agents_state.set_window_area(None);
         return;
     }
 
-    frame.render_widget(Clear, area);
+    let window = local_agents_window_area(viewport);
+    session.local_agents_state.set_window_area(Some(window));
+    frame.render_widget(Clear, window);
 
     let default_style = default_style(session);
-    let dim_style = default_style.add_modifier(Modifier::DIM);
+    // Muted by explicit color (theme secondary), never `Modifier::DIM`: DIM
+    // doubles as a sticky area style in this pipeline and renders
+    // near-invisible on several terminals.
+    let muted_style = session.core.styles.muted_text_style();
     let highlight_style = modal_list_highlight_style(session);
-    let (selected_index, scroll_offset, entries) = {
+    let (selected_index, scroll_offset, entries, live_count, finished_count) = {
         let state = &session.local_agents_state;
-        (state.selected(), state.scroll_offset(), state.entries().to_vec())
+        (
+            state.selected(),
+            state.scroll_offset(),
+            state.entries().to_vec(),
+            state.loading_count(),
+            state.finished_count(),
+        )
     };
     let selected_exec_session = selected_index
         .and_then(|index| entries.get(index))
@@ -134,59 +143,43 @@ pub fn render_local_agents(session: &mut Session, frame: &mut Frame<'_>, area: R
     let info_line = if entries.is_empty() {
         "Background subagents are opt-in. Configure one, then use Ctrl+B or /subprocesses.".to_string()
     } else if selected_exec_session {
-        format!(
-            "↑↓ Navigate · Enter inspect · Ctrl+K stop · Ctrl+X close · Ctrl+R focus · Ctrl+P preview · Esc close · Showing {} local agent{}",
-            entries.len(),
-            if entries.len() == 1 { "" } else { "s" }
-        )
+        "↑↓ Navigate · Enter inspect · Ctrl+K stop · Ctrl+X close · Ctrl+R focus · Ctrl+P preview · Esc close"
+            .to_string()
     } else {
-        format!(
-            "↑↓ Navigate · Enter inspect · Alt+O transcript · Ctrl+K stop · Ctrl+X close · Esc close · Showing {} local agent{}",
-            entries.len(),
-            if entries.len() == 1 { "" } else { "s" }
-        )
+        "↑↓ Navigate · Enter inspect · Alt+O transcript · Ctrl+K stop · Ctrl+X close · Esc close".to_string()
     };
 
-    let header_rows = SharedListPanelSections {
-        header: vec![Line::from(Span::styled("Local Agents".to_owned(), highlight_style))],
-        info: vec![Line::from(Span::styled(info_line, default_style))],
-        search: None,
-    };
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(local_agents_divider_style(session, selected_index, &entries))
+        .title(Span::styled("Background", highlight_style));
+    let inner = block.inner(window);
+    frame.render_widget(block, window);
 
-    let mut list_model = LocalAgentsPanelModel {
-        entries: entries.clone(),
-        selected: selected_index,
-        offset: scroll_offset,
-        visible_rows: 0,
-        base_style: default_style,
-        highlight_style,
-    };
-
-    let [divider_area, header_area, info_area, body] = match area.try_layout(&Layout::vertical([
-        Constraint::Length(1),
+    let [header_area, info_area, body] = match inner.try_layout(&Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
     ])) {
         Ok(areas) => areas,
         Err(_) => {
-            warn!(target: "vtcode::tui", height = area.height, "local agents panel layout failed, skipping render");
+            warn!(target: "vtcode::tui", height = inner.height, "local agents window layout failed, skipping render");
+            session.local_agents_state.set_list_area(None);
             return;
         }
     };
 
-    let divider_style = local_agents_divider_style(session, selected_index, &entries);
-    frame.render_widget(Fill::new("─").style(divider_style), divider_area);
-
     frame.render_widget(
-        Paragraph::new(header_rows.header)
-            .style(default_style)
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(Line::from(Span::styled(
+            local_agents_header_summary(live_count, finished_count),
+            highlight_style,
+        )))
+        .style(default_style),
         header_area,
     );
     frame.render_widget(
-        Paragraph::new(header_rows.info)
-            .style(default_style.add_modifier(Modifier::DIM))
+        Paragraph::new(info_line)
+            .style(session.core.styles.muted_text_style())
             .wrap(Wrap { trim: false }),
         info_area,
     );
@@ -195,12 +188,21 @@ pub fn render_local_agents(session: &mut Session, frame: &mut Frame<'_>, area: R
         .try_layout(&Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]))
         .unwrap_or([body; 2]);
 
+    let mut list_model = LocalAgentsPanelModel {
+        entries: entries.clone(),
+        selected: selected_index,
+        offset: scroll_offset,
+        visible_rows: 0,
+        highlight_style,
+        muted_style,
+    };
+
     render_shared_list_panel(
         frame,
         list_area,
         SharedListPanelSections::default(),
         SharedListPanelStyles {
-            base_style: dim_style,
+            base_style: default_style,
             selected_style: Some(highlight_style),
             text_style: default_style,
             divider_style: None,
@@ -212,16 +214,17 @@ pub fn render_local_agents(session: &mut Session, frame: &mut Frame<'_>, area: R
 
     session.local_agents_state.set_visible_rows(list_model.visible_rows);
     session.local_agents_state.set_scroll_offset(list_model.offset);
+    session.local_agents_state.set_list_area(Some(list_area));
 
     let selected_entry = selected_index.and_then(|index| entries.get(index));
     let preview_text = selected_entry
         .map(|entry| format_local_agent_preview(session, entry))
         .unwrap_or_else(|| {
             vec![
-                Line::from("No local agents are running."),
+                Line::from("No local agents yet."),
                 Line::default(),
                 Line::from(
-                    "Use /subprocesses to open this drawer later, or configure a background agent and press Ctrl+B.",
+                    "Configure a background agent and press Ctrl+B, or use /subprocesses to open this window later.",
                 ),
             ]
         });
@@ -252,7 +255,7 @@ fn format_local_agent_preview(session: &Session, entry: &LocalAgentEntry) -> Vec
 
 fn local_agent_title_line(session: &Session, entry: &LocalAgentEntry) -> Line<'static> {
     let base = default_style(session);
-    let muted = base.add_modifier(Modifier::DIM);
+    let muted = session.core.styles.muted_text_style();
     let mut spans = vec![
         Span::styled(entry.display_label.clone(), base),
         Span::styled(" · ".to_string(), muted),
@@ -263,18 +266,18 @@ fn local_agent_title_line(session: &Session, entry: &LocalAgentEntry) -> Line<'s
     if entry.is_loading() && session.core.appearance.should_animate_progress_status() {
         spans.extend(shimmer_spans_with_style_at_phase(
             &entry.status,
-            accent_style(session).add_modifier(Modifier::DIM),
+            accent_style(session),
             session.core.shimmer_state.phase(),
         ));
     } else {
-        spans.push(Span::styled(entry.status.clone(), accent_style(session).add_modifier(Modifier::DIM)));
+        spans.push(Span::styled(entry.status.clone(), accent_style(session)));
     }
 
     Line::from(spans)
 }
 
 fn local_agent_status_line(session: &Session, text: &str, shimmer: bool) -> Line<'static> {
-    let style = default_style(session).add_modifier(Modifier::DIM);
+    let style = session.core.styles.muted_text_style();
     if shimmer && session.core.appearance.should_animate_progress_status() {
         Line::from(shimmer_spans_with_style_at_phase(text, style, session.core.shimmer_state.phase()))
     } else {
@@ -314,8 +317,12 @@ fn local_agents_divider_style(session: &Session, selected_index: Option<usize>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, format_local_agent_preview, local_agent_status_line, local_agent_title_line};
+    use super::{
+        Session, format_local_agent_preview, local_agent_status_line, local_agent_title_line,
+        local_agents_header_summary, local_agents_window_area,
+    };
     use crate::tui::core_tui::types::{InlineTheme, LocalAgentEntry, LocalAgentKind};
+    use ratatui::layout::Rect;
     use std::time::Duration;
 
     fn sample_entry(status: &str) -> LocalAgentEntry {
@@ -368,5 +375,23 @@ mod tests {
         assert_eq!(title.spans.len(), 5, "loading status should use one static label span");
         assert_eq!(summary.spans, static_summary.spans);
         assert_eq!(summary.spans[0].content.as_ref(), "Reviewing the workspace");
+    }
+
+    #[test]
+    fn header_summary_reports_live_and_finished() {
+        assert_eq!(local_agents_header_summary(0, 0), "No background agents yet");
+        assert_eq!(local_agents_header_summary(2, 0), "2 running");
+        assert_eq!(local_agents_header_summary(0, 1), "1 agent finished");
+        assert_eq!(local_agents_header_summary(0, 4), "4 agents finished");
+        assert_eq!(local_agents_header_summary(1, 2), "1 running · 2 finished");
+    }
+
+    #[test]
+    fn window_area_is_centered_large_panel() {
+        let area = local_agents_window_area(Rect::new(0, 0, 100, 40));
+        assert!(area.width < 100 && area.width >= 80);
+        assert!(area.height < 40 && area.height >= 30);
+        assert_eq!(area.x, (100 - area.width) / 2);
+        assert_eq!(area.y, (40 - area.height) / 2);
     }
 }

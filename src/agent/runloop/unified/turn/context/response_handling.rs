@@ -3,7 +3,7 @@ use crate::agent::runloop::unified::plan_blocks::strip_plan_persistence_policy_l
 use crate::agent::runloop::unified::planning_workflow::{
     PlanApprovalRoute, PlanArtifactError, ValidatedPlanArtifact, allocate_plan_file_if_missing,
     build_plan_repair_directive, emit_plan_ready_events, persist_plan_draft, persisted_plan_is_ready,
-    plan_approval_route, plan_repair_directive_for_error, validate_plan_content,
+    plan_approval_route, plan_rejection_history_feedback, plan_repair_directive_for_error, validate_plan_content,
 };
 use crate::agent::runloop::unified::turn::turn_processing::resolve_effective_request_model;
 use crate::agent::runloop::unified::ui_interaction_stream_helpers::render_compact_reasoning_block;
@@ -13,8 +13,18 @@ pub(crate) const DENIED_INTERVIEW_PLAN_SYNTHESIS_RETRY_DIRECTIVE: &str = "Planni
 pub(crate) const PLAN_PSEUDO_TOOL_CALL_REPROMPT_DIRECTIVE: &str = "Planning: the previous response contained tool-call markup that was not executed — XML tool-call text is not a tool call. If you need more repository evidence, invoke tools through the tool-call channel. Otherwise present the completed plan as one compact `<proposed_plan>` (Summary, numbered steps in the form `Action -> files: [path] -> verify: [command]`, Validation, short Assumptions). Each `verify:` must be a concrete command or observable check; valid examples: `cargo nextest run -p vtcode`, `cargo check --locked`, `rg -n 'symbol' src/file.rs`, `sed -n '1,40p' docs/file.md`, `grep -n 'symbol' src/file.rs`. Invalid: `run checks`, `check later`, or `git diff --check`. Tool-call markup written as text is never executed.";
 
 const EXECUTION_PLAN_REJECTION_NOTICE: &str = "The proposed plan was rejected and discarded; no continuation turn was scheduled. Adjust the request or revise the plan to continue.";
+const PLANNING_PLAN_REJECTION_NOTICE: &str = "The proposed plan was rejected and discarded; no continuation turn was scheduled. Revise the plan or restate the request to continue.";
 const PLAN_APPROVAL_WAITING_NOTICE: &str = "Plan is awaiting approval. Type `approve`, `implement`, or `yes` to begin execution, or `edit` to revise the plan.";
 const PLAN_APPROVAL_DISMISSED_NOTICE: &str = "Plan review ended without starting implementation. The plan remains available for revision or approval in a later turn.";
+
+/// Model-visible text for a terminal plan rejection.
+///
+/// Keeps the user-facing `notice` as a stable first line (tests, logs) and
+/// appends validator-owned feedback so a later user `continue` can repair the
+/// draft instead of resubmitting the same invalid shape.
+fn terminal_plan_rejection_message(notice: &str, error: &PlanArtifactError) -> String {
+    format!("{notice}\n\n{}", plan_rejection_history_feedback(error))
+}
 
 /// Detect whether a planning-mode text response is a clarifying question
 /// posed to the user rather than a plan or research prose. The deterministic
@@ -284,9 +294,11 @@ impl<'a> TurnProcessingContext<'a> {
             // The rejection is a terminal, user-visible outcome. Publish it
             // through the assistant-response path as well as the renderer so
             // finalization does not mistake this completed control-flow turn
-            // for a turn that never produced a final response.
+            // for a turn that never produced a final response. History must
+            // carry the validator feedback, not only the TUI lines above —
+            // otherwise a later `continue` resubmits the same invalid shape.
             self.handle_assistant_response(
-                EXECUTION_PLAN_REJECTION_NOTICE.to_string(),
+                terminal_plan_rejection_message(EXECUTION_PLAN_REJECTION_NOTICE, &error),
                 Vec::new(),
                 None,
                 false,
@@ -361,9 +373,7 @@ impl<'a> TurnProcessingContext<'a> {
             crate::agent::runloop::unified::planning_workflow_state::PLANNING_WORKFLOW_NO_APPROVAL_READY_PLAN_HINT,
         )?;
         self.handle_assistant_response(
-            format!(
-                "The proposed plan was rejected and discarded; no continuation turn was scheduled. Revise the plan or restate the request to continue ({error})."
-            ),
+            terminal_plan_rejection_message(PLANNING_PLAN_REJECTION_NOTICE, &error),
             Vec::new(),
             None,
             false,
@@ -968,6 +978,15 @@ impl<'a> TurnProcessingContext<'a> {
             self.handle
                 .set_input_status(Some("Validating plan...".to_string()), self.input_status_state.right.clone());
             self.handle.force_redraw();
+            // Mirror the footer status into the transcript so the long
+            // synthesis-to-approval gap stays visibly live. Non-blocking
+            // send; a closed UI surface logs and continues validation.
+            if let Err(err) = crate::agent::runloop::unified::tool_summary::render_planning_progress_indicator(
+                self.renderer,
+                crate::agent::runloop::unified::tool_summary::PLANNING_VALIDATING_INDICATOR,
+            ) {
+                tracing::warn!("failed to render planning validating indicator: {}", err);
+            }
             // Persist before publishing the approval request so consumers that
             // follow the event's plan_file can read the completed draft.
             let validation = validate_plan_content(&plan_text);
@@ -981,6 +1000,12 @@ impl<'a> TurnProcessingContext<'a> {
             self.handle
                 .set_input_status(Some("Persisting plan...".to_string()), self.input_status_state.right.clone());
             self.handle.force_redraw();
+            if let Err(err) = crate::agent::runloop::unified::tool_summary::render_planning_progress_indicator(
+                self.renderer,
+                crate::agent::runloop::unified::tool_summary::PLANNING_PERSISTING_INDICATOR,
+            ) {
+                tracing::warn!("failed to render planning persisting indicator: {}", err);
+            }
 
             // Execution-mode first drafts have no planning workflow behind
             // them, so `persist_plan_draft` would bail with "No active plan
@@ -1336,6 +1361,25 @@ fn append_to_last_assistant_message(working_history: &mut [uni::Message], additi
 mod tests {
     use super::*;
     use crate::agent::runloop::unified::turn::turn_processing::test_support::TestTurnProcessingBacking;
+    use vtcode_core::tools::handlers::planning_workflow::CANONICAL_STEP_FORMAT;
+
+    fn last_final_answer_text(ctx: &TurnProcessingContext<'_>) -> String {
+        ctx.working_history
+            .iter()
+            .rev()
+            .find(|message| {
+                message.role == uni::MessageRole::Assistant && message.phase == Some(uni::AssistantPhase::FinalAnswer)
+            })
+            .map(|message| message.content.as_text().into_owned())
+            .expect("terminal rejection must publish a final assistant message")
+    }
+
+    fn assert_history_carries_validator_feedback(final_text: &str) {
+        assert!(
+            final_text.contains("Plan validation issues:") && final_text.contains(CANONICAL_STEP_FORMAT),
+            "history must carry validator feedback and canonical step format, got: {final_text}"
+        );
+    }
 
     /// Unparseable pseudo-tool-call markup: the `<tools:call>` name is empty,
     /// so every textual parser rejects it, but the pseudo-marker scan still
@@ -1737,6 +1781,7 @@ Repair planning recovery from the evidence already gathered with concrete verifi
             matches!(outcome, TurnHandlerOutcome::Break(TurnLoopResult::Completed { .. })),
             "exhausted repair budget must end the turn with the specific rejection, not a silent hint"
         );
+        assert_history_carries_validator_feedback(&last_final_answer_text(&ctx));
     }
 
     #[tokio::test]
@@ -1927,6 +1972,14 @@ Repairs the approved plan after the referenced paths moved.
                 && message.phase == Some(uni::AssistantPhase::FinalAnswer)
                 && message.content.as_text().contains(EXECUTION_PLAN_REJECTION_NOTICE)
         }));
+        // Terminal rejection must leave the validator contract in history so a
+        // later `continue` can repair the draft (session-vtcode-20260924T133543Z).
+        let final_text = last_final_answer_text(&ctx);
+        assert_history_carries_validator_feedback(&final_text);
+        assert!(
+            final_text.contains("missing required section"),
+            "history must name the missing sections, got: {final_text}"
+        );
     }
 
     #[tokio::test]
@@ -1975,6 +2028,7 @@ Repairs the approved plan after the referenced paths moved.
             }),
             "a rejected revision must publish a harness-visible final response"
         );
+        assert_history_carries_validator_feedback(&last_final_answer_text(&ctx));
         assert!(
             ctx.harness_state.final_response_rendered(),
             "a rejected revision must count as a rendered final response"
@@ -2001,6 +2055,7 @@ Repairs the approved plan after the referenced paths moved.
                 && message.phase == Some(uni::AssistantPhase::FinalAnswer)
                 && message.content.as_text().contains(EXECUTION_PLAN_REJECTION_NOTICE)
         }));
+        assert_history_carries_validator_feedback(&last_final_answer_text(&ctx));
         assert!(!ctx.working_history.iter().any(|message| {
             message
                 .content

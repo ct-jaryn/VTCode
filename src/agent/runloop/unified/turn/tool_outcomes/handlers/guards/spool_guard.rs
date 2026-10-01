@@ -16,7 +16,6 @@ use vtcode_core::tools::registry::labels::tool_action_label;
 
 use super::super::ValidationResult;
 use super::common::push_guard_failure_messages;
-use crate::agent::runloop::unified::run_loop_context::SPOOL_PAGE_PREVIEW_CREDIT_BYTES;
 use crate::agent::runloop::unified::tool_reads::{
     read_spool_head_for_error_check, spool_content_looks_like_error, spool_page_source_path,
 };
@@ -251,12 +250,6 @@ pub(crate) async fn enforce_spool_chunk_read_guard(
     let max_reads_per_turn = max_sequential_spool_chunk_reads_per_turn(ctx);
     let streak = ctx.harness_state.record_spool_chunk_read();
     if streak <= max_reads_per_turn {
-        // Bank preview credit so this page stays model-visible even after the
-        // aggregate preview budget is exhausted. Paging is already bounded per
-        // result and capped sequentially here, so credit cannot grow the
-        // prompt without bound.
-        ctx.harness_state
-            .grant_spool_page_preview_credit(SPOOL_PAGE_PREVIEW_CREDIT_BYTES);
         return None;
     }
 

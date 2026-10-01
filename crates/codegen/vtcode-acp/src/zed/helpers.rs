@@ -1,8 +1,9 @@
 use crate::acp;
 use std::collections::HashSet;
 use std::path::Path;
+use vtcode_config::constants::defaults::DEFAULT_PRIMARY_AGENT_NAME;
 use vtcode_config::core::permissions::AgentPermissionsConfig;
-use vtcode_config::{SubagentSource, SubagentSpec, builtin_primary_duck_agent};
+use vtcode_config::{SubagentSource, SubagentSpec, builtin_primary_build_agent};
 use vtcode_core::ActivePrimaryAgentState;
 use vtcode_core::config::types::ReasoningEffortLevel;
 use vtcode_core::permissions::{
@@ -50,7 +51,7 @@ impl PrimaryAgentCatalog {
         });
 
         if options.is_empty() {
-            options.push(primary_agent_option_from_spec(&builtin_primary_duck_agent()));
+            options.push(primary_agent_option_from_spec(&builtin_primary_build_agent()));
         }
 
         let active = ActivePrimaryAgentState::from_specs_with_default(specs, default_primary_agent);
@@ -63,7 +64,7 @@ impl PrimaryAgentCatalog {
             options
                 .first()
                 .map(|option| option.id.clone())
-                .unwrap_or_else(|| "duck".to_string())
+                .unwrap_or_else(|| DEFAULT_PRIMARY_AGENT_NAME.to_string())
         };
 
         Self { options, default_id }

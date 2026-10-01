@@ -633,7 +633,7 @@ mod tests {
 
         let handle = agent.build_session_handle(acp::SessionId::new("session-1"), thread);
 
-        assert_eq!(primary_agent(&handle), "duck");
+        assert_eq!(primary_agent(&handle), "build");
     }
 
     #[tokio::test]
@@ -691,8 +691,10 @@ Research primary prompt."#,
         let session_id = agent.register_session();
         let session = agent.session_handle(&session_id).unwrap();
 
-        assert!(agent.update_session_primary_agent(&session, "build".to_string()));
-        assert_eq!(primary_agent(&session), "build");
+        // `build_agent` already defaults to "build", so switch to a different
+        // known agent to exercise a real transition (an unchanged id is a no-op).
+        assert!(agent.update_session_primary_agent(&session, "plan".to_string()));
+        assert_eq!(primary_agent(&session), "plan");
         assert_eq!(
             session
                 .data
@@ -701,8 +703,11 @@ Research primary prompt."#,
                 .and_then(|data| data.thread.metadata())
                 .and_then(|metadata| metadata.primary_agent)
                 .as_deref(),
-            Some("build")
+            Some("plan")
         );
+
+        // Re-applying the same id is a no-op.
+        assert!(!agent.update_session_primary_agent(&session, "plan".to_string()));
     }
 
     #[tokio::test]

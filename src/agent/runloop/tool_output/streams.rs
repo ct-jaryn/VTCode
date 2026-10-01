@@ -41,7 +41,7 @@
 
 use std::borrow::Cow;
 
-use anstyle::{AnsiColor, Reset, Style as AnsiStyle};
+use anstyle::{AnsiColor, Effects, Reset, Style as AnsiStyle};
 use anyhow::Result;
 use smallvec::SmallVec;
 use vtcode_commons::preview::{
@@ -105,15 +105,38 @@ const LARGE_OUTPUT_NOTIFICATION_THRESHOLD: usize = 50_000; // 50KB — triggers 
 
 enum HiddenLinesNoticeKind {
     CommandPreview,
+    /// Exec-session stdin/stdout overflow. Points at the in-TUI expand
+    /// affordance instead of the share-hint copy used for command previews.
+    ExecSessionExpand,
     Generic,
     TokenBudget,
 }
 
+/// Expand affordance copy for a truncated exec-session body.
+///
+/// `underline_action` embeds SGR underline on the click target so TUI
+/// hit-region detection can treat it as clickable. CLI sinks pass `false`:
+/// raw escapes would leak into plain output, and they have no hit regions.
+fn exec_session_expand_notice(hidden: usize, underline_action: bool) -> String {
+    let summary = shared_hidden_lines_summary(hidden);
+    if underline_action {
+        let underline = AnsiStyle::new().effects(Effects::UNDERLINE);
+        format!("{summary} · {underline}click to expand{Reset}")
+    } else {
+        format!("{summary} · click to expand")
+    }
+}
+
 fn hidden_lines_notice(hidden: usize, kind: HiddenLinesNoticeKind) -> String {
+    hidden_lines_notice_with(hidden, kind, true)
+}
+
+fn hidden_lines_notice_with(hidden: usize, kind: HiddenLinesNoticeKind, underline_expand: bool) -> String {
     match kind {
         HiddenLinesNoticeKind::CommandPreview => {
             format!("    {} (/share html for full transcript)", shared_hidden_lines_summary(hidden))
         }
+        HiddenLinesNoticeKind::ExecSessionExpand => exec_session_expand_notice(hidden, underline_expand),
         HiddenLinesNoticeKind::Generic => {
             format!("[... {} line{} truncated ...]", hidden, if hidden == 1 { "" } else { "s" })
         }
@@ -1467,16 +1490,21 @@ pub(crate) async fn render_stream_section(
 ) -> Result<()> {
     use std::fmt::Write as FmtWrite;
 
-    let is_run_command = tool_name.is_some_and(|name| {
-        tool_intent::is_command_run_tool(name)
-            || name == vtcode_core::config::constants::tools::UNIFIED_EXEC
-            || name == vtcode_core::config::constants::tools::EXEC_PTY_CMD
-    });
+    // `unified_exec` follow-ups share the tool name with launches; the caller
+    // marks them so a session poll gets the dim/expand path instead of the
+    // run-command head/tail preview.
+    let force_session_body = renderer.session_body_active();
+    let is_run_command = !force_session_body
+        && tool_name.is_some_and(|name| {
+            tool_intent::is_command_run_tool(name)
+                || name == vtcode_core::config::constants::tools::UNIFIED_EXEC
+                || name == vtcode_core::config::constants::tools::EXEC_PTY_CMD
+        });
     // Session follow-ups re-render the same captured terminal text on every
     // poll, so their body is plain rather than re-colored: git-diff detection
     // and LS_COLORS styling both misfire on build logs (`PASS … .rs`), and the
     // run-command path renders the same content through a plain fence already.
-    let is_exec_session = !is_run_command && is_exec_session_tool(tool_name);
+    let is_exec_session = force_session_body || (!is_run_command && is_exec_session_tool(tool_name));
     let allow_ansi_for_tool = allow_ansi && !is_run_command;
     let apply_line_styles = !is_run_command && !is_exec_session;
 
@@ -1614,27 +1642,10 @@ pub(crate) async fn render_stream_section(
         return Ok(());
     }
 
-    let mut format_buffer = String::with_capacity(64);
-
-    let hidden = if truncated {
-        total.saturating_sub(lines_vec.len())
-    } else {
-        0
-    };
-    if hidden > 0 {
-        format_buffer.clear();
-        // A session body is the same bounded-preview situation as a command
-        // preview, so it reuses the notice that points at the full transcript.
-        let notice_kind = if was_truncated_by_tokens {
-            HiddenLinesNoticeKind::TokenBudget
-        } else if is_exec_session {
-            HiddenLinesNoticeKind::CommandPreview
-        } else {
-            HiddenLinesNoticeKind::Generic
-        };
-        format_buffer.push_str(&hidden_lines_notice(hidden, notice_kind));
-        renderer.line(MessageStyle::ToolDetail, &format_buffer)?;
-    }
+    // Exec-session stdin/stdout bodies are the lowest visual tier: theme
+    // `pty_output` plus DIM so a re-rendered build log recedes under the
+    // assistant's reply. Headers keep normal tool brightness.
+    let session_body_style = is_exec_session.then(|| fallback_style.style().effects(Effects::DIMMED));
 
     if !is_exec_session && should_render_as_code_block(fallback_style) && !apply_line_styles {
         let markdown = build_markdown_code_block(&lines_vec, None, true);
@@ -1644,8 +1655,42 @@ pub(crate) async fn render_stream_section(
             if apply_line_styles && let Some(style) = select_line_style(tool_name, line, git_styles, ls_styles) {
                 render_preview_line(renderer, line, None, None, true, fallback_style, Some(style))?;
             } else {
-                render_preview_line(renderer, line, None, None, true, fallback_style, None)?;
+                render_preview_line(renderer, line, None, None, true, fallback_style, session_body_style)?;
             }
+        }
+    }
+
+    let hidden = if truncated {
+        total.saturating_sub(lines_vec.len())
+    } else {
+        0
+    };
+    if hidden > 0 {
+        // Session overflow advertises the in-TUI expand affordance (underline
+        // marks the clickable action); command previews keep the share hint.
+        let notice_kind = if was_truncated_by_tokens {
+            HiddenLinesNoticeKind::TokenBudget
+        } else if is_exec_session {
+            HiddenLinesNoticeKind::ExecSessionExpand
+        } else {
+            HiddenLinesNoticeKind::Generic
+        };
+        let notice = hidden_lines_notice_with(hidden, notice_kind, renderer.supports_inline_ui());
+        if is_exec_session {
+            // Tag the notice with the recorded capture so the TUI can open the
+            // tool-output viewer on this session's complete stdin/stdout body.
+            if let Some(anchor) = renderer.take_session_expand_anchor() {
+                renderer.set_next_tool_output_anchor(anchor);
+            }
+            // Dim with the body so the notice does not out-shout the capture,
+            // while the underlined action stays a distinct hit target.
+            renderer.line_with_override_style(
+                MessageStyle::ToolDetail,
+                MessageStyle::ToolDetail.style().effects(Effects::DIMMED),
+                &notice,
+            )?;
+        } else {
+            renderer.line(MessageStyle::ToolDetail, &notice)?;
         }
     }
 
@@ -1668,9 +1713,10 @@ mod tests {
         EXEC_SESSION_OUTPUT_MAX_LINES, HiddenLinesNoticeKind, MAX_LINE_LENGTH, collect_run_command_preview,
         diff_language_hint_from_content, format_diff_line_with_gutter_and_syntax,
         format_diff_line_with_gutter_and_syntax_to_width, format_side_by_side_row_ansi, hidden_lines_notice,
-        highlight_diff_body_with_syntax, highlight_diff_content, is_exec_session_tool, language_hint_for_display_line,
-        render_diff_content_block, render_preview_line, render_stream_section, select_render_line_style,
-        should_show_diff_gutter, strip_ansi_codes, syntax_segments_for_diff_body, trim_to_tail,
+        hidden_lines_notice_with, highlight_diff_body_with_syntax, highlight_diff_content, is_exec_session_tool,
+        language_hint_for_display_line, render_diff_content_block, render_preview_line, render_stream_section,
+        select_render_line_style, should_show_diff_gutter, strip_ansi_codes, syntax_segments_for_diff_body,
+        trim_to_tail,
     };
     use smallvec::SmallVec;
     use vtcode_core::config::ToolOutputMode;
@@ -1699,6 +1745,10 @@ mod tests {
         assert_eq!(
             hidden_lines_notice(2, HiddenLinesNoticeKind::CommandPreview),
             "    … +2 lines (/share html for full transcript)"
+        );
+        assert_eq!(
+            strip_ansi_codes(&hidden_lines_notice(2, HiddenLinesNoticeKind::ExecSessionExpand)),
+            "… +2 lines · click to expand"
         );
         assert_eq!(hidden_lines_notice(1, HiddenLinesNoticeKind::Generic), "[... 1 line truncated ...]");
         assert_eq!(
@@ -1741,12 +1791,24 @@ mod tests {
     }
 
     #[test]
-    fn exec_session_hidden_lines_reuse_command_preview_notice() {
-        // A bounded session body must point at the full transcript the same way
-        // a bounded command preview does, so the reader can expand it.
-        let notice = hidden_lines_notice(30, HiddenLinesNoticeKind::CommandPreview);
+    fn exec_session_hidden_lines_advertise_expand() {
+        // A bounded session body must advertise the in-TUI expand affordance
+        // rather than the command-preview share hint.
+        let notice = hidden_lines_notice(30, HiddenLinesNoticeKind::ExecSessionExpand);
         assert!(notice.contains("+30 lines"), "got: {notice}");
-        assert!(notice.contains("full transcript"), "got: {notice}");
+        assert!(notice.contains("click to expand"), "got: {notice}");
+        assert!(!notice.contains("share html"), "session overflow must not push the share hint: {notice}");
+        // The action phrase is underlined so TUI hit-region detection can find it.
+        assert!(strip_ansi_codes(&notice).contains("click to expand"));
+        assert!(notice.contains("\u{1b}["), "underline SGR expected in: {notice:?}");
+    }
+
+    #[test]
+    fn exec_session_expand_notice_plain_without_underline() {
+        // CLI sinks have no hit regions; raw SGR would leak into plain output.
+        let notice = hidden_lines_notice_with(2, HiddenLinesNoticeKind::ExecSessionExpand, false);
+        assert_eq!(notice, "… +2 lines · click to expand");
+        assert!(!notice.contains('\u{1b}'), "no SGR expected in: {notice:?}");
     }
 
     #[test]
@@ -1799,7 +1861,7 @@ mod tests {
         assert!(!output.contains("build log line 1\n"), "head should be trimmed: {output:?}");
         // The hidden-row count and the expand affordance stay discoverable.
         assert!(output.contains("+30 lines"), "hidden count should be shown: {output:?}");
-        assert!(output.contains("full transcript"), "expand affordance should be shown: {output:?}");
+        assert!(output.contains("click to expand"), "expand affordance should be shown: {output:?}");
     }
 
     #[tokio::test]
@@ -1828,6 +1890,103 @@ mod tests {
         let output = strip_ansi_codes(&collected);
         assert!(output.contains("line 1") && output.contains("line 2") && output.contains("line 3"));
         assert!(!output.contains("truncated") && !output.contains("lines ("), "no notice expected: {output:?}");
+    }
+
+    #[tokio::test]
+    async fn exec_session_body_and_notice_are_dimmed() {
+        use anstyle::Effects;
+        use vtcode_core::ui::InlineCommand;
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut renderer = AnsiRenderer::with_inline_ui(InlineHandle::new_for_tests(sender), Default::default());
+        let content = (1..=40).map(|n| format!("build log line {n}")).collect::<Vec<_>>().join("\n");
+
+        render_stream_section(
+            &mut renderer,
+            "",
+            &content,
+            ToolOutputMode::Compact,
+            30,
+            Some(tool_names::WRITE_STDIN),
+            &GitStyles::new(),
+            &LsStyles::from_env(),
+            MessageStyle::ToolOutput,
+            false,
+            true,
+            None,
+        )
+        .await
+        .expect("session body should render");
+
+        let mut body_segment = None;
+        let mut notice_segment = None;
+        while let Ok(command) = receiver.try_recv() {
+            let segments = match command {
+                InlineCommand::AppendLine { segments, .. } | InlineCommand::AppendToolOutputLine { segments, .. } => {
+                    segments
+                }
+                _ => continue,
+            };
+            let text = segments.iter().map(|s| s.text.as_str()).collect::<String>();
+            if body_segment.is_none() && text.contains("build log line") {
+                body_segment = segments.first().cloned();
+            }
+            if notice_segment.is_none() && text.contains("click to expand") {
+                // The underlined action phrase is its own segment.
+                notice_segment = segments.into_iter().find(|s| s.text.contains("click to expand"));
+            }
+        }
+
+        let body = body_segment.expect("session body segment");
+        assert!(body.style.effects.contains(Effects::DIMMED), "session body must be dimmed: {:?}", body.style);
+        let notice = notice_segment.expect("expand notice segment");
+        assert!(
+            notice.style.effects.contains(Effects::UNDERLINE),
+            "expand action must be underlined as the click target: {:?}",
+            notice.style
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_session_expand_notice_binds_tool_output_id() {
+        use vtcode_core::ui::InlineCommand;
+
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut renderer = AnsiRenderer::with_inline_ui(InlineHandle::new_for_tests(sender), Default::default());
+        renderer.set_session_expand_anchor(42);
+        let content = (1..=40).map(|n| format!("build log line {n}")).collect::<Vec<_>>().join("\n");
+
+        render_stream_section(
+            &mut renderer,
+            "",
+            &content,
+            ToolOutputMode::Compact,
+            30,
+            Some(tool_names::WRITE_STDIN),
+            &GitStyles::new(),
+            &LsStyles::from_env(),
+            MessageStyle::ToolOutput,
+            false,
+            true,
+            None,
+        )
+        .await
+        .expect("session body should render");
+
+        let mut bound_notice_id = None;
+        while let Ok(command) = receiver.try_recv() {
+            if let InlineCommand::AppendToolOutputLine { id, segments, .. } = command {
+                let text = segments.iter().map(|s| s.text.as_str()).collect::<String>();
+                if text.contains("click to expand") {
+                    bound_notice_id = Some(id);
+                }
+            }
+        }
+        assert_eq!(
+            bound_notice_id,
+            Some(42),
+            "expand notice must carry the recorded capture id so click opens the viewer"
+        );
     }
 
     #[tokio::test]

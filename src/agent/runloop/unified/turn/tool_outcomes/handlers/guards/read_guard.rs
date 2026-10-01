@@ -1,7 +1,9 @@
 //! Guards for file read operations.
 //!
 //! Contains two guards:
-//! 1. **Read-after-write guard**: Prevents reading a file that was just written
+//! 1. **Read-after-write guard**: Blocks bare full reads of a file written
+//!    this turn (the write response carries a diff preview); bounded slice
+//!    reads (explicit offset/limit/page) are admitted
 //! 2. **Repeated read-only call guard**: Prevents excessive reads of the same file
 //!
 //! The repeated read guard uses a two-tier approach:
@@ -10,14 +12,14 @@
 
 use serde_json::{Value, json};
 use vtcode_core::config::constants::tools as tool_names;
-use vtcode_core::tools::tool_intent::{ShellActivity, classify_shell_activity};
 
 use super::super::ValidationResult;
 use super::super::looping::low_signal_family_key;
 use super::common::{extract_read_path, is_read_action, push_guard_failure_messages};
-use crate::agent::runloop::unified::tool_reads::spool_page_source_path;
+use crate::agent::runloop::git::normalize_workspace_path;
 use crate::agent::runloop::unified::turn::context::TurnProcessingContext;
 use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{find_duplicate_in_history, signature_key_for};
+use crate::agent::runloop::unified::turn::tool_outcomes::read_extent;
 use crate::agent::runloop::unified::turn::tool_outcomes::response_content::maybe_inline_spooled;
 
 /// Maximum consecutive reads of the same file with the same slice (offset/limit/raw).
@@ -298,103 +300,6 @@ fn is_plan_artifact_read(canonical_tool_name: &str, args: &Value) -> Option<Stri
     }
 }
 
-/// Whether a read-only call is an inspection whose value is its visible body.
-/// Once the model-visible preview budget is exhausted, inspections return
-/// metadata stubs without content, so admitting more of them only burns
-/// request cycles. Fail-open: unknown tools are never inspections.
-fn is_preview_gated_inspection(canonical_tool_name: &str, effective_args: &Value) -> bool {
-    if is_read_action(canonical_tool_name, effective_args) {
-        return true;
-    }
-    if matches!(
-        canonical_tool_name,
-        tool_names::CODE_SEARCH | tool_names::UNIFIED_SEARCH | tool_names::GREP_FILE | tool_names::LIST_FILES
-    ) {
-        return true;
-    }
-    if matches!(canonical_tool_name, tool_names::UNIFIED_EXEC | tool_names::EXEC_COMMAND | "command_session") {
-        return matches!(classify_shell_activity(canonical_tool_name, effective_args), ShellActivity::Inspection);
-    }
-    false
-}
-
-#[cold]
-fn build_preview_exhaustion_error_content(planning_active: bool) -> String {
-    let guidance = if planning_active {
-        "Tool preview budget is exhausted this turn; further inspection returns hidden stubs. \
-         Synthesize the `<proposed_plan>` now from the evidence already gathered. \
-         Verification, task_tracker, session polling, spool paging in small ranges using a spool_path already in this conversation, and plan-draft re-reads stay open; exhausted inspections are blocked."
-    } else {
-        "Tool preview budget is exhausted this turn; further inspection returns hidden stubs. \
-         Work from the evidence already visible: summarize status, edit, verify, or report. \
-         To read a spooled output, page it in small ranges using a spool_path already in this conversation."
-    };
-    super::super::super::execution_result::build_error_content(
-        guidance.to_string(),
-        None,
-        None,
-        "preview_exhaustion_gate",
-    )
-    .to_string()
-}
-
-/// Reject read-only inspections once the model-visible preview budget is
-/// exhausted. Post-exhaustion responses are metadata stubs without body
-/// content, so executing more inspections cannot surface new evidence — it
-/// only grows the request and starves synthesis or implementation.
-///
-/// Channels that stay useful without visible bodies remain open: verification
-/// commands (exit codes survive in stub metadata), the planning interview,
-/// task bookkeeping, session polling (verifier completions arrive through
-/// it), spool paging (kept visible through preview credit), and plan-draft
-/// re-reads (which carry finalize-the-plan guidance). Rejections feed the
-/// existing blocked-call fuse, so persistent flailing still converges on
-/// recovery instead of looping here.
-pub(crate) fn enforce_preview_exhaustion_inspection_gate(
-    ctx: &mut TurnProcessingContext<'_>,
-    tool_call_id: &str,
-    canonical_tool_name: &str,
-    effective_args: &Value,
-    readonly_classification: bool,
-) -> Option<ValidationResult> {
-    if !readonly_classification {
-        return None;
-    }
-    if !ctx.harness_state.model_visible_preview_budget_exhausted() {
-        return None;
-    }
-    if matches!(
-        canonical_tool_name,
-        tool_names::TASK_TRACKER | tool_names::REQUEST_USER_INPUT | tool_names::WRITE_STDIN
-    ) {
-        return None;
-    }
-    if matches!(canonical_tool_name, tool_names::UNIFIED_EXEC | tool_names::EXEC_COMMAND | "command_session")
-        && matches!(classify_shell_activity(canonical_tool_name, effective_args), ShellActivity::Verification)
-    {
-        return None;
-    }
-    if spool_page_source_path(canonical_tool_name, effective_args).is_some() {
-        return None;
-    }
-    if ctx.tool_registry.is_planning_active() && is_plan_artifact_read(canonical_tool_name, effective_args).is_some() {
-        return None;
-    }
-    if !is_preview_gated_inspection(canonical_tool_name, effective_args) {
-        return None;
-    }
-    let planning_active = ctx.tool_registry.is_planning_active();
-    let block_reason = if planning_active {
-        "Tool preview budget exhausted; inspection blocked. Synthesize the plan from collected evidence."
-    } else {
-        "Tool preview budget exhausted; inspection blocked. Work from visible evidence instead."
-    }
-    .to_string();
-    let error_content = build_preview_exhaustion_error_content(planning_active);
-    push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
-    Some(ValidationResult::PreviewExhausted)
-}
-
 /// Build the error content for a read-after-write guard trip.
 #[cold]
 fn build_read_after_write_error(path: &str) -> String {
@@ -411,6 +316,15 @@ fn build_read_after_write_error(path: &str) -> String {
 
 /// Enforce the read-after-write guard.
 ///
+/// Blocks bare full reads of a path written this turn: the write response
+/// already carries a diff preview, so a full re-read only duplicates context.
+/// A bounded slice read (explicit offset/limit/page under the shared
+/// alias vocabulary) is admitted — it is the deliberate targeted inspection
+/// the block message directs the model toward, and repeated slice reads stay
+/// bounded by the family/per-path caps enforced right after this guard.
+/// A `raw` flag alone does not admit: an uncondensed full re-read is the most
+/// wasteful variant the guard exists to stop.
+///
 /// Returns `Some(ValidationResult::Blocked)` when the guard trips,
 /// or `None` when the guard passes.
 pub(crate) fn enforce_read_after_write_guard(
@@ -425,7 +339,15 @@ pub(crate) fn enforce_read_after_write_guard(
 
     let path = extract_read_path(effective_args)?;
 
-    if !ctx.harness_state.was_recently_written(&path) {
+    // Both sides of the membership check are normalized against the workspace
+    // root: patch payloads record workspace-relative targets while reads may
+    // spell the same file absolutely (or vice versa).
+    let normalized = normalize_workspace_path(&ctx.config.workspace, std::path::Path::new(&path));
+    if !ctx.harness_state.was_recently_written(&normalized.to_string_lossy()) {
+        return None;
+    }
+
+    if read_extent::args_have_bounded_extent(effective_args) {
         return None;
     }
 
@@ -451,20 +373,6 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
 ) -> Option<ValidationResult> {
     if !readonly_classification {
         return None;
-    }
-
-    // Blindness brake first: post-exhaustion inspections return hidden stubs,
-    // so executing them cannot surface new evidence. Reject before counting
-    // or serving anything; verification, spool paging, and bookkeeping stay
-    // open inside the gate itself.
-    if let Some(outcome) = enforce_preview_exhaustion_inspection_gate(
-        ctx,
-        tool_call_id,
-        canonical_tool_name,
-        effective_args,
-        readonly_classification,
-    ) {
-        return Some(outcome);
     }
 
     // Planning doubles the read caps, mirroring the generous planning research
@@ -538,7 +446,11 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
     // query-aware family cap above, not pagination.
     if let Some(path) = repeated_read_path(canonical_tool_name, effective_args) {
         let path_count = ctx.harness_state.record_file_read_path_call(path.clone());
-        if path_count > path_cap {
+        let recovery_allowed = ctx
+            .tool_registry
+            .pending_patch_recovery_read_path(canonical_tool_name, effective_args)
+            .is_some_and(|path| ctx.harness_state.claim_patch_recovery_path(path));
+        if path_count > path_cap && !recovery_allowed {
             let block_reason = format!(
                 "Repeated reads of '{path}' hit the per-file-path cap ({path_cap}), so further reads of this path are blocked for the rest of this turn. Reads of other paths, edits, and other useful actions remain available; continue from the evidence already gathered."
             );
@@ -552,6 +464,13 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
             push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
             return Some(ValidationResult::Blocked);
         }
+    }
+
+    // Recovery still advances family/path counters and retains their limits.
+    // The registry consumes the allowance only on execution, bypassing both
+    // replay reuse here and its own caches without discarding loop history.
+    if ctx.tool_registry.has_patch_recovery_read(canonical_tool_name, effective_args) {
+        return None;
     }
 
     // Cap-first: exact duplicates, cross-turn TTL matches, and history

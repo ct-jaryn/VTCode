@@ -234,6 +234,7 @@ where
     // Create a guard to mark TUI as initialized during the session
     // This ensures the panic hook knows to restore terminal state
     let _panic_guard = crate::tui::ui::tui::panic_hook::TuiPanicGuard::new();
+    crate::tui::frame_metrics::initialize_from_env();
 
     let _signal_guard = SignalCleanupGuard::new()?;
 

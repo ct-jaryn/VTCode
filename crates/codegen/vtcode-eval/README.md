@@ -71,6 +71,11 @@ only when per-turn usage is absent, preventing double counting.
   while the scheduler rejects `attempts == 0` and invalid metric `k` values.
 - Reports sum known per-attempt costs and count unknown-pricing attempts separately;
   unknown cost is never silently treated as a known zero.
+- `SuiteReport` carries cost-efficiency aggregates — `cost_per_solve`,
+  `mean_cost_per_attempt`, `mean_tokens_per_attempt`, `mean_turns_per_attempt`.
+  `cost_per_solve` is `None` when any attempt is unpriced or nothing passed;
+  the means cover priced/token/tracked attempts only. The markdown renderer
+  prints them as an `Efficiency: cost/solve … · per attempt · tokens · turns` line.
 - Environment verification (`EnvironmentProbe`) is a separate concern from outcome
   grading — executor implementations decide whether and how to apply probes before
   returning a `RunOutcome`.

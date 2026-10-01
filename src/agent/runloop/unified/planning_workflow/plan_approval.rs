@@ -460,6 +460,7 @@ pub(crate) fn build_plan_confirmation_request_with_context(
             indent: 0,
             selection: Some(InlineListSelection::PlanApprovalExecute),
             search_value: None,
+            ..Default::default()
         },
         InlineListItem {
             title: "Yes, clear context and implement".to_string(),
@@ -468,6 +469,7 @@ pub(crate) fn build_plan_confirmation_request_with_context(
             indent: 0,
             selection: Some(InlineListSelection::PlanApprovalFreshContext),
             search_value: None,
+            ..Default::default()
         },
         InlineListItem {
             title: "Yes, switch to Auto and implement".to_string(),
@@ -478,6 +480,7 @@ pub(crate) fn build_plan_confirmation_request_with_context(
             indent: 0,
             selection: Some(InlineListSelection::PlanApprovalSwitchAuto),
             search_value: None,
+            ..Default::default()
         },
         InlineListItem {
             title: "No, stay in Plan mode".to_string(),
@@ -486,6 +489,7 @@ pub(crate) fn build_plan_confirmation_request_with_context(
             indent: 0,
             selection: Some(InlineListSelection::PlanApprovalEditPlan),
             search_value: None,
+            ..Default::default()
         },
     ];
 
@@ -508,6 +512,7 @@ pub(crate) fn build_plan_confirmation_request_with_context(
             key: TransientHotkeyKey::CtrlChar('g'),
             action: TransientHotkeyAction::LaunchEditor,
         }],
+        status: None,
     })
 }
 

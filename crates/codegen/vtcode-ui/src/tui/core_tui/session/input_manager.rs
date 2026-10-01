@@ -493,8 +493,8 @@ impl InputManager {
 
     /// Byte range of the logical line containing the cursor.
     ///
-    /// Lines are split on `\n` (logical lines, not visual wraps), matching
-    /// Up/Down handling. Returns `(line_start, line_end)` byte offsets with
+    /// Lines are split on `\n` (logical lines, not visual wraps).
+    /// Returns `(line_start, line_end)` byte offsets with
     /// `line_start <= cursor <= line_end` clamped to content bounds.
     pub fn current_line_byte_range(&self) -> (usize, usize) {
         let lines = self.textarea.lines();

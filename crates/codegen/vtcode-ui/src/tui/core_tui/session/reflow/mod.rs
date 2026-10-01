@@ -103,6 +103,7 @@ impl Session {
     /// - Subtle dividers between conversation turns
     /// - Consistent spacing between message blocks
     /// - Tool output grouped with headers
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(super) fn reflow_message_lines(
         &self,
         index: usize,
@@ -399,10 +400,12 @@ impl Session {
     ///
     /// Uses URL-aware wrapping to preserve URL clickability across all views.
     /// URLs are treated as atomic units and never split across lines.
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(super) fn wrap_line(&self, line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
         wrapping::wrap_line_preserving_urls(line, max_width)
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn reflow_agent_message_lines(
         &self,
         message: &MessageLine,
@@ -420,7 +423,16 @@ impl Session {
 
         let content_width = max_width.saturating_sub(prefix_width);
         let fallback = self.text_fallback(message.kind).or(self.theme.foreground);
-        let content_text: String = message.segments.iter().map(|s| s.text.as_str()).collect();
+        // Only materialize joined text when a segment might contain a link.
+        let content_may_link = message
+            .segments
+            .iter()
+            .any(|segment| transcript_links::may_contain_link_candidate_text(&segment.text));
+        let content_text: String = if content_may_link {
+            message.segments.iter().map(|s| s.text.as_str()).collect()
+        } else {
+            String::new()
+        };
         let mut content_spans = Vec::with_capacity(message.segments.len());
         for segment in &message.segments {
             let style = ratatui_style_from_inline(&segment.style, fallback);
@@ -432,21 +444,21 @@ impl Session {
 
         let (mut wrapped, mut explicit_links) = if content_width == 0 {
             (vec![Line::default()], vec![Vec::new()])
-        } else if let Some(prefix) = code_continuation_prefix.as_deref() {
-            let wrapped = text_utils::wrap_line_with_hanging_prefix(content_line, content_width, prefix);
-            let explicit_links = transcript_links::project_detected_links_onto_wrapped_lines(
-                &wrapped,
-                &content_text,
-                self.workspace_root.as_deref(),
-            );
-            (wrapped, explicit_links)
         } else {
-            let wrapped = self.wrap_line(content_line, content_width);
-            let explicit_links = transcript_links::project_detected_links_onto_wrapped_lines(
-                &wrapped,
-                &content_text,
-                self.workspace_root.as_deref(),
-            );
+            let wrapped = if let Some(prefix) = code_continuation_prefix.as_deref() {
+                text_utils::wrap_line_with_hanging_prefix(content_line, content_width, prefix)
+            } else {
+                self.wrap_line(content_line, content_width)
+            };
+            let explicit_links = if content_may_link {
+                transcript_links::project_detected_links_onto_wrapped_lines(
+                    &wrapped,
+                    &content_text,
+                    self.workspace_root.as_deref(),
+                )
+            } else {
+                vec![Vec::new(); wrapped.len()]
+            };
             (wrapped, explicit_links)
         };
 
@@ -489,20 +501,23 @@ impl Session {
             text
         };
         let first_line_prefix_width = UnicodeWidthStr::width(first_line_prefix_text.as_str());
+        let continuation_prefix = " ".repeat(first_line_prefix_width);
         let mut lines = Vec::with_capacity(wrapped.len());
         for (index, (mut line, mut line_links)) in wrapped.into_iter().zip(explicit_links).enumerate() {
             let mut spans = Vec::new();
-            // Continuation rows start at column 0: agent prose (no bullet),
-            // tool, and PTY rows share one left edge; tool/PTY headers keep
-            // their own `•` markers while agent text reads as plain prose.
+            // Keep wrapped prose aligned under its body when a role label or
+            // other first-line prefix is present. The default empty prefix
+            // keeps ordinary assistant prose flush with the transcript edge.
             let (prefix_len, prefix_col_width) = if index == 0 {
                 (first_line_prefix_text.len(), first_line_prefix_width)
             } else {
-                (0, 0)
+                (continuation_prefix.len(), first_line_prefix_width)
             };
             if index == 0 {
                 spans.append(&mut prefix_spans);
                 spans.push(Span::raw(left_padding));
+            } else if !continuation_prefix.is_empty() {
+                spans.push(Span::raw(continuation_prefix.clone()));
             }
             spans.append(&mut line.spans);
             if spans.is_empty() {

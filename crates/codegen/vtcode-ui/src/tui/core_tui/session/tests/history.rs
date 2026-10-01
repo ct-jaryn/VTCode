@@ -94,6 +94,23 @@ fn history_picker_restores_base_input_and_draft_on_cancel() {
 }
 
 #[test]
+fn history_picker_ctrl_c_dismisses_and_restores_draft() {
+    let mut session = AppSession::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.core.set_input("draft command".to_string());
+
+    let _ = session.process_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(session.history_picker_state.active);
+
+    let event = session.process_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+    assert!(event.is_none(), "Ctrl+C should dismiss without interrupting");
+    assert!(!session.history_picker_state.active);
+    assert!(session.history_picker_state.search_query.is_empty());
+    assert_eq!(session.core.input_manager.content(), "draft command");
+    assert!(session.core.input_enabled());
+}
+
+#[test]
 fn history_picker_renders_search_field_above_results() {
     let mut session = AppSession::new(InlineTheme::default(), None, VIEW_ROWS);
     session.core.set_input("cargo test".to_string());
@@ -119,7 +136,7 @@ fn history_picker_renders_search_field_above_results() {
 }
 
 #[test]
-fn arrow_up_moves_within_multiline_before_history() {
+fn arrow_up_stays_within_multiline_without_history() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.set_input("first message".to_string());
     let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -140,14 +157,16 @@ fn arrow_up_moves_within_multiline_before_history() {
     assert!(up_cursor_2.is_none());
     assert_eq!(session.input_manager.cursor_row(), 0);
 
-    // At first line, Up traverses history.
-    let up_history = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    assert!(matches!(up_history, Some(InlineEvent::HistoryPrevious)));
-    assert_eq!(session.input_manager.content(), "second");
+    // At first line, Up is a no-op: multiline never traverses history.
+    let up_edge = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_edge.is_none());
+    assert_eq!(session.input_manager.content(), "line1\nline2\nline3");
+    assert_eq!(session.input_manager.cursor_row(), 0);
+    assert!(session.input_manager.history_index().is_none());
 }
 
 #[test]
-fn arrow_down_moves_within_multiline_before_history() {
+fn arrow_down_stays_within_multiline_without_history() {
     let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
     session.set_input("only entry".to_string());
     let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -161,6 +180,253 @@ fn arrow_down_moves_within_multiline_before_history() {
     assert_eq!(session.input_manager.content(), "aaa\nbbb");
     assert_eq!(session.input_manager.cursor_row(), 1);
     assert!(session.input_manager.history_index().is_none());
+
+    // At last line, Down is a no-op: multiline never traverses history.
+    let down_edge = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down_edge.is_none());
+    assert_eq!(session.input_manager.content(), "aaa\nbbb");
+    assert_eq!(session.input_manager.cursor_row(), 1);
+    assert!(session.input_manager.history_index().is_none());
+}
+
+#[test]
+fn multiline_up_down_with_active_history_stays_in_buffer() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("first".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.set_input("second".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Enter history from empty single-line draft.
+    let up = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(matches!(up, Some(InlineEvent::HistoryPrevious)));
+    assert_eq!(session.input_manager.content(), "second");
+    assert!(session.input_manager.history_index().is_some());
+
+    // Typing a newline keeps history navigation state (insert does not reset)
+    // and makes the buffer multiline.
+    session.insert_char('\n');
+    assert!(!session.input_manager.is_single_line());
+    assert_eq!(session.input_manager.content(), "second\n");
+
+    // Asymmetric pair: Up at first row vs Down at last row both stay in buffer.
+    session.set_cursor(0);
+    let up_stays = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_stays.is_none());
+    assert_eq!(session.input_manager.content(), "second\n");
+
+    session.set_cursor(session.input_manager.content().len());
+    let down_stays = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down_stays.is_none());
+    assert_eq!(session.input_manager.content(), "second\n");
+
+    // History navigation stays armed while the buffer is multiline; Ctrl+P/N
+    // remain the escape hatch back into history traversal.
+    assert!(session.input_manager.history_index().is_some());
+    let ctrl_p = session.process_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert!(ctrl_p.is_none());
+    assert_eq!(session.input_manager.content(), "first");
+}
+
+#[test]
+fn ctrl_p_navigates_history_even_when_multiline() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("alpha".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.set_input("beta".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    session.set_input("line1\nline2".to_string());
+    assert!(!session.input_manager.is_single_line());
+
+    let ctrl_p = session.process_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert!(ctrl_p.is_none());
+    assert_eq!(session.input_manager.content(), "beta");
+}
+
+#[test]
+fn wrapped_single_line_up_moves_within_visual_rows() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("first".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.set_input("second".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // 90 ascii chars at width 30 (empty prompt prefix) wrap to 3 visual rows.
+    let draft = "a".repeat(90);
+    session.set_input(draft.clone());
+    session.set_input_area(Some(Rect::new(0, 0, 30, 8)));
+    let geometry = session.input_visual_geometry().expect("visual geometry");
+    assert_eq!((geometry.total_rows, geometry.cursor_row), (3, 2));
+    assert!(session.is_multi_row_composer());
+
+    // Up from the last visual row moves within the buffer, never history.
+    let up_1 = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_1.is_none());
+    assert_eq!(session.input_manager.content(), draft);
+    assert!(session.input_manager.history_index().is_none());
+    assert_eq!(session.cursor(), 60);
+
+    let up_2 = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_2.is_none());
+    assert_eq!(session.cursor(), 30);
+
+    // Up at the first visual row is a no-op, still no history.
+    let up_edge = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_edge.is_none());
+    assert_eq!(session.cursor(), 30);
+    assert_eq!(session.input_manager.content(), draft);
+    assert!(session.input_manager.history_index().is_none());
+}
+
+#[test]
+fn wrapped_single_line_down_moves_within_visual_rows() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("only entry".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // 90 ascii chars at width 30 (empty prompt prefix) wrap to 3 visual rows.
+    let draft = "b".repeat(90);
+    session.set_input(draft.clone());
+    session.set_input_area(Some(Rect::new(0, 0, 30, 8)));
+    assert!(session.is_multi_row_composer());
+
+    session.set_cursor(0);
+    let down_1 = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down_1.is_none());
+    assert_eq!(session.input_manager.content(), draft);
+    assert!(session.input_manager.history_index().is_none());
+    assert_eq!(session.cursor(), 30);
+
+    // Down drains to the end of the buffer without touching history.
+    for _ in 0..5 {
+        let event = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(event.is_none());
+        assert_eq!(session.input_manager.content(), draft);
+        assert!(session.input_manager.history_index().is_none());
+    }
+    assert_eq!(session.cursor(), draft.len());
+
+    // Down at the last visual row is a no-op, still no history.
+    let down_edge = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down_edge.is_none());
+    assert_eq!(session.cursor(), draft.len());
+    assert!(session.input_manager.history_index().is_none());
+}
+
+#[test]
+fn single_visual_row_up_still_navigates_history() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("alpha".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.set_input("beta".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Short draft at a wide area renders as a single visual row.
+    session.set_input("hi".to_string());
+    session.set_input_area(Some(Rect::new(0, 0, 200, 8)));
+    assert_eq!(session.input_visual_geometry().map(|geometry| geometry.total_rows), Some(1));
+    assert!(!session.is_multi_row_composer());
+
+    let up = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(matches!(up, Some(InlineEvent::HistoryPrevious)));
+    assert_eq!(session.input_manager.content(), "beta");
+}
+
+#[test]
+fn ctrl_p_navigates_history_even_when_wrapped() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("alpha".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.set_input("beta".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    session.set_input("c".repeat(90));
+    session.set_input_area(Some(Rect::new(0, 0, 30, 8)));
+    assert!(session.is_multi_row_composer());
+
+    let ctrl_p = session.process_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert!(ctrl_p.is_none());
+    assert_eq!(session.input_manager.content(), "beta");
+}
+
+#[test]
+fn app_session_wrapped_single_line_up_down_never_traverses_history() {
+    let mut session = AppSession::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.core.set_input("first".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.core.set_input("second".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let draft = "d".repeat(90);
+    session.core.set_input(draft.clone());
+    session.core.set_input_area(Some(Rect::new(0, 0, 30, 8)));
+    assert!(session.is_multi_row_composer());
+
+    let up = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up.is_none());
+    assert_eq!(session.core.input_manager.content(), draft);
+    assert!(session.core.input_manager.history_index().is_none());
+
+    session.core.set_cursor(0);
+    let down = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down.is_none());
+    assert_eq!(session.core.input_manager.content(), draft);
+    assert!(session.core.input_manager.history_index().is_none());
+}
+
+#[test]
+fn app_session_multiline_up_down_never_traverses_history() {
+    let mut session = AppSession::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.core.set_input("first".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.core.set_input("second".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    session.core.set_input("line1\nline2".to_string());
+    assert!(!session.core.input_manager.is_single_line());
+
+    let up_move = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_move.is_none());
+    assert_eq!(session.core.input_manager.content(), "line1\nline2");
+
+    let up_edge = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(up_edge.is_none());
+    assert_eq!(session.core.input_manager.content(), "line1\nline2");
+    assert!(session.core.input_manager.history_index().is_none());
+
+    let down_move = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down_move.is_none());
+    assert_eq!(session.core.input_manager.content(), "line1\nline2");
+
+    let down_edge = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(down_edge.is_none());
+    assert_eq!(session.core.input_manager.content(), "line1\nline2");
+    assert!(session.core.input_manager.history_index().is_none());
+}
+
+#[test]
+fn single_line_up_down_still_navigates_history() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.set_input("alpha".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    session.set_input("beta".to_string());
+    let _ = session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(session.input_manager.is_single_line());
+    let up = session.process_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(matches!(up, Some(InlineEvent::HistoryPrevious)));
+    assert_eq!(session.input_manager.content(), "beta");
+
+    // History walks newest-first: Down from newest steps to the older entry,
+    // then to the saved empty draft.
+    let down = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(matches!(down, Some(InlineEvent::HistoryNext)));
+    assert_eq!(session.input_manager.content(), "alpha");
+
+    let down_draft = session.process_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(matches!(down_draft, Some(InlineEvent::HistoryNext)));
+    assert!(session.input_manager.content().is_empty());
 }
 
 #[test]

@@ -4,7 +4,8 @@
 //! user query, the IDE editor snapshot) used to be spliced into every request
 //! at a moving position: few-shot after the newest message, editor context at
 //! `messages[0]`. On routes that bind replayed thinking to the exact prior
-//! prefix (Claude Opus 5.5, Claude Fable 5.1) and on every prompt cache, a
+//! prefix (Claude Sonnet 5.5, Claude Opus 5.5, Claude Fable 5.1) and on every
+//! prompt cache, a
 //! block that moves, changes, or disappears between requests invalidates
 //! everything after it; a changed `messages[0]` invalidates the whole history.
 //!

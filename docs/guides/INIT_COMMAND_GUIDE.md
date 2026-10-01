@@ -81,7 +81,7 @@ After initialization:
 
 - use `AGENTS.md` for project-wide guidance
 - add focused rule files under `.vtcode/rules/` when only some paths need extra instructions
-- use `/memory` or `/config memory` to inspect and tune persistent-memory behavior
+- use `/config memory` to inspect and tune persistent-memory behavior
 
 ## Example Output
 

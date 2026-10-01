@@ -150,7 +150,7 @@ For each turn, the harness:
    (`llm_request/request_context.rs`). Every later request of the turn, and
    every later turn, replays it unchanged at that position, so requests stay
    append-only for prompt caching and for models that bind replayed thinking
-   to the exact prior prefix (Claude Opus 5.5, Claude Fable 5.1).
+   to the exact prior prefix (Claude Sonnet 5.5, Claude Opus 5.5, Claude Fable 5.1).
 7. Shapes the persisted block per route: routes with turn-scoped system
    messages send it as `role: "system"` with
    `clear_at: "next_user_message"`, so it stops applying once the next user

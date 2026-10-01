@@ -25,6 +25,7 @@ use crate::tui::core_tui::types::{
     InlineListSelection, InlineMessageKind, InlineSegment, InlineTextStyle, InlineTheme, LocalAgentEntry,
     SecurePromptConfig,
 };
+use crate::tui::options::FullscreenInteractionSettings;
 
 const MAX_DEFERRED_EVENTS: usize = 32;
 
@@ -155,6 +156,9 @@ pub enum InlineCommand {
     SetAppearance {
         appearance: AppearanceConfig,
     },
+    SetFullscreenInteraction {
+        interaction: FullscreenInteractionSettings,
+    },
     /// Replace the live action bindings after a valid configuration reload.
     SetKeyBindings {
         bindings: HashMap<String, Vec<String>>,
@@ -245,6 +249,7 @@ pub enum InlineEvent {
     ScrollLineDown,
     ScrollPageUp,
     ScrollPageDown,
+    JumpToLastChange,
     FileSelected(String),
     OpenFileInEditor(String),
     OpenUrl(String),
@@ -289,6 +294,7 @@ impl From<crate::tui::core_tui::types::InlineEvent> for InlineEvent {
             crate::tui::core_tui::types::InlineEvent::ScrollLineDown => Self::ScrollLineDown,
             crate::tui::core_tui::types::InlineEvent::ScrollPageUp => Self::ScrollPageUp,
             crate::tui::core_tui::types::InlineEvent::ScrollPageDown => Self::ScrollPageDown,
+            crate::tui::core_tui::types::InlineEvent::JumpToLastChange => Self::JumpToLastChange,
             crate::tui::core_tui::types::InlineEvent::OpenFileInEditor(path) => Self::OpenFileInEditor(path),
             crate::tui::core_tui::types::InlineEvent::OpenUrl(url) => Self::OpenUrl(url),
             crate::tui::core_tui::types::InlineEvent::LaunchEditor { draft } => Self::LaunchEditor { draft },
@@ -528,6 +534,10 @@ impl InlineHandle {
         self.send_command(InlineCommand::SetAppearance { appearance });
     }
 
+    pub fn set_fullscreen_interaction(&self, interaction: FullscreenInteractionSettings) {
+        self.send_command(InlineCommand::SetFullscreenInteraction { interaction });
+    }
+
     pub fn set_key_bindings(&self, bindings: HashMap<String, Vec<String>>) {
         self.send_command(InlineCommand::SetKeyBindings { bindings });
     }
@@ -649,6 +659,20 @@ impl InlineHandle {
         search: Option<InlineListSearchConfig>,
         footer_hint: Option<String>,
     ) {
+        self.show_list_modal_with_status(title, lines, items, selected, search, footer_hint, None);
+    }
+
+    /// Show a list modal with an optional status strip (last action feedback).
+    pub fn show_list_modal_with_status(
+        &self,
+        title: String,
+        lines: Vec<String>,
+        items: Vec<InlineListItem>,
+        selected: Option<InlineListSelection>,
+        search: Option<InlineListSearchConfig>,
+        footer_hint: Option<String>,
+        status: Option<crate::tui::core_tui::types::InlineStatus>,
+    ) {
         self.show_transient(TransientRequest::List(ListOverlayRequest {
             title,
             lines,
@@ -657,6 +681,7 @@ impl InlineHandle {
             search,
             footer_hint,
             hotkeys: Vec::new(),
+            status,
         }));
     }
 

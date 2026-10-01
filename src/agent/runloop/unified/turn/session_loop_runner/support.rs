@@ -147,6 +147,22 @@ pub(super) fn remove_transient_system_notes(history: &mut Vec<vtcode_core::llm::
     }
 }
 
+/// User-facing notice when a prompt checkpoint cannot be taken.
+///
+/// Pure policy: maps the checkpoint error text to a short `Info` notice.
+/// The full error stays in the tracing log; the UI stays concise. The busy
+/// branch names the safety reason (checkpoint corruption) and both options
+/// (wait + retry, separate worktree) so parallel-session users can act.
+pub(super) fn checkpoint_unavailable_notice(err_text: &str) -> &'static str {
+    if err_text.contains("Another turn or rewind is using this workspace") {
+        "Prompt kept — workspace busy (safety lock prevents checkpoint corruption). Options: wait then retry, or use a separate worktree."
+    } else if err_text.contains("Interrupted rewind") {
+        "Prompt kept — rewind interrupted. Run /rewind again to auto-recover, then retry."
+    } else {
+        "Prompt kept — checkpoint unavailable. Wait a moment and retry."
+    }
+}
+
 pub(super) fn build_tracked_file_freshness_note(
     workspace: &std::path::Path,
     stale_paths: &[std::path::PathBuf],
@@ -668,6 +684,7 @@ pub(super) async fn prompt_startup_planning_workflow(
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction(STARTUP_PLANNING_WORKFLOW_ENTER_ACTION.to_string())),
                 search_value: None,
+                ..Default::default()
             },
             InlineListItem {
                 title: "Start normally".to_string(),
@@ -676,10 +693,12 @@ pub(super) async fn prompt_startup_planning_workflow(
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction(STARTUP_PLANNING_WORKFLOW_STAY_ACTION.to_string())),
                 search_value: None,
+                ..Default::default()
             },
         ],
         selected: Some(InlineListSelection::ConfigAction(STARTUP_PLANNING_WORKFLOW_ENTER_ACTION.to_string())),
         search: None,
+        status: None,
         hotkeys: Vec::new(),
     });
 
@@ -705,9 +724,33 @@ pub(super) async fn prompt_startup_planning_workflow(
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionSummaryStatus, RefusedTurnRollback, classify_execution_summary};
+    use super::{
+        ExecutionSummaryStatus, RefusedTurnRollback, checkpoint_unavailable_notice, classify_execution_summary,
+    };
     use crate::agent::runloop::unified::turn::context::TurnLoopResult;
     use serde_json::json;
+
+    #[test]
+    fn checkpoint_unavailable_notice_names_safety_lock_and_options_for_busy_workspace() {
+        let notice =
+            checkpoint_unavailable_notice("Another turn or rewind is using this workspace: operation would block");
+        assert!(notice.starts_with("Prompt kept"), "notice must confirm the prompt is kept: {notice}");
+        assert!(notice.contains("safety lock"), "notice must name the safety reason: {notice}");
+        assert!(notice.contains("wait then retry"), "notice must offer wait+retry: {notice}");
+        assert!(notice.contains("separate worktree"), "notice must offer worktree option: {notice}");
+    }
+
+    #[test]
+    fn checkpoint_unavailable_notice_routes_interrupted_rewind_to_recover() {
+        let notice = checkpoint_unavailable_notice("Interrupted rewind; run again before continuing");
+        assert_eq!(notice, "Prompt kept — rewind interrupted. Run /rewind again to auto-recover, then retry.");
+    }
+
+    #[test]
+    fn checkpoint_unavailable_notice_falls_back_to_concise_retry() {
+        let notice = checkpoint_unavailable_notice("Checkpoint skipped paths; cannot safely start turn");
+        assert_eq!(notice, "Prompt kept — checkpoint unavailable. Wait a moment and retry.");
+    }
 
     #[tokio::test]
     async fn exec_session_resume_note_is_none_without_sessions() {

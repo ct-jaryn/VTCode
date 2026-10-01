@@ -1,8 +1,13 @@
+//! Local code-fence block extraction for UI rendering.
+//! Fence scanning and name hygiene live in `vtcode_commons::text_fence`.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodeFenceBlock {
     pub language: Option<String>,
     pub lines: Vec<String>,
 }
+
+pub(crate) use vtcode_commons::text_fence::find_unfenced_from;
 
 pub(crate) fn extract_code_fence_blocks(text: &str) -> Vec<CodeFenceBlock> {
     // Estimate capacity: assume ~1 code block per 30 lines on average, cap at 20
@@ -10,9 +15,8 @@ pub(crate) fn extract_code_fence_blocks(text: &str) -> Vec<CodeFenceBlock> {
     let mut blocks = Vec::with_capacity(estimated_blocks.min(20));
     let mut current_language: Option<String> = None;
 
-    // Pre-allocate line buffer based on text size estimate
-    let estimated_lines = text.lines().count() / 5; // Assume ~20% of lines are code
-    let mut current_lines: Vec<String> = Vec::with_capacity(estimated_lines.min(1000)); // Cap at 1000 lines
+    let estimated_lines = text.lines().count() / 5;
+    let mut current_lines: Vec<String> = Vec::with_capacity(estimated_lines.min(1000));
 
     for raw_line in text.lines() {
         let trimmed_start = raw_line.trim_start();

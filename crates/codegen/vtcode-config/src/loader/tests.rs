@@ -1094,6 +1094,30 @@ default_policy = "deny"
 }
 
 #[test]
+fn save_clears_default_absent_optional_fields_from_existing_file() {
+    // Regression: picking "Project default" service_tier must remove a
+    // previously saved tier. Optional fields absent from the default
+    // serialization were never visited by the sparse merge, so stale values
+    // survived every save and the next session kept using them.
+    let workspace = assert_fs::TempDir::new().expect("workspace");
+    let path = workspace.path().join("vtcode.toml");
+    fs::write(&path, "[provider.openai]\nservice_tier = \"ultrafast\"\n[foreign_tool]\nkeep_me = true\n")
+        .expect("seed config");
+
+    let config = VTCodeConfig::default();
+    assert_eq!(config.provider.openai.service_tier, None);
+    ConfigManager::save_config_to_path(&path, &config).expect("save");
+
+    let saved = fs::read_to_string(&path).expect("read back");
+    assert!(!saved.contains("ultrafast"), "stale tier must be cleared, got:\n{saved}");
+    assert!(!saved.contains("[provider.openai]"), "emptied table must be pruned, got:\n{saved}");
+    assert!(saved.contains("keep_me"), "foreign keys must be preserved, got:\n{saved}");
+
+    let reloaded: VTCodeConfig = toml::from_str(&saved).expect("reload");
+    assert_eq!(reloaded.provider.openai.service_tier, None);
+}
+
+#[test]
 #[serial]
 fn config_defaults_provider_overrides_paths_and_theme() {
     let workspace = assert_fs::TempDir::new().expect("failed to create workspace");

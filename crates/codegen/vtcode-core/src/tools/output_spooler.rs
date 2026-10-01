@@ -121,6 +121,21 @@ pub(crate) fn command_preview_content(
     }
 }
 
+/// Which retention rules a cleanup pass applies.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SpoolCleanupScope {
+    /// Drop only files older than `max_age_secs`.
+    AgeOnly,
+    /// Age expiry plus the `max_files` count budget.
+    AgeAndCount,
+}
+
+impl SpoolCleanupScope {
+    fn enforces_count_budget(self) -> bool {
+        matches!(self, SpoolCleanupScope::AgeAndCount)
+    }
+}
+
 /// Configuration for the output spooler
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpoolerConfig {
@@ -204,7 +219,31 @@ pub enum SpoolState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpoolIntegrity {
     pub byte_count: u64,
+    pub line_count: u64,
     pub sha256: String,
+}
+
+/// Count physical lines across committed chunks, including an unterminated last line.
+#[derive(Default)]
+pub(crate) struct SpoolLineCounter {
+    newline_count: u64,
+    last_byte: Option<u8>,
+}
+
+impl SpoolLineCounter {
+    pub(crate) fn append(&mut self, bytes: &[u8]) {
+        self.newline_count = self
+            .newline_count
+            .saturating_add(bytes.iter().filter(|byte| **byte == b'\n').count() as u64);
+        if let Some(byte) = bytes.last() {
+            self.last_byte = Some(*byte);
+        }
+    }
+
+    pub(crate) fn line_count(&self) -> u64 {
+        self.newline_count
+            .saturating_add(u64::from(self.last_byte.is_some_and(|byte| byte != b'\n')))
+    }
 }
 
 pub(crate) fn encode_digest_hex(digest: impl AsRef<[u8]>) -> String {
@@ -433,9 +472,14 @@ pub(crate) fn ensure_spooled_reference_metadata(value: &mut Value) {
         .or_else(|| preview_source.as_ref().map(|preview| preview.len() as u64));
     if let Some(bytes) = spooled_bytes {
         object.entry("spooled_bytes").or_insert_with(|| json!(bytes));
+        let extent = object
+            .get("spool_line_count")
+            .and_then(Value::as_u64)
+            .map(|lines| format!(", {lines} lines; EOF at line {lines}"))
+            .unwrap_or_default();
         object.entry("spool_note").or_insert_with(|| {
             json!(format!(
-                "Large output ({bytes} bytes) spooled to `{spool_path}`. Use exec_command with cat, sed, or rg to inspect only the sections you need."
+                "Large output ({bytes} bytes{extent}) spooled to `{spool_path}`. Do not re-inline the full file. Use exec_command with sed or rg to inspect only missing sections; avoid overlapping reads."
             ))
         });
     } else {
@@ -786,14 +830,9 @@ impl ToolOutputSpooler {
             obj.insert("spool_sha256".to_string(), json!(spool_result.sha256));
             obj.insert("spool_state".to_string(), json!("completed"));
             obj.insert("spool_complete".to_string(), json!(true));
-
-            // Keep the recovery guidance aligned with the model-facing command tools.
-            // Large data stays on disk and the model pulls only the sections it needs.
-            let spool_note = format!(
-                "Large output ({} bytes) spooled to `spool_path`. Do not re-inline the full file. Use `view_file` or `grep_search` (or `exec_command` if available) to inspect only the sections you need.",
-                spool_result.original_bytes
-            );
-            obj.insert("spool_note".to_string(), json!(spool_note));
+            let mut line_counter = SpoolLineCounter::default();
+            line_counter.append(spool_result.content.as_bytes());
+            obj.insert("spool_line_count".to_string(), json!(line_counter.line_count()));
 
             if let Some(src) = source_path {
                 obj.entry("source_path".to_string()).or_insert_with(|| json!(src));
@@ -803,6 +842,7 @@ impl ToolOutputSpooler {
             }
         }
 
+        ensure_spooled_reference_metadata(&mut response);
         Ok(response)
     }
 
@@ -837,7 +877,28 @@ impl ToolOutputSpooler {
 
     /// Clean up old spooled files and sync the in-memory tracking list.
     /// Pinned blocked-turn outputs are never deleted here.
+    ///
+    /// Also enforces [`SpoolerConfig::max_files`] against the on-disk
+    /// directory (not just this instance's tracking vec) so leftovers from
+    /// prior sessions cannot accumulate past the budget.
     pub async fn cleanup_old_files(&self) -> Result<usize> {
+        self.cleanup_files(SpoolCleanupScope::AgeAndCount).await
+    }
+
+    /// Age-based cleanup only, for startup paths.
+    ///
+    /// The count budget relies on [`Self::pinned_files`], which is per-process:
+    /// a second session starting in the same workspace cannot see a concurrent
+    /// session's pinned or active spools, so enforcing the count budget at
+    /// startup can delete young files the other session still reads from its
+    /// conversation history. Age-expired files are safe to drop anywhere: no
+    /// live session produced them within `max_age_secs`. The count budget
+    /// stays on the in-session periodic path ([`Self::cleanup_old_files`]).
+    pub async fn cleanup_expired_files(&self) -> Result<usize> {
+        self.cleanup_files(SpoolCleanupScope::AgeOnly).await
+    }
+
+    async fn cleanup_files(&self, scope: SpoolCleanupScope) -> Result<usize> {
         if !fs::try_exists(&self.output_dir).await.unwrap_or(false) {
             return Ok(0);
         }
@@ -847,6 +908,8 @@ impl ToolOutputSpooler {
 
         // Collect paths to remove (can't modify vec during filesystem iteration)
         let mut paths_to_remove = Vec::new();
+        // Age of each surviving candidate so max_files can drop the oldest.
+        let mut survivors: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
 
         let pinned = self.pinned_files.read().await;
         let mut entries = fs::read_dir(&self.output_dir).await?;
@@ -857,13 +920,26 @@ impl ToolOutputSpooler {
             }
             if let Ok(metadata) = entry.metadata().await
                 && let Ok(modified) = metadata.modified()
-                && let Ok(age) = now.duration_since(modified)
-                && age.as_secs() > self.config.max_age_secs
             {
-                paths_to_remove.push(path);
+                let age = now.duration_since(modified).unwrap_or_default();
+                if age.as_secs() > self.config.max_age_secs {
+                    paths_to_remove.push(path);
+                } else {
+                    survivors.push((path, modified));
+                }
             }
         }
         drop(pinned);
+
+        // Enforce the file-count budget across sessions: drop the oldest
+        // unpinned survivors until at most max_files remain on disk.
+        if scope.enforces_count_budget() && survivors.len() > self.config.max_files {
+            survivors.sort_by_key(|(_, modified)| *modified);
+            let overflow = survivors.len() - self.config.max_files;
+            for (path, _) in survivors.into_iter().take(overflow) {
+                paths_to_remove.push(path);
+            }
+        }
 
         // Remove files from disk
         for path in &paths_to_remove {
@@ -1226,6 +1302,23 @@ mod tests {
         assert!(result.get("spool_hint").is_none());
     }
 
+    #[test]
+    fn spool_line_counts_handle_empty_chunks_and_unterminated_lines() {
+        for (chunks, expected) in [
+            (vec![""], 0),
+            (vec!["abc", "", "def"], 1),
+            (vec!["a\n", "\n", ""], 2),
+            (vec!["first\r", "\nsecond\n", "last"], 3),
+            (vec!["日本語", "\n", "final"], 2),
+        ] {
+            let mut counter = SpoolLineCounter::default();
+            for chunk in chunks {
+                counter.append(chunk.as_bytes());
+            }
+            assert_eq!(counter.line_count(), expected);
+        }
+    }
+
     #[tokio::test]
     async fn test_exec_command_spools_raw_output() {
         let temp = tempdir().unwrap();
@@ -1252,6 +1345,8 @@ mod tests {
         let spooled_path = result.get("spool_path").and_then(|v| v.as_str()).unwrap();
         let spooled_content = std::fs::read_to_string(temp.path().join(spooled_path)).unwrap();
         assert_eq!(spooled_content, command_output);
+        assert_eq!(result["spool_line_count"], 3);
+        assert!(result["spool_note"].as_str().unwrap().contains("EOF at line 3"));
         assert!(!spooled_content.contains("\"output\""));
         assert!(!spooled_content.contains("\"exit_code\""));
     }
@@ -1449,6 +1544,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cleanup_enforces_max_files_across_sessions() {
+        // Simulate leftovers from prior sessions: files exist on disk but are
+        // not in this instance's tracking vec. max_files must still bound them.
+        let temp = tempdir().unwrap();
+        let output_dir = temp.path().join(TOOL_OUTPUT_DIR);
+        std::fs::create_dir_all(&output_dir).unwrap();
+        for index in 0..8 {
+            std::fs::write(output_dir.join(format!("stale_{index}.txt")), b"leftover").unwrap();
+            // Ensure distinct mtimes so oldest-first eviction is deterministic.
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let config = SpoolerConfig {
+            threshold_bytes: 1,
+            // Keep everything young so only the count budget applies.
+            max_age_secs: 3600,
+            max_files: 3,
+            ..Default::default()
+        };
+        let spooler = ToolOutputSpooler::with_config(temp.path(), config);
+        let removed = spooler.cleanup_old_files().await.unwrap();
+        assert_eq!(removed, 5, "startup prune must drop overflow past max_files");
+
+        let remaining = std::fs::read_dir(&output_dir).unwrap().count();
+        assert_eq!(remaining, 3, "on-disk spool count must respect max_files");
+    }
+
+    #[tokio::test]
     async fn test_cleanup_skips_pinned_blocked_turn_outputs() {
         let temp = tempdir().unwrap();
         let config = SpoolerConfig {
@@ -1474,5 +1597,35 @@ mod tests {
         let removed = spooler.cleanup_old_files().await.unwrap();
         assert_eq!(removed, 1);
         assert!(!full_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired_files_never_enforces_count_budget() {
+        // Startup pruning runs in a fresh process whose pin set cannot see a
+        // concurrent session's young spools, so it must be age-only: young
+        // files beyond max_files stay on disk until the in-session periodic
+        // cleanup enforces the budget.
+        let temp = tempdir().unwrap();
+        let output_dir = temp.path().join(".vtcode").join("context").join("tool_outputs");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        for i in 0..8 {
+            std::fs::write(output_dir.join(format!("young-{i}.out")), b"young").unwrap();
+        }
+
+        let config = SpoolerConfig {
+            threshold_bytes: 1,
+            max_age_secs: 3600,
+            max_files: 3,
+            ..Default::default()
+        };
+        let spooler = ToolOutputSpooler::with_config(temp.path(), config);
+
+        let removed = spooler.cleanup_expired_files().await.unwrap();
+        assert_eq!(removed, 0, "startup prune must not evict young files past max_files");
+        assert_eq!(std::fs::read_dir(&output_dir).unwrap().count(), 8, "all young spools survive the startup prune");
+
+        let removed = spooler.cleanup_old_files().await.unwrap();
+        assert_eq!(removed, 5, "in-session cleanup still enforces the count budget");
+        assert_eq!(std::fs::read_dir(&output_dir).unwrap().count(), 3);
     }
 }

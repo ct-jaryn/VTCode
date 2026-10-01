@@ -72,6 +72,7 @@ impl Session {
         self.hovered_transcript_file_link = None;
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(crate) fn decorate_borrowed_cached_transcript_links(
         &mut self,
         lines: &[TranscriptLine],
@@ -84,6 +85,7 @@ impl Session {
         self.decorate_borrowed_transcript_links_impl(lines, area, true)
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn decorate_borrowed_transcript_links_impl(
         &mut self,
         lines: &[TranscriptLine],
@@ -133,6 +135,7 @@ impl Session {
         self.decorate_visible_transcript_links_impl(lines, area, true)
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(crate) fn decorate_visible_cached_transcript_links(
         &mut self,
         lines: Vec<TranscriptLine>,
@@ -504,13 +507,23 @@ fn may_contain_link_candidate(line: &Line<'_>, explicit_links: &[RenderedTranscr
             .any(|span| may_contain_link_candidate_text(span.content.as_ref()))
 }
 
-fn may_contain_link_candidate_text(text: &str) -> bool {
-    text.contains("://")
-        || text.contains('/')
-        || text.contains('\\')
-        || text.contains("~/")
-        || text.contains("./")
-        || text.contains("../")
+pub(super) fn may_contain_link_candidate_text(text: &str) -> bool {
+    if text.contains("://") || text.contains('/') || text.contains('\\') {
+        return true;
+    }
+    // Bare workspace filenames (`Cargo.toml`) resolve without a path separator.
+    // Only treat `name.ext` tokens as candidates — not sentence periods (`end.`).
+    text.split_whitespace().any(looks_like_filename_token)
+}
+
+fn looks_like_filename_token(token: &str) -> bool {
+    // Sentence punctuation trails filenames: `Cargo.toml.` `test.rs,`
+    let token = token.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.');
+    let token = token.trim_end_matches('.');
+    let Some((stem, ext)) = token.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty() && !ext.is_empty() && ext.len() <= 10 && ext.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 /// A wrapped display row anchored in the original unwrapped text.
@@ -810,6 +823,11 @@ pub(crate) fn project_detected_links_onto_wrapped_lines(
     original_text: &str,
     workspace_root: Option<&Path>,
 ) -> Vec<Vec<RenderedTranscriptLink>> {
+    // Fast reject: plain prose never needs link projection. Skipping this was
+    // a per-row String + regex cost on every reflow (hotpath).
+    if !may_contain_link_candidate_text(original_text) {
+        return vec![Vec::new(); wrapped_lines.len()];
+    }
     let matches = detect_transcript_link_matches(original_text, workspace_root);
     let mut projected = Vec::with_capacity(wrapped_lines.len());
     // Rows are anchored by searching for their body text (see
@@ -842,6 +860,7 @@ pub(crate) fn project_detected_links_onto_wrapped_lines(
     projected
 }
 
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 pub(crate) fn detect_rendered_transcript_links(
     line: &Line<'_>,
     workspace_root: Option<&Path>,
@@ -1042,6 +1061,15 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::tui::core_tui::types::InlineTheme;
+
+    #[test]
+    fn filename_candidates_ignore_sentence_punctuation() {
+        assert!(may_contain_link_candidate_text("see Cargo.toml."));
+        assert!(may_contain_link_candidate_text("open test.rs, then continue"));
+        assert!(!may_contain_link_candidate_text("the end."));
+        assert!(!may_contain_link_candidate_text("plain prose without names"));
+        assert!(may_contain_link_candidate_text("src/main.rs"));
+    }
 
     /// Walk up from `CARGO_MANIFEST_DIR` to the directory whose `Cargo.toml`
     /// contains `[workspace]`. Hardcoding `parent()` breaks when crates are

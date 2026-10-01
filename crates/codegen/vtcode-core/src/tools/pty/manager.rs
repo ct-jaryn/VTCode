@@ -63,7 +63,7 @@ use crate::audit::PermissionAuditLog;
 use crate::config::{CommandsConfig, PtyConfig};
 use crate::telemetry::perf;
 use crate::tools::exec_session::create_live_spool_file;
-use crate::tools::output_spooler::{SpoolIntegrity, encode_digest_hex};
+use crate::tools::output_spooler::{SpoolIntegrity, SpoolLineCounter, encode_digest_hex};
 use crate::tools::path_env;
 use crate::tools::shell::resolve_fallback_shell;
 use crate::tools::types::VTCodePtySession;
@@ -433,15 +433,24 @@ impl PtyManager {
         Ok(result)
     }
 
-    pub async fn resolve_working_dir(&self, requested: Option<&str>) -> Result<PathBuf> {
+    /// Lexical cwd shared by launch validation and recovery target lookup.
+    pub(crate) fn working_dir_candidate(&self, requested: Option<&str>) -> Result<PathBuf> {
         let requested = match requested {
             Some(dir) if !dir.trim().is_empty() => dir.trim(),
             _ => return Ok(self.workspace_root.clone()),
         };
 
         let candidate = self.workspace_root.join(requested);
-        let normalized = ensure_path_within_workspace(&candidate, &self.workspace_root)
-            .map_err(|e| anyhow!("Working directory '{}' escapes the workspace root: {e}", candidate.display()))?;
+        ensure_path_within_workspace(&candidate, &self.workspace_root)
+            .map_err(|e| anyhow!("Working directory '{}' escapes the workspace root: {e}", candidate.display()))
+    }
+
+    pub async fn resolve_working_dir(&self, requested: Option<&str>) -> Result<PathBuf> {
+        let normalized = self.working_dir_candidate(requested)?;
+        if requested.is_none_or(|dir| dir.trim().is_empty()) {
+            return Ok(normalized);
+        }
+        let candidate = &normalized;
         // Symlink-aware containment: a symlinked directory inside the
         // workspace must not move the command cwd outside it.
         vtcode_commons::paths::ensure_path_within_workspace_resolved(&normalized, &self.workspace_root)
@@ -609,6 +618,7 @@ impl PtyManager {
             let mut spool_redactor = vtcode_commons::sanitizer::StreamingSecretRedactor::default();
             let mut spool_hasher = Sha256::new();
             let mut spool_byte_count = 0_u64;
+            let mut spool_lines = SpoolLineCounter::default();
 
             while let Some(chunk) = output_spool_rx.recv().await {
                 let Some(file) = spool_file.as_mut() else {
@@ -622,6 +632,7 @@ impl PtyManager {
                         spool_file = None;
                     } else {
                         spool_hasher.update(sanitized.as_bytes());
+                        spool_lines.append(sanitized.as_bytes());
                         spool_byte_count = spool_byte_count.saturating_add(sanitized.len() as u64);
                     }
                 }
@@ -632,6 +643,7 @@ impl PtyManager {
                 let write_failed = !sanitized.is_empty() && file.write_all(sanitized.as_bytes()).await.is_err();
                 if !write_failed && !sanitized.is_empty() {
                     spool_hasher.update(sanitized.as_bytes());
+                    spool_lines.append(sanitized.as_bytes());
                     spool_byte_count = spool_byte_count.saturating_add(sanitized.len() as u64);
                 }
                 // Spool files are live-read while the session runs, so every
@@ -642,6 +654,7 @@ impl PtyManager {
                 } else {
                     *output_spool_integrity_for_task.lock() = Some(SpoolIntegrity {
                         byte_count: spool_byte_count,
+                        line_count: spool_lines.line_count(),
                         sha256: encode_digest_hex(spool_hasher.finalize()),
                     });
                 }

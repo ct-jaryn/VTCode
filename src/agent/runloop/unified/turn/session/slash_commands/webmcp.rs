@@ -261,6 +261,7 @@ async fn confirm_webmcp_action(
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction(CONFIRM_WEBMCP_ACTION.to_string())),
                 search_value: Some("confirm proceed yes".to_string()),
+                ..Default::default()
             },
             InlineListItem {
                 title: "Cancel".to_string(),
@@ -269,6 +270,7 @@ async fn confirm_webmcp_action(
                 indent: 0,
                 selection: Some(InlineListSelection::ConfigAction(CANCEL_WEBMCP_ACTION.to_string())),
                 search_value: Some("cancel keep current no".to_string()),
+                ..Default::default()
             },
         ],
         Some(InlineListSelection::ConfigAction(CANCEL_WEBMCP_ACTION.to_string())),

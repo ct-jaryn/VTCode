@@ -130,18 +130,6 @@ pub(crate) async fn handle_input_commands(
                         super::interaction_loop_runner::handle_select_primary_agent(ctx, state, Some(name)).await?;
                         return Ok(CommandProcessingResult::ContinueLoop);
                     }
-                    SlashCommandControl::ResumeLatest { show_all } => {
-                        match super::interaction_loop_runner::try_resume_latest_session(
-                            ctx.renderer,
-                            &ctx.config.workspace,
-                            show_all,
-                        )
-                        .await?
-                        {
-                            Some(outcome) => return Ok(CommandProcessingResult::Outcome(outcome)),
-                            None => return Ok(CommandProcessingResult::ContinueLoop),
-                        }
-                    }
                 }
             }
         }

@@ -1,6 +1,6 @@
 # vtcode-safety
 
-[Root AGENTS.md](../AGENTS.md) | Command safety detection, execution policies, and sandboxing. Layer 1 crate — depends on vtcode-commons.
+[Root AGENTS.md](../../../AGENTS.md) | Command safety detection, execution policies, and sandboxing. Layer 1 crate — depends on vtcode-commons.
 
 ## Module Groups
 
@@ -9,6 +9,7 @@
 | Command Safety | `command_safety/` — dangerous command detection, shell parsing |
 | Execution Policy | `exec_policy/` — policy management, approval workflows, command validation |
 | Sandboxing | `sandboxing/` — sandbox policy, permissions, execution environments |
+| Audit/Isolation | `audit_log.rs` — durable tool-invocation audit sink | `mcp_sandbox.rs` — per-MCP-server derived sandbox |
 
 ## Rules
 
@@ -22,7 +23,7 @@
 - `exec_policy/parser.rs` imports `vtcode_commons::fs::{parse_json_with_context, read_file_with_context}`; `command_validation.rs` imports `paths::{canonicalize_workspace, normalize_path}` and delegates workspace containment to `ensure_path_within_workspace_resolved` (symlink-aware walk lives in commons, tests included).
 - `sandboxing/` uses tree-sitter for Bash AST analysis — pinned to specific versions.
 - `command_safety::shell_parser` must extract nested simple commands from loops/conditionals so safety checks and approval caching see loop bodies, not just top-level shell syntax; preserve raw and ANSI-quoted arguments in that extraction.
-- `command_safety::shell_parser` owns dynamic-shell-syntax detection; `find` expansion must fail closed before preflight or learned approval. Static shell classification permits literal escapes inside double-quoted arguments (e.g., `rg` regexes) but rejects unquoted escapes; keep the scanner quote-aware.
+- `command_safety::shell_parser` owns dynamic-shell-syntax detection; `find` expansion must fail closed before preflight or learned approval. Static shell classification permits literal escapes inside double-quoted arguments (e.g., `rg` regexes) but rejects unquoted escapes; keep the scanner quote-aware. Quoted-heredoc body skipping applies only outside quotes — no heredoc starts inside a double-quoted string while `$()`/backticks stay active there (`contains_command_substitution` gates on both quote states) — and only from the unquoted opener newline onward: the opener-line suffix after the delimiter is live shell, so operators/`$()` there must still split or bail (arm a pending skip, never blind-skip from the delimiter).
 - Keep hard rejection (`command_might_be_dangerous`) separate from inline-code admission (`command_requires_approval`); interpreter `-c`/`-e` forms may proceed only under enforceable sandbox policy or explicit approval.
 - Sandboxed pipe/PTY and MCP stdio launches rebuild allowlisted env vars after overrides; macOS hostname allowlists reject unenforceable policies, Windows restrictions fail closed, and `SensitivePath` matching is case-insensitive with component-boundary semantics. Linux enforcement (`sandboxing/linux.rs`, `linux_seccomp.rs`) runs inside the binary's hidden `vtcode sandbox-exec` launcher (`LinuxSandboxLauncher::resolve`): build the Landlock ruleset at the exact probed ABI, exclude `/proc`/`/sys` and restrict `/dev` to explicit nodes (`restrict_dev_grants`), keep the two seccomp filters (EPERM blocklist + ENOSYS clone3) separate, deny `TIOCSTI`/`TIOCSCTTY` via seccomp while leaving Landlock exec/IOCTL_DEV unhandled for PTY, duplicate blocked numbers with `__X32_SYSCALL_BIT` on x86_64, and keep `syscall_number` mappings in sync with `BLOCKED_SYSCALLS`.
 - Keep `exec_policy_command_validation` fuzzing and traversal/symlink regression cases aligned with workspace containment or command validation changes.

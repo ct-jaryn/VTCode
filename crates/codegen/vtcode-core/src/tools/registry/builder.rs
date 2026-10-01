@@ -200,6 +200,15 @@ impl ToolRegistry {
         let hot_cache_size = std::num::NonZeroUsize::new(optimization_config.tool_registry.hot_cache_size)
             .unwrap_or(std::num::NonZeroUsize::MIN);
         let output_spooler = Arc::new(ToolOutputSpooler::with_config(&workspace_root, spooler_config));
+        // Age-expired leftovers from prior sessions are pruned immediately;
+        // periodic cleanup only fires every N spools inside one session, so
+        // short sessions never reached the threshold and stale spools piled up
+        // across runs. The count budget stays on the in-session periodic path:
+        // pinning is per-process, so a startup count prune in this session
+        // could delete young spools a concurrent session still reads.
+        if let Err(error) = output_spooler.cleanup_expired_files().await {
+            tracing::debug!(%error, "startup spool prune failed");
+        }
 
         // Pre-allocate FxHashMaps with expected capacity for typical MCP tool sets.
         // Most sessions register 10-50 MCP tools; start with room for 32 to
@@ -220,6 +229,7 @@ impl ToolRegistry {
             mcp_reverse_index: Arc::new(tokio::sync::RwLock::new(mcp_reverse_index)),
             timeout_policy: Arc::new(parking_lot::RwLock::new(ToolTimeoutPolicy::default())),
             execution_history: ToolExecutionHistory::with_workspace_root(100, workspace_root.clone()),
+            patch_recovery_reads: Arc::new(Mutex::new(super::patch_recovery::PatchRecoveryReads::default())),
             harness_context: HarnessContext::default(),
             resiliency: Arc::new(Mutex::new(ResiliencyContext::default())),
             mcp_circuit_breaker: Arc::new(circuit_breaker::McpCircuitBreaker::with_metrics(metrics.clone())),
@@ -227,8 +237,6 @@ impl ToolRegistry {
             initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_call_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pty_poll_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            turn_preview_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            turn_tiny_preview_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             canonical_plans_dir: Arc::new(std::sync::OnceLock::new()),
             metrics,
             shell_policy: Arc::new(RwLock::new(ShellPolicyChecker::new())),
