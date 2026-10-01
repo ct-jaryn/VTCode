@@ -290,13 +290,14 @@ impl Session {
         let shell_mode_title = self.shell_mode_border_title();
         let active_subagent_title = self.active_subagent_input_title();
         let active_subagent_border_style = self.active_subagent_input_border_style();
-        let mut block = if shell_mode_title.is_some() || active_subagent_title.is_some() {
+        let has_mode_border = self.has_primary_mode();
+        let mut block = if shell_mode_title.is_some() || active_subagent_title.is_some() || has_mode_border {
             Block::bordered()
         } else {
             Block::new()
         };
         block = block.style(background_style).padding(self.input_block_padding());
-        if shell_mode_title.is_some() || active_subagent_title.is_some() {
+        if shell_mode_title.is_some() || active_subagent_title.is_some() || has_mode_border {
             block = block.border_type(super::terminal_capabilities::get_border_type()).border_style(
                 active_subagent_border_style.unwrap_or_else(|| self.styles.accent_style().add_modifier(Modifier::BOLD)),
             );
@@ -398,7 +399,8 @@ impl Session {
     }
 
     pub(crate) fn input_block_extra_height(&self) -> u16 {
-        if self.active_subagent_input_title().is_some() && !self.input_uses_shell_prefix() {
+        if !self.input_uses_shell_prefix() && (self.active_subagent_input_title().is_some() || self.has_primary_mode())
+        {
             2
         } else {
             0
@@ -1007,11 +1009,13 @@ impl Session {
         };
 
         let scroll_indicator = self.build_scroll_indicator();
+        let mode_pill = self.primary_mode_pill();
 
         if left.is_none()
             && background_hint.is_none()
             && right.is_none()
             && scroll_indicator.is_none()
+            && mode_pill.is_none()
             && !self.thinking_spinner.is_active
         {
             return None;
@@ -1091,8 +1095,11 @@ impl Session {
             }
         }
 
-        // Build right side spans (scroll indicator + optional right content)
+        // Build right side spans (mode pill + scroll indicator + optional right content)
         let mut right_spans: Vec<Span<'static>> = Vec::new();
+        if let Some((label, style)) = mode_pill {
+            right_spans.push(Span::styled(label, style));
+        }
         if let Some(scroll) = &scroll_indicator {
             right_spans.push(Span::styled(scroll.clone(), dim_style));
         }
@@ -1179,7 +1186,7 @@ impl Session {
         Some(Line::from(Span::styled(format!(" {label} "), style)).right_aligned())
     }
 
-    fn active_subagent_input_border_style(&self) -> Option<Style> {
+    pub(crate) fn active_subagent_input_border_style(&self) -> Option<Style> {
         // Use the primary agent color if available, otherwise fall back to badge color.
         if let Some(color_style) =
             super::super::style::agent_color_style(self.header_context.primary_agent_color.as_deref(), Color::Magenta)
@@ -1201,6 +1208,35 @@ impl Session {
         }?;
 
         Some(self.styles.accent_style().fg(color).add_modifier(Modifier::BOLD))
+    }
+
+    /// Trimmed primary agent mode name, driving the persistent mode border/pill.
+    fn primary_mode_name(&self) -> Option<&str> {
+        self.header_context
+            .primary_agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
+    /// Whether a primary agent mode is set, driving the persistent mode border.
+    fn has_primary_mode(&self) -> bool {
+        self.primary_mode_name().is_some()
+    }
+
+    /// Mode pill for the input status line, reusing the header badge color.
+    ///
+    /// Returns `None` when no primary agent name is set so the default
+    /// (modeless) status line is unchanged. The style resolves through the
+    /// shared design-system `agent_color_style`, keeping the four mode hues
+    /// distinct on both dark and light terminals.
+    fn primary_mode_pill(&self) -> Option<(String, Style)> {
+        let name = self.primary_mode_name()?;
+        let fallback = self.theme.primary.map(ratatui_color_from_ansi).unwrap_or(Color::LightMagenta);
+        let style =
+            super::super::style::agent_color_style(self.header_context.primary_agent_color.as_deref(), fallback);
+        let label = super::header::primary_agent_header_label(Some(name));
+        Some((format!("• {label}"), style))
     }
 
     fn shell_mode_status_hint(&self) -> Option<&'static str> {

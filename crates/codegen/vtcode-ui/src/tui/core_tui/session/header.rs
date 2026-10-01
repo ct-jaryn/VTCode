@@ -33,7 +33,7 @@ fn format_model_summary_label(model: &str) -> String {
     model.split('-').map(capitalize_first_letter).collect::<Vec<_>>().join("-")
 }
 
-fn primary_agent_header_label(name: Option<&str>) -> String {
+pub(crate) fn primary_agent_header_label(name: Option<&str>) -> String {
     let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
         return "Build".to_string();
     };

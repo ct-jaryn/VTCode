@@ -773,3 +773,156 @@ fn header_hides_blocked_badge_without_blocked_signals() {
     let text = header_line_text(&mut session);
     assert!(!text.contains("Blocked"), "header should not show blocked badge, got: {text}");
 }
+
+#[test]
+fn mode_pill_absent_without_primary_agent() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent { name: None, color: None });
+
+    let rendered = session
+        .render_input_status_line(VIEW_WIDTH)
+        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+        .unwrap_or_default();
+
+    assert!(!rendered.contains("•"), "modeless status line should not show a mode pill, got: {rendered}");
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("   ".to_string()),
+        color: Some("build".to_string()),
+    });
+    let blank = session
+        .render_input_status_line(VIEW_WIDTH)
+        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+        .unwrap_or_default();
+    assert!(!blank.contains("•"), "blank mode name should not show a mode pill, got: {blank}");
+}
+
+#[test]
+fn mode_pill_shows_build_and_plan_distinctly() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+    let build_line = session.render_input_status_line(VIEW_WIDTH).expect("mode pill status line");
+    let build_text: String = build_line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(build_text.contains("• Build"), "unexpected status: {build_text}");
+    let build_fg = build_line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref().contains("• Build"))
+        .expect("build pill span")
+        .style
+        .fg;
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("plan".to_string()),
+        color: Some("plan".to_string()),
+    });
+    let plan_line = session.render_input_status_line(VIEW_WIDTH).expect("mode pill status line");
+    let plan_text: String = plan_line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(plan_text.contains("• Plan"), "unexpected status: {plan_text}");
+    assert!(!plan_text.contains("• Build"), "stale mode pill, got: {plan_text}");
+    let plan_fg = plan_line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref().contains("• Plan"))
+        .expect("plan pill span")
+        .style
+        .fg;
+
+    assert!(build_fg.is_some() && plan_fg.is_some(), "mode pill must carry a concrete color");
+    assert_ne!(build_fg, plan_fg, "build and plan pills must be visually distinct");
+}
+
+#[test]
+fn mode_pill_falls_back_for_unknown_color_token() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("custom".to_string()),
+        color: Some("not-a-color".to_string()),
+    });
+
+    let line = session.render_input_status_line(VIEW_WIDTH).expect("mode pill status line");
+    let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(text.contains("• Custom"), "unexpected status: {text}");
+    let fg = line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref().contains("• Custom"))
+        .expect("custom pill span")
+        .style
+        .fg;
+    assert!(fg.is_some(), "unknown color token must fall back to a concrete color");
+}
+
+#[test]
+fn mode_pill_coexists_with_right_status() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: None,
+        right: Some("84% context left".to_string()),
+    });
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("auto".to_string()),
+        color: Some("auto".to_string()),
+    });
+
+    let rendered = session
+        .render_input_status_line(VIEW_WIDTH)
+        .expect("mode pill status line")
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(rendered.contains("• Auto"), "missing mode pill, got: {rendered}");
+    assert!(rendered.contains("84% context left"), "mode pill must not clobber right status, got: {rendered}");
+}
+
+#[test]
+fn mode_border_adds_extra_height_without_subagent() {
+    let mut session = fresh_session();
+    assert_eq!(session.input_block_extra_height(), 0);
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+    assert_eq!(session.input_block_extra_height(), 2);
+
+    session.handle_command(InlineCommand::SetPrimaryAgent { name: None, color: None });
+    assert_eq!(session.input_block_extra_height(), 0);
+}
+
+#[test]
+fn mode_border_yields_to_shell_prefix() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+    session.set_input("!ls -la".to_string());
+
+    assert_eq!(session.input_block_extra_height(), 0);
+    assert_eq!(session.shell_mode_border_title(), Some(" ! Shell mode "));
+}
+
+#[test]
+fn mode_border_uses_distinct_mode_colors() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+    let build_fg = session.active_subagent_input_border_style().expect("mode border style").fg;
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("plan".to_string()),
+        color: Some("plan".to_string()),
+    });
+    let plan_fg = session.active_subagent_input_border_style().expect("mode border style").fg;
+
+    assert!(build_fg.is_some() && plan_fg.is_some(), "mode border must carry a concrete color");
+    assert_ne!(build_fg, plan_fg, "build and plan borders must be visually distinct");
+}
