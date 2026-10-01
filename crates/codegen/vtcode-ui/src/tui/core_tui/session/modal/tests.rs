@@ -989,7 +989,7 @@ fn list_modal_space_no_longer_submits_config_action() {
 }
 
 #[test]
-fn list_modal_alt_d_is_swallowed_without_changing_density() {
+fn list_modal_alt_d_is_swallowed() {
     let mut modal = ModalState {
         title: "Config".to_owned(),
         lines: vec![],
@@ -1015,20 +1015,32 @@ fn list_modal_alt_d_is_swallowed_without_changing_density() {
         status: None,
     };
 
-    assert!(!modal.list.as_ref().expect("config list should exist").compact_rows());
-
     let result = modal.handle_list_key_event(
         &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
         ModalKeyModifiers { alt: true, ..ModalKeyModifiers::default() },
     );
 
     assert!(matches!(result, ModalListKeyResult::HandledNoRedraw));
-    assert!(!modal.list.as_ref().expect("config list should exist").compact_rows());
 }
 
 #[test]
-fn subtitle_lists_default_to_compact_density() {
-    let list = ModalListState::new(
+fn density_behavior_still_drives_summary_hints() {
+    // Row spacing is now universal, but `density_behavior` still decides the
+    // summary line: config lists always show the shared navigation hint,
+    // other lists only echo an explicit footer.
+    let config_list = ModalListState::new(
+        vec![InlineListItem {
+            title: "Permission default".to_owned(),
+            subtitle: Some("permissions.default = ask".to_owned()),
+            badge: Some("Toggle".to_owned()),
+            indent: 0,
+            selection: Some(InlineListSelection::ConfigAction("permissions.default:cycle".to_owned())),
+            search_value: None,
+            ..Default::default()
+        }],
+        None,
+    );
+    let model_list = ModalListState::new(
         vec![InlineListItem {
             title: "gpt-5".to_owned(),
             subtitle: Some("High-quality general reasoning model".to_owned()),
@@ -1041,25 +1053,9 @@ fn subtitle_lists_default_to_compact_density() {
         None,
     );
 
-    assert!(list.compact_rows(), "subtitle lists should default to compact row density");
-}
-
-#[test]
-fn single_line_lists_keep_compact_flag_cleared() {
-    let list = ModalListState::new(
-        vec![InlineListItem {
-            title: "Approve".to_owned(),
-            subtitle: None,
-            badge: None,
-            indent: 0,
-            selection: Some(InlineListSelection::ToolApproval(true)),
-            search_value: None,
-            ..Default::default()
-        }],
-        None,
-    );
-
-    assert!(!list.compact_rows(), "single-line lists need no compact flag");
+    assert_eq!(config_list.non_filter_summary_text(None), Some(crate::design::keys::list_hint()));
+    assert_eq!(model_list.non_filter_summary_text(None), None);
+    assert_eq!(model_list.non_filter_summary_text(Some("Esc close")), Some("Esc close".to_string()));
 }
 
 #[test]

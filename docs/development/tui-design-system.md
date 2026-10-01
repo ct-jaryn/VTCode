@@ -20,7 +20,7 @@ Canonical list UI lives in **`vtcode_ui::design`**. Wire types stay in
 - **Choice / current_choice** — list options; `current_choice` marks `Current`.
 - **Hint** — dimmed note; never a header.
 - **group_divider** — full-width rule between sections.
-- **Density** — config lists (`ConfigAction` rows: settings, model/provider groups) render comfortable with a blank separator row between items; other subtitle lists stay compact so long catalogs still fit.
+- **Density** — every selectable row keeps one blank separator row after it, in core modal lists and the standalone `run_interactive_selection` picker alike, so dense subtitle lists stay scannable.
 
 Do **not** assemble `InlineListItem { .. }` literals in command/UI code; call the factories and tweak with `with_search_value` / `with_badge` when needed.
 

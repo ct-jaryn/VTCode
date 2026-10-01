@@ -74,7 +74,7 @@ fn estimated_modal_instruction_rows(lines: &[String], content_width: usize) -> u
     rows.clamp(1, MAX_INLINE_INSTRUCTION_ROWS)
 }
 
-fn list_has_two_line_items(list: &ModalListState) -> bool {
+fn list_has_multiline_items(list: &ModalListState) -> bool {
     list.visible_indices.iter().any(|&index| {
         list.items
             .get(index)
@@ -83,7 +83,7 @@ fn list_has_two_line_items(list: &ModalListState) -> bool {
 }
 
 fn list_row_cap(list: &ModalListState) -> usize {
-    if list_has_two_line_items(list) {
+    if list_has_multiline_items(list) {
         ui::INLINE_LIST_MAX_ROWS_MULTILINE
     } else {
         ui::INLINE_LIST_MAX_ROWS
@@ -92,8 +92,8 @@ fn list_row_cap(list: &ModalListState) -> usize {
 
 fn list_desired_rows(list: &ModalListState) -> usize {
     // Count rendered rows, not items: each title costs one row, each subtitle
-    // costs a second row, headers reserve a blank separator above, and
-    // non-compact selectable rows reserve a trailing blank. Capped so large
+    // costs a second row, headers reserve a blank separator above, and every
+    // selectable row reserves a trailing blank. Capped so large
     // pickers still scroll instead of claiming the full viewport.
     let mut rows = 0usize;
     for (visible_index, &item_index) in list.visible_indices.iter().enumerate() {
@@ -111,7 +111,7 @@ fn list_desired_rows(list: &ModalListState) -> usize {
         if item.subtitle.as_ref().is_some_and(|subtitle| !subtitle.trim().is_empty()) {
             rows = rows.saturating_add(1);
         }
-        if !list.compact_rows() && item.selection.is_some() {
+        if item.selection.is_some() {
             rows = rows.saturating_add(1);
         }
     }
@@ -184,9 +184,9 @@ pub fn split_inline_modal_area(session: &Session, area: Rect) -> (Rect, Option<R
         wizard
             .steps
             .get(wizard.current_step)
-            .is_some_and(|step| list_has_two_line_items(&step.list))
+            .is_some_and(|step| list_has_multiline_items(&step.list))
     } else if let Some(modal) = session.modal_state() {
-        modal.list.as_ref().is_some_and(list_has_two_line_items)
+        modal.list.as_ref().is_some_and(list_has_multiline_items)
     } else {
         false
     };

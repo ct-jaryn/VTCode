@@ -1234,9 +1234,9 @@ pub fn modal_list_item_lines(
         ));
     }
 
-    // Shared group rhythm: blank line above and below every group header so
-    // sections stay scannable in dense subtitle lists (settings, model picker,
-    // permission groups). Dividers keep a single full-width rule.
+    // Shared rhythm: every selectable row keeps one blank separator row
+    // after it so dense subtitle lists (settings, model picker, permission
+    // groups) stay scannable. Dividers keep a single full-width rule.
     let mut lines = Vec::new();
     if item.is_header() {
         if visible_index > 0 {
@@ -1295,7 +1295,7 @@ pub fn modal_list_item_lines(
         lines.push(Line::from(editor_spans));
     }
 
-    if !list.compact_rows() && item.selection.is_some() {
+    if item.selection.is_some() {
         lines.push(Line::default());
     }
     lines
@@ -2196,27 +2196,41 @@ mod tests {
         // Later header: blank above and below.
         let h1 = modal_list_item_lines(&list, 2, 2, &styles, 60, None, false, None);
         assert_eq!(h1.len(), 3, "later header is gap + title + gap: {h1:?}");
-        // Item rows stay title + subtitle (no extra blank in compact lists).
+        // Item rows are title + subtitle + blank separator gap.
         let item = modal_list_item_lines(&list, 1, 1, &styles, 60, None, false, None);
-        assert_eq!(item.len(), 2, "title + subtitle only: {item:?}");
+        assert_eq!(item.len(), 3, "title + subtitle + gap: {item:?}");
+        assert!(item.last().is_some_and(|line| line.spans.is_empty()), "last row is the blank gap: {item:?}");
     }
 
     #[test]
-    fn config_lists_keep_comfortable_spacing_between_items() {
+    fn all_subtitle_lists_keep_comfortable_spacing_between_items() {
+        // Shared rhythm across modal subclasses: config rows and plain model
+        // rows alike end with a blank separator gap.
         let styles = modal_render_styles();
         let list = ModalListState::new(
-            vec![InlineListItem {
-                title: "Temperature".to_string(),
-                value: Some("0.7".to_string()),
-                subtitle: Some("Sampling temperature (0.0 precise to 1.0 creative).".to_string()),
-                selection: Some(InlineListSelection::ConfigAction("settings:set:agent.temperature:inc".to_string())),
-                ..Default::default()
-            }],
+            vec![
+                InlineListItem {
+                    title: "Temperature".to_string(),
+                    value: Some("0.7".to_string()),
+                    subtitle: Some("Sampling temperature (0.0 precise to 1.0 creative).".to_string()),
+                    selection: Some(InlineListSelection::ConfigAction(
+                        "settings:set:agent.temperature:inc".to_string(),
+                    )),
+                    ..Default::default()
+                },
+                InlineListItem {
+                    title: "Claude".to_string(),
+                    subtitle: Some("desc".to_string()),
+                    selection: Some(InlineListSelection::Model(0)),
+                    ..Default::default()
+                },
+            ],
             None,
         );
-        assert!(!list.compact_rows(), "config lists keep a blank separator row");
-        let item = modal_list_item_lines(&list, 0, 0, &styles, 60, None, false, None);
-        assert_eq!(item.len(), 3, "title + subtitle + gap: {item:?}");
-        assert!(item.last().is_some_and(|line| line.spans.is_empty()), "last row is the blank gap: {item:?}");
+        for (visible_index, item_index) in [0usize, 1usize].into_iter().enumerate() {
+            let item = modal_list_item_lines(&list, visible_index, item_index, &styles, 60, None, false, None);
+            assert_eq!(item.len(), 3, "title + subtitle + gap: {item:?}");
+            assert!(item.last().is_some_and(|line| line.spans.is_empty()), "last row is the blank gap: {item:?}");
+        }
     }
 }
