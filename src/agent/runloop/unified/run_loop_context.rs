@@ -121,6 +121,11 @@ const TOOL_PREVIEW_METADATA_STRING_LIMIT: usize = 512;
 /// point; oversized or malformed payloads keep only the generic byte count.
 const TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES: usize = 128 * 1024;
 
+/// Shared per-turn cap for auxiliary model-backed checks (failure diagnosis,
+/// prompt-injection probes). These run invisibly between tool results, so a
+/// tool-heavy turn must not multiply them without bound.
+const AUX_MODEL_CALL_BUDGET: u32 = 3;
+
 /// Minimal probe for the exhaustion marker. Decoding only the single control
 /// flag avoids materializing the full tool payload (`Value` IR) on every
 /// response when all we need is one bool.
@@ -589,6 +594,9 @@ pub(crate) struct HarnessTurnState {
     /// Cap on model-backed diagnosis calls per turn. After this, deterministic
     /// fallbacks only — failure-heavy loops must not multiply model calls.
     failure_diagnosis_model_calls: u32,
+    /// Cap on model-backed prompt-injection probes per turn. Tool-heavy
+    /// full-auto turns otherwise add one hidden LLM round-trip per result.
+    auto_permission_probe_model_calls: u32,
     pub stop_hook_active: bool,
     pub seen_task_tracker_create_signatures: HashSet<String>,
     pub recently_written_files: HashSet<String>,
@@ -749,6 +757,7 @@ impl HarnessTurnState {
             streamed_tool_call_item_ids: HashMap::new(),
             failure_diagnosis_memo: HashMap::new(),
             failure_diagnosis_model_calls: 0,
+            auto_permission_probe_model_calls: 0,
             stop_hook_active: false,
             seen_task_tracker_create_signatures: HashSet::new(),
             recently_written_files: HashSet::new(),
@@ -920,12 +929,22 @@ impl HarnessTurnState {
 
     /// Whether another model-backed diagnosis is allowed this turn.
     pub(crate) fn can_spend_failure_diagnosis_model_call(&self) -> bool {
-        self.failure_diagnosis_model_calls < 3
+        self.failure_diagnosis_model_calls < AUX_MODEL_CALL_BUDGET
     }
 
     /// Count a model-backed diagnosis attempt (success or failure).
     pub(crate) fn record_failure_diagnosis_model_call(&mut self) {
         self.failure_diagnosis_model_calls = self.failure_diagnosis_model_calls.saturating_add(1);
+    }
+
+    /// Whether another model-backed prompt-injection probe is allowed this turn.
+    pub(crate) fn can_spend_auto_permission_probe_model_call(&self) -> bool {
+        self.auto_permission_probe_model_calls < AUX_MODEL_CALL_BUDGET
+    }
+
+    /// Count a model-backed prompt-injection probe attempt (success or failure).
+    pub(crate) fn record_auto_permission_probe_model_call(&mut self) {
+        self.auto_permission_probe_model_calls = self.auto_permission_probe_model_calls.saturating_add(1);
     }
 
     /// Test-only execution-budget shorthand so exec-mode tests avoid
@@ -3186,5 +3205,19 @@ mod tests {
             state.record_failure_diagnosis_model_call();
         }
         assert!(!state.can_spend_failure_diagnosis_model_call(), "per-turn model diagnosis budget must stop at 3");
+    }
+
+    #[test]
+    fn auto_permission_probe_budget_stops_model_calls_per_turn() {
+        let mut state = HarnessTurnState::new(TurnRunId("run-1".into()), TurnId("turn-1".into()), 120, 10, 1);
+
+        assert!(state.can_spend_auto_permission_probe_model_call());
+        for _ in 0..3 {
+            state.record_auto_permission_probe_model_call();
+        }
+        assert!(
+            !state.can_spend_auto_permission_probe_model_call(),
+            "per-turn prompt-injection probe budget must stop at 3"
+        );
     }
 }

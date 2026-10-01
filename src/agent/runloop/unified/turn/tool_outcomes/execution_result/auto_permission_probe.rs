@@ -1,7 +1,9 @@
 use anyhow::Result;
 use vtcode_core::utils::ansi::MessageStyle;
 
-use crate::agent::runloop::unified::auto_permission::{ProbeWarning, probe_tool_output};
+use crate::agent::runloop::unified::auto_permission::{
+    PROBE_TIMEOUT, ProbeWarning, probe_tool_output, recent_user_context,
+};
 use crate::agent::runloop::unified::turn::context::TurnProcessingContext;
 
 async fn auto_permission_probe_warning(
@@ -12,22 +14,42 @@ async fn auto_permission_probe_warning(
     if !ctx.full_auto || ctx.is_planning_active() {
         return None;
     }
-
-    let permissions = ctx.vt_cfg.map(|cfg| &cfg.permissions);
-    let working_history = ctx.working_history.clone();
-    match probe_tool_output(
-        ctx.provider_client.as_mut(),
-        ctx.config,
-        ctx.vt_cfg,
-        permissions?,
-        &working_history,
-        content_for_model,
+    let Some(permissions) = ctx.vt_cfg.map(|cfg| &cfg.permissions) else {
+        return None;
+    };
+    // Skip the pre-filter-free spend: empty outputs carry nothing to probe,
+    // and they must not consume the per-turn probe budget.
+    if content_for_model.trim().is_empty() {
+        return None;
+    }
+    if !ctx.harness_state.can_spend_auto_permission_probe_model_call() {
+        tracing::debug!(tool = %tool_name, "auto permission review prompt probe budget exhausted for this turn");
+        return None;
+    }
+    // The probe reads only the last two user messages: extract them up front
+    // instead of cloning the whole conversation for every tool result.
+    let user_context = recent_user_context(ctx.working_history);
+    ctx.harness_state.record_auto_permission_probe_model_call();
+    match tokio::time::timeout(
+        PROBE_TIMEOUT,
+        probe_tool_output(
+            ctx.provider_client.as_mut(),
+            ctx.config,
+            ctx.vt_cfg,
+            permissions,
+            &user_context,
+            content_for_model,
+        ),
     )
     .await
     {
-        Ok(warning) => warning,
-        Err(err) => {
+        Ok(Ok(warning)) => warning,
+        Ok(Err(err)) => {
             tracing::warn!(tool = %tool_name, error = %err, "auto permission review prompt probe failed");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(tool = %tool_name, "auto permission review prompt probe timed out");
             None
         }
     }
