@@ -163,19 +163,21 @@ impl ToolResponseBuilder {
             obj.insert("has_more".to_string(), json!(true));
         }
 
-        // Add custom top-level fields
-        for (k, v) in self.custom_fields {
-            obj.insert(k, v);
-        }
-
         // Build and merge metadata. Keys already surfaced as top-level custom
         // fields stay top-level only: duplicating them inside `metadata.data`
         // re-serializes the same values on every tool result (read_file paid
-        // that tax for `content_kind`/`encoding` on every call).
+        // that tax for `content_kind`/`encoding` on every call). Only explicit
+        // `.field()` twins dedup — a `.data()` entry sharing a name with a
+        // builder-structural key (success/status/message/...) must survive.
         let mut meta = self.metadata.build();
-        meta.data.retain(|key, _| !obj.contains_key(key));
+        meta.data.retain(|key, _| !self.custom_fields.contains_key(key));
         if !meta.data.is_empty() || !meta.files.is_empty() || !meta.lines.is_empty() {
             obj.insert("metadata".to_string(), json!(meta));
+        }
+
+        // Add custom top-level fields
+        for (k, v) in self.custom_fields {
+            obj.insert(k, v);
         }
 
         res
@@ -242,5 +244,22 @@ mod tests {
 
         assert_eq!(value["content_kind"], json!("text"));
         assert!(value.get("metadata").is_none());
+    }
+
+    #[test]
+    fn build_json_keeps_data_keys_colliding_with_structural_names() {
+        // A `.data()` entry must not vanish because it shares a name with a
+        // builder-structural key; only explicit `.field()` twins dedup.
+        let value = ToolResponseBuilder::new("read_file")
+            .message("done")
+            .field("kind", json!("top"))
+            .data("message", json!("from data"))
+            .data("kind", json!("from data"))
+            .build_json();
+
+        assert_eq!(value["message"], json!("done"));
+        assert_eq!(value["kind"], json!("top"));
+        assert_eq!(value["metadata"]["data"]["message"], json!("from data"));
+        assert!(value["metadata"]["data"].get("kind").is_none());
     }
 }
