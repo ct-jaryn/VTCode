@@ -28,7 +28,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
 tokio-util = { workspace = true, features = ["codec"] }
 toml = { workspace = true }
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
 tracing = { workspace = true }
 vtcode-commons = { workspace = true }
