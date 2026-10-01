@@ -983,6 +983,61 @@ async fn command_session_inspect_distinguishes_empty_and_closed_sessions() -> Re
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn command_session_wait_returns_partial_output_when_session_closes_mid_wait() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+
+    // The fixture emits output three times over ~600ms, so the wait loop's
+    // 50ms drain cycle provably buffers it long before the fixture closes
+    // the session — the same concurrent-removal actor as a TUI force-cancel
+    // closing a foreground session under an in-flight wait.
+    registry
+        .exec_sessions
+        .create_pipe_session(
+            "run-mid-wait-close".into(),
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "for i in 1 2 3; do echo mid-wait-output; sleep 0.2; done; sleep 30".into(),
+            ],
+            temp_dir.path().to_path_buf(),
+            Default::default(),
+        )
+        .await?;
+
+    let (close_side, wait_side) = tokio::join!(
+        async {
+            // 2s leaves a 30x+ margin over the fixture's last emission on a
+            // loaded CI runner while keeping the test fast (wait deadline
+            // is 30s, so the close always lands mid-wait).
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+            registry.close_exec_session("run-mid-wait-close").await?;
+            anyhow::Ok(())
+        },
+        registry.execute_harness_command_session(json!({
+            "action": "wait",
+            "s": "run-mid-wait-close",
+            "wait_timeout_seconds": 30,
+        }))
+    );
+    close_side.expect("close side must succeed");
+
+    // join! completes only when both sides settle: the wait either observes
+    // the mid-wait close or runs out its own deadline.
+    let response = wait_side.expect("a session closed mid-wait must return its buffered output, not an error");
+    let output = response["output"].as_str().unwrap_or_default();
+    assert!(output.contains("mid-wait-output"), "output buffered before the close must survive: {response}");
+    assert!(
+        output.contains("closed while waiting"),
+        "the response must disclose that the capture is partial: {response}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn mutating_tools_clear_recent_read_reuse_history() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;

@@ -17,6 +17,40 @@ struct ResolvedExecSession {
     command_display: String,
 }
 
+/// A session record removed mid-wait (TUI force-cancel or graceful close
+/// while a run/wait tool call is still polling) must not discard the output
+/// buffered so far: surface the partial capture with a trailing note instead
+/// of failing the whole tool call. Any other error keeps failing fast, and a
+/// missing session before any output exists still propagates the typed
+/// [`crate::tools::exec_session::ExecSessionNotFound`] error.
+fn partial_capture_on_missing_session(
+    error: anyhow::Error,
+    session_id: &str,
+    output: String,
+    exit_code: Option<i32>,
+    elapsed: Duration,
+) -> Result<PtyEphemeralCapture> {
+    if error
+        .downcast_ref::<crate::tools::exec_session::ExecSessionNotFound>()
+        .is_none()
+    {
+        return Err(error);
+    }
+    let mut output = output;
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    match exit_code {
+        Some(code) => output.push_str(&format!(
+            "[vtcode] exec session '{session_id}' was closed during output drain after exiting with code {code}; the output above may be missing trailing bytes."
+        )),
+        None => output.push_str(&format!(
+            "[vtcode] exec session '{session_id}' was closed while waiting for output; the output above is partial."
+        )),
+    }
+    Ok(PtyEphemeralCapture { output, exit_code, duration: elapsed })
+}
+
 impl ResolvedExecSession {
     fn new(metadata: VTCodeExecSession) -> Self {
         let command_display = build_exec_session_command_display(&metadata);
@@ -431,7 +465,17 @@ impl ToolRegistry {
         session_id: &str,
         session_exited: bool,
     ) -> Result<bool> {
-        if let Some(stats) = self.exec_sessions.output_stats(session_id).await? {
+        let stats = match self.exec_sessions.output_stats(session_id).await {
+            Ok(stats) => stats,
+            // A session closed while its output was still being captured
+            // keeps returning its partial capture; there is no spool left to
+            // describe, and pruning stays gated on the observed exit code.
+            Err(err) if err.downcast_ref::<crate::tools::exec_session::ExecSessionNotFound>().is_some() => {
+                return Ok(true);
+            }
+            Err(err) => return Err(err),
+        };
+        if let Some(stats) = stats {
             let safe_to_prune = !stats.spool_available || (stats.spool_complete && stats.spool_integrity.is_some());
             let spooler_config = self.output_spooler.config();
             attach_spool_metadata(
@@ -475,13 +519,25 @@ impl ToolRegistry {
         loop {
             let observed_activity = activity_rx.as_mut().map(|receiver| *receiver.borrow_and_update());
 
-            let promoted = self.exec_sessions.promote_requested_session(session_id).await?;
-            let promoted_by_foreground_watcher = self.exec_sessions.take_foreground_promotion(session_id).await?;
+            let promoted = match self.exec_sessions.promote_requested_session(session_id).await {
+                Ok(value) => value,
+                Err(err) => return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed()),
+            };
+            let promoted_by_foreground_watcher = match self.exec_sessions.take_foreground_promotion(session_id).await {
+                Ok(value) => value,
+                Err(err) => return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed()),
+            };
             if promoted || promoted_by_foreground_watcher {
-                if let Some(final_output) = self
+                let final_output = match self
                     .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
-                    .await?
+                    .await
                 {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed());
+                    }
+                };
+                if let Some(final_output) = final_output {
                     update_exec_capture_output(&mut output, &final_output, drain_output);
                     if let Some(tool_name) = tool_name
                         && let Some(ref callback) = progress_callback
@@ -492,11 +548,29 @@ impl ToolRegistry {
                 return Ok(PtyEphemeralCapture { output, exit_code: None, duration: start.elapsed() });
             }
 
-            if let Some(code) = self.exec_session_completed(session_id).await? {
-                if let Some(final_output) = self
+            let completed = match self.exec_session_completed(session_id).await {
+                Ok(value) => value,
+                Err(err) => return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed()),
+            };
+            if let Some(code) = completed {
+                let final_output = match self
                     .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
-                    .await?
+                    .await
                 {
+                    Ok(value) => value,
+                    // Completion was already observed; keep the exit code and
+                    // buffered output instead of failing the call.
+                    Err(err) => {
+                        return partial_capture_on_missing_session(
+                            err,
+                            session_id,
+                            output,
+                            Some(code),
+                            start.elapsed(),
+                        );
+                    }
+                };
+                if let Some(final_output) = final_output {
                     update_exec_capture_output(&mut output, &final_output, drain_output);
 
                     if let Some(tool_name) = tool_name
@@ -512,10 +586,24 @@ impl ToolRegistry {
                 let drain_deadline = Instant::now() + Duration::from_millis(1000);
                 let mut last_output_at = Instant::now();
                 while Instant::now() < drain_deadline {
-                    match self
+                    let drained_output = match self
                         .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
-                        .await?
+                        .await
                     {
+                        Ok(value) => value,
+                        // Completion was already observed; keep the exit code
+                        // and buffered output instead of failing the call.
+                        Err(err) => {
+                            return partial_capture_on_missing_session(
+                                err,
+                                session_id,
+                                output,
+                                Some(code),
+                                start.elapsed(),
+                            );
+                        }
+                    };
+                    match drained_output {
                         Some(extra_output) => {
                             update_exec_capture_output(&mut output, &extra_output, drain_output);
                             if let Some(tool_name) = tool_name
@@ -530,7 +618,18 @@ impl ToolRegistry {
                             last_output_at = Instant::now();
                         }
                         None => {
-                            let output_drained = self.exec_session_output_drained(session_id).await?;
+                            let output_drained = match self.exec_session_output_drained(session_id).await {
+                                Ok(value) => value,
+                                Err(err) => {
+                                    return partial_capture_on_missing_session(
+                                        err,
+                                        session_id,
+                                        output,
+                                        Some(code),
+                                        start.elapsed(),
+                                    );
+                                }
+                            };
                             if output_drained && Instant::now().duration_since(last_output_at) >= quiet_window {
                                 break;
                             }
@@ -545,10 +644,14 @@ impl ToolRegistry {
                 });
             }
 
-            if let Some(new_output) = self
+            let new_output = match self
                 .next_exec_session_output(session_id, drain_output, &mut last_peeked_output)
-                .await?
+                .await
             {
+                Ok(value) => value,
+                Err(err) => return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed()),
+            };
+            if let Some(new_output) = new_output {
                 update_exec_capture_output(&mut output, &new_output, drain_output);
                 if tool_name.is_some() {
                     pending_lines.push_str(&new_output);
@@ -569,11 +672,28 @@ impl ToolRegistry {
             }
 
             if start.elapsed() >= yield_duration {
-                let output_drained = self.exec_session_output_drained(session_id).await?;
+                let output_drained = match self.exec_session_output_drained(session_id).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed());
+                    }
+                };
                 if output_drained {
                     let exit_grace_deadline = Instant::now() + Duration::from_millis(250);
                     while Instant::now() < exit_grace_deadline {
-                        if let Some(code) = self.exec_session_completed(session_id).await? {
+                        let completed = match self.exec_session_completed(session_id).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return partial_capture_on_missing_session(
+                                    err,
+                                    session_id,
+                                    output,
+                                    None,
+                                    start.elapsed(),
+                                );
+                            }
+                        };
+                        if let Some(code) = completed {
                             if let Some(tool_name) = tool_name
                                 && let Some(ref callback) = progress_callback
                                 && !pending_lines.is_empty()
@@ -641,10 +761,14 @@ impl ToolRegistry {
                 });
             }
 
-            let session_metadata = self
-                .exec_session_metadata(session_id)
-                .await
-                .with_context(|| format!("exec session '{session_id}' disappeared during settlement"))?;
+            let session_metadata = match self.exec_session_metadata(session_id).await {
+                Ok(metadata) => metadata,
+                // The record was removed mid-settlement; return what was
+                // captured instead of dropping it one frame above the wait.
+                Err(err) => {
+                    return partial_capture_on_missing_session(err, session_id, output, None, start.elapsed());
+                }
+            };
             if session_metadata.background {
                 return Ok(PtyEphemeralCapture { output, exit_code: None, duration: start.elapsed() });
             }
