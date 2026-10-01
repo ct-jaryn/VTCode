@@ -24,7 +24,7 @@ include = [
     "templates/",
 ]
 [dependencies]
-filesnap = "=0.5.0"
+filesnap = "=0.5.1"
 anyhow = { workspace = true }
 hashbrown = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -55,7 +55,7 @@ thiserror = { workspace = true }
 dialoguer = { workspace = true }
 regex = { workspace = true }
 shell-words = { workspace = true }
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
@@ -135,7 +135,7 @@ schemars = { workspace = true, optional = true }
 # MCP (Model Context Protocol) support
 # Phase 1: Upgrade to 0.9.0+ for improved transport and lifecycle management
 url = { workspace = true }
-jsonschema = "0.52"
+jsonschema = "0.58"
 uuid = { workspace = true, features = ["v4", "serde"] }
 which = "8.0.2"
 textwrap = "0.16"
