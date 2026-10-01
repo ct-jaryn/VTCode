@@ -102,29 +102,7 @@ $lines | Select-Object -Skip 1 | Set-Content -Path tokens.txt
     }
 }
 
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else {
-        "unknown panic".to_string()
-    }
-}
-
-async fn start_mock_server_or_skip() -> Option<MockServer> {
-    match tokio::spawn(async { MockServer::start().await }).await {
-        Ok(s) => Some(s),
-        Err(e) if e.is_panic() => {
-            let msg = panic_message(e.into_panic());
-            if msg.contains("Operation not permitted") || msg.contains("PermissionDenied") {
-                return None;
-            }
-            panic!("mock server should start: {msg}");
-        }
-        Err(e) => panic!("mock server task should complete: {e}"),
-    }
-}
+use crate::providers::test_support::start_mock_server_or_skip;
 
 // ─── Helper constructors ─────────────────────────────────────────────────────
 fn tool_def(name: &str, desc: &str, schema: Value) -> provider::ToolDefinition {

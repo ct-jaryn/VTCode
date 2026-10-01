@@ -85,19 +85,12 @@ impl GeminiProvider {
     /// with `systemInstruction`, `tools`, or `toolConfig` ("CachedContent can
     /// not be used with GenerateContent request setting system_instruction,
     /// tools or tool_config"), and a cached entry's own `toolConfig` is
-    /// immutable and shared for the whole segment. Plain `AUTO` without
-    /// server-side flags is the documented default when the field is omitted,
-    /// so only a request that narrows, disables, or validates tool use needs
-    /// the body field.
+    /// immutable and shared for the whole segment. The API default when the
+    /// field is omitted is plain `AUTO` without server-side flags, so only a
+    /// request that narrows, disables, or validates tool use needs the body
+    /// field.
     fn body_tool_config_is_non_default(gemini_request: &GenerateContentRequest) -> bool {
-        let Some(config) = gemini_request.tool_config.as_ref() else {
-            return false;
-        };
-        let constrained_mode = config
-            .function_calling_config
-            .as_ref()
-            .is_some_and(|calling| calling.mode != "AUTO" || calling.allowed_function_names.is_some());
-        constrained_mode || config.include_server_side_tool_invocations == Some(true)
+        gemini_request.tool_config.as_ref().is_some_and(|config| !config.is_default())
     }
 
     /// Ensure a `cachedContents` entry exists for the request's stable
@@ -182,9 +175,9 @@ impl GeminiProvider {
     /// Conversation contents remain on the request.
     ///
     /// The API rejects `systemInstruction`, `tools`, and `toolConfig` next to
-    /// `cachedContent`, so all three are dropped here. Requests whose tool
-    /// choice is not the default `AUTO` never reach this function (see
-    /// [`Self::request_requires_body_tool_config`]).
+    /// `cachedContent`, so all three are dropped here. A request whose built
+    /// tool configuration is not the API default never reaches this function
+    /// (see [`Self::body_tool_config_is_non_default`]).
     pub(super) fn apply_explicit_cache_to_request(
         &self,
         mut gemini_request: GenerateContentRequest,

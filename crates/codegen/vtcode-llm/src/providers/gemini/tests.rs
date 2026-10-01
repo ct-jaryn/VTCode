@@ -1731,29 +1731,7 @@ mod caching_tests {
         )
     }
 
-    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        if let Some(message) = payload.downcast_ref::<String>() {
-            return message.clone();
-        }
-        if let Some(message) = payload.downcast_ref::<&str>() {
-            return (*message).to_string();
-        }
-        "unknown panic".to_string()
-    }
-
-    async fn start_mock_server_or_skip() -> Option<wiremock::MockServer> {
-        match tokio::spawn(async { wiremock::MockServer::start().await }).await {
-            Ok(server) => Some(server),
-            Err(err) if err.is_panic() => {
-                let message = panic_message(err.into_panic());
-                if message.contains("Operation not permitted") || message.contains("PermissionDenied") {
-                    return None;
-                }
-                panic!("mock server should start: {message}");
-            }
-            Err(err) => panic!("mock server task should complete: {err}"),
-        }
-    }
+    use crate::providers::test_support::start_mock_server_or_skip;
 
     /// First attempt carries `cachedContent` and gets a stale-cache 404; the
     /// uncached retry gets a minimal SSE success.
@@ -1870,9 +1848,10 @@ mod caching_tests {
 
     /// The API forbids `toolConfig` next to `cachedContent`, so a request that
     /// constrains tool use must keep the implicit shape and send the config
-    /// itself; otherwise the constraint is silently lost.
+    /// itself; otherwise the constraint is silently lost. The segment entry
+    /// must survive that skip so later default-config turns reuse it.
     #[tokio::test]
-    async fn constrained_tool_choice_skips_explicit_cache_and_keeps_body_config() {
+    async fn constrained_tool_choice_skips_cache_without_losing_the_segment_entry() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
 
@@ -1893,7 +1872,7 @@ mod caching_tests {
             .await;
 
         let provider = explicit_cache_provider(&server.uri(), model);
-        let request = LLMRequest {
+        let default_request = |tool_choice: Option<ToolChoice>| LLMRequest {
             model: model.to_string(),
             messages: vec![Message::user("hello".to_string())].into(),
             tools: Some(Arc::new(vec![ToolDefinition::function(
@@ -1905,29 +1884,60 @@ mod caching_tests {
                     "required": ["query"]
                 }),
             )])),
-            tool_choice: Some(ToolChoice::None),
+            tool_choice,
             ..Default::default()
         };
-        if let Err(err) = provider.stream(request).await {
+
+        // 1. A default-config turn installs the segment entry.
+        if let Err(err) = provider.stream(default_request(None)).await {
+            panic!("the default-config turn must succeed: {err}");
+        }
+        let installed = provider
+            .explicit_cache
+            .current()
+            .expect("the default-config turn installs a segment entry")
+            .0;
+        assert_eq!(installed, "cachedContents/vtcode-test");
+
+        // 2. The constrained turn keeps its config on the body and must not
+        //    clear or replace the installed entry.
+        if let Err(err) = provider.stream(default_request(Some(ToolChoice::None))).await {
             panic!("a constrained tool choice must stay enforceable on the wire: {err}");
+        }
+        assert_eq!(
+            provider.explicit_cache.current().map(|(name, _)| name).as_deref(),
+            Some(installed.as_str()),
+            "skipping the cache must not lose the segment entry"
+        );
+
+        // 3. The next default-config turn reuses that same entry.
+        if let Err(err) = provider.stream(default_request(None)).await {
+            panic!("the following default-config turn must succeed: {err}");
         }
 
         let requests = server.received_requests().await.expect("received requests");
-        assert!(
-            !requests.iter().any(|request| request.url.path().ends_with("/cachedContents")),
-            "a constrained tool choice must not create or reuse an explicit cache entry"
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path().ends_with("/cachedContents"))
+                .count(),
+            1,
+            "only the default-config turn may create the cache"
         );
         let attempts = stream_attempts(&requests);
-        assert_eq!(attempts.len(), 1, "the constrained request must go out exactly once");
-        let body: Value = serde_json::from_slice(&attempts[0].body).expect("stream body");
-        assert!(body.get("cachedContent").is_none(), "the constraint cannot travel alongside cachedContent");
+        assert_eq!(attempts.len(), 3, "each turn issues exactly one stream request");
+        let body = |index: usize| -> Value { serde_json::from_slice(&attempts[index].body).expect("stream body") };
+        assert_eq!(body(0)["cachedContent"], "cachedContents/vtcode-test");
+        assert!(body(1).get("cachedContent").is_none(), "the constraint cannot travel alongside cachedContent");
         assert_eq!(
-            body["toolConfig"]["functionCallingConfig"]["mode"], "NONE",
+            body(1)["toolConfig"]["functionCallingConfig"]["mode"],
+            "NONE",
             "the disabled-tool constraint must reach the provider"
         );
-        assert!(
-            provider.explicit_cache.current().is_none(),
-            "no segment entry is installed for the constrained request"
+        assert_eq!(
+            body(2)["cachedContent"],
+            "cachedContents/vtcode-test",
+            "the following default-config turn must reuse the surviving entry"
         );
     }
 }

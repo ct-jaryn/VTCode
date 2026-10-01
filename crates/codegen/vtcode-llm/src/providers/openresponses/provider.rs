@@ -1052,31 +1052,9 @@ mod tests {
     use crate::provider::NormalizedStreamEvent;
     use futures::StreamExt;
     use wiremock::matchers::{body_json, body_partial_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, ResponseTemplate};
 
-    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        if let Some(message) = payload.downcast_ref::<String>() {
-            return message.clone();
-        }
-        if let Some(message) = payload.downcast_ref::<&str>() {
-            return (*message).to_string();
-        }
-        "unknown panic".to_string()
-    }
-
-    async fn start_mock_server_or_skip() -> Option<MockServer> {
-        match tokio::spawn(async { MockServer::start().await }).await {
-            Ok(server) => Some(server),
-            Err(err) if err.is_panic() => {
-                let message = panic_message(err.into_panic());
-                if message.contains("Operation not permitted") || message.contains("PermissionDenied") {
-                    return None;
-                }
-                panic!("mock server should start: {message}");
-            }
-            Err(err) => panic!("mock server task should complete: {err}"),
-        }
-    }
+    use crate::providers::test_support::start_mock_server_or_skip;
 
     fn test_provider(base_url: &str) -> OpenResponsesProvider {
         let http_client = reqwest::Client::builder().no_proxy().build().expect("test client should build");
