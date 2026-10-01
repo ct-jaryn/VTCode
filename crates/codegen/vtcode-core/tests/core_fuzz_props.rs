@@ -216,14 +216,18 @@ fn fuzz_empty_command_is_safe() {
     assert!(!command_might_be_dangerous(&empty));
 }
 
-/// Known invariants for dangerous commands
+/// Known invariants for dangerous commands. Only the destructive modes of
+/// the guarded git subcommands are preflight-blocked; recoverable forms
+/// (`git reset --soft`, `git rm --cached`, `git branch -d`) pass preflight
+/// and proceed through normal policy routing.
 #[test]
 fn fuzz_known_dangerous_commands() {
     let dangerous_cases = vec![
-        vec!["git", "reset"],
         vec!["git", "reset", "--hard"],
+        vec!["git", "reset", "--merge"],
+        vec!["git", "reset", "--keep"],
         vec!["git", "rm"],
-        vec!["git", "branch", "-d", "feature"],
+        vec!["git", "rm", "file.txt"],
         vec!["git", "branch", "-D", "feature"],
         vec!["git", "push", "--force"],
         vec!["git", "push", "-f"],
@@ -250,6 +254,10 @@ fn fuzz_known_safe_commands() {
         vec!["git", "diff"],
         vec!["git", "push", "origin", "main"],
         vec!["git", "checkout", "reset"],
+        vec!["git", "reset"],
+        vec!["git", "reset", "--soft", "HEAD~1"],
+        vec!["git", "rm", "--cached", "file.txt"],
+        vec!["git", "branch", "-d", "feature"],
         vec!["ls", "-la"],
         vec!["echo", "hello"],
         vec!["rm", "file.txt"],
