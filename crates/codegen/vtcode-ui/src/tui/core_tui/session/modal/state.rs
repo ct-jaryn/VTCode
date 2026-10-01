@@ -591,13 +591,18 @@ impl ModalListState {
             })
             .collect();
         let total_selectable = converted.iter().filter(|item| item.selection.is_some()).count();
-        // Compact single-spacing is the default for subtitle lists: title plus
-        // dimmed subtitle with no blank separator row. Single-line lists render
-        // identically either way.
-        let compact_rows = converted
-            .iter()
-            .any(|item| item.subtitle.as_ref().is_some_and(|subtitle| !subtitle.trim().is_empty()));
         let density_behavior = Self::density_behavior_for_items(&converted);
+        // Shared config lists (settings, model/provider groups) keep comfortable
+        // spacing with a blank separator row between items so dense subtitles
+        // stay scannable. Other subtitle lists (pickers, menus) stay compact
+        // to avoid pushing long catalogs off-screen; single-line lists render
+        // identically either way.
+        let compact_rows = match density_behavior {
+            ModalListDensityBehavior::FixedComfortable => false,
+            ModalListDensityBehavior::Adjustable => converted
+                .iter()
+                .any(|item| item.subtitle.as_ref().is_some_and(|subtitle| !subtitle.trim().is_empty())),
+        };
         let mut modal_state = Self {
             visible_indices: (0..converted.len()).collect(),
             items: converted,

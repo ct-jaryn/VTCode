@@ -14,7 +14,7 @@ const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
-    /// AI provider for single agent mode (gemini, openai, anthropic, meta, openrouter, zai)
+    /// Active provider for single-agent runs.
     #[serde(default = "default_provider")]
     pub provider: String,
 
@@ -22,7 +22,7 @@ pub struct AgentConfig {
     #[serde(default = "default_api_key_env")]
     pub api_key_env: String,
 
-    /// Default model to use
+    /// Default model for new conversations.
     #[serde(default = "default_model")]
     pub default_model: String,
 
@@ -91,29 +91,22 @@ pub struct AgentConfig {
     #[serde(default = "default_idle_turn_limit")]
     pub idle_turn_limit: usize,
 
-    /// Reasoning effort level for models that support it (none, minimal, low, medium, high, xhigh, max)
-    /// Applies to: Claude, GPT-5 family, Gemini, Qwen3, DeepSeek with reasoning capability
+    /// Reasoning depth for capable models (none to max).
     #[serde(default = "default_reasoning_effort")]
     pub reasoning_effort: ReasoningEffortLevel,
     /// Permit a lower supported effort with an explicit harness diagnostic.
     #[serde(default)]
     pub allow_reasoning_effort_downgrade: bool,
 
-    /// Verbosity level for output text (low, medium, high)
-    /// Applies to: GPT-5.4-family Responses workflows and other models that support verbosity control
+    /// Output verbosity for supported models (low to high).
     #[serde(default = "default_verbosity")]
     pub verbosity: VerbosityLevel,
 
-    /// Temperature for main LLM responses (0.0-1.0)
-    /// Lower values = more deterministic, higher values = more creative
-    /// Recommended: 0.7 for balanced creativity and consistency
-    /// Range: 0.0 (deterministic) to 1.0 (maximum randomness)
+    /// Sampling temperature (0.0 precise to 1.0 creative).
     #[serde(default = "default_temperature")]
     pub temperature: f32,
 
-    /// Temperature for prompt refinement (0.0-1.0, default: 0.3)
-    /// Lower values ensure prompt refinement is more deterministic/consistent
-    /// Keep lower than main temperature for stable prompt improvement
+    /// Temperature for prompt refinement (0.0-1.0).
     #[serde(default = "default_refine_temperature")]
     pub refine_temperature: f32,
 

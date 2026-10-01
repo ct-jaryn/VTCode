@@ -1015,7 +1015,7 @@ fn list_modal_alt_d_is_swallowed_without_changing_density() {
         status: None,
     };
 
-    assert!(modal.list.as_ref().expect("config list should exist").compact_rows());
+    assert!(!modal.list.as_ref().expect("config list should exist").compact_rows());
 
     let result = modal.handle_list_key_event(
         &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
@@ -1023,7 +1023,7 @@ fn list_modal_alt_d_is_swallowed_without_changing_density() {
     );
 
     assert!(matches!(result, ModalListKeyResult::HandledNoRedraw));
-    assert!(modal.list.as_ref().expect("config list should exist").compact_rows());
+    assert!(!modal.list.as_ref().expect("config list should exist").compact_rows());
 }
 
 #[test]

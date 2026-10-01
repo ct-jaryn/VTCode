@@ -570,6 +570,36 @@ fn push_split_word(lines: &mut Vec<String>, word: &str, width: usize, continuati
     rest.to_string()
 }
 
+/// Format an `f64` float for display, collapsing `f32`-widening artifacts.
+///
+/// Config floats backed by `f32` (temperatures, thresholds) widen to long
+/// `f64` tails (`0.7` becomes `0.699999988079071`) once serialized to
+/// `toml::Value`. When the value round-trips exactly through `f32`, the
+/// shorter `f32` form is displayed; otherwise full `f64` precision is kept
+/// so genuine precision is never silently dropped. Display-only: the stored
+/// value is untouched.
+///
+/// ```
+/// # use vtcode_commons::formatting::format_float_display;
+/// assert_eq!(format_float_display(0.699999988079071), "0.7");
+/// assert_eq!(format_float_display(0.3), "0.3");
+/// assert_eq!(format_float_display(0.30000000000000004), "0.30000000000000004");
+/// ```
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_cmp,
+    reason = "Narrowing `f64` to `f32` and comparing exactly is the detection mechanism: only exact round-trips collapse."
+)]
+pub fn format_float_display(value: f64) -> String {
+    if value.is_finite() {
+        let narrowed = value as f32;
+        if (narrowed as f64) == value {
+            return narrowed.to_string();
+        }
+    }
+    value.to_string()
+}
+
 /// Truncate a string so that the retained prefix is at most `max_bytes` bytes,
 /// rounded down to the nearest UTF-8 char boundary.  Returns the truncated
 /// prefix with `suffix` appended, or the original string when it already fits.
@@ -721,6 +751,24 @@ pub fn compact_reasoning_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_float_display_collapses_f32_widening() {
+        // `0.7f32` widened to `f64` is the exact artifact seen in the settings
+        // value column; asymmetric counterpart must keep full precision.
+        assert_eq!(format_float_display(f64::from(0.7f32)), "0.7");
+        assert_eq!(format_float_display(f64::from(0.3f32)), "0.3");
+        assert_eq!(format_float_display(f64::from(-0.7f32)), "-0.7");
+        assert_eq!(format_float_display(0.30000000000000004), "0.30000000000000004");
+    }
+
+    #[test]
+    fn format_float_display_keeps_plain_floats() {
+        assert_eq!(format_float_display(1.0), "1");
+        assert_eq!(format_float_display(0.0), "0");
+        assert_eq!(format_float_display(0.05), "0.05");
+        assert_eq!(format_float_display(0.75), "0.75");
+    }
 
     #[test]
     fn truncate_byte_budget_ascii() {

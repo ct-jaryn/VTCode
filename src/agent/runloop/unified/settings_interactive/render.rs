@@ -5,7 +5,7 @@ use crate::agent::runloop::unified::config_section_headings::{heading_for_path, 
 
 use super::docs::FieldDoc;
 use super::path::path_with_key;
-use vtcode_commons::formatting::truncate_middle;
+use vtcode_commons::formatting::{format_float_display, truncate_middle};
 
 pub(super) fn display_title(label: &str, path: &str, value: &TomlValue) -> String {
     if label.starts_with('[') && !ends_with_quoted_map_key(path) {
@@ -94,7 +94,7 @@ fn collect_search_terms(path: &str, value: &TomlValue, parts: &mut Vec<String>) 
     match value {
         TomlValue::String(value) => parts.push(value.clone()),
         TomlValue::Integer(value) => parts.push(value.to_string()),
-        TomlValue::Float(value) => parts.push(value.to_string()),
+        TomlValue::Float(value) => parts.push(format_float_display(*value)),
         TomlValue::Boolean(value) => {
             parts.push(value.to_string());
             parts.push(if *value { "on" } else { "off" }.to_string());
@@ -139,7 +139,7 @@ pub(super) fn summarize_value(value: &TomlValue) -> String {
     match value {
         TomlValue::String(text) => truncate_middle(text, 48),
         TomlValue::Integer(number) => number.to_string(),
-        TomlValue::Float(number) => number.to_string(),
+        TomlValue::Float(number) => format_float_display(*number),
         TomlValue::Boolean(value) => {
             if *value {
                 "On".to_string()
@@ -161,6 +161,17 @@ pub(super) fn summarize_value(value: &TomlValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summarize_value_collapses_f32_temperature_artifact() {
+        // Screenshot artifact: `temperature = 0.7` (`f32`) rendered as
+        // `0.699999988079071` after widening to `f64`; the asymmetric
+        // counterpart keeps genuine `f64` precision intact.
+        assert_eq!(summarize_value(&TomlValue::Float(f64::from(0.7f32))), "0.7");
+        assert_eq!(summarize_value(&TomlValue::Float(f64::from(0.3f32))), "0.3");
+        assert_eq!(summarize_value(&TomlValue::Float(0.30000000000000004)), "0.30000000000000004");
+        assert_eq!(summarize_value(&TomlValue::Float(1.0)), "1");
+    }
 
     #[test]
     fn display_title_preserves_quoted_map_key_for_table() {

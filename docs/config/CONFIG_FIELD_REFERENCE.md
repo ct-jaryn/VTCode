@@ -37,7 +37,7 @@ python3 scripts/generate_config_field_reference.py
 | `agent.credential_storage_mode` | `string` | no | `"auto"` | Preferred storage backend for credentials (OAuth tokens, API keys, etc.) - `keyring`: Use OS-specific secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service), with encrypted-file fallback when unavailable. - `file`: Use AES-256-GCM encrypted file with machine-derived key - `auto`: Try keyring first, fall back to file if unavailable |
 | `agent.custom_api_keys` | `object` | no | `-` | Provider/key identities captured from interactive configuration flows Note: Actual API keys are stored securely in the configured credential backend (OS keyring when available, otherwise encrypted file storage). Keys use `<provider>/<environment-variable>` identity keys and this field only tracks which identities have keys stored (for UI/migration purposes). The keys themselves are NOT serialized to the config file for security. |
 | `agent.custom_api_keys.*` | `string` | no | `-` | - |
-| `agent.default_model` | `string` | no | `"xiaomi/mimo-v2.6-pro"` | Default model to use |
+| `agent.default_model` | `string` | no | `"xiaomi/mimo-v2.6-pro"` | Default model for new conversations. |
 | `agent.enable_self_review` | `boolean` | no | `false` | Enable an extra self-review pass to refine final responses |
 | `agent.enable_split_tool_results` | `boolean` | no | `true` | Enable split tool results for massive token savings (Phase 4) When enabled, tools return dual-channel output: - llm_content: Concise summary sent to LLM (token-optimized, 53-95% reduction) - ui_content: Rich output displayed to user (full details preserved) Applies to: exec_command, code_search, apply_patch, and retained internal helpers Default: true (opt-out for compatibility), recommended for production use |
 | `agent.harness.async_approval.auto_approve_below_usd` | `number` | no | `0.1` | Auto-approve tool calls whose estimated cost is below this threshold (USD). Set to 0.0 to require approval for everything. |
@@ -138,12 +138,12 @@ python3 scripts/generate_config_field_reference.py
 | `agent.prompt_suggestions.model` | `string` | no | `""` | Lightweight model to use for suggestions. Leave empty to auto-select an efficient sibling of the main model. |
 | `agent.prompt_suggestions.show_cost_notice` | `boolean` | no | `true` | Whether VT Code should remind users that LLM-backed suggestions consume tokens. |
 | `agent.prompt_suggestions.temperature` | `number` | no | `0.3` | Temperature for inline prompt suggestion generation. |
-| `agent.provider` | `string` | no | `"openrouter"` | AI provider for single agent mode (gemini, openai, anthropic, meta, openrouter, vercel, zai) |
-| `agent.reasoning_effort` | `string` | no | `"none"` | Reasoning effort level for models that support it (none, minimal, low, medium, high, xhigh, max) Applies to: Claude, GPT-5 family, Gemini, Qwen3, DeepSeek with reasoning capability |
+| `agent.provider` | `string` | no | `"openrouter"` | Active provider for single-agent runs. |
+| `agent.reasoning_effort` | `string` | no | `"none"` | Reasoning depth for capable models (none to max). |
 | `agent.refine_prompts_enabled` | `boolean` | no | `false` | Enable prompt refinement pass before sending to LLM |
 | `agent.refine_prompts_max_passes` | `integer` | no | `1` | Max refinement passes for prompt writing |
 | `agent.refine_prompts_model` | `string` | no | `""` | Optional model override for the refiner (empty = auto pick efficient sibling) |
-| `agent.refine_temperature` | `number` | no | `0.3` | Temperature for prompt refinement (0.0-1.0, default: 0.3) Lower values ensure prompt refinement is more deterministic/consistent Keep lower than main temperature for stable prompt improvement |
+| `agent.refine_temperature` | `number` | no | `0.3` | Temperature for prompt refinement (0.0-1.0). |
 | `agent.require_plan_confirmation` | `boolean` | no | `true` | Require user confirmation before executing a plan generated in planning workflow When true, exiting planning workflow shows the implementation blueprint and requires explicit user approval before enabling edit tools. |
 | `agent.shell_prompt_profile` | `string` | no | `"auto"` | Shell syntax profile used in model-facing command examples. This controls prompt wording only; command policy remains in the runtime. Values: auto, unix_like, powershell. |
 | `agent.small_model.enabled` | `boolean` | no | `true` | Enable small model tier for efficient operations |
@@ -155,7 +155,7 @@ python3 scripts/generate_config_field_reference.py
 | `agent.small_model.use_for_web_summary` | `boolean` | no | `true` | Enable small model for web content summarization |
 | `agent.system_prompt_budget_warning` | `boolean` | no | `true` | Warn when the composed system prompt exceeds `max_system_prompt_tokens`. |
 | `agent.system_prompt_mode` | `string` | no | `"minimal"` | System prompt mode controlling prompt verbosity and token overhead. Options target lean base prompts: minimal (~500 tokens, default), lightweight (~750 tokens), default and specialized (~900 tokens) before dynamic runtime addenda. |
-| `agent.temperature` | `number` | no | `0.7` | Temperature for main LLM responses (0.0-1.0) Lower values = more deterministic, higher values = more creative Recommended: 0.7 for balanced creativity and consistency Range: 0.0 (deterministic) to 1.0 (maximum randomness) |
+| `agent.temperature` | `number` | no | `0.7` | Sampling temperature (0.0 precise to 1.0 creative). |
 | `agent.temporal_context_use_utc` | `boolean` | no | `false` | Use UTC instead of local time for temporal context in system prompts |
 | `agent.theme` | `string` | no | `"ciapre"` | UI theme identifier controlling ANSI styling |
 | `agent.todo_planning_mode` | `boolean` | no | `true` | Enable TODO planning helper mode for structured task management |
@@ -163,7 +163,7 @@ python3 scripts/generate_config_field_reference.py
 | `agent.trim_system_prompt` | `boolean` | no | `true` | Trim advisory reasoning, skill summaries, and optional environment metadata when over budget. Set to `false` to warn without trimming; base, shell-safety, and active-tool contracts are never trimmed. |
 | `agent.ui_surface` | `string` | no | `"inline"` | Preferred rendering surface for the interactive chat UI (inline by default; auto, alternate, inline) |
 | `agent.user_instructions` | `null \| string` | no | `null` | Custom instructions provided by the user via configuration to guide agent behavior |
-| `agent.verbosity` | `string` | no | `"medium"` | Verbosity level for output text (low, medium, high) Applies to: GPT-5.4-family Responses workflows and other models that support verbosity control |
+| `agent.verbosity` | `string` | no | `"medium"` | Output verbosity for supported models (low to high). |
 | `agent.vibe_coding.enable_conversation_memory` | `boolean` | no | `true` | Enable conversation memory for pronoun resolution |
 | `agent.vibe_coding.enable_entity_resolution` | `boolean` | no | `true` | Enable fuzzy entity resolution |
 | `agent.vibe_coding.enable_proactive_context` | `boolean` | no | `true` | Enable proactive context gathering |
@@ -246,7 +246,7 @@ python3 scripts/generate_config_field_reference.py
 | `context.max_context_tokens` | `integer` | no | `0` | Optional session prompt safety ceiling. `0` uses the resolved model/provider capacity. The effective auto-compaction boundary is the smaller of the resolved capacity and this ceiling, less reserved output headroom. |
 | `context.preserve_recent_turns` | `integer` | no | `10` | Preserve recent turns during context management This field is maintained for compatibility but no longer used for trimming |
 | `context.trim_to_percent` | `integer` | no | `60` | Percentage to trim context to when it gets too large This field is maintained for compatibility but no longer used for trimming |
-| `custom_providers` | `array` | no | `[]` | User-defined OpenAI-compatible provider endpoints. These entries are editable in `/config` and appear in the model picker using each entry's `display_name`. Non-empty values from repository-controlled workspace/project layers are rejected; define provider endpoints in trusted system/user or explicitly selected config. |
+| `custom_providers` | `array` | no | `[]` | Extra OpenAI-compatible endpoints for the model picker. Define in user or system config only. |
 | `custom_providers[].api_format` | `string` | no | `-` | Typed API format for the provider's default profile. |
 | `custom_providers[].api_key_env` | `string` | no | `""` | Environment variable name that holds the API key for this endpoint (e.g., "MYCORP_API_KEY"). |
 | `custom_providers[].auth` | `CustomProviderCommandAuthConfig \| null` | no | `-` | Optional command-backed bearer token configuration. |

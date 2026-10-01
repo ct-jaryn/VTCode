@@ -2200,4 +2200,23 @@ mod tests {
         let item = modal_list_item_lines(&list, 1, 1, &styles, 60, None, false, None);
         assert_eq!(item.len(), 2, "title + subtitle only: {item:?}");
     }
+
+    #[test]
+    fn config_lists_keep_comfortable_spacing_between_items() {
+        let styles = modal_render_styles();
+        let list = ModalListState::new(
+            vec![InlineListItem {
+                title: "Temperature".to_string(),
+                value: Some("0.7".to_string()),
+                subtitle: Some("Sampling temperature (0.0 precise to 1.0 creative).".to_string()),
+                selection: Some(InlineListSelection::ConfigAction("settings:set:agent.temperature:inc".to_string())),
+                ..Default::default()
+            }],
+            None,
+        );
+        assert!(!list.compact_rows(), "config lists keep a blank separator row");
+        let item = modal_list_item_lines(&list, 0, 0, &styles, 60, None, false, None);
+        assert_eq!(item.len(), 3, "title + subtitle + gap: {item:?}");
+        assert!(item.last().is_some_and(|line| line.spans.is_empty()), "last row is the blank gap: {item:?}");
+    }
 }
