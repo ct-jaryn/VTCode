@@ -270,7 +270,7 @@ Before a PR, see the [contribution guide](./docs/CONTRIBUTING.md): Conventional 
 
 Thanks to everyone who builds, tests, and improves VT Code.
 
-<details>
+<details open>
 <summary>View all contributors</summary>
 
 <!-- CONTRIBUTORS:START -->
