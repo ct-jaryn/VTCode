@@ -1,3 +1,5 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-auth
 
 [Root AGENTS.md](../../../AGENTS.md) | OAuth PKCE flows and credential storage for LLM providers.
@@ -8,9 +10,7 @@
 
 ## Rules
 
-- All OAuth flows use PKCE — `generate_pkce_challenge()` is the entry point.
-- `credentials::CredentialStorage` supports keyring and file-based backends.
-- `oauth_server::run_auth_code_callback_server` starts a local HTTP server for OAuth callbacks.
+- All OAuth flows use PKCE — `generate_pkce_challenge()` is the entry point. `credentials::CredentialStorage` supports keyring and file-based backends. `oauth_server::run_auth_code_callback_server` starts a local HTTP server for OAuth callbacks.
 - Re-exported from `vtcode-config::auth` for backward compat — canonical code is here.
 
 ## Gotchas

@@ -248,7 +248,7 @@ jobs:
       - name: Audit locked dependencies against RustSec
         run: cargo audit --file Cargo.lock
 
-  # Run markdownlint on all markdown files in the repository.
+  # Lint maintained, tracked Markdown with the shared local selector.
   lint-markdown:
     name: Check Markdown
     runs-on: ubuntu-latest
@@ -266,14 +266,25 @@ jobs:
           filters: |
             markdown:
               - '**/*.md'
-              - '!.github/workflows/*.yml'
+              - '.markdownlint-cli2.jsonc'
+              - 'scripts/check_markdown.py'
+              - 'scripts/tests/test_check_markdown.py'
+              - 'scripts/generate_config_field_reference.py'
+              - 'scripts/generate_docs_map.py'
+              - 'scripts/tests/test_generate_config_field_reference.py'
+              - 'scripts/update-contributors-readme.sh'
+              - '.github/workflows/ci.yml'
               - '!target/**'
-      - uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.filter.outputs.markdown == 'true'
         with:
-          globs: |
-            '**/*.md'
-            '!target'
+          node-version: '24'
+      - name: Check maintained Markdown
+        if: steps.filter.outputs.markdown == 'true'
+        run: |
+          python3 scripts/tests/test_check_markdown.py
+          python3 scripts/tests/test_generate_config_field_reference.py
+          python3 scripts/check_markdown.py
 
   check-cross-platform:
     name: Cross-platform check ${{ matrix.os }}

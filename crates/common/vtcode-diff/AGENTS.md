@@ -1,3 +1,5 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-diff
 
 [Root AGENTS.md](../../../AGENTS.md) | Reusable bounded diff computation and semantic preview layout.

@@ -595,6 +595,9 @@ mod tests {
         );
 
         assert!(is_preflight_failure(&error));
+        let diagnosis = deterministic_error_diagnosis(&error, "execution");
+        assert!(diagnosis.next_action.contains("security"));
+        assert!(!diagnosis.next_action.contains("declared schema"));
     }
 
     #[test]

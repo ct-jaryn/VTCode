@@ -1,6 +1,7 @@
 # VT Code Downloads
 
-Welcome to the VT Code downloads center! VT Code is available across multiple platforms and IDEs to enhance your coding experience with AI-powered assistance.
+Welcome to the VT Code downloads center! VT Code is available across multiple platforms and IDEs to enhance your coding
+experience with AI-powered assistance.
 
 ## Available for Your IDE
 
@@ -16,23 +17,25 @@ The original VT Code extension for Visual Studio Code with LLM-native code under
 
 [![Open VSX Registry](https://img.shields.io/badge/Available-Open%20VSX-4CAF50?style=for-the-badge&logo=opensearch&logoColor=white)](https://open-vsx.org/extension/nguyenxuanvinh/vtcode-companion)
 
-VT Code is available for Windsurf through the Open VSX Registry. Install directly from the extensions marketplace or via VSIX file download.
+VT Code is available for Windsurf through the Open VSX Registry. Install directly from the extensions marketplace or via
+VSIX file download.
 
 ### Cursor
 
 [![Open VSX Registry](https://img.shields.io/badge/Available-Open%20VSX-2196F3?style=for-the-badge&logo=opensearch&logoColor=white)](https://open-vsx.org/extension/nguyenxuanvinh/vtcode-companion)
 
-VT Code is available for Cursor through the Open VSX Registry. Install directly from the extensions marketplace, via VSIX file, or using the CLI.
+VT Code is available for Cursor through the Open VSX Registry. Install directly from the extensions marketplace, via
+VSIX file, or using the CLI.
 
 ## What is VT Code?
 
 VT Code is a Rust-based AI coding assistant that provides:
 
--   **Semantic Code Understanding**: LLM-native code understanding and ripgrep integration
--   **Multi-Provider AI**: Support for OpenAI, Anthropic, Google, xAI, DeepSeek, and more
--   **Security First**: Built-in safeguards with human-in-the-loop controls
--   **Offline Analysis**: Analyze your codebase without sending code to external services
--   **Configurable**: Customizable through `vtcode.toml` configuration files
+- **Semantic Code Understanding**: LLM-native code understanding and ripgrep integration
+- **Multi-Provider AI**: Support for OpenAI, Anthropic, Google, xAI, DeepSeek, and more
+- **Security First**: Built-in safeguards with human-in-the-loop controls
+- **Offline Analysis**: Analyze your codebase without sending code to external services
+- **Configurable**: Customizable through `vtcode.toml` configuration files
 
 ## Prerequisites
 
@@ -53,7 +56,9 @@ brew install vtcode
 
 ### Visual Studio Code
 
-Install directly from the [VSCode Marketplace](https://marketplace.visualstudio.com/items?itemName=nguyenxuanvinh.vtcode-companion) or search for "vtcode-companion" in the Extensions panel.
+Install directly from the
+[VSCode Marketplace](https://marketplace.visualstudio.com/items?itemName=nguyenxuanvinh.vtcode-companion) or search for
+"vtcode-companion" in the Extensions panel.
 
 ### Windsurf
 
@@ -81,19 +86,20 @@ VT Code is available in Cursor's extensions marketplace powered by Open VSX:
 
 Alternative installation methods for Cursor:
 
--   **VSIX file**: Command Palette → **Extensions: Install from VSIX…**
--   **CLI**: `cursor --install-extension vtcode-companion-<version>.vsix`
--   **URL**: Direct installation may be available depending on your Cursor version
+- **VSIX file**: Command Palette → **Extensions: Install from VSIX…**
+- **CLI**: `cursor --install-extension vtcode-companion-<version>.vsix`
+- **URL**: Direct installation may be available depending on your Cursor version
 
 For detailed setup instructions, see our [Cursor and Windsurf Setup Guide](./cursor-windsurf-setup.md).
 
 ## Support and Documentation
 
--   [Documentation](../README.md)
--   [Troubleshooting](./troubleshooting.md)
--   [Community Discord](https://discord.gg/vtcode)
--   [GitHub Issues](https://github.com/vinhnx/vtcode/issues)
+- [Documentation](../README.md)
+- [Troubleshooting](./troubleshooting.md)
+- [Community Discord](https://discord.gg/vtcode)
+- [GitHub Issues](https://github.com/vinhnx/vtcode/issues)
 
 ---
 
-_VT Code is designed to work with your favorite IDE to provide LLM-native code understanding and AI assistance. All VS Code compatible editors can use VT Code through the Open VSX registry._
+_VT Code is designed to work with your favorite IDE to provide LLM-native code understanding and AI assistance. All VS
+Code compatible editors can use VT Code through the Open VSX registry._

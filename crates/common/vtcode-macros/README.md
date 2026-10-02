@@ -2,8 +2,7 @@
 
 Procedural macros for VT Code.
 
-`vtcode-macros` provides derive macros that eliminate boilerplate for common
-patterns in the VT Code codebase.
+`vtcode-macros` provides derive macros that eliminate boilerplate for common patterns in the VT Code codebase.
 
 <!-- cargo-rdme -->
 

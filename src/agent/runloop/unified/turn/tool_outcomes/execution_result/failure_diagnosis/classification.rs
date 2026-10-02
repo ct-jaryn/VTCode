@@ -14,16 +14,21 @@ pub(crate) fn deterministic_preflight_diagnosis(
     error: &str,
     circuit_tripped: bool,
 ) -> ToolFailureDiagnosis {
+    let policy_correction = vtcode_core::tools::error_messages::agent_execution::preflight_policy_correction(error);
     let tool_name = bounded_field(tool_name);
     let error = bounded_field(error);
     let next_action = if circuit_tripped {
         "Stop retrying this malformed call; tools are disabled for the next pass."
     } else {
-        "Correct the arguments using the declared schema, then retry once."
+        policy_correction.unwrap_or("Correct the arguments using the declared schema, then retry once.")
     };
     ToolFailureDiagnosis::new(
         format!("Tool preflight validation failed for '{tool_name}': {error}"),
-        "The call was rejected before execution because its arguments or safety preflight were invalid.",
+        if policy_correction.is_some() {
+            "The call was rejected before execution by the active planning or command security policy."
+        } else {
+            "The call was rejected before execution because its arguments or safety preflight were invalid."
+        },
         next_action,
     )
 }
@@ -124,6 +129,15 @@ pub(crate) fn deterministic_error_diagnosis(error: &ToolExecutionError, failure_
             observed,
             "The supplied exec session ID is absent from this runtime; this does not establish the command's outcome.",
             "Recover the exact session ID from the original response. If completion is recorded, reuse its output. Rerun only if fresh execution is still needed.",
+        );
+    }
+    if let Some(correction) =
+        vtcode_core::tools::error_messages::agent_execution::preflight_policy_correction(&error_message)
+    {
+        return ToolFailureDiagnosis::new(
+            observed,
+            "The requested action was rejected by planning or command security policy.",
+            correction,
         );
     }
     let likely_cause = match error.category {

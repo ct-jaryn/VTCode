@@ -1,11 +1,10 @@
 # Editor Context Bridge
 
-VT Code accepts editor context from any IDE that writes a canonical JSON snapshot file and sets
-`VT_IDE_CONTEXT_FILE` in the VT Code process environment.
+VT Code accepts editor context from any IDE that writes a canonical JSON snapshot file and sets `VT_IDE_CONTEXT_FILE` in
+the VT Code process environment.
 
-When `VT_IDE_CONTEXT_FILE` is not set, VT Code also looks for a workspace-local fallback at
-`.vtcode/ide-context.json` and then `.vtcode/ide-context.md`. This is primarily for external
-terminal sessions started outside the IDE process.
+When `VT_IDE_CONTEXT_FILE` is not set, VT Code also looks for a workspace-local fallback at `.vtcode/ide-context.json`
+and then `.vtcode/ide-context.md`. This is primarily for external terminal sessions started outside the IDE process.
 
 ## Contract
 
@@ -14,8 +13,8 @@ terminal sessions started outside the IDE process.
 - Workspace fallback: `.vtcode/ide-context.json`
 - Snapshot version: `1`
 - Provider families: `vscode_compatible`, `zed`, `generic`
-- Backward compatibility: VT Code still reads `VT_VSCODE_CONTEXT_FILE` and legacy VS Code
-  markdown snapshots during migration
+- Backward compatibility: VT Code still reads `VT_VSCODE_CONTEXT_FILE` and legacy VS Code markdown snapshots during
+  migration
 
 ## Canonical payload
 
@@ -60,12 +59,11 @@ terminal sessions started outside the IDE process.
 
 ## Field notes
 
-- `active_file.path` may be absolute, relative to `workspace_root`, or an editor URI like
-  `untitled:Scratch-1`.
+- `active_file.path` may be absolute, relative to `workspace_root`, or an editor URI like `untitled:Scratch-1`.
 - `line_range` is optional and is usually the visible/editor-focused range.
 - `selection.text` is optional and should only be included for explicit selections.
-- `visible_editors` is optional. VT Code parses it for future use but does not inject it into the
-  prompt by default in this first pass.
+- `visible_editors` is optional. VT Code parses it for future use but does not inject it into the prompt by default in
+  this first pass.
 
 ## Integration checklist
 

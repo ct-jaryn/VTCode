@@ -1,3 +1,5 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-acp
 
 [Root AGENTS.md](../../../AGENTS.md) | Agent Client Protocol (Zed integration). Canonical ACP entrypoint.
@@ -10,13 +12,7 @@
 
 ## Rules
 
-- `AcpClientV2` is the current API. `AcpClient` is deprecated (legacy since 0.60.x).
-- `StandardAcpAdapter` / `ZedAcpAdapter` in `zed/` bridge protocol to Zed.
-- `register_acp_connection()` is a global `OnceLock<Arc<ConnectionHandle>>` — call once from the host protocol after the SACP `connect_with` closure receives the `cx`.
-- `acp` module in `vtcode-core` is the compatibility facade; canonical code lives here.
-- ACP 1.0.1 uses SACP builder + handlers, not the old `impl acp::Agent` trait. `handlers.rs` registers SACP request/notification handlers around `ZedAgent`.
-- `ZedAgent` is `Send + Sync` (`Arc<Mutex<_>>` + `AtomicBool`) so it can be moved into SACP `cx.spawn` tasks.
-- Tool execution RPCs (`fs/read_text_file`, `terminal/create`, `session/request_permission`) must be called from inside a `cx.spawn(...)` task — invoking them directly from an SACP request handler deadlocks the dispatch loop.
+- `AcpClientV2` is the current API. `AcpClient` is deprecated (legacy since 0.60.x). `StandardAcpAdapter` / `ZedAcpAdapter` in `zed/` bridge protocol to Zed. `register_acp_connection()` is a global `OnceLock<Arc<ConnectionHandle>>` — call once from the host protocol after the SACP `connect_with` closure receives the `cx`. `acp` module in `vtcode-core` is the compatibility facade; canonical code lives here. ACP 1.0.1 uses SACP builder + handlers, not the old `impl acp::Agent` trait. `handlers.rs` registers SACP request/notification handlers around `ZedAgent`. `ZedAgent` is `Send + Sync` (`Arc<Mutex<_>>` + `AtomicBool`) so it can be moved into SACP `cx.spawn` tasks. Tool execution RPCs (`fs/read_text_file`, `terminal/create`, `session/request_permission`) must be called from inside a `cx.spawn(...)` task — invoking them directly from an SACP request handler deadlocks the dispatch loop.
 - `ZedAgent` carries the configured `AuthCredentialsStoreMode`; provider-key resolution must use that mode rather than the platform default.
 
 ## Gotchas

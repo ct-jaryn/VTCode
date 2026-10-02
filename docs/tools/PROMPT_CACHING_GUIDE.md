@@ -1,29 +1,31 @@
 # Prompt Caching Guide
 
-The harness treats a cache prefix as an immutable segment. Tool definitions use
-deterministic core-first ordering followed by tool name and type, and the
-serialized catalog is reused for the segment. Catalog expansion through tool
+The harness treats a cache prefix as an immutable segment. Tool definitions use deterministic core-first ordering
+followed by tool name and type, and the serialized catalog is reused for the segment. Catalog expansion through tool
 discovery takes effect at the next segment boundary.
 
-Prompt caching lets VT Code reuse validated conversation prefixes across providers to reduce latency and token consumption. This guide explains how to configure the feature globally and fine-tune the per-provider behaviour exposed in `vtcode.toml`.
+Prompt caching lets VT Code reuse validated conversation prefixes across providers to reduce latency and token
+consumption. This guide explains how to configure the feature globally and fine-tune the per-provider behaviour exposed
+in `vtcode.toml`.
 
 ## Global Settings
 
 All prompt caching controls live under the `[prompt_cache]` section in `vtcode.toml`.
 
-| Key                     | Type    | Description                                                                                               |
-| ----------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
-| `enabled`               | bool    | Master switch for the caching subsystem. When disabled, per-provider overrides are ignored.               |
-| `cache_dir`             | string  | Path (supports `~`) where cache entries are persisted. Relative paths resolve against the workspace root. |
-| `max_entries`           | integer | Maximum entries persisted on disk before rotation.                                                        |
-| `max_age_days`          | integer | Maximum age of an entry before automatic eviction.                                                        |
-| `enable_auto_cleanup`   | bool    | If `true`, stale entries are purged during startup and shutdown.                                          |
-| `min_quality_threshold` | float   | Minimum quality score a completion must meet before it is cached.                                         |
-| `cache_friendly_prompt_shaping` | bool | Default-on prompt shaping that keeps volatile runtime context at the end of system prompts for better cache-prefix reuse. |
+| Key                             | Type    | Description                                                                                                               |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | bool    | Master switch for the caching subsystem. When disabled, per-provider overrides are ignored.                               |
+| `cache_dir`                     | string  | Path (supports `~`) where cache entries are persisted. Relative paths resolve against the workspace root.                 |
+| `max_entries`                   | integer | Maximum entries persisted on disk before rotation.                                                                        |
+| `max_age_days`                  | integer | Maximum age of an entry before automatic eviction.                                                                        |
+| `enable_auto_cleanup`           | bool    | If `true`, stale entries are purged during startup and shutdown.                                                          |
+| `min_quality_threshold`         | float   | Minimum quality score a completion must meet before it is cached.                                                         |
+| `cache_friendly_prompt_shaping` | bool    | Default-on prompt shaping that keeps volatile runtime context at the end of system prompts for better cache-prefix reuse. |
 
 ## Provider Overrides
 
-Each provider exposes an override block under `[prompt_cache.providers]`. Overrides are only honoured when both the global `enabled` flag and the provider-level `enabled` flag are `true`.
+Each provider exposes an override block under `[prompt_cache.providers]`. Overrides are only honoured when both the
+global `enabled` flag and the provider-level `enabled` flag are `true`.
 
 ### OpenAI
 
@@ -37,29 +39,47 @@ surface_metrics = true
 
 - `min_prefix_tokens` — minimum number of prompt tokens before the API is asked to cache the prefix.
 - `idle_expiration_seconds` — how long (in seconds) a cached prefix can remain idle before expiry.
-- `surface_metrics` — when enabled, OpenAI usage responses expose cache-hit statistics surfaced through VT Code’s usage telemetry.
-- `prompt_cache_retention` — optional OpenAI Responses API retention policy for cached prefixes. Supported values are `"in_memory"` and `"24h"`.
-- Default: `None` (opt-in) - VT Code does not set prompt_cache_retention by default; so OpenAI keeps its default `in_memory` behavior unless you opt in explicitly.
-- GPT-5.6-family Responses requests additionally send `prompt_cache_options: {"ttl": "30m"}` by default (currently the only TTL OpenAI accepts for these models), declaring cache intent explicitly instead of relying on the implicit default alone. An explicit catalog TTL or a configured `prompt_cache_retention` takes precedence where applicable.
-- GPT-5.6+ Responses requests mark explicit `prompt_cache_breakpoint` boundaries on stable history (up to 4). Pre-5.6 exact matching only had the implicit latest-message breakpoint, so a growing conversation never partial-matched; explicit markers let later turns reuse the stable prefix while the suffix churns. The relocated `[System reminder]` tail never receives a marker (it varies per turn); a single-item request still marks its one stable item so the first request writes. Older models reject the field, so markers are 5.6-family-only. Markers are also first-party-only: VT Code emits them solely on the native api.openai.com backend. Third-party Responses-compatible endpoints (for example Merge Gateway through a base-URL override) reject the field with 400 `invalid_parameter`, and the ChatGPT subscription backend rejects it with 400 `prompt_cache_breakpoint is not supported on this model`; those backends keep the implicit latest-message breakpoint, so caching still works — only the explicit stable-prefix markers are dropped.
-- Responses `instructions` carry only the stable system prefix. Volatile sections (`[Harness Limits]`, `[Runtime Tool Catalog]`, `[Deferred Tools]`, planning notices, `## Environment`) and history `System` messages (compaction summaries, resume notes) move to a trailing `[System reminder]` input item, mirroring the Anthropic wire split. Chat Completions likewise sends stable instructions as the leading system message and volatile sections as a trailing system message. History order is otherwise untouched.
+- `surface_metrics` — when enabled, OpenAI usage responses expose cache-hit statistics surfaced through VT Code’s usage
+  telemetry.
+- `prompt_cache_retention` — optional OpenAI Responses API retention policy for cached prefixes. Supported values are
+  `"in_memory"` and `"24h"`.
+- Default: `None` (opt-in) - VT Code does not set prompt_cache_retention by default; so OpenAI keeps its default
+  `in_memory` behavior unless you opt in explicitly.
+- GPT-5.6-family Responses requests additionally send `prompt_cache_options: {"ttl": "30m"}` by default (currently the
+  only TTL OpenAI accepts for these models), declaring cache intent explicitly instead of relying on the implicit
+  default alone. An explicit catalog TTL or a configured `prompt_cache_retention` takes precedence where applicable.
+- GPT-5.6+ Responses requests mark explicit `prompt_cache_breakpoint` boundaries on stable history (up to 4). Pre-5.6
+  exact matching only had the implicit latest-message breakpoint, so a growing conversation never partial-matched;
+  explicit markers let later turns reuse the stable prefix while the suffix churns. The relocated `[System reminder]`
+  tail never receives a marker (it varies per turn); a single-item request still marks its one stable item so the first
+  request writes. Older models reject the field, so markers are 5.6-family-only. Markers are also first-party-only: VT
+  Code emits them solely on the native api.openai.com backend. Third-party Responses-compatible endpoints (for example
+  Merge Gateway through a base-URL override) reject the field with 400 `invalid_parameter`, and the ChatGPT subscription
+  backend rejects it with 400 `prompt_cache_breakpoint is not supported on this model`; those backends keep the implicit
+  latest-message breakpoint, so caching still works — only the explicit stable-prefix markers are dropped.
+- Responses `instructions` carry only the stable system prefix. Volatile sections (`[Harness Limits]`,
+  `[Runtime Tool Catalog]`, `[Deferred Tools]`, planning notices, `## Environment`) and history `System` messages
+  (compaction summaries, resume notes) move to a trailing `[System reminder]` input item, mirroring the Anthropic wire
+  split. Chat Completions likewise sends stable instructions as the leading system message and volatile sections as a
+  trailing system message. History order is otherwise untouched.
 - Example CLI override to enable 24h retention for Responses model:
 
-    ```bash
-    vtcode --model gpt-5 --config prompt_cache.providers.openai.prompt_cache_retention=24h ask "Explain this function"
-    ```
+  ```bash
+  vtcode --model gpt-5 --config prompt_cache.providers.openai.prompt_cache_retention=24h ask "Explain this function"
+  ```
 
 - To list all Response-API-enabled OpenAI models:
 
-    ```bash
-    vtcode models list --provider openai
-    ```
+  ```bash
+  vtcode models list --provider openai
+  ```
 
 - Applies only to OpenAI models that use the Responses API; for other models this value is ignored.
 
 ## Prefix Stability Rules
 
-Prompt caching on Responses-style providers only hits when the new request keeps an exact prefix match. In VT Code, the most common cache breakers are:
+Prompt caching on Responses-style providers only hits when the new request keeps an exact prefix match. In VT Code, the
+most common cache breakers are:
 
 - Changing `model`, `tools`, or sandbox/environment instruction blocks mid-session.
 - Reordering tools between requests.
@@ -67,11 +87,14 @@ Prompt caching on Responses-style providers only hits when the new request keeps
 - Putting a per-second timestamp in the static system prompt.
 - Sending compaction/summarization as a fresh single-message prompt instead of forking the parent prefix.
 
-To reduce avoidable misses, VT Code keeps tool ordering deterministic and defers MCP `tools/list_changed` refreshes to turn boundaries so an active turn sees a stable tool catalog.
-VT Code enables `prompt_cache.cache_friendly_prompt_shaping = true` by default. When it is enabled, VT Code applies provider-aware shaping:
+To reduce avoidable misses, VT Code keeps tool ordering deterministic and defers MCP `tools/list_changed` refreshes to
+turn boundaries so an active turn sees a stable tool catalog. VT Code enables
+`prompt_cache.cache_friendly_prompt_shaping = true` by default. When it is enabled, VT Code applies provider-aware
+shaping:
 
 - OpenAI, Gemini, DeepSeek, OpenRouter, Moonshot, Z.AI: move volatile counters to a trailing `[Runtime Context]` block.
-- Anthropic and MiniMax: same trailing runtime block, plus Anthropic-format system prompt splitting so runtime context is sent as an uncached block.
+- Anthropic and MiniMax: same trailing runtime block, plus Anthropic-format system prompt splitting so runtime context
+  is sent as an uncached block.
 
 ### Static first, dynamic last
 
@@ -80,76 +103,145 @@ The harness lays out every prompt so stable pieces stay cached and only the conv
 1. Static system prompt and tool definitions (globally cached).
 2. Project instruction layers (`AGENTS.md` / `CLAUDE.md`, cached within a project).
 3. Session-stable routing (`## Skills` before the more volatile `## Active Tools`).
-4. Dynamic suffix: `## Environment` (date-only, never clock time), planning/full-auto notices, `[Harness Limits]`, `[Runtime Tool Catalog]`, conversation messages.
+4. Dynamic suffix: `## Environment` (date-only, never clock time), planning/full-auto notices, `[Harness Limits]`,
+   `[Runtime Tool Catalog]`, conversation messages.
 
-Planning and full-auto transitions are runtime mode changes: they are conveyed in the uncached dynamic suffix (and gated at execution), never by rewriting the stable prefix or swapping the tool set mid-segment. A planning toggle ends the current cache-stable segment once by design (logged as `planning_workflow_enabled/disabled`); the next request re-establishes the prefix and subsequent turns hit again.
+Planning and full-auto transitions are runtime mode changes: they are conveyed in the uncached dynamic suffix (and gated
+at execution), never by rewriting the stable prefix or swapping the tool set mid-segment. A planning toggle ends the
+current cache-stable segment once by design (logged as `planning_workflow_enabled/disabled`); the next request
+re-establishes the prefix and subsequent turns hit again.
 
-Temporal context in the system prompt is date-only (`- Date:`). Precise clock time belongs in a `<system-reminder>` history message on turns that actually need it, so the cached prefix stays stable all day.
+Temporal context in the system prompt is date-only (`- Date:`). Precise clock time belongs in a `<system-reminder>`
+history message on turns that actually need it, so the cached prefix stays stable all day.
 
 ### Cache-safe compaction forking
 
-When the context window fills, compaction forks the cached call: the request reuses the parent segment's exact system prompt, ordered tools, and conversation prefix, with only the compaction instruction appended as the new final turn. The summary is then installed and a new immutable segment begins (`thread.compact_boundary` records the before/after prefix and catalog hashes). Standalone single-message summarization (no parent prefix) is only a fallback and pays full input cost.
+When the context window fills, compaction forks the cached call: the request reuses the parent segment's exact system
+prompt, ordered tools, and conversation prefix, with only the compaction instruction appended as the new final turn. The
+summary is then installed and a new immutable segment begins (`thread.compact_boundary` records the before/after prefix
+and catalog hashes). Standalone single-message summarization (no parent prefix) is only a fallback and pays full input
+cost.
 
-All local summarization paths fork this way: flat single-pass summaries, hierarchical abstract/detail band requests (which reuse the parent system/tools prefix with `tool_choice: none`), and prefire two-pass pass-2 requests. Native inline compaction (`compact_20260112`) likewise attaches the parent system/tools prefix with `tool_choice: none`, and its local fallbacks forward the parent so a rejected inline attempt does not lose the fork. Provider-native standalone compaction (OpenAI `/responses/compact`) is server-side and needs no fork.
+All local summarization paths fork this way: flat single-pass summaries, hierarchical abstract/detail band requests
+(which reuse the parent system/tools prefix with `tool_choice: none`), and prefire two-pass pass-2 requests. Native
+inline compaction (`compact_20260112`) likewise attaches the parent system/tools prefix with `tool_choice: none`, and
+its local fallbacks forward the parent so a rejected inline attempt does not lose the fork. Provider-native standalone
+compaction (OpenAI `/responses/compact`) is server-side and needs no fork.
 
 ### Tool-free recovery keeps the tool prefix
 
-Tool-free recovery (budget exhaustion, blocked-call fuse, loop detector) must not rewrite the provider prefix. OpenAI's prompt-caching guide is explicit: disable tool use with `tool_choice: "none"` instead of removing tool definitions — omitting `tools` rewrites the rendered prefix and invalidates the cache.
+Tool-free recovery (budget exhaustion, blocked-call fuse, loop detector) must not rewrite the provider prefix. OpenAI's
+prompt-caching guide is explicit: disable tool use with `tool_choice: "none"` instead of removing tool definitions —
+omitting `tools` rewrites the rendered prefix and invalidates the cache.
 
 VT Code therefore:
 
-- Keeps the same ordered tool catalog on the wire during recovery (and in the `[Runtime Tool Catalog]` section) as on tool-enabled turns.
+- Keeps the same ordered tool catalog on the wire during recovery (and in the `[Runtime Tool Catalog]` section) as on
+  tool-enabled turns.
 - Sets `tool_choice: none` on providers that accept it (OpenAI Responses/Chat, Anthropic).
-- On Merge Gateway, keeps the tool definitions but omits `tool_choice` entirely (Bedrock routes reject `tool_choice: "none"`). The harness still rejects tool calls during recovery.
-- Delivers the `[Recovery Mode]` contract as a request-only tail-position turn-scoped system message (the same mechanism as the collapsed-output notice), never as a system-prompt section, and freezes the `recovery_reason` inside it when the recovery activation starts so retries do not rotate the directive bytes. Later telemetry reasons do not rewrite that message.
+- On Merge Gateway, keeps the tool definitions but omits `tool_choice` entirely (Bedrock routes reject
+  `tool_choice: "none"`). The harness still rejects tool calls during recovery.
+- Delivers the `[Recovery Mode]` contract as a request-only tail-position turn-scoped system message (the same mechanism
+  as the collapsed-output notice), never as a system-prompt section, and freezes the `recovery_reason` inside it when
+  the recovery activation starts so retries do not rotate the directive bytes. Later telemetry reasons do not rewrite
+  that message.
 
-Because the system prompt is at the front of every request, any per-turn delta there (the old in-prompt `[Recovery Mode]` block included) would bust the entire cached prefix — tools, system, and all history. The tail-message placement keeps the system prompt byte-identical to the tool-enabled turns that gathered the evidence, so consecutive recovery turns reuse the same cached prefix. The directive is never persisted to canonical history, so it cannot outlive the recovery episode; routes without native turn-scoped support receive it through the request-only wire translation.
+Because the system prompt is at the front of every request, any per-turn delta there (the old in-prompt
+`[Recovery Mode]` block included) would bust the entire cached prefix — tools, system, and all history. The tail-message
+placement keeps the system prompt byte-identical to the tool-enabled turns that gathered the evidence, so consecutive
+recovery turns reuse the same cached prefix. The directive is never persisted to canonical history, so it cannot outlive
+the recovery episode; routes without native turn-scoped support receive it through the request-only wire translation.
 
-When a recovery pass ends and a new activation starts, the frozen reason may refresh once (one intentional segment boundary). Fingerprint telemetry records `tools_omitted` and `recovery_reason` as distinct change causes alongside `stable_prefix` / `tool_catalog` / `model`.
+When a recovery pass ends and a new activation starts, the frozen reason may refresh once (one intentional segment
+boundary). Fingerprint telemetry records `tools_omitted` and `recovery_reason` as distinct change causes alongside
+`stable_prefix` / `tool_catalog` / `model`.
 
 ### Cache health monitoring
 
-Beyond per-event advisories (reasoning-effort changes, idle-gap expiry, planning transitions), both runloops feed every turn's normalized usage into a shared session health monitor (`core::agent::cache_health::PromptCacheHealthMonitor`). Turns without provider cache metrics or below 1,024 input tokens are ignored as noise. Two session-scoped alerts fire at most once each, via `tracing::warn` plus the runloop's user-warning channel:
+Beyond per-event advisories (reasoning-effort changes, idle-gap expiry, planning transitions), both runloops feed every
+turn's normalized usage into a shared session health monitor (`core::agent::cache_health::PromptCacheHealthMonitor`).
+Turns without provider cache metrics or below 1,024 input tokens are ignored as noise. Two session-scoped alerts fire at
+most once each, via `tracing::warn` plus the runloop's user-warning channel:
 
-- **Sustained misses** — 3 consecutive measured turns each reusing under 50% of cache. Indicates the session is re-paying full input cost turn after turn. The warning includes the cumulative hit rate (`cached/total input`) over measured turns.
+- **Sustained misses** — 3 consecutive measured turns each reusing under 50% of cache. Indicates the session is
+  re-paying full input cost turn after turn. The warning includes the cumulative hit rate (`cached/total input`) over
+  measured turns.
 - **Low hit rate** — after 8 measured turns, the cumulative hit rate (`cached/total input`) is under 25%.
 
-No-op catalog refreshes (version/epoch bump with identical tool bytes and stable prompt) preserve the frozen request envelope so the provider prefix stays hot; only provider-visible changes rebuild it.
+No-op catalog refreshes (version/epoch bump with identical tool bytes and stable prompt) preserve the frozen request
+envelope so the provider prefix stays hot; only provider-visible changes rebuild it.
 
-Either alert names the likely causes to check: prompt/tool-catalog churn (model/reasoning switches, MCP refreshes, planning toggles) or idle gaps expiring the provider cache. The sustained-miss warning also points to earlier single-event warnings and the trajectory log for prefix/catalog hash changes.
+Either alert names the likely causes to check: prompt/tool-catalog churn (model/reasoning switches, MCP refreshes,
+planning toggles) or idle gaps expiring the provider cache. The sustained-miss warning also points to earlier
+single-event warnings and the trajectory log for prefix/catalog hash changes.
 
 ### Mid-session model switches
 
-Prompt caches are unique per model: switching rebuilds the cache at full input cost even when the rest of the prefix is unchanged, so it is the most expensive single cache event in a session. Both runloops emit a one-line advisory on the first request carrying a new model (headless: tracing warning plus session warning; interactive: tracing warning plus renderer warning line), mirroring the existing reasoning-effort-change advisory. Prefer resolving the model up front; when a switch is unavoidable (e.g. escalation or `/model`), expect one full-price request before hits resume. For cheap exploratory work, prefer delegating to a subagent on the cheaper model with a handoff summary over switching the main session's model.
+Prompt caches are unique per model: switching rebuilds the cache at full input cost even when the rest of the prefix is
+unchanged, so it is the most expensive single cache event in a session. Both runloops emit a one-line advisory on the
+first request carrying a new model (headless: tracing warning plus session warning; interactive: tracing warning plus
+renderer warning line), mirroring the existing reasoning-effort-change advisory. Prefer resolving the model up front;
+when a switch is unavoidable (e.g. escalation or `/model`), expect one full-price request before hits resume. For cheap
+exploratory work, prefer delegating to a subagent on the cheaper model with a handoff summary over switching the main
+session's model.
 
 ### Why mode content stays in the prompt (triage note)
 
 Two further article prescriptions were researched and deliberately deferred:
 
-- **Planning/full-auto via `<system-reminder>` messages instead of system-prompt sections.** Snapshots are deterministic per mode, so the wire prefix is already stable turn-to-turn within a mode on every provider; the only residual cost is the single toggle-transition miss (zero on Anthropic, where the wire split keeps the cached stable prefix across the toggle). Moving the full planning contract — read-only enforcement, plan-quality spec, research floor — out of the system prompt risks planning behavior with no eval to verify, and would require reworking the prompt/catalog alignment guard that pins the interview-policy line. Revisit only with eval coverage for planning adherence.
-- **Always exposing the full tool catalog (no planning filtering).** Same steady-state analysis: deterministic per-mode filtering means no per-turn churn today; always-expose would save only the toggle-transition miss while showing mutating tools on every planning turn, trading rare one-time savings for per-turn model-confusion risk and denied-call waste across all supported models (including small ones). The fail-closed execution gate stays as the safety net, and tool hiding stays as defense-in-depth. Revisit only with eval evidence that target models obey read-only instructions reliably when mutating tools are visible.
+- **Planning/full-auto via `<system-reminder>` messages instead of system-prompt sections.** Snapshots are deterministic
+  per mode, so the wire prefix is already stable turn-to-turn within a mode on every provider; the only residual cost is
+  the single toggle-transition miss (zero on Anthropic, where the wire split keeps the cached stable prefix across the
+  toggle). Moving the full planning contract — read-only enforcement, plan-quality spec, research floor — out of the
+  system prompt risks planning behavior with no eval to verify, and would require reworking the prompt/catalog alignment
+  guard that pins the interview-policy line. Revisit only with eval coverage for planning adherence.
+- **Always exposing the full tool catalog (no planning filtering).** Same steady-state analysis: deterministic per-mode
+  filtering means no per-turn churn today; always-expose would save only the toggle-transition miss while showing
+  mutating tools on every planning turn, trading rare one-time savings for per-turn model-confusion risk and denied-call
+  waste across all supported models (including small ones). The fail-closed execution gate stays as the safety net, and
+  tool hiding stays as defense-in-depth. Revisit only with eval evidence that target models obey read-only instructions
+  reliably when mutating tools are visible.
 
-OpenAI and Merge Gateway keep `prompt_cache_key` stable per session (unless `prompt_cache_key_mode = "off"`). The wire key is `vtcode:openai:{lineage}` on OpenAI and `vtcode:merge:{lineage}` on merge-gateway; per-turn capability/catalog hashes are tracked separately in `tool_catalog_hash` / `system_prompt_prefix_hash` and never mixed into the routing key. Both the interactive runloop and the headless AgentRunner follow this rule.
+OpenAI and Merge Gateway keep `prompt_cache_key` stable per session (unless `prompt_cache_key_mode = "off"`). The wire
+key is `vtcode:openai:{lineage}` on OpenAI and `vtcode:merge:{lineage}` on merge-gateway; per-turn capability/catalog
+hashes are tracked separately in `tool_catalog_hash` / `system_prompt_prefix_hash` and never mixed into the routing key.
+Both the interactive runloop and the headless AgentRunner follow this rule.
 
-OpenRouter and xAI also receive production lineage when global `[prompt_cache] enabled=true` (independent of the OpenAI-specific cache block / `prompt_cache_key_mode`): OpenRouter body `session_id` + header `x-session-id` from `vtcode:openrouter:{lineage}`; xAI body `prompt_cache_key` + header `x-grok-conv-id` from `vtcode:xai:{lineage}`. Blank lineage omits the wire fields.
+OpenRouter and xAI also receive production lineage when global `[prompt_cache] enabled=true` (independent of the
+OpenAI-specific cache block / `prompt_cache_key_mode`): OpenRouter body `session_id` + header `x-session-id` from
+`vtcode:openrouter:{lineage}`; xAI body `prompt_cache_key` + header `x-grok-conv-id` from `vtcode:xai:{lineage}`. Blank
+lineage omits the wire fields.
 
-Merge Gateway native `/v1/responses` also sends session identity for automatic cache-aware routing: body `session_id` and HTTP header `X-Session-Id`, both equal to the session lineage id (the cache key with any `vtcode:merge:`/`vtcode:openai:`/`vtcode:openrouter:`/`vtcode:xai:` prefix and any residual `-{16 hex}` prefix-hash suffix stripped). Blank lineage omits both fields.
+Merge Gateway native `/v1/responses` also sends session identity for automatic cache-aware routing: body `session_id`
+and HTTP header `X-Session-Id`, both equal to the session lineage id (the cache key with any
+`vtcode:merge:`/`vtcode:openai:`/`vtcode:openrouter:`/`vtcode:xai:` prefix and any residual `-{16 hex}` prefix-hash
+suffix stripped). Blank lineage omits both fields.
 
-**Provider cache affinity (session keys)**
+### Provider cache affinity (session keys)
 
-| Provider path | Session / cache identity | Notes |
-| --- | --- | --- |
-| OpenAI native / ChatGPT / OpenResponses | `prompt_cache_key` = `vtcode:openai:{lineage}` | Required for multi-turn affinity on pre-5.6 models; optional on 5.6+ |
-| Merge Gateway native | `session_id` + `X-Session-Id` (+ `prompt_cache_key`) | Automatic caching on many upstream routes; no explicit `prompt_cache_breakpoint` markers (Merge rejects the field with 400) |
-| OpenRouter | body `session_id` + header `x-session-id` | Sticky provider routing; body wins over header; **requires global `[prompt_cache] enabled=true`** |
-| xAI native Chat Completions | header `x-grok-conv-id` + body `prompt_cache_key` | Per-server cache affinity; **requires global `[prompt_cache] enabled=true`** |
-| Anthropic / Gemini / DeepSeek / Moonshot / Z.AI native | automatic or `cache_control` | No client session key |
+| Provider path                                          | Session / cache identity                             | Notes                                                                                                                       |
+| ------------------------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI native / ChatGPT / OpenResponses                | `prompt_cache_key` = `vtcode:openai:{lineage}`       | Required for multi-turn affinity on pre-5.6 models; optional on 5.6+                                                        |
+| Merge Gateway native                                   | `session_id` + `X-Session-Id` (+ `prompt_cache_key`) | Automatic caching on many upstream routes; no explicit `prompt_cache_breakpoint` markers (Merge rejects the field with 400) |
+| OpenRouter                                             | body `session_id` + header `x-session-id`            | Sticky provider routing; body wins over header; **requires global `[prompt_cache] enabled=true`**                           |
+| xAI native Chat Completions                            | header `x-grok-conv-id` + body `prompt_cache_key`    | Per-server cache affinity; **requires global `[prompt_cache] enabled=true`**                                                |
+| Anthropic / Gemini / DeepSeek / Moonshot / Z.AI native | automatic or `cache_control`                         | No client session key                                                                                                       |
 
-Usage telemetry: OpenAI-style hosts report cache reads as `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens`; Anthropic-style as `cache_read_input_tokens`. VT Code maps these into both `cached_prompt_tokens` and `cache_read_tokens` so trajectory `prompt_cache_metrics` and cache-health are not zero-filled. Cost accounting still uses `cache_read_tokens` without double-counting. Merge Gateway native Responses usage often reports cache activity only as Anthropic-style `cache_read_input_tokens` / `cache_creation_input_tokens`; the same dual mapping keeps trajectory and session cache summaries honest.
+Usage telemetry: OpenAI-style hosts report cache reads as `prompt_tokens_details.cached_tokens` /
+`prompt_cache_hit_tokens`; Anthropic-style as `cache_read_input_tokens`. VT Code maps these into both
+`cached_prompt_tokens` and `cache_read_tokens` so trajectory `prompt_cache_metrics` and cache-health are not
+zero-filled. Cost accounting still uses `cache_read_tokens` without double-counting. Merge Gateway native Responses
+usage often reports cache activity only as Anthropic-style `cache_read_input_tokens` / `cache_creation_input_tokens`;
+the same dual mapping keeps trajectory and session cache summaries honest.
 
-Merge Gateway first-progress timeout is floored at **120s on planning and non-planning turns** when non-streaming fallback is available. Other remote providers with non-streaming fallback get a once-per-session advisory when a stream first-token timeout triggers the full-prompt retry (local providers excluded).
+Merge Gateway first-progress timeout is floored at **120s on planning and non-planning turns** when non-streaming
+fallback is available. Other remote providers with non-streaming fallback get a once-per-session advisory when a stream
+first-token timeout triggers the full-prompt retry (local providers excluded).
 
-Blocked-session forensics: a blocked handoff copies `events.jsonl` and `derived/atif-trajectory.json` into `{archive}-forensics/` beside the blocker archive when present, and writes `.vtcode/sessions/<id>/retention-pin.json` so ordinary session retention does not evict the session while the blocker is unresolved. Resolving the archive unpins when no other unresolved archive references the session.
+Blocked-session forensics: a blocked handoff copies `events.jsonl` and `derived/atif-trajectory.json` into
+`{archive}-forensics/` beside the blocker archive when present, and writes `.vtcode/sessions/<id>/retention-pin.json` so
+ordinary session retention does not evict the session while the blocker is unresolved. Resolving the archive unpins when
+no other unresolved archive references the session.
 
 VT Code surfaces prompt-cache churn using the same terminology in `vtcode trajectory` and `/share-log` exports:
 
@@ -162,19 +254,16 @@ The share-log HTML overview also reports prompt-cache observations, churn breakd
 
 ### Request segments and telemetry
 
-Each request prefix is frozen in an immutable `SessionRequestEnvelope` for a
-request segment. Compaction starts the next segment before the compacted
-history is installed; the old envelope, compacted-history artifact, and
-`ThreadCompactBoundary` event remain recoverable. Automatic, manual, recovery,
-and model-switch compaction use the same boundary path. A change to the model,
-provider, mode, instruction snapshot, or tool-catalog epoch starts a new
-segment; unchanged turns reuse the existing envelope byte-for-byte.
+Each request prefix is frozen in an immutable `SessionRequestEnvelope` for a request segment. Compaction starts the next
+segment before the compacted history is installed; the old envelope, compacted-history artifact, and
+`ThreadCompactBoundary` event remain recoverable. Automatic, manual, recovery, and model-switch compaction use the same
+boundary path. A change to the model, provider, mode, instruction snapshot, or tool-catalog epoch starts a new segment;
+unchanged turns reuse the existing envelope byte-for-byte.
 
-The `tool_catalog_cache_metrics` trajectory record includes ordered wire tool
-names, catalog/wire/deferred counts, and active loaded-skill names on startup or
-when that catalog identity changes. Unchanged turns omit those repeated lists.
-`vtcode trajectory` compares the ordered snapshots so a catalog reorder across
-starts is visible instead of being hidden by an unchanged tool count.
+The `tool_catalog_cache_metrics` trajectory record includes ordered wire tool names, catalog/wire/deferred counts, and
+active loaded-skill names on startup or when that catalog identity changes. Unchanged turns omit those repeated lists.
+`vtcode trajectory` compares the ordered snapshots so a catalog reorder across starts is visible instead of being hidden
+by an unchanged tool count.
 
 ### Anthropic (Claude)
 
@@ -193,12 +282,19 @@ min_message_length_for_cache = 256
 
 - `tools_ttl_seconds` — TTL for tool definitions and system prompt cache hints.
 - `messages_ttl_seconds` — TTL for user message cache hints.
-- `extended_ttl_seconds` — optional longer-lived TTL. When present, VT Code automatically opts into Anthropic’s extended prompt caching beta header. Budget-continuation profile requests use this TTL for the messages breakpoint (default 1h), and the beta header follows whichever breakpoint actually resolves to 1h — including that profile promotion — so a promoted breakpoint is never sent without the header.
-- `prefer_extended_ttl` — when true, tools/system/message breakpoints upgrade from 5m to 1h (2× write cost) for sessions that idle past the 5m window.
+- `extended_ttl_seconds` — optional longer-lived TTL. When present, VT Code automatically opts into Anthropic’s extended
+  prompt caching beta header. Budget-continuation profile requests use this TTL for the messages breakpoint (default
+  1h), and the beta header follows whichever breakpoint actually resolves to 1h — including that profile promotion — so
+  a promoted breakpoint is never sent without the header.
+- `prefer_extended_ttl` — when true, tools/system/message breakpoints upgrade from 5m to 1h (2× write cost) for sessions
+  that idle past the 5m window.
 - `max_breakpoints` — maximum number of cache insertion points per request (tools, system prompt, user messages).
 - `cache_system_messages` / `cache_user_messages` / `cache_tool_definitions` — toggle cache hints for each content type.
 - `min_message_length_for_cache` — avoids setting cache hints on very short user messages.
-- The tools-prefix breakpoint attaches to the last function tool: native server tools (web search, code execution, memory) carry no `cache_control` slot, so a trailing native tool no longer drops the whole tools-prefix breakpoint. Message breakpoints roll on the last two qualifying user messages; hardening passes (orphan-strip, adjacency, hoist-to-front, trailing-assistant guard) are deterministic repairs that keep grown histories byte-stable.
+- The tools-prefix breakpoint attaches to the last function tool: native server tools (web search, code execution,
+  memory) carry no `cache_control` slot, so a trailing native tool no longer drops the whole tools-prefix breakpoint.
+  Message breakpoints roll on the last two qualifying user messages; hardening passes (orphan-strip, adjacency,
+  hoist-to-front, trailing-assistant guard) are deterministic repairs that keep grown histories byte-stable.
 
 ### Gemini
 
@@ -210,17 +306,35 @@ min_prefix_tokens = 128
 explicit_ttl_seconds = 900
 ```
 
-- `mode` — `implicit` leverages built-in cache detection; `explicit` uses the `cachedContents` lifecycle; `off` disables all Gemini caching.
+- `mode` — `implicit` leverages built-in cache detection; `explicit` uses the `cachedContents` lifecycle; `off` disables
+  all Gemini caching.
 - `min_prefix_tokens` — minimum prompt size before requesting cache evaluation.
-- `explicit_ttl_seconds` — TTL for `cachedContents.create` (config default 1h; a null/absent value falls back to 900s). Explicit mode creates a cache of the system instruction + tools while the segment fingerprint (model/system/tools) is stable, then sends `cachedContent` on `generateContent`/`streamGenerateContent` while keeping conversation contents on the body. A fingerprint change creates a new cache and best-effort deletes the old name. When the provider reports the cached name as stale (expired or evicted), VT Code drops the slot and retries the request once without the cache on both the streaming and non-streaming paths. The API rejects `systemInstruction`, `tools`, and `toolConfig` next to `cachedContent`, so a request whose tool configuration is not the plain default `AUTO` (a constrained `tool_choice` of none/any/specific, `VALIDATED` decoding, or server-side tool invocation flags) skips the explicit cache and keeps its `toolConfig` on the body — the configuration stays enforceable instead of being dropped, and the installed segment entry is left intact for the next default-config turn. Those skipped requests fall back to implicit caching, so a session that always sends hosted/built-in tools (code execution, Google Search, URL context, …) will not use `cachedContents` at all. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5 family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
+- `explicit_ttl_seconds` — TTL for `cachedContents.create` (config default 1h; a null/absent value falls back to 900s).
+  Explicit mode creates a cache of the system instruction + tools while the segment fingerprint (model/system/tools) is
+  stable, then sends `cachedContent` on `generateContent`/`streamGenerateContent` while keeping conversation contents on
+  the body. A fingerprint change creates a new cache and best-effort deletes the old name. When the provider reports the
+  cached name as stale (expired or evicted), VT Code drops the slot and retries the request once without the cache on
+  both the streaming and non-streaming paths. The API rejects `systemInstruction`, `tools`, and `toolConfig` next to
+  `cachedContent`, so a request whose tool configuration is not the plain default `AUTO` (a constrained `tool_choice` of
+  none/any/specific, `VALIDATED` decoding, or server-side tool invocation flags) skips the explicit cache and keeps its
+  `toolConfig` on the body — the configuration stays enforceable instead of being dropped, and the installed segment
+  entry is left intact for the next default-config turn. Those skipped requests fall back to implicit caching, so a
+  session that always sends hosted/built-in tools (code execution, Google Search, URL context, …) will not use
+  `cachedContents` at all. Create failures fall back to the implicit shape. Implicit caching needs 2,048+ tokens (2.5
+  family) or 4,096+ (3.x) of stable prefix — below that, expect no hits by design.
 
 ### Stable tool catalog across planning modes
 
-`prompt_cache.stable_tool_catalog_across_modes` (default `true`) keeps the wire tool array identical on planning and execution turns (union of both modes' tools). Planning toggles then do not rewrite the tool prefix. The fail-closed execution gate still blocks mutations during planning; interview / `request_user_input` visibility remains mode-scoped.
+`prompt_cache.stable_tool_catalog_across_modes` (default `true`) keeps the wire tool array identical on planning and
+execution turns (union of both modes' tools). Planning toggles then do not rewrite the tool prefix. The fail-closed
+execution gate still blocks mutations during planning; interview / `request_user_input` visibility remains mode-scoped.
 
 ### Cache write pricing and rate limits
 
-Cache writes cost more than uncached input (default 1.25×; Anthropic 1h extended TTL 2×). `usage_cost::cache_write_rate` applies that multiplier when a model catalog does not declare `cache_write`. Provider TPM-style limits still count the full prompt volume (`uncached + cached + creation`); use `usage_cost::prompt_tokens_for_rate_limit` when estimating rate-limit pressure.
+Cache writes cost more than uncached input (default 1.25×; Anthropic 1h extended TTL 2×). `usage_cost::cache_write_rate`
+applies that multiplier when a model catalog does not declare `cache_write`. Provider TPM-style limits still count the
+full prompt volume (`uncached + cached + creation`); use `usage_cost::prompt_tokens_for_rate_limit` when estimating
+rate-limit pressure.
 
 ### OpenRouter
 
@@ -241,7 +355,10 @@ report_savings = true
 enabled = true
 ```
 
-DeepSeek caches automatically on disk with 64-token prefix units; no wire flags are needed. VT Code sends the system prompt as the leading `messages[0]` system message so the stable prefix starts at token 0 — a requirement for DeepSeek prefix matching. Keep volatile content at the end of the history; any byte difference at the front busts the whole prefix.
+DeepSeek caches automatically on disk with 64-token prefix units; no wire flags are needed. VT Code sends the system
+prompt as the leading `messages[0]` system message so the stable prefix starts at token 0 — a requirement for DeepSeek
+prefix matching. Keep volatile content at the end of the history; any byte difference at the front busts the whole
+prefix.
 
 ### Z.AI
 
@@ -250,7 +367,8 @@ DeepSeek caches automatically on disk with 64-token prefix units; no wire flags 
 enabled = true
 ```
 
-Z.AI handles caching server-side. When the override is enabled, VT Code honors upstream behavior and surfaces usage metrics when available.
+Z.AI handles caching server-side. When the override is enabled, VT Code honors upstream behavior and surfaces usage
+metrics when available.
 
 ## Usage Telemetry
 
@@ -264,20 +382,28 @@ These metrics flow through `vtcode-core::llm::types::Usage` and appear anywhere 
 
 ## Validation & Testing
 
-- Unit tests in `crates/codegen/vtcode-llm/src/providers/anthropic.rs` validate cache control insertion and beta header composition.
-- `crates/codegen/vtcode-llm/src/providers/openrouter/` exercises usage parsing and session-affinity wire identity (body `session_id` + `x-session-id`).
-- `crates/codegen/vtcode-llm/src/providers/xai.rs` covers lineage `prompt_cache_key` injection and `x-grok-conv-id` header naming.
-- Local cache behavior tests in `crates/codegen/vtcode-core/src/core/prompt_caching.rs` verify caching, eviction, and persistence.
+- Unit tests in `crates/codegen/vtcode-llm/src/providers/anthropic.rs` validate cache control insertion and beta header
+  composition.
+- `crates/codegen/vtcode-llm/src/providers/openrouter/` exercises usage parsing and session-affinity wire identity (body
+  `session_id` + `x-session-id`).
+- `crates/codegen/vtcode-llm/src/providers/xai.rs` covers lineage `prompt_cache_key` injection and `x-grok-conv-id`
+  header naming.
+- Local cache behavior tests in `crates/codegen/vtcode-core/src/core/prompt_caching.rs` verify caching, eviction, and
+  persistence.
 - Configuration loading tests ensure settings from `vtcode.toml` are applied correctly.
-- Run `cargo nextest run` to execute all fast tests after updating configuration or provider cache logic (never `cargo test`).
+- Run `cargo nextest run` to execute all fast tests after updating configuration or provider cache logic (never
+  `cargo test`).
 
 ## Implementation Architecture
 
 The prompt caching system is implemented as a multi-layered architecture:
 
-1. **Global Configuration Layer**: Managed in `crates/codegen/vtcode-config/src/core/prompt_cache.rs` with global and per-provider settings
-2. **Provider Integration Layer**: Each provider has specific cache control implementation in `crates/codegen/vtcode-core/src/llm/providers/`
-3. **Local Caching Layer**: File-based caching engine in `crates/codegen/vtcode-core/src/core/prompt_caching.rs` for optimized prompt storage
+1. **Global Configuration Layer**: Managed in `crates/codegen/vtcode-config/src/core/prompt_cache.rs` with global and
+   per-provider settings
+2. **Provider Integration Layer**: Each provider has specific cache control implementation in
+   `crates/codegen/vtcode-core/src/llm/providers/`
+3. **Local Caching Layer**: File-based caching engine in `crates/codegen/vtcode-core/src/core/prompt_caching.rs` for
+   optimized prompt storage
 4. **Runtime Integration**: Cache configuration flows through the provider factory to ensure proper initialization
 
 ## Migration Guide
@@ -294,4 +420,5 @@ When upgrading to the new prompt caching system:
 - Check that your prompts meet the minimum token requirements for each provider
 - Enable verbose logging to see cache interaction details
 
-By tuning these values you can balance latency, cost, and cache freshness per provider while keeping the behaviour consistent across the VT Code agent ecosystem.
+By tuning these values you can balance latency, cost, and cache freshness per provider while keeping the behaviour
+consistent across the VT Code agent ecosystem.

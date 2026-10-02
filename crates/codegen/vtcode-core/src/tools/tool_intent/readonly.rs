@@ -201,6 +201,15 @@ pub(crate) fn command_words_are_readonly(words: &[String]) -> bool {
         return false;
     }
 
+    if first == "command" {
+        return matches!(command_words.get(1).map(String::as_str), Some("-v" | "-V"))
+            && command_words.len() > 2
+            && command_words
+                .iter()
+                .skip(2)
+                .all(|word| !word.starts_with('-') && !word.is_empty());
+    }
+
     if is_readonly_base_command(&first)
         || is_version_or_help_probe(command_words)
         || is_known_readonly_dry_run(command_words, &first)
@@ -484,6 +493,22 @@ mod tests {
 
     fn run_cmd(command: &str) -> Value {
         json!({"action": "run", "command": command})
+    }
+
+    #[test]
+    fn command_availability_probes_do_not_admit_execution() {
+        for command in ["command -v npx", "command -V python3 cargo", "command -v npx || true"] {
+            assert!(is_readonly_command_session_command(&run_cmd(command)), "{command}");
+        }
+        for command in [
+            "command rm file",
+            "command -p rm file",
+            "command -v",
+            "command -v -- rm",
+            "command -v $(touch file)",
+        ] {
+            assert!(!is_readonly_command_session_command(&run_cmd(command)), "{command}");
+        }
     }
 
     #[test]

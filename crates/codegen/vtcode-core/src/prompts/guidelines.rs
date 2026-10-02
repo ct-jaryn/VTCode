@@ -468,7 +468,7 @@ fn generate_runtime_tool_guidelines_for_profile(
         lines.push("- `code_search`: omit unused filters; no empty values (`path: \"\"`).".to_string());
     }
     if has_task_tracker {
-        lines.push("- Keep `task_tracker` updated as you refine the plan.".to_string());
+        lines.push("- Keep `task_tracker` updated as you refine the plan. Indexed updates return totals and the changed item; use action=list for the full checklist.".to_string());
         lines.push("- Keep blockers and verification open in `task_tracker` until resolved.".to_string());
         lines.push(PLANNING_TASK_TRACKER_INDEX_LINE.to_string());
     }

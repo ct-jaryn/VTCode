@@ -1,66 +1,46 @@
-// markdownlint-cli2 configuration for the VT Code repository.
-//
-// This is a checked-in baseline. The repository's hand-written Markdown
-// predates markdownlint and does not follow its default stylistic rules
-// (long badge/URL lines, inline HTML for the contributor grid, mixed
-// heading/list styles, and so on). Rather than force a repository-wide
-// reformat, the rules below are disabled so the `lint-markdown` CI job is
-// meaningful and green. Every other rule -- including rules added by future
-// markdownlint releases -- stays enabled. Delete entries as files are
-// normalized so the baseline ratchets down over time.
+// Correctness rules stay enabled; exceptions belong beside intentional examples.
 {
+  "noProgress": true,
   "config": {
-    // Headings
-    "MD001": false, // heading-increment
-    "MD003": false, // heading-style
-    "MD018": false, // no-missing-space-atx
-    "MD019": false, // no-multiple-space-atx
-    "MD022": false, // blanks-around-headings
-    "MD024": false, // no-duplicate-heading
-    "MD025": false, // single-title/single-h1
-    "MD026": false, // no-trailing-punctuation
-    "MD036": false, // no-emphasis-as-heading
-    "MD041": false, // first-line-heading/first-line-h1
-    // Lists
-    "MD004": false, // ul-style
-    "MD005": false, // list-indent
-    "MD007": false, // ul-indent
-    "MD029": false, // ol-prefix
-    "MD030": false, // list-marker-space
-    "MD032": false, // blanks-around-lists
-    // Whitespace
-    "MD009": false, // no-trailing-spaces
-    "MD010": false, // no-hard-tabs
-    "MD012": false, // no-multiple-blanks
-    "MD027": false, // no-multiple-space-blockquote
-    "MD028": false, // no-blanks-blockquote
-    "MD047": false, // single-trailing-newline
-    // Line length
-    "MD013": false, // line-length
-    // Code blocks
-    "MD014": false, // commands-show-output
-    "MD031": false, // blanks-around-fences
-    "MD040": false, // fenced-code-language
-    "MD046": false, // code-block-style
-    // Inline markup
-    "MD033": false, // no-inline-html
-    "MD034": false, // no-bare-urls
-    "MD035": false, // hr-style
-    "MD037": false, // no-space-in-emphasis
-    "MD038": false, // no-space-in-code
-    "MD039": false, // no-space-in-links
-    "MD042": false, // no-empty-links
-    "MD049": false, // emphasis-style
-    "MD050": false, // strong-style
-    // Links, images, tables
-    "MD045": false, // no-alt-text
-    "MD051": false, // link-fragments
-    "MD052": false, // reference-links-images
-    "MD053": false, // link-image-reference-definitions
-    "MD055": false, // table-pipe-style
-    "MD056": false, // table-column-count
-    "MD058": false, // blanks-around-tables
-    "MD059": false, // descriptive-link-text
-    "MD060": false // table-column-style
+    "default": true,
+    "MD003": {
+      "style": "atx"
+    },
+    "MD004": {
+      "style": "dash"
+    },
+    "MD007": {
+      "indent": 2
+    },
+    "MD013": {
+      "line_length": 120,
+      "code_blocks": false,
+      "tables": false,
+      "headings": false
+    },
+    "MD024": {
+      "siblings_only": true
+    },
+    "MD029": {
+      "style": "ordered"
+    },
+    "MD033": {
+      "allowed_elements": [
+        "a",
+        "br",
+        "details",
+        "div",
+        "img",
+        "kbd",
+        "p",
+        "picture",
+        "source",
+        "sub",
+        "summary",
+        "sup",
+        "strong",
+        "em"
+      ]
+    }
   }
 }

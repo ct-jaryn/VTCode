@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use vtcode_commons::preview::{condense_text_bytes, tail_preview_text};
 use vtcode_core::config::constants::tools as tool_names;
-use vtcode_core::core::agent::result_reducers::{reduce_tool_result, strip_tui_display_fields};
+use vtcode_core::core::agent::result_reducers::{project_model_tool_result, reduce_tool_result};
 use vtcode_core::llm::provider::{LLMRequest, Message as LlmMessage};
 use vtcode_core::llm::{
     LightweightFeature, collect_single_response, create_provider_for_model_route, resolve_lightweight_route,
@@ -437,7 +437,7 @@ async fn build_tool_response_content(
     // bodies). Without this, `raw=true` and summarizer-failure fallbacks
     // push full tool bodies into history.
     let reduced = reduce_tool_result(tool_name, output.clone());
-    let model_output = strip_tui_display_fields(tool_name, &reduced);
+    let model_output = project_model_tool_result(tool_name, args_val, &reduced);
     let output = model_output.as_ref();
 
     // Skip LLM summarization when raw=true is requested
@@ -605,7 +605,12 @@ fn should_keep_exec_success_next_action(obj: &serde_json::Map<String, serde_json
 }
 
 fn should_keep_recoverable_failure_next_action(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
-    is_recoverable_failure_payload(obj) && has_non_empty_string_field(obj, "next_action")
+    let policy_denied = has_error_payload(obj)
+        && obj
+            .get("error_class")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|class| matches!(class, "policy_denied" | "policy_blocked"));
+    (is_recoverable_failure_payload(obj) || policy_denied) && has_non_empty_string_field(obj, "next_action")
 }
 
 fn should_keep_search_recovery_success_next_action(obj: &serde_json::Map<String, serde_json::Value>) -> bool {

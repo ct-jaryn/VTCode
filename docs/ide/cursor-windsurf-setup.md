@@ -4,7 +4,8 @@ This guide provides detailed instructions for installing and using VT Code with 
 
 ## Overview
 
-VT Code is available for both Cursor and Windsurf through the Open VSX registry. Since both editors support VS Code extensions, the VT Code extension provides the same functionality as in VS Code.
+VT Code is available for both Cursor and Windsurf through the Open VSX registry. Since both editors support VS Code
+extensions, the VT Code extension provides the same functionality as in VS Code.
 
 ## Prerequisites
 
@@ -31,14 +32,14 @@ vtcode --version
 
 ### Method 1: In-Editor Marketplace (Recommended)
 
-#### For Cursor:
+#### For Cursor
 
 1. Open Cursor
 2. Go to Extensions panel (Ctrl+Shift+X or Cmd+Shift+X)
 3. Search for "vtcode-companion"
 4. Click Install
 
-#### For Windsurf:
+#### For Windsurf
 
 1. Open Windsurf
 2. Go to Extensions panel
@@ -80,12 +81,12 @@ To create a configuration file:
 
 The VT Code extension provides the same features in Cursor and Windsurf as in VS Code:
 
--   **Ask the Agent**: Send questions to the VT Code AI assistant
--   **Ask About Selection**: Get explanations for selected code
--   **Quick Actions Panel**: Access common VT Code commands
--   **Terminal Integration**: Launch VT Code chat directly in the editor
--   **Configuration Management**: Manage vtcode.toml settings
--   **Semantic Code Intelligence**: AST-based code understanding
+- **Ask the Agent**: Send questions to the VT Code AI assistant
+- **Ask About Selection**: Get explanations for selected code
+- **Quick Actions Panel**: Access common VT Code commands
+- **Terminal Integration**: Launch VT Code chat directly in the editor
+- **Configuration Management**: Manage vtcode.toml settings
+- **Semantic Code Intelligence**: AST-based code understanding
 
 ## Troubleshooting
 
@@ -93,15 +94,15 @@ The VT Code extension provides the same features in Cursor and Windsurf as in VS
 
 1. Verify VT Code CLI is installed:
 
-    ```bash
-    vtcode --version
-    ```
+   ```bash
+   vtcode --version
+   ```
 
 2. Ensure VT Code is in your PATH:
 
-    ```bash
-    which vtcode
-    ```
+   ```bash
+   which vtcode
+   ```
 
 3. Restart your editor after installing the extension
 
@@ -111,8 +112,8 @@ The VT Code extension provides the same features in Cursor and Windsurf as in VS
 
 If the extension can't find the VT Code CLI:
 
--   **In Cursor/Windsurf settings**, look for `vtcode.commandPath` setting
--   **Set the full path** to your VT Code executable if it's installed in a non-standard location
+- **In Cursor/Windsurf settings**, look for `vtcode.commandPath` setting
+- **Set the full path** to your VT Code executable if it's installed in a non-standard location
 
 ### Configuration Issues
 
@@ -131,8 +132,10 @@ If you encounter issues:
 
 ## Updating the Extension
 
-The extension will typically update automatically when new versions are published to Open VSX. You can also manually check for updates in your editor's Extensions panel.
+The extension will typically update automatically when new versions are published to Open VSX. You can also manually
+check for updates in your editor's Extensions panel.
 
 ---
 
-_Note: VT Code is designed to work with VS Code-compatible editors through the Open VSX registry. For the best experience, ensure you have the latest version of both the extension and the VT Code CLI._
+_Note: VT Code is designed to work with VS Code-compatible editors through the Open VSX registry. For the best
+experience, ensure you have the latest version of both the extension and the VT Code CLI._

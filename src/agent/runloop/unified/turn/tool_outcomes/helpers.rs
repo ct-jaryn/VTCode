@@ -3225,6 +3225,34 @@ mod tests {
     }
 
     #[test]
+    fn markdownlint_verification_clears_only_on_successful_standalone_exit() {
+        for (command, exit_code, clears_gate) in [
+            ("npx --yes markdownlint-cli2@0.23.3 README.md", 0, true),
+            ("npx --yes markdownlint-cli2@0.23.3 README.md", 1, false),
+            ("npx --yes markdownlint-cli2@0.23.3 README.md | grep error", 0, false),
+            ("python3 scripts/check_markdown.py", 0, true),
+            ("python3 scripts/check_markdown.py", 1, false),
+            ("python3 scripts/check_markdown.py --fix", 0, false),
+            ("python3 scripts/check_markdown.py --list", 0, false),
+            ("python3 scripts/check_markdown.py | grep error", 0, false),
+        ] {
+            let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+            tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
+            let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                output: json!({"exit_code": exit_code}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: exit_code == 0,
+            });
+            update_repetition_tracker(&mut tracker, &outcome, tools::EXEC_COMMAND, &json!({"cmd": command}));
+            assert_eq!(!tracker.verification_is_pending(), clears_gate, "{command}, exit {exit_code}");
+            if exit_code != 0 {
+                assert_eq!(tracker.fix_edits_remaining, FAILED_VERIFICATION_FIX_ALLOWANCE);
+            }
+        }
+    }
+
+    #[test]
     fn truncation_only_piped_verifier_success_clears_gate() {
         // The kernel elides a pure `| head`/`| tail` tail and runs the
         // standalone verifier, so its exit 0 is the verifier's own. The

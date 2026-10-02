@@ -57,6 +57,52 @@ pub fn strip_tui_display_fields<'a>(tool_name: &str, value: &'a Value) -> Cow<'a
     Cow::Owned(Value::Object(stripped))
 }
 
+/// Project an indexed tracker update without repeating unchanged task details.
+/// Full results remain available to persistence, events, and explicit list calls.
+pub fn project_model_tool_result<'a>(tool_name: &str, args: &Value, value: &'a Value) -> Cow<'a, Value> {
+    let mut projected = strip_tui_display_fields(tool_name, value);
+    if tool_name != tools::TASK_TRACKER
+        || args.get("action").and_then(Value::as_str) != Some("update")
+        || args.get("items").is_some()
+    {
+        return projected;
+    }
+    let index_path = args
+        .get("index_path")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| args.get("index").and_then(Value::as_u64).map(|index| index.to_string()));
+    let Some(index_path) = index_path else {
+        return projected;
+    };
+    let Some(changed_item) = value
+        .get("checklist")
+        .and_then(|checklist| checklist.get("items"))
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("index_path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path == index_path)
+                    || item
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|index| index.to_string() == index_path)
+            })
+        })
+        .cloned()
+    else {
+        return projected;
+    };
+    if let Some(object) = projected.to_mut().as_object_mut() {
+        if let Some(checklist) = object.get_mut("checklist").and_then(Value::as_object_mut) {
+            checklist.remove("items");
+        }
+        object.insert("changed_item".to_owned(), changed_item);
+    }
+    projected
+}
+
 /// Hard byte cap on model-visible content. Line truncation alone does not
 /// bound output with very long lines (minified bundles, generated data), so
 /// the provider-visible preview contract needs a byte budget as well.
@@ -171,6 +217,51 @@ pub fn truncate_lines(text: &str, max_lines: usize) -> Option<(String, usize)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tracker_projection_keeps_only_the_changed_hierarchical_item() {
+        let original = serde_json::json!({
+            "status": "updated",
+            "checklist": {"total": 2, "completed": 1, "items": [
+                {"index_path": "1", "description": "Parent", "status": "pending"},
+                {"index_path": "1.1", "description": "Child", "status": "completed", "verify": ["cargo check"]}
+            ]},
+            "view": {"lines": ["Parent", "Child"]}
+        });
+        let projected = project_model_tool_result(
+            "task_tracker",
+            &serde_json::json!({"action": "update", "index_path": "1.1"}),
+            &original,
+        );
+        assert_eq!(projected["changed_item"]["description"], "Child");
+        assert_eq!(projected["changed_item"]["verify"], serde_json::json!(["cargo check"]));
+        assert_eq!(projected["checklist"]["total"], 2);
+        assert!(projected["checklist"].get("items").is_none());
+        assert!(projected.get("view").is_none());
+        assert_eq!(original["checklist"]["items"].as_array().unwrap().len(), 2);
+        assert!(original.get("view").is_some());
+        assert!(projected.to_string().len() < original.to_string().len());
+        for args in [
+            serde_json::json!({"action": "list"}),
+            serde_json::json!({"action": "create"}),
+            serde_json::json!({"action": "update", "items": ["Replacement"]}),
+            serde_json::json!({"action": "update", "index_path": "9"}),
+        ] {
+            let projected = project_model_tool_result("task_tracker", &args, &original);
+            assert_eq!(projected["checklist"]["items"], original["checklist"]["items"]);
+            assert!(projected.get("changed_item").is_none());
+        }
+    }
+
+    #[test]
+    fn tracker_projection_supports_standard_indices() {
+        let result = serde_json::json!({"checklist": {"items": [
+            {"index": 1, "description": "First"}, {"index": 2, "description": "Second"}
+        ]}});
+        let projected =
+            project_model_tool_result("task_tracker", &serde_json::json!({"action": "update", "index": 2}), &result);
+        assert_eq!(projected["changed_item"]["description"], "Second");
+        assert_eq!(project_model_tool_result("exec_command", &serde_json::json!({}), &result).as_ref(), &result);
+    }
     use super::*;
     use serde_json::json;
 

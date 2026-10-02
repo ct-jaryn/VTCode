@@ -1,20 +1,20 @@
 # Merge Gateway Quick Reference
 
-| Setting | Value |
-| --- | --- |
-| Provider key | `merge-gateway` |
-| API key | `MERGE_GATEWAY_API_KEY` |
-| Native endpoint | `https://api-gateway.merge.dev/v1` |
-| Endpoint override | `MERGE_GATEWAY_BASE_URL` |
-| Default model | `default_routing` |
-| Curated routes | See the full list below; all are available in the model picker |
-| Default transport | Merge Responses API (`POST /responses`) |
-| Legacy transport | Explicit base URLs ending in `/v1/openai` use Chat Completions |
-| Catalog | Authenticated `GET /models`, paginated and cache-backed |
-| Authentication | ****** |
-| Tool calls | Supported |
-| Streaming usage | Supported via native Responses SSE |
-| Reasoning effort | Forwarded per route: `reasoning_effort` (OpenAI/xAI/Moonshot/Meta/ZAI) or `thinking.budget_tokens` (Anthropic/Gemini/DeepSeek/Qwen/MiniMax/Thinking Machines); unknown routes omitted |
+| Setting           | Value                                                                                                                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider key      | `merge-gateway`                                                                                                                                                                       |
+| API key           | `MERGE_GATEWAY_API_KEY`                                                                                                                                                               |
+| Native endpoint   | `https://api-gateway.merge.dev/v1`                                                                                                                                                    |
+| Endpoint override | `MERGE_GATEWAY_BASE_URL`                                                                                                                                                              |
+| Default model     | `default_routing`                                                                                                                                                                     |
+| Curated routes    | See the full list below; all are available in the model picker                                                                                                                        |
+| Default transport | Merge Responses API (`POST /responses`)                                                                                                                                               |
+| Legacy transport  | Explicit base URLs ending in `/v1/openai` use Chat Completions                                                                                                                        |
+| Catalog           | Authenticated `GET /models`, paginated and cache-backed                                                                                                                               |
+| Authentication    | **\*\***                                                                                                                                                                              |
+| Tool calls        | Supported                                                                                                                                                                             |
+| Streaming usage   | Supported via native Responses SSE                                                                                                                                                    |
+| Reasoning effort  | Forwarded per route: `reasoning_effort` (OpenAI/xAI/Moonshot/Meta/ZAI) or `thinking.budget_tokens` (Anthropic/Gemini/DeepSeek/Qwen/MiniMax/Thinking Machines); unknown routes omitted |
 
 Curated routes:
 
@@ -59,5 +59,4 @@ vtcode --provider merge-gateway --model deepseek/deepseek-v4-pro
 ```
 
 Create keys in the [Merge dashboard](https://dashboard.merge.dev/). See the
-[full Merge Gateway guide](./merge-gateway.md) for configuration, limitations,
-and troubleshooting.
+[full Merge Gateway guide](./merge-gateway.md) for configuration, limitations, and troubleshooting.

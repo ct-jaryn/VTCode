@@ -1,4 +1,7 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-exec-events
+
 [Root AGENTS.md](../../../AGENTS.md) | Authoritative `ThreadEvent` contract. All runtime events flow through this crate.
 
 ## Key Types
@@ -11,11 +14,7 @@
 
 ## Rules
 
-- **Do not invent parallel event types.** Extend `ThreadEvent` and `ThreadItemDetails` enums.
-- `EVENT_SCHEMA_VERSION` must be bumped when the serialized contract changes.
-- `EventEmitter` trait has a blanket `FnMut(&ThreadEvent)` impl.
-- Feature-gated emitters: `telemetry-log` (LogEmitter), `telemetry-tracing` (TracingEmitter), `schema-export` (JSON Schema), `serde-json` (JSON helpers).
-- `atif/` exports ATIF trajectories; `trace/` implements Agent Trace attribution.
+- **Do not invent parallel event types.** Extend `ThreadEvent` and `ThreadItemDetails` enums. `EVENT_SCHEMA_VERSION` must be bumped when the serialized contract changes. `EventEmitter` trait has a blanket `FnMut(&ThreadEvent)` impl. Feature-gated emitters: `telemetry-log` (LogEmitter), `telemetry-tracing` (TracingEmitter), `schema-export` (JSON Schema), `serde-json` (JSON helpers). `atif/` exports ATIF trajectories; `trace/` implements Agent Trace attribution.
 - **Keep `ThreadEvent` compact**: large sparse payloads must be `Box`ed (see `thread_event_stays_compact` size-guard test; ≤80 bytes). `Box<T>` is serde/schema transparent.
 
 ## Gotchas

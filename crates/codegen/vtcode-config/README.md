@@ -10,7 +10,7 @@ default) to scaffold configuration directories with project-specific defaults.
 ## Modules
 
 | Module | Purpose |
-|---|---|
+| --- | --- |
 | `loader` | Config parsing, merging, watching, and layer stack |
 | `core` | Primary config structs (`AgentConfig`, `ModelConfig`, `SandboxConfig`, …) |
 | `defaults` | `ConfigDefaultsProvider` and helpers for search paths |
@@ -23,7 +23,7 @@ default) to scaffold configuration directories with project-specific defaults.
 | `debug` | Debug and trace configuration |
 | `hooks` | Lifecycle hook configuration |
 | `ide_context` | IDE context provider configuration |
-| `mcp` | MCP` | MCP server and client configuration |
+| `mcp` | MCP server and client configuration |
 | `models` | Model identifiers and metadata |
 | `optimization` | Performance tuning knobs (caching, pooling, profiling) |
 | `subagents` | Sub-agent discovery and specs |
@@ -31,7 +31,7 @@ default) to scaffold configuration directories with project-specific defaults.
 ## Public entrypoints
 
 | Export | Description |
-|---|---|
+| --- | --- |
 | `VTCodeConfig` | Deserialized configuration root |
 | `ConfigManager` | Load, merge, and watch configuration files |
 | `ConfigDefaultsProvider` | Trait for customizing default paths and values |
@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
 ## Features
 
 | Feature | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `bootstrap` | ✓ | Scaffold config directories on first load |
 | `schema` | — | JSON Schema generation via `schemars` |
 
@@ -71,6 +71,7 @@ Disable default features when you only need parsing/validation to omit the
 filesystem bootstrap helpers and reduce dependencies.
 
 ### Examples
+
 ```rust
 use vtcode_config::ConfigManager;
 

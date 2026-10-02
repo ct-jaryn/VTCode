@@ -1,10 +1,12 @@
 # Granular Permissions
 
-VT Code uses explicit permission decisions instead of session permission states. Primary agents and subagents carry their own local policy, and global `[permissions]` rules can still provide workspace-wide ceilings and prompts.
+VT Code uses explicit permission decisions instead of session permission states. Primary agents and subagents carry
+their own local policy, and global `[permissions]` rules can still provide workspace-wide ceilings and prompts.
 
 ## Agent Permission Schema
 
-Every VT Code-native agent spec must provide `permissions.default`. Optional rule buckets are evaluated in this order: `deny`, `ask`, `auto`, `allow`, then `default`.
+Every VT Code-native agent spec must provide `permissions.default`. Optional rule buckets are evaluated in this order:
+`deny`, `ask`, `auto`, `allow`, then `default`.
 
 ```yaml
 permissions:
@@ -22,7 +24,8 @@ permissions:
 
 Allowed default decisions are `ask`, `allow`, `auto`, and `deny`.
 
-`permissions.auto` means classifier-backed review. Matching tool calls are reviewed by VT Code's permission reviewer; they are not treated as unrestricted execution.
+`permissions.auto` means classifier-backed review. Matching tool calls are reviewed by VT Code's permission reviewer;
+they are not treated as unrestricted execution.
 
 ## Global Rules
 
@@ -35,7 +38,8 @@ allow = ["exec_command", "code_search", "mcp__context7__*"]
 deny = ["exec_command(rm -rf *)", "apply_patch(/.git/**)"]
 ```
 
-Global rules do not define a default decision. The active primary agent or active subagent supplies `permissions.default` after global deny and ask checks.
+Global rules do not define a default decision. The active primary agent or active subagent supplies
+`permissions.default` after global deny and ask checks.
 
 ## Classifier Review Settings
 

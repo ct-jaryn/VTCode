@@ -149,7 +149,8 @@ pub(crate) fn handle_preflight_failure(
     } else if circuit_tripped {
         "Stop retrying this malformed call. Tools are disabled for the next pass — synthesize a plain-text response reporting the failure to the user."
     } else {
-        "Correct the arguments using schema_correction, then retry this tool once."
+        vtcode_core::tools::error_messages::agent_execution::preflight_policy_correction(error)
+            .unwrap_or("Correct the arguments using schema_correction, then retry this tool once.")
     };
     let failure_kind = if circuit_tripped {
         "preflight_circuit_breaker"
@@ -197,6 +198,9 @@ pub(crate) fn handle_preflight_failure(
 }
 
 fn preflight_schema_correction(tool_name: &str, error: &str) -> String {
+    if let Some(correction) = vtcode_core::tools::error_messages::agent_execution::preflight_policy_correction(error) {
+        return correction.to_owned();
+    }
     if tool_name == tool_names::APPLY_PATCH || error.contains("apply_patch is a tool") {
         return vtcode_core::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION.to_string();
     }
@@ -937,7 +941,7 @@ pub(crate) async fn validate_tool_call<'a>(
                     .as_ref()
                     .map(|(tool, args)| (Some(tool.clone()), Some(args.clone())))
                     .unwrap_or((None, None));
-                let error_text = err.to_string();
+                let error_text = format!("{err:#}");
                 if check_is_argument_error(&error_text)
                     || error_text.to_ascii_lowercase().contains("tool preflight validation failed")
                 {
@@ -949,7 +953,7 @@ pub(crate) async fn validate_tool_call<'a>(
                     Some(tool_name),
                     Some(args_val),
                     build_validation_error_content_with_fallback(
-                        format!("Tool preflight validation failed: {err}"),
+                        format!("Tool preflight validation failed: {err:#}"),
                         "preflight",
                         fallback_tool,
                         fallback_tool_args,

@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 -->
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
 # AGENTS.md
 
 Keep this file concise and under 150 lines. Root guidance belongs here; detailed explanations belong in `docs/`, skills, `.vtcode/memory/`, or crate-local `AGENTS.md` files.
@@ -6,9 +8,7 @@ Universal model-facing behavior is compiled in `crates/codegen/vtcode-core/src/p
 
 ## Core Workflow (repo-only)
 
-- Orient: consult `.vtcode/memory/` (`gotchas.md`, `issues.md`, `library.md`, `decisions.md`) before acting. Search for task-relevant entries and read matching sections; avoid concatenating the full memory corpus. For self-bugs inspect relevant events in `.vtcode/logs/trajectory.jsonl`, `.vtcode/checkpoints`, and `.vtcode/sessions`.
-- Only when the request touches core agent harness/agent logic (`src/agent/runloop/`, `vtcode-core` agent loop/tools/prompts, `agent.harness`/`automation.full_auto`), you may consult `openai/codex` via DeepWiki MCP (`deepwiki` in `.mcp.json` / `vtcode.toml [mcp.providers]`); otherwise skip. Fallback to `gh api repos/openai/codex/...` or `git fetch https://github.com/openai/codex` only if needed.
-- Implement surgically in the existing small crate; when adapting a Codex pattern cite source + commit (`codex-rs/...`, Apache-2.0 © 2025 OpenAI, https://github.com/openai/codex), preserve notices/state changes per Apache-2.0 §4, extend `scripts/templates/third-party-header.txt` + regen notices if substantive, and keep VT Code invariants (`ThreadEvent`, harness split, sandbox boundary).
+- Orient: consult `.vtcode/memory/` (`gotchas.md`, `issues.md`, `library.md`, `decisions.md`) before acting. Search for task-relevant entries and read matching sections; avoid concatenating the full memory corpus. For self-bugs inspect relevant events in `.vtcode/logs/trajectory.jsonl`, `.vtcode/checkpoints`, and `.vtcode/sessions`. Only when the request touches core agent harness/agent logic (`src/agent/runloop/`, `vtcode-core` agent loop/tools/prompts, `agent.harness`/`automation.full_auto`), you may consult `openai/codex` via DeepWiki MCP (`deepwiki` in `.mcp.json` / `vtcode.toml [mcp.providers]`); otherwise skip. Fallback to `gh api repos/openai/codex/...` or `git fetch https://github.com/openai/codex` only if needed. Implement surgically in the existing small crate; when adapting a Codex pattern cite source + commit (`codex-rs/...`, Apache-2.0 © 2025 OpenAI, <https://github.com/openai/codex>), preserve notices/state changes per Apache-2.0 §4, extend `scripts/templates/third-party-header.txt` + regen notices if substantive, and keep VT Code invariants (`ThreadEvent`, harness split, sandbox boundary).
 - Verify with `./scripts/check-dev.sh` + `cargo nextest run`; record durable learnings in `.vtcode/memory/` (local-only, gitignored).
 
 ## Rules
@@ -145,5 +145,5 @@ Narrow commands: `cargo check`, `cargo nextest run`, `cargo nextest run --profil
 
 - LLM providers: use the `adding-llm-providers` skill. The `/model` picker uses `ModelId::all_models()`; `builtin_model_presets()` is used by `ModelsManager`. Both may need updates.
 - New workspace crates: use the `adding-workspace-crate` skill. This affects more than `Cargo.toml`; all workspace path dependencies need `version` fields.
-- Structural code work: prefer `ast-grep` over text grep for code shape, calls, impls, and codemods. Use `rg` for prose, logs, and config strings. Always invoke `ast-grep`, not the `sg` alias. Use `exec_command` or the ast-grep skill for arbitrary structural patterns. Advanced `code_search` accepts one literal query and bounded filters. Rust pattern catalog: https://ast-grep.github.io/catalog/rust/. GitHub refs: prefer `gh` CLI over `webfetch`; for harness/agent-logic tasks, optional `openai/codex` via DeepWiki MCP or `gh`/git-fetch (see Core Workflow).
+- Structural code work: prefer `ast-grep` over text grep for code shape, calls, impls, and codemods. Use `rg` for prose, logs, and config strings. Always invoke `ast-grep`, not the `sg` alias. Use `exec_command` or the ast-grep skill for arbitrary structural patterns. Advanced `code_search` accepts one literal query and bounded filters. Rust pattern catalog: <https://ast-grep.github.io/catalog/rust/>. GitHub refs: prefer `gh` CLI over `webfetch`; for harness/agent-logic tasks, optional `openai/codex` via DeepWiki MCP or `gh`/git-fetch (see Core Workflow).
 - Cap large command output: `COMMAND 2>&1 | head -c 4000` — but never pipe verifier commands (`cargo check --locked`, `cargo fmt --all -- --check`, `cargo nextest run`); pass `max_output_tokens` instead, since a pipe masks the verifier's exit status and never clears the verification gate.

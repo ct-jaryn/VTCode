@@ -932,6 +932,22 @@ fn dynamic_find_preflight_feedback_names_safe_static_alternatives() {
     assert!(correction.contains("Do not retry"));
 }
 
+#[test]
+fn policy_preflight_feedback_does_not_recommend_json_repair() {
+    let security = preflight_schema_correction(
+        tool_names::EXEC_COMMAND,
+        "Command security check failed: Command injection pattern detected",
+    );
+    assert!(security.contains("security policy"));
+    assert!(!security.contains("matching the declared schema"));
+    assert!(security.contains("Do not retry"));
+    let planning = preflight_schema_correction(tool_names::EXEC_COMMAND, "tool denied by planning workflow");
+    assert!(planning.contains("command -v"));
+    assert!(planning.contains("defer unknown scripts"));
+    let malformed = preflight_schema_correction(tool_names::EXEC_COMMAND, "Invalid arguments: missing cmd");
+    assert!(malformed.contains("matching the declared schema"));
+}
+
 #[tokio::test]
 async fn planning_preflight_recovery_requires_plan_artifact() {
     let mut backing = TestContextBacking::new(4).await;

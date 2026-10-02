@@ -11,8 +11,8 @@ It contains:
 
 ACP (Agent Communication Protocol) support for VT Code.
 
-This crate exposes both the ACP client library and the VT Code Zed bridge.
-Downstream crates should treat this as the canonical ACP entrypoint.
+This crate exposes both the ACP client library and the VT Code Zed bridge. Downstream crates should treat this as the
+canonical ACP entrypoint.
 
 <!-- cargo-rdme end -->
 

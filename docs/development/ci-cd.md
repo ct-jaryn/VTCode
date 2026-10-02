@@ -44,59 +44,50 @@ The project uses several GitHub Actions workflows to ensure code quality and aut
 
 **Jobs:**
 
-- **Build Linux**: Compiles `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, and `aarch64-unknown-linux-gnu` binaries
+- **Build Linux**: Compiles `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, and `aarch64-unknown-linux-gnu`
+  binaries
 - **Build Windows**: Compiles `x86_64-pc-windows-msvc` binary
 - **Upload Artifacts**: Stores compiled binaries + extension-stripped `.sha256` sidecars for release
 
 **Required release target matrix** (enforced by `scripts/release.sh`):
 
-| Target | Built by | Archive |
-| --- | --- | --- |
-| `x86_64-apple-darwin` | local (`release.sh`) | `.tar.gz` |
-| `aarch64-apple-darwin` | local (`release.sh`) | `.tar.gz` |
-| `x86_64-unknown-linux-gnu` | `build-linux-windows.yml` | `.tar.gz` |
-| `x86_64-unknown-linux-musl` | `build-linux-windows.yml` | `.tar.gz` |
-| `aarch64-unknown-linux-gnu` | `build-linux-windows.yml` | `.tar.gz` |
-| `x86_64-pc-windows-msvc` | `build-linux-windows.yml` | `.zip` (required by default) |
+| Target                      | Built by                  | Archive                      |
+| --------------------------- | ------------------------- | ---------------------------- |
+| `x86_64-apple-darwin`       | local (`release.sh`)      | `.tar.gz`                    |
+| `aarch64-apple-darwin`      | local (`release.sh`)      | `.tar.gz`                    |
+| `x86_64-unknown-linux-gnu`  | `build-linux-windows.yml` | `.tar.gz`                    |
+| `x86_64-unknown-linux-musl` | `build-linux-windows.yml` | `.tar.gz`                    |
+| `aarch64-unknown-linux-gnu` | `build-linux-windows.yml` | `.tar.gz`                    |
+| `x86_64-pc-windows-msvc`    | `build-linux-windows.yml` | `.zip` (required by default) |
 
-`release.sh` derives a raw `compat-vtcode-<v>-<target>.tar.gz.compat` executable from
-each normal archive. These are the legacy updater compatibility bridge for
-v0.141.0-v0.141.4 (see [Update System Guide](../guides/UPDATE_SYSTEM.md)). The
-`compat-` prefix is load-bearing: GitHub returns release assets sorted alphabetically
-by name, and the prefix makes the compat asset sort before `vtcode-<v>-<target>.tar.gz`
-so the broken legacy updater picks the raw binary instead of the gzip archive it
-cannot extract. The release fails if any required target archive (including
-Windows by default) is missing. Set `RELEASE_REQUIRE_WINDOWS=false` only for an
-emergency macOS/Linux rescue when Windows CI is flaky.
+`release.sh` derives a raw `compat-vtcode-<v>-<target>.tar.gz.compat` executable from each normal archive. These are the
+legacy updater compatibility bridge for v0.141.0-v0.141.4 (see [Update System Guide](../guides/UPDATE_SYSTEM.md)). The
+`compat-` prefix is load-bearing: GitHub returns release assets sorted alphabetically by name, and the prefix makes the
+compat asset sort before `vtcode-<v>-<target>.tar.gz` so the broken legacy updater picks the raw binary instead of the
+gzip archive it cannot extract. The release fails if any required target archive (including Windows by default) is
+missing. Set `RELEASE_REQUIRE_WINDOWS=false` only for an emergency macOS/Linux rescue when Windows CI is flaky.
 
-**macOS signing and Gatekeeper**
+#### macOS signing and Gatekeeper
 
-When Developer ID signing and notarization credentials are configured, both
-macOS release executables are signed with a hardened runtime, secure timestamp,
-and the stable code identifier `com.vinhnx.vtcode`. The release scripts submit
-each executable to Apple's notary service and verify its signature and
-Gatekeeper assessment before publishing the archive or compatibility
-executable. The raw executable archive layout stays compatible with Homebrew,
-`install.sh`, and the updater. Apple publishes notarization tickets for
-standalone command-line binaries online but does not allow stapling tickets to
-those binaries, so Gatekeeper needs network access when it first checks a new
-release. See Apple's guides for
+When Developer ID signing and notarization credentials are configured, both macOS release executables are signed with a
+hardened runtime, secure timestamp, and the stable code identifier `com.vinhnx.vtcode`. The release scripts submit each
+executable to Apple's notary service and verify its signature and Gatekeeper assessment before publishing the archive or
+compatibility executable. The raw executable archive layout stays compatible with Homebrew, `install.sh`, and the
+updater. Apple publishes notarization tickets for standalone command-line binaries online but does not allow stapling
+tickets to those binaries, so Gatekeeper needs network access when it first checks a new release. See Apple's guides for
 [notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
-and [customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
-Gatekeeper may still show an informational first-launch dialog for a newly
-installed version, including a notarized one.
+and
+[customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+Gatekeeper may still show an informational first-launch dialog for a newly installed version, including a notarized one.
 
-On a Mac with no signing credentials, the release scripts continue to package
-and publish unsigned, unnotarized macOS binaries and print a warning. Gatekeeper
-may warn, block, or ask users to approve a downloaded binary; VT Code cannot
-hide or dismiss those macOS security dialogs. This keeps macOS releases
-available without a paid developer account, with the tradeoff that first-run
-security friction remains.
+On a Mac with no signing credentials, the release scripts continue to package and publish unsigned, unnotarized macOS
+binaries and print a warning. Gatekeeper may warn, block, or ask users to approve a downloaded binary; VT Code cannot
+hide or dismiss those macOS security dialogs. This keeps macOS releases available without a paid developer account, with
+the tradeoff that first-run security friction remains.
 
-To enable signing and notarization, the Mac running the release needs a
-Developer ID Application certificate in its keychain and a `notarytool`
-keychain profile. Create the profile with `xcrun notarytool store-credentials`,
-then set the profile name and full signing identity before releasing:
+To enable signing and notarization, the Mac running the release needs a Developer ID Application certificate in its
+keychain and a `notarytool` keychain profile. Create the profile with `xcrun notarytool store-credentials`, then set the
+profile name and full signing identity before releasing:
 
 ```bash
 export VTCODE_MACOS_SIGNING_IDENTITY='Developer ID Application: Name (TEAMID)'
@@ -104,27 +95,25 @@ export VTCODE_MACOS_NOTARY_PROFILE='VTCodeNotary'
 ./scripts/release.sh --patch
 ```
 
-Leave both variables unset to publish unsigned macOS binaries. If either
-variable is set, both must be configured correctly; a partial or invalid
-configuration fails rather than silently falling back to unsigned artifacts.
-Linux and Windows artifacts do not use this macOS-only signing path.
+Leave both variables unset to publish unsigned macOS binaries. If either variable is set, both must be configured
+correctly; a partial or invalid configuration fails rather than silently falling back to unsigned artifacts. Linux and
+Windows artifacts do not use this macOS-only signing path.
 
 **Binary size & cold-start optimization:**
 
-All release profiles inherit `[profile.release]` which uses `opt-level = "z"` (size
-optimization) + full LTO + `codegen-units = 1`. Binary size directly impacts cold-start
-time — dyld page-faults loading the Mach-O dominate the first-launch latency.
+All release profiles inherit `[profile.release]` which uses `opt-level = "z"` (size optimization) + full LTO +
+`codegen-units = 1`. Binary size directly impacts cold-start time — dyld page-faults loading the Mach-O dominate the
+first-launch latency.
 
-| Build path | Profile | Extra size flags |
-| --- | --- | --- |
-| macOS local (`release.sh`) | `release` | `-Wl,-dead_strip` via `CARGO_TARGET_*_RUSTFLAGS` |
-| Linux CI | `release-fast` (thin LTO, 4 codegen units) | `-Wl,--gc-sections` via `RUSTFLAGS` |
-| Windows CI | `release-fast-windows` (no LTO, 16 codegen units) | MSVC `/OPT:REF` (default) |
+| Build path                 | Profile                                           | Extra size flags                                 |
+| -------------------------- | ------------------------------------------------- | ------------------------------------------------ |
+| macOS local (`release.sh`) | `release`                                         | `-Wl,-dead_strip` via `CARGO_TARGET_*_RUSTFLAGS` |
+| Linux CI                   | `release-fast` (thin LTO, 4 codegen units)        | `-Wl,--gc-sections` via `RUSTFLAGS`              |
+| Windows CI                 | `release-fast-windows` (no LTO, 16 codegen units) | MSVC `/OPT:REF` (default)                        |
 
-`release.sh` also runs a cold-start spot check (fresh `/tmp` copy → `--version` timing)
-after the macOS aarch64 build to catch sub-1s regressions before shipping. All build
-commands use `--locked` to ensure the Cargo.lock matches Cargo.toml so the size-optimized
-profiles are actually applied.
+`release.sh` also runs a cold-start spot check (fresh `/tmp` copy → `--version` timing) after the macOS aarch64 build to
+catch sub-1s regressions before shipping. All build commands use `--locked` to ensure the Cargo.lock matches Cargo.toml
+so the size-optimized profiles are actually applied.
 
 ### 4. Coverage (`coverage.yml`)
 
@@ -172,8 +161,7 @@ cargo fmt --all
 cargo fmt --print-config default rustfmt.toml
 ```
 
-**Configuration:**
-Create a `rustfmt.toml` or `.rustfmt.toml` file in your project root:
+**Configuration:** Create a `rustfmt.toml` or `.rustfmt.toml` file in your project root:
 
 ```toml
 edition = "2021"
@@ -211,19 +199,18 @@ cargo clippy --fix
 
 ### First-party debt scan
 
-The lint migration keeps the actionable marker scan separate from generated or
-fixture content. Run it from the repository root:
+The lint migration keeps the actionable marker scan separate from generated or fixture content. Run it from the
+repository root:
 
 ```bash
 ./scripts/first-party-debt-scan.sh
 ```
 
-The scanner covers first-party `src/`, `crates/`, and `scripts/` content while
-excluding vendored, generated, fixture, template, sample, and task-panel
-content. New `TODO:`, `FIXME:`, `HACK:`, or `XXX:` markers fail the check.
+The scanner covers first-party `src/`, `crates/`, and `scripts/` content while excluding vendored, generated, fixture,
+template, sample, and task-panel content. New `TODO:`, `FIXME:`, `HACK:`, or `XXX:` markers fail the check.
 
-The workspace lint gate also enforces the previously suppressed result,
-indexing, string-slice, cast, and allow-without-reason lint families:
+The workspace lint gate also enforces the previously suppressed result, indexing, string-slice, cast, and
+allow-without-reason lint families:
 
 ```bash
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -415,11 +402,9 @@ scripts/generate-notices.sh          # regenerate the file
 scripts/generate-notices.sh --check  # CI mode: exit 1 if out of date
 ```
 
-The `license-notices` CI job runs `scripts/generate-notices.sh --check` on
-every PR to catch stale license notices before merge. The file has a manual
-header (`scripts/templates/third-party-header.txt` for in-tree source ports)
-and an auto-generated dependency listing (`scripts/templates/third-party-notices.hbs`
-via cargo-about).
+The `license-notices` CI job runs `scripts/generate-notices.sh --check` on every PR to catch stale license notices
+before merge. The file has a manual header (`scripts/templates/third-party-header.txt` for in-tree source ports) and an
+auto-generated dependency listing (`scripts/templates/third-party-notices.hbs` via cargo-about).
 
 ## References
 

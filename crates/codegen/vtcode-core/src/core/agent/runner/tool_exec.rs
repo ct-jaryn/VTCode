@@ -8,7 +8,7 @@ use super::tool_rejection::{
 use super::tool_types::{PreparedRunnerToolBatch, PreparedRunnerToolCall, RunnerCallAdmission, ToolCallItemRef};
 use crate::core::agent::events::{ExecEventRecorder, tool_invocation_completed_event, tool_output_payload_from_value};
 use crate::core::agent::harness_kernel::{
-    FallbackRecommendation, PreparedToolBatch, PreparedToolBatchKind, reduce_tool_result, strip_tui_display_fields,
+    FallbackRecommendation, PreparedToolBatch, PreparedToolBatchKind, project_model_tool_result, reduce_tool_result,
 };
 use crate::core::agent::runtime::{AgentRuntime, RuntimeControl};
 use crate::exec::events::ToolCallStatus;
@@ -151,7 +151,7 @@ fn apply_tool_success(
     // Strip TUI-only display fields (e.g. task_tracker `view`) before the
     // result enters model context. The TUI event below still uses
     // `optimized_result` (with `view`) so display rendering is unaffected.
-    let llm_result = strip_tui_display_fields(name, &optimized_result);
+    let llm_result = project_model_tool_result(name, args, &optimized_result);
     runtime
         .state
         .push_tool_result(call_id.to_string(), name, &llm_result, is_gemini);
@@ -842,7 +842,7 @@ impl AgentRunner {
         // Strip TUI-only display fields before the result enters model context,
         // matching `apply_tool_success`. The TUI event below still uses
         // `optimized_result` (with `view`) so display rendering is unaffected.
-        let llm_result = strip_tui_display_fields(tool_name, &optimized_result);
+        let llm_result = project_model_tool_result(tool_name, tool_args, &optimized_result);
         runtime
             .state
             .push_tool_result(call_id.to_string(), tool_name, &llm_result, is_gemini);

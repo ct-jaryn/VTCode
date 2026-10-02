@@ -37,9 +37,8 @@ my-skill/
 
 ## SKILL.md
 
-VT Code accepts the core Agent Skills frontmatter fields plus the client-side
-`disable-model-invocation` flag used to hide a skill from the model-facing startup catalog while
-keeping it available for explicit harness activation:
+VT Code accepts the core Agent Skills frontmatter fields plus the client-side `disable-model-invocation` flag used to
+hide a skill from the model-facing startup catalog while keeping it available for explicit harness activation:
 
 ```yaml
 ---
@@ -71,7 +70,8 @@ Client extensions (parsed, not part of the spec):
 - `argument-hint`
 - `disable-model-invocation`
 
-Legacy VT Code frontmatter such as `version`, `author`, `when-to-use`, `when-not-to-use`, `model`, `mode`, `context`, `agent`, `network`, `permissions`, container flags, and similar extensions is rejected.
+Legacy VT Code frontmatter such as `version`, `author`, `when-to-use`, `when-not-to-use`, `model`, `mode`, `context`,
+`agent`, `network`, `permissions`, container flags, and similar extensions is rejected.
 
 VT Code does not support `agents/openai.yaml`. That file is Codex-specific and ignored by design.
 
@@ -84,19 +84,16 @@ VT Code does not support `agents/openai.yaml`. That file is Codex-specific and i
 
 ## Sub-LLM Tool Execution
 
-Skills run in a sub-conversation with their own model request. When the serving
-model emits no native function calls but embeds textual `<tool_call>` markup in
-its reply (common on gateway-served models), VT Code parses the first unfenced,
+Skills run in a sub-conversation with their own model request. When the serving model emits no native function calls but
+embeds textual `<tool_call>` markup in its reply (common on gateway-served models), VT Code parses the first unfenced,
 cleanly named block and executes it as a native-equivalent tool call:
 
 - Shell aliases (`bash`, `shell`, `run`, …) are canonicalized to `exec_command`.
-- The parsed call flows through the same skill tool scope, permission policy,
-  and loop detection as a native call — nothing bypasses approval.
-- Markup inside fenced code blocks is documentation (skill docs, quoted
-  examples) and is never executed; mid-prose mentions that do not resolve to a
-  tool identifier are skipped.
-- If no parseable markup remains, the reply is treated as the skill's final
-  content and synthesized without tools.
+- The parsed call flows through the same skill tool scope, permission policy, and loop detection as a native call —
+  nothing bypasses approval.
+- Markup inside fenced code blocks is documentation (skill docs, quoted examples) and is never executed; mid-prose
+  mentions that do not resolve to a tool identifier are skipped.
+- If no parseable markup remains, the reply is treated as the skill's final content and synthesized without tools.
 
 ## Commands
 
@@ -137,12 +134,15 @@ VT Code also exposes the interactive slash-command surface as skills.
 - Canonical skill names use the `cmd-<slash-name>` form, for example `cmd-status` or `cmd-review`.
 - The `/status` or `/review` slash command remains the primary interactive alias.
 - Built-in session/UI commands are surfaced as built-in command skills.
-- Prompt-oriented slash commands are shipped as bundled system skills in the release binary and installed under the system skill cache at runtime.
-- Command skills are intentionally excluded from the default prompt-side skill index to avoid spending context on slash-command metadata that is already exposed elsewhere in the harness.
+- Prompt-oriented slash commands are shipped as bundled system skills in the release binary and installed under the
+  system skill cache at runtime.
+- Command skills are intentionally excluded from the default prompt-side skill index to avoid spending context on
+  slash-command metadata that is already exposed elsewhere in the harness.
 - Built-in command skills support `info` and `use`, but not `load`.
 
 ## Notes
 
-- `vtcode skills create` generates a spec-first `SKILL.md` scaffold with optional commented guidance for `disable-model-invocation`.
+- `vtcode skills create` generates a spec-first `SKILL.md` scaffold with optional commented guidance for
+  `disable-model-invocation`.
 - User-facing skill metadata in VT Code is limited to the strict `SKILL.md` fields above.
 - Bundled system skills are surfaced as `system` scope.

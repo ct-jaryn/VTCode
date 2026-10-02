@@ -1,8 +1,12 @@
 # VT Code Configuration
 
-VT Code configuration gives you fine-grained control over the model, execution environment, and integrations available to the CLI. Use this guide alongside the workflows in the extension, the participant system, and the tool approval mechanisms available in the application.
+VT Code configuration gives you fine-grained control over the model, execution environment, and integrations available
+to the CLI. Use this guide alongside the workflows in the extension, the participant system, and the tool approval
+mechanisms available in the application.
 
-VT Code uses a configuration file named `vtcode.toml` that can be placed at the root of your project workspace to customize behavior. The extension watches for changes to this file and will automatically update settings when it's modified.
+VT Code uses a configuration file named `vtcode.toml` that can be placed at the root of your project workspace to
+customize behavior. The extension watches for changes to this file and will automatically update settings when it's
+modified.
 
 ## Getting Started with Configuration
 
@@ -29,14 +33,16 @@ You can copy either of these files to your project root to begin customizing you
 VT Code supports several mechanisms for setting config values:
 
 - The `$VTCODE_HOME/config.toml` configuration file where the `VTCODE_HOME` environment value defaults to `~/.vtcode`.
-- The workspace-level `vtcode.toml` file that can be placed at the root of your project (similar to `AGENTS.md` in the OpenAI Codex).
+- The workspace-level `vtcode.toml` file that can be placed at the root of your project (similar to `AGENTS.md` in the
+  OpenAI Codex).
 - Environment variables that can override certain configuration options.
 
 Both the workspace `vtcode.toml` and the main `config.toml` file support the following options:
 
 ## Feature flags
 
-Optional and experimental capabilities are toggled via the `[features]` table in `vtcode.toml`. These allow you to customize the behavior of various VT Code features.
+Optional and experimental capabilities are toggled via the `[features]` table in `vtcode.toml`. These allow you to
+customize the behavior of various VT Code features.
 
 ```toml
 [features]
@@ -100,7 +106,8 @@ base_url = "http://localhost:11434/v1"
 # No API key required for local Ollama instance
 ```
 
-Note this makes it possible to use VT Code with non-default models, so long as they are properly configured with the correct API endpoints and authentication.
+Note this makes it possible to use VT Code with non-default models, so long as they are properly configured with the
+correct API endpoints and authentication.
 
 Or a third-party provider (using a distinct environment variable for the API key):
 
@@ -111,7 +118,8 @@ base_url = "https://api.mistral.ai/v1"
 env_key = "MISTRAL_API_KEY"
 ```
 
-It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values (`http_headers`) or values read from environment variables (`env_http_headers`):
+It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values
+(`http_headers`) or values read from environment variables (`env_http_headers`):
 
 ```toml
 [agent.provider_settings.example]
@@ -143,9 +151,8 @@ top_p = 0.9                # Top-P sampling parameter
 
 Controls various workspace-specific settings for VT Code execution.
 
-> **Note:** The `[workspace]` section is now implemented. When `use_root_config = true`,
-> only the workspace root `vtcode.toml` is used as the active config layer; system,
-> user, project, and dot-dir layers are discarded.
+> **Note:** The `[workspace]` section is now implemented. When `use_root_config = true`, only the workspace root
+> `vtcode.toml` is used as the active config layer; system, user, project, and dot-dir layers are discarded.
 
 ```toml
 [workspace]
@@ -180,7 +187,8 @@ participant_timeout = 30  # 30 seconds
 
 ### mcp
 
-You can configure VT Code to use [Model Context Protocol (MCP) servers](https://modelcontextprotocol.io/) to give VT Code access to external applications, resources, or services.
+You can configure VT Code to use [Model Context Protocol (MCP) servers](https://modelcontextprotocol.io/) to give VT
+Code access to external applications, resources, or services.
 
 #### Server configuration
 
@@ -340,7 +348,8 @@ include_diff = false
 
 ### profiles
 
-A _profile_ is a collection of configuration values that can be set together. Multiple profiles can be defined in `vtcode.toml` and you can specify the one you want to use depending on the project type or your current task.
+A _profile_ is a collection of configuration values that can be set together. Multiple profiles can be defined in
+`vtcode.toml` and you can specify the one you want to use depending on the project type or your current task.
 
 Here is an example of a `vtcode.toml` that defines multiple profiles:
 
@@ -514,65 +523,66 @@ If VT Code is not behaving as expected with your configuration:
 
 1. First, verify the configuration file parses correctly:
 
-    ```toml
-    # Make sure all tables close properly
-    [agent]
-    provider = "openai"
-    default_model = "gpt-5"
-    # No missing closing brackets
-    ```
+   ```toml
+   # Make sure all tables close properly
+   [agent]
+   provider = "openai"
+   default_model = "gpt-5"
+   # No missing closing brackets
+   ```
 
 2. Check that required environment variables are set:
 
-    ```bash
-    # Verify API keys are available
-    echo $OPENAI_API_KEY
-    ```
+   ```bash
+   # Verify API keys are available
+   echo $OPENAI_API_KEY
+   ```
 
 3. Enable logging temporarily to see what's happening:
-    ```toml
-    [logging]
-    enabled = true
-    level = "debug"
-    ```
+
+   ```toml
+   [logging]
+   enabled = true
+   level = "debug"
+   ```
 
 ## Config reference
 
-| Key                                     | Type / Values                                     | Notes                                                              |
-| --------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------ |
-| `agent.provider`                        | string                                            | Provider to use (e.g., `openai`, `anthropic`, `google`, `ollama`). |
-| `agent.default_model`                   | string                                            | Default model for the selected provider.                           |
-| `agent.context_window`                  | number                                            | Context window tokens.                                             |
-| `agent.max_output_tokens`               | number                                            | Max output tokens.                                                 |
-| `agent.temperature`                     | number                                            | Model temperature (0.0-2.0).                                       |
-| `agent.top_p`                           | number                                            | Top-P sampling parameter (0.0-1.0).                                |
-| `security.human_in_the_loop`            | boolean                                           | Enable tool approval prompts (default: true).                      |
-| `security.default_tool_policy`          | `ask` \| `allow` \| `deny`                        | Default tool execution policy.                                     |
-| `tools.policies.*`                      | `ask` \| `allow` \| `deny`                        | Policies for specific tools.                                       |
-| `mcp.enabled`                           | boolean                                           | Enable MCP integration (default: false).                           |
-| `mcp.providers[].name`                  | string                                            | MCP provider name.                                                 |
-| `mcp.providers[].command`               | string                                            | MCP provider command to execute.                                   |
-| `mcp.providers[].args`                  | array                                             | Arguments for the MCP command.                                     |
-| `mcp.providers[].enabled`               | boolean                                           | Whether the provider is enabled.                                   |
-| `participants.enabled`                  | boolean                                           | Enable participant system (default: true).                         |
-| `participants.default_participants`     | array                                             | Default participants to include.                                   |
-| `participants.timeout`                  | number                                            | Timeout for participant context (seconds).                         |
-| `automation.full_auto.enabled`          | boolean                                           | Enable full automation mode.                                       |
-| `automation.full_auto.allowed_tools`    | array                                             | Tools allowed in automation mode.                                  |
-| `workspace.use_root_config`             | boolean                                           | When true, force workspace root vtcode.toml as the sole active config layer.                                  |
-| `workspace.include_context`             | boolean                                           | Include workspace context.                                         |
-| `workspace.max_context_size`            | number                                            | Max size of workspace context (bytes).                             |
-| `execution.tool_timeout`                | number                                            | Timeout for tool executions (seconds).                             |
-| `execution.api_timeout`                 | number                                            | Timeout for API calls (seconds).                                   |
-| `telemetry.enabled`                     | boolean                                           | Enable telemetry (default: false).                                 |
-| `telemetry.analytics`                   | boolean                                           | Enable usage analytics.                                            |
-| `logging.enabled`                       | boolean                                           | Enable detailed logging.                                           |
-| `logging.level`                         | `error` \| `warn` \| `info` \| `debug` \| `trace` | Log level.                                                         |
-| `auth.secure_storage`                   | boolean                                           | Store credentials securely (default: true).                        |
-| `auth.validate_keys`                    | boolean                                           | Validate API keys on startup.                                      |
-| `commands.ask_agent_enabled`            | boolean                                           | Enable the ask agent command.                                      |
-| `commands.analyze_enabled`              | boolean                                           | Enable the analyze command.                                        |
-| `commands.command_timeout`              | number                                            | Command execution timeout (seconds).                               |
-| `profiles.*.agent.provider`             | string                                            | Provider override for a profile.                                   |
-| `profiles.*.security.human_in_the_loop` | boolean                                           | Security setting override for a profile.                           |
-| `profiles.*.tools.policies.*`           | `ask` \| `allow` \| `deny`                        | Tool policy override for a profile.                                |
+| Key                                     | Type / Values                                     | Notes                                                                        |
+| --------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `agent.provider`                        | string                                            | Provider to use (e.g., `openai`, `anthropic`, `google`, `ollama`).           |
+| `agent.default_model`                   | string                                            | Default model for the selected provider.                                     |
+| `agent.context_window`                  | number                                            | Context window tokens.                                                       |
+| `agent.max_output_tokens`               | number                                            | Max output tokens.                                                           |
+| `agent.temperature`                     | number                                            | Model temperature (0.0-2.0).                                                 |
+| `agent.top_p`                           | number                                            | Top-P sampling parameter (0.0-1.0).                                          |
+| `security.human_in_the_loop`            | boolean                                           | Enable tool approval prompts (default: true).                                |
+| `security.default_tool_policy`          | `ask` \| `allow` \| `deny`                        | Default tool execution policy.                                               |
+| `tools.policies.*`                      | `ask` \| `allow` \| `deny`                        | Policies for specific tools.                                                 |
+| `mcp.enabled`                           | boolean                                           | Enable MCP integration (default: false).                                     |
+| `mcp.providers[].name`                  | string                                            | MCP provider name.                                                           |
+| `mcp.providers[].command`               | string                                            | MCP provider command to execute.                                             |
+| `mcp.providers[].args`                  | array                                             | Arguments for the MCP command.                                               |
+| `mcp.providers[].enabled`               | boolean                                           | Whether the provider is enabled.                                             |
+| `participants.enabled`                  | boolean                                           | Enable participant system (default: true).                                   |
+| `participants.default_participants`     | array                                             | Default participants to include.                                             |
+| `participants.timeout`                  | number                                            | Timeout for participant context (seconds).                                   |
+| `automation.full_auto.enabled`          | boolean                                           | Enable full automation mode.                                                 |
+| `automation.full_auto.allowed_tools`    | array                                             | Tools allowed in automation mode.                                            |
+| `workspace.use_root_config`             | boolean                                           | When true, force workspace root vtcode.toml as the sole active config layer. |
+| `workspace.include_context`             | boolean                                           | Include workspace context.                                                   |
+| `workspace.max_context_size`            | number                                            | Max size of workspace context (bytes).                                       |
+| `execution.tool_timeout`                | number                                            | Timeout for tool executions (seconds).                                       |
+| `execution.api_timeout`                 | number                                            | Timeout for API calls (seconds).                                             |
+| `telemetry.enabled`                     | boolean                                           | Enable telemetry (default: false).                                           |
+| `telemetry.analytics`                   | boolean                                           | Enable usage analytics.                                                      |
+| `logging.enabled`                       | boolean                                           | Enable detailed logging.                                                     |
+| `logging.level`                         | `error` \| `warn` \| `info` \| `debug` \| `trace` | Log level.                                                                   |
+| `auth.secure_storage`                   | boolean                                           | Store credentials securely (default: true).                                  |
+| `auth.validate_keys`                    | boolean                                           | Validate API keys on startup.                                                |
+| `commands.ask_agent_enabled`            | boolean                                           | Enable the ask agent command.                                                |
+| `commands.analyze_enabled`              | boolean                                           | Enable the analyze command.                                                  |
+| `commands.command_timeout`              | number                                            | Command execution timeout (seconds).                                         |
+| `profiles.*.agent.provider`             | string                                            | Provider override for a profile.                                             |
+| `profiles.*.security.human_in_the_loop` | boolean                                           | Security setting override for a profile.                                     |
+| `profiles.*.tools.policies.*`           | `ask` \| `allow` \| `deny`                        | Tool policy override for a profile.                                          |

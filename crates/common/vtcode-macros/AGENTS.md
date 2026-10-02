@@ -1,3 +1,5 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-macros
 
 [Root AGENTS.md](../../../AGENTS.md) | `StringNewtype` derive macro shared across workspace crates.

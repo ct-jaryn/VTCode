@@ -1,15 +1,12 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-webmcp
 
 [Root AGENTS.md](../../../AGENTS.md) | Authenticated browser bridge and safe workspace adapter.
 
 ## Modules
 
-- `protocol` — versioned browser/server messages.
-- `pairing` — expiring one-time codes, sessions, origin binding, revocation, and atomic replacement.
-- `event_hub` — bounded replay and slow-client handling for runtime events.
-- `runtime` — adapter traits and result types used by active and headless sessions.
-- `filesystem` — canonicalized, digest-checked headless workspace adapter using `vtcode-diff` for authoritative diffs.
-- `remote_mcp` — authenticated read-only Streamable HTTP and legacy SSE transports.
+- `protocol` — versioned browser/server messages. `pairing` — expiring one-time codes, sessions, origin binding, revocation, and atomic replacement. `event_hub` — bounded replay and slow-client handling for runtime events. `runtime` — adapter traits and result types used by active and headless sessions. `filesystem` — canonicalized, digest-checked headless workspace adapter using `vtcode-diff` for authoritative diffs. `remote_mcp` — authenticated read-only Streamable HTTP and legacy SSE transports.
 - `server` — Axum WebSocket transport and request dispatch.
 - `error.rs` — crate error types.
 

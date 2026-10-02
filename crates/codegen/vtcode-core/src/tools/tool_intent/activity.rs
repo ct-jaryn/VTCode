@@ -50,6 +50,28 @@ fn is_verification_invocation(words: &[String]) -> bool {
         .to_ascii_lowercase();
 
     match program.as_str() {
+        "markdownlint-cli2" => command_words.get(1..).is_some_and(markdownlint_arguments_verify),
+        "npx" => {
+            let package_index = command_words
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, word)| !matches!(word.as_str(), "--yes" | "-y" | "--no-install"))
+                .map(|(index, _)| index);
+            package_index.is_some_and(|index| {
+                let Some(package) = command_words.get(index) else {
+                    return false;
+                };
+                let is_markdownlint = package == "markdownlint-cli2"
+                    || package.strip_prefix("markdownlint-cli2@").is_some_and(|version| {
+                        version.split('.').count() == 3
+                            && version
+                                .split('.')
+                                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+                    });
+                is_markdownlint && command_words.get(index + 1..).is_some_and(markdownlint_arguments_verify)
+            })
+        }
         "cargo" => {
             if second.as_deref() == Some("fmt") {
                 // `cargo fmt` without `--check` reformats the worktree (mutation).
@@ -92,11 +114,23 @@ fn is_verification_invocation(words: &[String]) -> bool {
         }
         "rustc" | "pytest" | "xcodebuild" | "gradle" | "gradlew" => true,
         "python" | "python3" => {
-            command_words.iter().any(|word| word == "-m") && command_words.iter().any(|word| word == "pytest")
+            (command_words.len() == 2
+                && command_words
+                    .get(1)
+                    .is_some_and(|script| Path::new(script).ends_with("scripts/check_markdown.py")))
+                || (command_words.iter().any(|word| word == "-m") && command_words.iter().any(|word| word == "pytest"))
         }
         _ if first.ends_with("/scripts/check.sh") || first.ends_with("/scripts/check-dev.sh") => true,
         _ => false,
     }
+}
+
+fn markdownlint_arguments_verify(arguments: &[String]) -> bool {
+    !arguments.is_empty()
+        && !arguments.iter().any(|argument| {
+            matches!(argument.as_str(), "--fix" | "-f" | "--help" | "-h" | "--version" | "-v")
+                || argument.starts_with("--fix=")
+        })
 }
 
 fn contains_verification_invocation(command: &str) -> bool {
@@ -748,6 +782,44 @@ mod tests {
 
     fn exec_command(command: &str) -> Value {
         json!({"cmd": command})
+    }
+
+    #[test]
+    fn markdownlint_verification_preserves_command_boundaries() {
+        for command in [
+            "markdownlint-cli2 README.md",
+            "npx --yes markdownlint-cli2 README.md",
+            "npx --no-install markdownlint-cli2@0.23.3 README.md",
+            "npx -y markdownlint-cli2 README.md && cargo check --locked",
+            "python3 scripts/check_markdown.py",
+            "python ./scripts/check_markdown.py",
+        ] {
+            assert!(shell_command_is_admitted_verification_attempt(&exec_command(command)), "{command}");
+            assert_eq!(
+                classify_shell_activity(tools::EXEC_COMMAND, &exec_command(command)),
+                ShellActivity::Verification,
+                "{command}"
+            );
+        }
+        for command in [
+            "markdownlint-cli2 --fix README.md",
+            "npx --yes markdownlint-cli2 -f README.md",
+            "npx --yes markdownlint-cli2 --fix=true README.md",
+            "markdownlint-cli2 --version",
+            "npx --package evil markdownlint-cli2 README.md",
+            "npx markdownlint-cli2@evil README.md",
+            "npx markdownlint-cli2 README.md && rm README.md",
+            "python3 scripts/check_markdown.py --fix",
+            "python3 scripts/check_markdown.py --list",
+            "python3 scripts/check_markdown.py --help",
+            "python3 other/check_markdown.py",
+        ] {
+            assert!(!shell_command_is_admitted_verification_attempt(&exec_command(command)), "{command}");
+        }
+        assert_ne!(
+            classify_shell_activity(tools::EXEC_COMMAND, &exec_command("npx markdownlint-cli2 README.md | grep error")),
+            ShellActivity::Verification
+        );
     }
 
     #[test]

@@ -10,26 +10,27 @@ This guide covers common issues and solutions when using VT Code with your IDE.
 
 1. Ensure VT Code CLI is installed:
 
-    ```bash
-    # Install with Cargo (recommended)
-    cargo install vtcode
+   ```bash
+   # Install with Cargo (recommended)
+   cargo install vtcode
 
-    # Or with Homebrew
-    brew trust vinhnx/tap
-    brew install vinhnx/tap/vtcode
+   # Or with Homebrew
+   brew trust vinhnx/tap
+   brew install vinhnx/tap/vtcode
 
-    ```
+   ```
 
-    See the [installation guide](../installation/README.md) for all methods,
-    including the native installer.
+   See the [installation guide](../installation/README.md) for all methods, including the native installer.
 
 2. Check that VT Code is in your PATH:
-    ```bash
-    vtcode --version
-    ```
+
+   ```bash
+   vtcode --version
+   ```
+
 3. If VT Code is installed in a custom location, update your IDE settings to point to the correct path:
-    - VS Code: Set `vtcode.commandPath` in settings to the full path of the VT Code executable
-    - Cursor/Windsurf: Look for similar extension settings to specify the VT Code executable path
+   - VS Code: Set `vtcode.commandPath` in settings to the full path of the VT Code executable
+   - Cursor/Windsurf: Look for similar extension settings to specify the VT Code executable path
 
 ## Extension Not Working
 
@@ -48,14 +49,12 @@ This guide covers common issues and solutions when using VT Code with your IDE.
 
 **Solution**:
 
-1. Ensure your provider credentials are set up — most providers read an
-   environment variable (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-   `GEMINI_API_KEY`); see the provider list in the
+1. Ensure your provider credentials are set up — most providers read an environment variable (for example
+   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`); see the provider list in the
    [installation guide](../installation/README.md#supported-ai-providers)
-2. For OAuth-based providers (GitHub Copilot), run `vtcode login` and make
-   sure the `copilot` CLI is installed
-3. Alternatively, store credentials with `vtcode secret add` (or `/secret add`
-   inside a session) instead of plain environment variables
+2. For OAuth-based providers (GitHub Copilot), run `vtcode login` and make sure the `copilot` CLI is installed
+3. Alternatively, store credentials with `vtcode secret add` (or `/secret add` inside a session) instead of plain
+   environment variables
 4. Check that your API key has sufficient permissions
 5. Verify your internet connection
 6. Check if the AI provider has any service interruptions
@@ -86,8 +85,7 @@ This guide covers common issues and solutions when using VT Code with your IDE.
 
 **Issue**: Using VT Code with Cursor, Windsurf, or other VS Code-compatible editors.
 
-**Solution**:
-VT Code works with any VS Code-compatible editor through the Open VSX registry:
+**Solution**: VT Code works with any VS Code-compatible editor through the Open VSX registry:
 
 1. Ensure the VT Code CLI is installed separately on your system
 2. Install the extension from the Open VSX registry or via VSIX file

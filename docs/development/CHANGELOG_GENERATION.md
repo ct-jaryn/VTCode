@@ -1,6 +1,7 @@
 # Changelog Generation with git-cliff
 
-VT Code uses [git-cliff](https://git-cliff.org) for automated changelog generation from Git commit history. This provides consistent, well-formatted changelogs that follow conventional commit standards.
+VT Code uses [git-cliff](https://git-cliff.org) for automated changelog generation from Git commit history. This
+provides consistent, well-formatted changelogs that follow conventional commit standards.
 
 ## Installation
 
@@ -135,7 +136,7 @@ The release script (`scripts/release.sh`) automatically uses git-cliff when avai
 
 VT Code follows [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
+```text
 <type>(<scope>): <description>
 
 [optional body]

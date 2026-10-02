@@ -174,17 +174,17 @@ log_level = "debug"
 
 - **Issue**: "Invalid API key" or authentication errors
 - **Solution**:
-    - Check your `vtcode.toml` provider configuration
-    - Verify API key is set: `echo $ANTHROPIC_API_KEY` (for Anthropic)
-    - Get a new API key from your provider's console
+  - Check your `vtcode.toml` provider configuration
+  - Verify API key is set: `echo $ANTHROPIC_API_KEY` (for Anthropic)
+  - Get a new API key from your provider's console
 
 ### Configuration Not Loading
 
 - **Issue**: Settings not being applied
 - **Solution**:
-    - Ensure `vtcode.toml` is in workspace root
-    - Check file syntax (should be valid TOML)
-    - Reload workspace (close/reopen folder in Zed)
+  - Ensure `vtcode.toml` is in workspace root
+  - Check file syntax (should be valid TOML)
+  - Reload workspace (close/reopen folder in Zed)
 
 ## Next Steps
 

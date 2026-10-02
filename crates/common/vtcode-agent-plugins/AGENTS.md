@@ -1,3 +1,5 @@
+<!-- Compact maintainer rules retain the repository instruction line budget. -->
+<!-- markdownlint-disable MD013 -->
 # vtcode-agent-plugins
 
 [Root AGENTS.md](../../../AGENTS.md) | Agent Plugins manifest parsing, validation, and discovery.
