@@ -986,6 +986,22 @@ pub(crate) async fn run_turn_loop(
             ctx.safety_validator.set_limits(max_per_turn, max_per_session);
         }
 
+        // The settings application and Build↔Plan mode switch above are the
+        // only points that can change the request identity mid-iteration:
+        // nothing after this line mutates `config.model`, the active primary
+        // agent, or the live config, so derive the effective model, context
+        // budget, and provider identity once and reuse them for the planning
+        // exit, budget check, compaction, and telemetry below. `vt_cfg` is
+        // re-read where needed: it borrows `ctx`, which is taken `&mut` by
+        // the tool-loop-limit handler and request-context construction.
+        let active_model = resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active());
+        let context_budget = vtcode_core::compaction::effective_context_budget(
+            effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+            ctx.provider_client.as_ref(),
+            &active_model,
+        );
+        let provider_name = ctx.provider_client.name().to_string();
+
         let transition = maybe_handle_planning_exit_trigger(
             ctx.renderer,
             ctx.tool_registry,
@@ -1000,13 +1016,7 @@ pub(crate) async fn run_turn_loop(
                 vt_cfg: effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                 skip_confirmations: ctx.skip_confirmations,
                 full_auto: ctx.full_auto,
-                context_usage_percent: ctx.context_manager.context_usage_percent(
-                    vtcode_core::compaction::effective_context_budget(
-                        effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
-                        ctx.provider_client.as_ref(),
-                        &resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active()),
-                    ),
-                ),
+                context_usage_percent: ctx.context_manager.context_usage_percent(context_budget),
                 telemetry: crate::agent::runloop::unified::planning_workflow::PlanApprovalTelemetryContext {
                     emitter: ctx.harness_emitter,
                     thread_id: &ctx.harness_state.run_id.0,
@@ -1031,12 +1041,13 @@ pub(crate) async fn run_turn_loop(
             }
         }
 
-        let active_model = resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active());
+        // Shared config view for the budget check and compaction decisions
+        // below; the borrow ends before the request context is constructed.
+        let vt_cfg = effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg);
         // A configured monetary budget is an enforcement contract. Validate
         // pricing before any compaction path because native compaction can
         // itself dispatch a provider request.
-        if let Some(max_budget_usd) =
-            effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg).and_then(|cfg| cfg.agent.harness.max_budget_usd)
+        if let Some(max_budget_usd) = vt_cfg.and_then(|cfg| cfg.agent.harness.max_budget_usd)
             && let Err(error) = vtcode_core::llm::usage_cost::require_budget_pricing(
                 ctx.provider_client.name(),
                 &active_model,
@@ -1070,7 +1081,7 @@ pub(crate) async fn run_turn_loop(
                     &harness_snapshot.session_id,
                     &ctx.harness_state.run_id.0,
                     &ctx.config.workspace,
-                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                    vt_cfg,
                     ctx.lifecycle_hooks,
                     ctx.harness_emitter,
                 ),
@@ -1123,9 +1134,7 @@ pub(crate) async fn run_turn_loop(
         } else {
             tracing::info!(
                 model = %active_model,
-                context_budget = vtcode_core::compaction::effective_context_budget(
-                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg), ctx.provider_client.as_ref(), &active_model,
-                ),
+                context_budget,
                 prompt_tokens = ctx.context_manager.current_token_usage(),
                 "Resolved per-turn context budget denominator"
             );
@@ -1134,11 +1143,10 @@ pub(crate) async fn run_turn_loop(
             // when disabled, or when suppressed; starting a spinner
             // unconditionally would flicker every turn.
             let auto_start = Instant::now();
-            let auto_compaction_allowed = effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg)
-                .is_some_and(|cfg| cfg.agent.harness.auto_compaction_enabled)
+            let auto_compaction_allowed = vt_cfg.is_some_and(|cfg| cfg.agent.harness.auto_compaction_enabled)
                 && ctx.session_stats.auto_compact_suppressed == vtcode_core::compaction::SUPPRESS_NONE;
             let auto_threshold = crate::agent::runloop::unified::turn::compaction::effective_compaction_threshold(
-                effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                vt_cfg,
                 ctx.provider_client.as_ref(),
                 &active_model,
             );
@@ -1158,7 +1166,7 @@ pub(crate) async fn run_turn_loop(
                     &harness_snapshot.session_id,
                     &ctx.harness_state.run_id.0,
                     &ctx.config.workspace,
-                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                    vt_cfg,
                     ctx.lifecycle_hooks,
                     ctx.harness_emitter,
                 ),
@@ -1278,10 +1286,8 @@ pub(crate) async fn run_turn_loop(
 
         // Execute the LLM request
         turn_processing_ctx.set_phase(TurnPhase::Requesting);
-        let active_model = resolve_effective_request_model(
-            &turn_processing_ctx.config.model,
-            turn_processing_ctx.active_primary_agent.active(),
-        );
+        // `active_model` is the per-iteration resolution from above; the
+        // proactive guards between there and here cannot change the model.
         let recovery_pass = turn_processing_ctx.consume_recovery_pass();
 
         let tool_free_recovery = recovery_pass && turn_processing_ctx.recovery_is_tool_free();
@@ -1290,10 +1296,9 @@ pub(crate) async fn run_turn_loop(
         // Cache-gap advisory (Phase E1): warn once per gap when the user
         // paused long enough for the provider prompt cache to have expired,
         // so this request may unexpectedly re-pay full input cost.
-        let cache_gap_provider_name = turn_processing_ctx.provider_client.name().to_string();
         if let Some(threshold) = turn_processing_ctx
             .vt_cfg
-            .and_then(|cfg| cfg.prompt_cache.gap_threshold_secs(&cache_gap_provider_name))
+            .and_then(|cfg| cfg.prompt_cache.gap_threshold_secs(&provider_name))
         {
             let threshold = Duration::from_secs(threshold);
             if turn_processing_ctx.session_stats.total_usage().cached_input_tokens > 0
@@ -1448,8 +1453,8 @@ pub(crate) async fn run_turn_loop(
         let response_usage = response.usage.clone();
         // Usage normalization and pricing must follow the provider instance
         // that will serve the request. Configuration may contain an alias or
-        // an inferred route, while the provider trait is authoritative.
-        let provider_name = turn_processing_ctx.provider_client.name().to_string();
+        // an inferred route, while the provider trait is authoritative. The
+        // per-iteration `provider_name` binding is that provider's identity.
         accumulate_turn_usage(&provider_name, &mut turn_usage, &response_usage);
         turn_processing_ctx.session_stats.record_usage(&provider_name, &response_usage);
         // SEV-style prompt-cache health: a sustained hit-rate collapse warns

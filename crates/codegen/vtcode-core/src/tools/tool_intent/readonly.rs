@@ -435,10 +435,9 @@ pub fn is_readonly_command_session_command(args: &Value) -> bool {
         return false;
     };
 
-    // `is_readonly_command_string` intentionally rejects compound separators
-    // for its conservative raw-string API. The static parser above is the
-    // stricter structured boundary for this allow-list and accepts a compound
-    // command only when every parsed command is independently safe.
+    // `sanitize_static_shell_command` rejects `;`, `||`, redirections, and
+    // background `&` up front; a `&&` chain is accepted only when every
+    // parsed segment independently passes the allow-list below.
     static_shell_command_words(&raw)
         .is_some_and(|commands| commands.iter().all(|words| command_words_are_readonly(words)))
 }

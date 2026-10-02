@@ -614,7 +614,7 @@ fn shell_task_guidance(shell_profile: ResolvedShellPromptProfile) -> &'static st
 }
 
 fn background_exec_guidance() -> &'static str {
-    "- For long-lived commands, set `background: true` on `exec_command`; it returns a bounded preview plus a stable `session_id` and wait arguments. At most three live background processes are retained per runtime, with no automatic eviction; reuse the session operations to wait, poll, write, inspect, terminate, or close."
+    "- For long-lived commands, set `background: true` on `exec_command`; it returns a bounded preview plus a stable `session_id` and wait arguments. At most three live background processes are retained per runtime, with no automatic eviction; `write_stdin` drives the session lifecycle."
 }
 
 fn read_only_batching_guidance(has_read_file: bool) -> &'static str {

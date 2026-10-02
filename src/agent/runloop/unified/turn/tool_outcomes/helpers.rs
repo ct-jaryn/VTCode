@@ -365,6 +365,43 @@ fn matches_recoverable_block_shape(lower: &str) -> bool {
     RECOVERABLE_BLOCK_ALLOW_TOKENS.iter().any(|token| lower.contains(token))
 }
 
+fn contains_any_token(lower: &str, tokens: &[&str]) -> bool {
+    tokens.iter().any(|token| lower.contains(token))
+}
+
+/// Deny tokens shared by the tracker and plan-mode auto-continue classifiers.
+/// They mirror production blocked-reason constants and true-handoff vocabulary:
+/// `RECOVERY_CONTRACT_VIOLATION_REASON` ("final tool-free synthesis pass" /
+/// "attempted more tool calls"), `PENDING_VERIFICATION_BLOCK_REASON`
+/// ("verification is still pending"), `POST_TOOL_CONTEXT_COMPACTION_FAILED_REASON`
+/// ("compaction could not reduce"), and UNMATCHED_TOOL_RESULT. When one of those
+/// constants' wording changes, update the token here in the same commit — the
+/// auto-continue gates classify by substring.
+const RECOVERABLE_BLOCK_BASE_DENY_TOKENS: &[&str] = &[
+    "permission",
+    "user input",
+    "request_user_input",
+    "interview",
+    "verification is still pending",
+    "compaction could not reduce",
+    "unmatched tool result",
+    "attempted more tool calls",
+    "final tool-free synthesis pass",
+];
+
+/// Tracker auto-continue deny tokens beyond [`RECOVERABLE_BLOCK_BASE_DENY_TOKENS`].
+const TRACKER_AUTO_CONTINUE_EXTRA_DENY_TOKENS: &[&str] = &[
+    "safety fuse",
+    "manual intervention",
+    "unverified assistant responses",
+    "anti-blind",
+    "verification gate",
+    "context exceeded",
+    "stale recovery state",
+    "awaiting approval",
+    "approval-ready plan remains",
+];
+
 /// Whether a blocked/completed turn reason is recoverable for tracker auto-queue
 /// (budget/preview/tool-free recovery) rather than a user-input handoff.
 ///
@@ -389,24 +426,8 @@ pub(crate) fn tracker_auto_continue_is_recoverable_block(reason: Option<&str>) -
     // POST_TOOL_CONTEXT_COMPACTION_FAILED_REASON: "context exceeded...compaction could not reduce"
     // STALE_APPROVED_PLAN_PAUSE_BLOCK_REASON: "stale recovery state"
     // UNMATCHED_TOOL_RESULT / planning interview-approval handoffs / permission / safety fuse.
-    if reason.contains("permission")
-        || reason.contains("user input")
-        || reason.contains("request_user_input")
-        || reason.contains("safety fuse")
-        || reason.contains("manual intervention")
-        || reason.contains("verification is still pending")
-        || reason.contains("unverified assistant responses")
-        || reason.contains("anti-blind")
-        || reason.contains("verification gate")
-        || reason.contains("context exceeded")
-        || reason.contains("compaction could not reduce")
-        || reason.contains("unmatched tool result")
-        || reason.contains("attempted more tool calls")
-        || reason.contains("final tool-free synthesis pass")
-        || reason.contains("stale recovery state")
-        || reason.contains("interview")
-        || reason.contains("awaiting approval")
-        || reason.contains("approval-ready plan remains")
+    if contains_any_token(&reason, RECOVERABLE_BLOCK_BASE_DENY_TOKENS)
+        || contains_any_token(&reason, TRACKER_AUTO_CONTINUE_EXTRA_DENY_TOKENS)
     {
         return false;
     }
@@ -523,17 +544,8 @@ pub(crate) fn plan_mode_recoverable_block(reason: &str) -> bool {
     let lower = reason.to_ascii_lowercase();
     // True handoffs deny even when recovery/budget tokens are also present
     // (compound reasons must not auto-queue past a permission/interview wait).
-    if lower.contains("request_user_input")
-        || lower.contains("permission")
-        || lower.contains("user input")
-        || lower.contains("awaiting")
-        || lower.contains("interview")
-        || lower.contains("attempted more tool calls")
-        || lower.contains("final tool-free synthesis pass")
-        || lower.contains("verification is still pending")
-        || lower.contains("compaction could not reduce")
-        || lower.contains("unmatched tool result")
-    {
+    // "awaiting" is deliberately broader than the tracker's "awaiting approval".
+    if contains_any_token(&lower, RECOVERABLE_BLOCK_BASE_DENY_TOKENS) || lower.contains("awaiting") {
         return false;
     }
     // Production recovery constants (including PLANNING_COMPLETED_TURN_FALLBACK_REASON)
@@ -953,6 +965,21 @@ mod tracker_continue_tests {
             "Tool loop budget exhausted before a final response"
         )));
         assert!(tracker_auto_continue_is_recoverable_block(Some("work budget exhausted")));
+    }
+
+    #[test]
+    fn production_block_reasons_stay_denied_by_both_classifiers() {
+        // The deny-token tables mirror production `Blocked`-reason constants
+        // by substring. Feed the real constants (not copies) so a wording
+        // change that drops a token fails here instead of silently flipping
+        // auto-continue behavior while every hardcoded test stays green.
+        for reason in [
+            crate::agent::runloop::unified::turn::turn_loop::RECOVERY_CONTRACT_VIOLATION_REASON,
+            crate::agent::runloop::unified::turn::turn_loop::PENDING_VERIFICATION_BLOCK_REASON,
+        ] {
+            assert!(!tracker_auto_continue_is_recoverable_block(Some(reason)), "{reason}");
+            assert!(!plan_mode_recoverable_block(reason), "{reason}");
+        }
     }
 
     #[test]

@@ -10,7 +10,8 @@ Current fuzz targets focus on security parser surfaces in `vtcode-core`:
 - `dangerous_commands`: `command_safety::dangerous_commands` classification invariants
 - `exec_policy_parser`: `exec_policy::PolicyParser` (simple/TOML/JSON)
 - `exec_policy_command_validation`: `exec_policy::command_validation::validate_command`
-- `unified_path_validation`: `tools::validation::unified_path::validate_and_resolve_path`
+- `unified_path_validation`: `vtcode_commons::paths::ensure_path_within_workspace_resolved` (the symlink-aware
+  containment primitive composed by `tools/file_ops/path_policy.rs`)
 
 Stable-toolchain generative tests (no nightly required) live next to the code:
 

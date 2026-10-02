@@ -915,11 +915,12 @@ impl ToolRegistry {
             }
         };
 
-        // Classify the tool intent once and reuse it for the read-only
-        // classification and the planning-workflow enforcement below, instead
-        // of recomputing it on every tool call.
-        let intent = tool_intent::classify_tool_intent(&tool_name, args);
-        let readonly_classification = if prevalidated {
+        // Classify the tool intent once: the prevalidated fast path skips full
+        // preflight and classifies here; the full-preflight path reuses the
+        // intent the kernel already computed on the validated (executed) args,
+        // so planning enforcement below cannot disagree with
+        // `readonly_classification`.
+        let (intent, readonly_classification) = if prevalidated {
             #[cfg(debug_assertions)]
             {
                 if let Err(err) = execution_kernel::preflight_validate_resolved_call(self, &tool_name, args)
@@ -928,10 +929,11 @@ impl ToolRegistry {
                     debug_assert!(false, "prevalidated execution received invalid call for '{tool_name}': {err}");
                 }
             }
-            !intent.mutating
+            let intent = tool_intent::classify_tool_intent(&tool_name, args);
+            (intent, !intent.mutating)
         } else {
             match execution_kernel::preflight_validate_resolved_call(self, &tool_name, args) {
-                Ok(outcome) => outcome.readonly_classification,
+                Ok(outcome) => (outcome.intent, outcome.readonly_classification),
                 Err(err) => {
                     let err_msg = err.to_string();
                     record_failure(

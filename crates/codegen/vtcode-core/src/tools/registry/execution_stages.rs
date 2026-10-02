@@ -7,10 +7,10 @@
 //! # Pipeline Stages
 //!
 //! 1. **resolve_tool_name** — alias resolution and canonical name lookup
-//! 2. **check_planning_workflow** — enforce read-only during planning
-//! 3. **check_circuit_breaker** — reject calls when breaker is open
-
-use serde_json::Value;
+//! 2. **check_circuit_breaker** — reject calls when breaker is open
+//!
+//! Planning-workflow enforcement lives in `execution_facade.rs` /
+//! `execution_kernel.rs` on the already-classified intent, not here.
 
 use super::ToolRegistry;
 
@@ -48,17 +48,6 @@ impl ToolRegistry {
                 display: name.to_string(),
                 is_alias: false,
             }
-        }
-    }
-
-    /// Check if a tool call should be denied due to an active planning workflow.
-    ///
-    /// Returns `None` if the call is allowed, or `Some(denial_message)` if denied.
-    pub fn check_planning_workflow_for(&self, tool_name: &str, args: &Value, display_name: &str) -> Option<String> {
-        if self.is_planning_active() && !self.is_planning_active_allowed(tool_name, args) {
-            Some(crate::tools::error_messages::agent_execution::planning_workflow_denial_message(display_name))
-        } else {
-            None
         }
     }
 

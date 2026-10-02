@@ -2160,7 +2160,7 @@ Use a skill only when the user names it or the task clearly matches. Load detail
 - Use `exec_command.cmd` with `ls`, `find`, `cat`, `sed`, and `awk` for repository browsing. Prefer `code_search` over `rg`/`grep` for code.
 - Batch independent read-only calls; order dependent reads, and serialize mutations.
 - Use `exec_command.cmd` for build tools, test tools, `git diff -- <path>`, and shell-only tasks. In one-shot `exec_command` calls, do not use `!!`, `!$`, `!ssh`, or `fc`; write full command arguments explicitly from conversation or tool results. Interactive shells: review-safe history expansion (Bash `histverify`, zsh `HIST_VERIFY`).
-- For long-lived commands, set `background: true` on `exec_command`; it returns a bounded preview plus a stable `session_id` and wait arguments. At most three live background processes are retained per runtime, with no automatic eviction; reuse the session operations to wait, poll, write, inspect, terminate, or close.
+- For long-lived commands, set `background: true` on `exec_command`; it returns a bounded preview plus a stable `session_id` and wait arguments. At most three live background processes are retained per runtime, with no automatic eviction; `write_stdin` drives the session lifecycle.
 - Run verifiers standalone or as a pure `&&` chain so the exit status is visible; a verifier piped only into `head` or `tail` counts as standalone, while results behind other pipes, `;`, or `||` stay unverified.
 - Run a real check that exercises the change; syntax-only or failed-to-start checks do not count. Install missing deps via the project's package manager, never sudo; if no check can run, say which and why.
 - Run fast checks before full builds.

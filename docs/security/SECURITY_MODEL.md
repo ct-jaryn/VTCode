@@ -417,7 +417,8 @@ VT Code now ships local `cargo-fuzz` harnesses for security parsing surfaces:
 
 - Shell command parsing (`command_safety::shell_parser`)
 - Execution policy parsing (`exec_policy::PolicyParser`)
-- Path boundary validation (`tools::validation::unified_path`)
+- Path boundary validation (`vtcode_commons::paths::ensure_path_within_workspace_resolved`, composed by
+  `tools/file_ops/path_policy.rs`)
 
 Run from repository root:
 

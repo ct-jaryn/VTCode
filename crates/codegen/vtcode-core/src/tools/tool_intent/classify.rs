@@ -31,15 +31,26 @@ pub fn builtin_tool_behavior(tool_name: &str) -> Option<ToolBehavior> {
 }
 
 pub fn is_parallel_safe_call(tool_name: &str, args: &Value) -> bool {
+    is_parallel_safe_call_with_intent(tool_name, args, &classify_tool_intent(tool_name, args))
+}
+
+/// [`is_parallel_safe_call`] for a call whose [`ToolIntent`] was already
+/// computed on the same args. The non-command branches reuse `intent.mutating`
+/// (identical to re-classifying: `builtin_tool_behavior.classify(args)` IS
+/// `classify_tool_intent`), so preflight paths avoid re-classifying the same
+/// args — a second tree-sitter parse for command payloads. The command-run
+/// branch still re-parses: parallel safety for command sessions is a separate
+/// predicate from the read-only intent.
+pub fn is_parallel_safe_call_with_intent(tool_name: &str, args: &Value, intent: &ToolIntent) -> bool {
     let canonical = canonical_tool_name(tool_name);
     if matches!(canonical, tools::EXEC_COMMAND | tools::UNIFIED_EXEC) && is_command_run_tool_call(canonical, args) {
         return is_parallel_safe_command_session_command(args);
     }
     if let Some(behavior) = builtin_tool_behavior_canonical(canonical) {
-        return behavior.supports_parallel_calls && !behavior.classify(args).mutating;
+        return behavior.supports_parallel_calls && !intent.mutating;
     }
 
-    !classify_tool_intent(canonical, args).mutating
+    !intent.mutating
 }
 
 pub fn classify_tool_intent(tool_name: &str, args: &Value) -> ToolIntent {

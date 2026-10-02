@@ -1,6 +1,5 @@
 pub mod commands;
 pub mod paths;
-pub mod unified_path;
 
 use jsonschema::ValidationError;
 use jsonschema::error::{TypeKind, ValidationErrorKind};

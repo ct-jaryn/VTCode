@@ -8,6 +8,7 @@ use crate::tools::apply_patch::{UNIFIED_FILE_MAX_PAYLOAD_BYTES_ENV, effective_ma
 use crate::tools::error_messages::agent_execution;
 use crate::tools::names::canonical_tool_name;
 use crate::tools::registry::ToolCatalogSource;
+use crate::tools::tool_intent::ToolIntent;
 use crate::tools::validation::{commands, condensed_schema_hint, paths};
 use crate::utils::tool_name_parsing::MCP_QUALIFIED_TOOL_PREFIX;
 
@@ -76,6 +77,10 @@ pub struct ToolPreflightOutcome {
     pub readonly_classification: bool,
     pub parallel_safe_after_preflight: bool,
     pub effective_args: Value,
+    /// The intent classified on the validation args that become the executed
+    /// text. Consumers must reuse it instead of re-classifying, so planning
+    /// enforcement cannot disagree with `readonly_classification`.
+    pub intent: ToolIntent,
 }
 
 fn required_args_for_tool(tool_name: &str) -> &'static [&'static str] {
@@ -780,11 +785,13 @@ pub(super) fn preflight_validate_resolved_call(
     Ok(ToolPreflightOutcome {
         normalized_tool_name: routed_tool_name.clone(),
         readonly_classification,
-        parallel_safe_after_preflight: crate::tools::tool_intent::is_parallel_safe_call(
+        parallel_safe_after_preflight: crate::tools::tool_intent::is_parallel_safe_call_with_intent(
             &validation_tool_name,
             validation_args.as_ref(),
+            &intent,
         ),
         effective_args: effective_args.unwrap_or_else(|| validation_args.into_owned()),
+        intent,
     })
 }
 

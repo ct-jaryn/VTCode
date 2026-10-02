@@ -149,8 +149,10 @@ pub fn cron_parameters() -> Value {
     })
 }
 
-/// Model-visible description of the `mcp` tool.
-pub const MCP_DESCRIPTION: &str = "Discover and manage Model Context Protocol capabilities. Use action=search_tools to find tools, action=get_tool_details to fetch one schema, action=list_servers to inspect configured servers, or action=connect and action=disconnect to manage a named server. action=search_tools searches only tools exposed by configured MCP servers; the separate search_tools tool searches the whole session catalog, including deferred built-in tools. Do not disconnect a server while one of its tool calls is active.";
+/// Model-visible description of the `mcp` tool. The `action` field description
+/// owns the per-action enumeration; this description keeps only the purpose,
+/// the server-search-vs-catalog-search distinction, and the disconnect guard.
+pub const MCP_DESCRIPTION: &str = "Discover and manage Model Context Protocol capabilities. Use the `action` field to find tools, fetch one tool schema, list configured servers, and connect or disconnect by name. action=search_tools searches only tools exposed by configured MCP servers; the separate search_tools tool searches the whole session catalog, including deferred built-in tools. Do not disconnect a server while one of its tool calls is active.";
 
 #[must_use]
 pub fn mcp_parameters() -> Value {
@@ -211,8 +213,9 @@ pub fn cron_delete_parameters() -> Value {
     })
 }
 
-/// Model-visible description of the `exec_command` tool.
-pub const EXEC_COMMAND_DESCRIPTION: &str = "Run a shell command through the active sandbox policy and permission checks. Put normal shell tools such as ls, rg, find, cat, sed, awk, build tools, and test tools in cmd. Returns output, exit status, and a reusable session id when the command is still running. For file edits, use apply_patch instead of shell redirection or in-place editors such as `sed -i`. Expanded sandbox_permissions modes trigger an approval check before the command runs; `require_escalated` and `bypass_sandbox` also need a non-empty justification.";
+/// Model-visible description of the `exec_command` tool. The escalation
+/// justification requirement is stated once, on the `justification` field.
+pub const EXEC_COMMAND_DESCRIPTION: &str = "Run a shell command through the active sandbox policy and permission checks. Put normal shell tools such as ls, rg, find, cat, sed, awk, build tools, and test tools in cmd. Returns output, exit status, and a reusable session id when the command is still running. For file edits, use apply_patch instead of shell redirection or in-place editors such as `sed -i`. Expanded sandbox_permissions modes trigger an approval check before the command runs.";
 
 #[must_use]
 pub fn exec_command_parameters() -> Value {
@@ -222,7 +225,7 @@ pub fn exec_command_parameters() -> Value {
         "properties": {
             "cmd": {"type": "string", "description": "Shell command to execute, subject to command policy. The tool description lists covered tools."},
             "yield_time_ms": {"type": "integer", "description": "Wait before returning output (ms). If the command is still running, the response includes a session_id for write_stdin. Values above 10000 turn this into a single-call long run: no outer timeout applies and the response returns after the yield window or command exit, whichever is first.", "default": 10000},
-            "background": {"type": "boolean", "description": "Start a retained background process and return after a bounded initial output window. At most three live background processes are allowed per VT Code runtime; use the returned session_id with write_stdin to wait, poll, write, inspect, terminate, or close.", "default": false},
+            "background": {"type": "boolean", "description": "Start a retained background process and return after a bounded initial output window. At most three live background processes are allowed per VT Code runtime; use the returned session_id with `write_stdin` for the session lifecycle.", "default": false},
             "stdin": {"type": "boolean", "description": "Keep pipe stdin open for later write_stdin input. Defaults to false (EOF); enable only for commands that need input. PTY input is always available.", "default": false},
             "max_output_tokens": {"type": "integer", "minimum": MIN_MAX_OUTPUT_TOKENS, "maximum": MAX_MAX_OUTPUT_TOKENS, "default": DEFAULT_MAX_OUTPUT_TOKENS, "description": "Output token cap. Large or truncated output can return a spool_path; an active session may set spool_complete=false for a readable partial snapshot, while an exited pending spool is withheld until a later wait."},
             "workdir": {"type": "string", "description": "Working directory."},
@@ -616,9 +619,14 @@ mod tests {
         assert!(EXEC_COMMAND_DESCRIPTION.starts_with("Run a shell command through the active sandbox policy"));
         assert!(EXEC_COMMAND_DESCRIPTION.contains("For file edits, use apply_patch"));
         assert!(EXEC_COMMAND_DESCRIPTION.contains("approval check"));
-        assert!(EXEC_COMMAND_DESCRIPTION.contains("non-empty justification"));
+        // The justification requirement is stated once, on the `justification`
+        // field description; the tool description keeps only the approval-check
+        // routing rule instead of repeating the requirement on every request.
+        assert!(
+            !EXEC_COMMAND_DESCRIPTION.contains("non-empty justification"),
+            "justification requirement belongs to the field description"
+        );
         for mode in ["require_escalated", "bypass_sandbox"] {
-            assert!(EXEC_COMMAND_DESCRIPTION.contains(mode), "{mode}");
             assert!(
                 exec_command_parameters()["properties"]["sandbox_permissions"]["enum"]
                     .as_array()
