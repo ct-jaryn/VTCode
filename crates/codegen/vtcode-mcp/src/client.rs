@@ -375,9 +375,9 @@ impl McpClient {
             .connect_and_initialize_provider(&provider_config, &allowlist_snapshot, tool_timeout)
             .await?;
 
-        if let Err(err) = provider.cached_tools_or_refresh(&allowlist_snapshot, tool_timeout).await {
+        if let Err(err) = provider.cached_tools_or_refresh_shared(&allowlist_snapshot, tool_timeout).await {
             warn!("Connected MCP server '{}' but failed to refresh tools: {err}", server_name);
-        } else if let Some(cache) = provider.cached_tools().await {
+        } else if let Some(cache) = provider.cached_tools_shared().await {
             self.record_tool_provider(&provider.name, &cache);
         }
 

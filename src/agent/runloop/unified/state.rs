@@ -381,13 +381,13 @@ impl SessionStats {
             self.request_segment_sequence = self.request_segment_sequence.saturating_add(1);
             format!("segment-{:08}", self.request_segment_sequence)
         };
-        let envelope = SessionRequestEnvelope::with_prefix_hash(
-            segment_id,
-            candidate.system_prompt(),
-            candidate.ordered_tools().as_ref().clone(),
-            candidate.instruction_digest(),
-            candidate.prefix_hash(),
-        );
+        // Reuse the candidate's shared `Arc<str>`/`Arc<Vec<ToolDefinition>>`
+        // owners and only swap the segment id. Rebuilding via
+        // `with_prefix_hash` would deep-clone the whole tool catalog and
+        // re-sort/re-hash it, even though `candidate` already holds the
+        // canonicalized, hashed form. `begin_segment` keeps the frozen prompt,
+        // catalog, and hashes byte-identical while cloning only Arcs.
+        let envelope = candidate.begin_segment(segment_id);
         self.request_envelope_identity = Some(identity);
         self.request_envelope_source_tools = tools;
         self.request_envelope = Some(envelope.clone());
