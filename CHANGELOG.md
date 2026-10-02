@@ -1,7 +1,41 @@
 # Changelog
 
 All notable changes to vtcode will be documented in this file.
+## 0.171.4 - 2026-10-02
 
+### Highlights
+#### Bug Fixes
+
+- Reduce session recovery and context churn (dca67aeb) 
+- Lighten transcript review refresh, search, and close path (cf89fb8e) 
+- Classify quoted awk literals as read-only to stop repeat prompts (249c8403) 
+- Bound TUI exit tail to remove fullscreen exit delay (861d493a) 
+#### Documentation
+
+- Restructure sections for clarity (77e0d10d) 
+- Close doc gaps for 0.169.3-0.171.3 behavior changes (ddaddecc) 
+- Update README (ab44d3f0) 
+- Update README (2f503e09) 
+- Update README (d5806d92) 
+- Fix GitHub alert syntax so caution/note callouts render (7385e02e) 
+- Update guide (4957a8b2) 
+#### Features
+
+- Tint activity shimmer sweep by agent mode (8cba8b8b) 
+- Sage build accent with mode-highlighted shimmer sweep (39574be9) 
+- Extend exec session lifecycle with stdin gating and cleanup actions (c7ea326b) 
+### Other Changes
+#### Other
+
+- Apply markdownlint list normalization to audited files (c3c814ca) 
+- Restore borderless composer and original shimmer (e4b73211) 
+- Update (bcee82cc) 
+#### Performance
+
+- Share cached tool lists and clone only search survivors (dd6512c1) 
+#### Refactors
+
+- Single-home guidance lines and sync goldens (0a083750) 
 ## 0.169.2 - 2026-09-24
 
 ## 0.171.3 - 2026-10-01
