@@ -139,10 +139,17 @@ impl EventStreamController {
 
     /// Cancel the current event loop task and await its termination.
     /// Creates a fresh CancellationToken for the next `start()` call.
+    ///
+    /// Bounded: a stuck crossterm reader must not park TUI teardown, and a
+    /// leaked reader would keep stdin claimed after exit. The handle is
+    /// aborted on timeout so shutdown always makes progress.
     async fn stop(&mut self) {
         self.cancellation_token.cancel();
-        if let Some(handle) = self.join_handle.take() {
-            let _ = tokio::time::timeout(Duration::from_millis(100), handle).await;
+        if let Some(mut handle) = self.join_handle.take()
+            && tokio::time::timeout(Duration::from_millis(100), &mut handle).await.is_err()
+        {
+            tracing::debug!("event loop did not stop within 100ms; aborting");
+            handle.abort();
         }
         self.cancellation_token = CancellationToken::new();
     }
@@ -161,10 +168,16 @@ impl EventStreamController {
     }
 
     /// Ensure the event loop is stopped for final cleanup on TUI exit.
+    ///
+    /// Bounded like [`Self::stop`]: abort on timeout so a wedged reader can
+    /// never delay the alternate-screen teardown and shell return.
     async fn shutdown(&mut self) {
-        if let Some(handle) = self.join_handle.take() {
+        if let Some(mut handle) = self.join_handle.take() {
             self.cancellation_token.cancel();
-            let _ = tokio::time::timeout(Duration::from_millis(100), handle).await;
+            if tokio::time::timeout(Duration::from_millis(100), &mut handle).await.is_err() {
+                tracing::debug!("event loop did not shut down within 100ms; aborting");
+                handle.abort();
+            }
         }
     }
 }
@@ -367,4 +380,54 @@ where
     vtcode_commons::trace_flush::flush_trace_log();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Sets a flag when dropped, so a test can observe that an aborted task
+    /// future was actually dropped (not merely detached).
+    struct DropFlag(std::sync::Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A wedged event-loop task must be aborted, not silently detached: the
+    /// prior implementation dropped the join handle on timeout, which left the
+    /// crossterm reader holding stdin past TUI teardown.
+    #[tokio::test]
+    async fn event_stream_shutdown_aborts_a_wedged_reader() {
+        let (_listener, channels) = EventListener::new();
+        let dropped = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = dropped.clone();
+        let handle = tokio::spawn(async move {
+            let _guard = DropFlag(flag);
+            std::future::pending::<()>().await;
+        });
+
+        let mut controller = EventStreamController::new(
+            CancellationToken::new(),
+            handle,
+            channels.tx.clone(),
+            channels.rx_paused.clone(),
+            channels.last_input_elapsed_ms.clone(),
+            channels.session_start,
+        );
+
+        let started = std::time::Instant::now();
+        controller.shutdown().await;
+        assert!(started.elapsed() < Duration::from_secs(1), "shutdown must not block on a wedged reader");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown must abort the wedged event-loop task");
+    }
 }

@@ -106,7 +106,16 @@ fn main() -> std::process::ExitCode {
                     // Reuse the multi-threaded runtime created during bootstrap
                     // instead of building a second one.
                     let BootstrapReady { prepared, runtime } = *ready;
-                    runtime.block_on(run(prepared))
+                    let result = runtime.block_on(run(prepared));
+                    // Bound runtime teardown. Dropping a multi-thread runtime
+                    // joins every worker and waits indefinitely for in-flight
+                    // `spawn_blocking` tasks (Tokio's `BlockingPool::drop`
+                    // calls `shutdown(None)`), so a stuck git snapshot, child
+                    // reap, or provider read can park the process after the
+                    // terminal is already restored. A short budget caps that
+                    // tail; normal teardown exits well within it.
+                    runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+                    result
                 }
             }
         }) {

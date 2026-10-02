@@ -74,6 +74,14 @@ use crate::updater::{InlineUpdateOutcome, display_update_notice, run_inline_upda
 pub(crate) const BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX: &str =
     "Review the authoritative background subprocess completion notice";
 
+/// Budget for best-effort background teardown on the session-exit path.
+///
+/// Every step here runs after the terminal has been restored, so an unbounded
+/// wait directly delays the shell prompt. Both the exec/PTY backstop and the
+/// subagent controller shutdown share this bound; the OS reaps any remainder
+/// at process exit, so skipping the wait is always preferable to parking.
+const EXIT_BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
 fn background_completion_continuation_prompt() -> String {
     format!(
         "{BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX} and continue the user's request. \
@@ -2691,10 +2699,23 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         // Best-effort backstop: a Ctrl+C exit from idle (no turn running) can
         // leave exec/PTY sessions alive because turn-level cancellation never
         // ran. Terminate them before teardown so no child outlives the TUI.
+        //
+        // Bounded: each session close can block up to ~12s on a stuck child
+        // reap (`EXEC_SESSION_CLOSE_TIMEOUT`), and closes run sequentially,
+        // so an unbounded await here parks the fullscreen TUI for many
+        // seconds on exit. The OS reaps any remainder at process exit; a
+        // timeout here only skips waiting, never leaks the terminal.
         if matches!(session_end_reason, SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::Error)
-            && let Err(error) = tool_registry.terminate_all_exec_sessions_async().await
         {
-            tracing::warn!(%error, "failed to terminate exec sessions during session exit");
+            match timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, tool_registry.terminate_all_exec_sessions_async()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "failed to terminate exec sessions during session exit");
+                }
+                Err(_elapsed) => {
+                    tracing::warn!("timed out terminating exec sessions during session exit; continuing teardown");
+                }
+            }
         }
         // Capture the end-of-session worktree state before teardown: finalize
         // does not touch the worktree, so the snapshot is equivalent, and
@@ -2800,8 +2821,17 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         let session_total_usage = session_stats.total_usage();
         // Shut down background work before the postamble so no late task can
         // write after the terminal is restored and the summary is printed.
+        // Bounded: nested close_tree walks can stall on contended locks, and
+        // this runs after the terminal is already restored, directly delaying
+        // the shell return. Aborts only skip waiting; the process exit reaps
+        // any remainder.
         if let Some(controller) = tool_registry.subagent_controller() {
-            controller.signal_shutdown().await;
+            if timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, controller.signal_shutdown())
+                .await
+                .is_err()
+            {
+                tracing::warn!("timed out shutting down subagent controller during session exit");
+            }
         }
         print_exit_summary(ExitData {
             app_name: "VT Code",

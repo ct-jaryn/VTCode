@@ -236,6 +236,29 @@ timeout 50 ms).
 
 Trace phases: `session_setup_critical`, `session_setup_ui`, `session_setup_hydrate`, `session_setup`, `first_ui_render`.
 
+## Exit and shutdown tail
+
+Fullscreen TUI exit must return to the shell promptly. Every blocking step between `drive_terminal`
+returning and the postamble is budgeted so a single stuck child, hook, or blocking task cannot park the
+process after the terminal is already restored:
+
+- `finalize_session` bounds session-end hooks (500 ms interrupt / 3 s normal) and MCP shutdown (500 ms / 2 s),
+  then `handle.shutdown()` + `InlineSession::wait_for_exit(2 s)` (abort fallback). Keep these bounds.
+- The exec/PTY backstop in `orchestration.rs` (`terminate_all_exec_sessions_async`) and the subagent
+  controller `signal_shutdown()` are wrapped in 2 s timeouts. Each exec-session close can block up to
+  `EXEC_SESSION_CLOSE_TIMEOUT` (12 s) on a stuck child reap and closes run sequentially, so an unbounded
+  await here could stall exit for minutes; the OS reaps any remainder at process exit.
+- `ProcessHandle::drop` (vtcode-bash-runner) performs synchronous kill + task aborts only. It must never
+  bridge through a spawned thread + temporary Tokio runtime — that added spawn latency per handle and
+  blocked the dropping thread during registry teardown. Regression:
+  `drop_kills_child_synchronously_without_bridging_runtime`.
+- `EventStreamController::stop`/`shutdown` abort the crossterm event-loop task when it does not stop within
+  100 ms, so a wedged reader cannot keep stdin claimed or delay alternate-screen teardown.
+  `SignalCleanupGuard::drop` bounds its join of the SIGTERM handler thread (100 ms spin, then detach).
+- `main.rs` calls `runtime.shutdown_timeout(500 ms)` after `block_on(run(...))`. Tokio's blocking pool waits
+  indefinitely for in-flight `spawn_blocking` work on plain drop; a stuck git snapshot or child reap would
+  otherwise park the process after the summary. Normal teardown finishes well within the budget.
+
 ## Blocker forensics and retention pins
 
 Blocked handoffs copy session `events.jsonl` / ATIF into `{archive}-forensics/` beside the blocker archive (best-effort;
