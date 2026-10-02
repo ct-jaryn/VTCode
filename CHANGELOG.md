@@ -2,6 +2,17 @@
 
 All notable changes to vtcode will be documented in this file.
 ## 0.171.4 - 2026-10-02
+## 0.171.5 - 2026-10-02
+
+### Highlights
+#### Bug Fixes
+
+- Harden shell approval family learning (GHSA-r249-hpfx-x2w7)  (5840697c) (@vinhnx)
+- Preserve verifier identity during session recovery (e9b86573) 
+### Other Changes
+#### Refactors
+
+- Dedup intent classification and remove dead helpers (e4d48bb2) 
 
 ### Highlights
 #### Bug Fixes
