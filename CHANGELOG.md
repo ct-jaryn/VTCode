@@ -2,6 +2,26 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## Unreleased
+
+### Features
+
+- Add filesnap-backed prompt checkpoints for combined file and conversation rewind, with `/redo` and `/rewind-recover`.
+  Track known file edits and literal Unix shell output redirects before mutation, and retain legacy snapshot
+  compatibility.
+
+### Behavior Changes
+
+- Anthropic: an unset `provider.anthropic.effort` now means the model's own default effort (`medium` on Claude Opus 5.5,
+  `high` on the other Claude 5 models). It previously defaulted to `xhigh`; set `effort = "xhigh"` to keep the old
+  behavior. An explicit `agent.reasoning_effort` or `/effort` still takes precedence.
+- Anthropic: `provider.anthropic.fallbacks` now defaults to `"default"`, so requests to the first-party Claude API for
+  models that support server-side refusal fallbacks (Claude Opus 5, Opus 5.5, Fable 5, and Fable 5.1) send
+  `fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta header. Other models and endpoints (Bedrock,
+  Vertex, Foundry, Anthropic-compatible providers) send nothing. Set `fallbacks = "off"` to opt out.
+- A provider refusal (`stop_reason: "refusal"`) now ends the turn as blocked: partial output is not committed as an
+  answer, tool calls in the refused response are not executed, and empty-response recovery does not resend the prompt.
+
 ## 0.171.5 - 2026-10-02
 
 ### Highlights
@@ -49,8 +69,6 @@ All notable changes to vtcode will be documented in this file.
 #### Refactors
 
 - Single-home guidance lines and sync goldens (0a083750) 
-
-## 0.169.2 - 2026-09-24
 
 ## 0.171.3 - 2026-10-01
 
@@ -570,8 +588,8 @@ All notable changes to vtcode will be documented in this file.
 
 - Harden Ran command full-display regressions with exact screenshot bytes (caff413b)
 
-<!-- Historical or repeated section title retained for existing anchors. -->
-<!-- markdownlint-disable-next-line MD024 -->
+## 0.169.2 - 2026-09-24
+
 ### Highlights
 
 #### Bug Fixes
@@ -686,8 +704,6 @@ All notable changes to vtcode will be documented in this file.
 - Opt into server-side refusal fallbacks by default (a5c97f1b)
 - Stop runner on provider refusal with a Refused outcome (2a90ae6b)
 
-<!-- Historical or repeated section title retained for existing anchors. -->
-<!-- markdownlint-disable-next-line MD024 -->
 ### Other Changes
 
 #### Other
@@ -721,28 +737,6 @@ All notable changes to vtcode will be documented in this file.
 - Require constraint cues instead of shouting in contract test (692ef4c3)
 - Assert verifier gate wording directly (325c1c35)
 - Match rewritten handoff and denied-interview directives (3154016f)
-
-## Unreleased
-
-### Features
-
-- Add filesnap-backed prompt checkpoints for combined file and conversation rewind, with `/redo` and `/rewind-recover`.
-  Track known file edits and literal Unix shell output redirects before mutation, and retain legacy snapshot
-  compatibility.
-
-### Behavior Changes
-
-- Anthropic: an unset `provider.anthropic.effort` now means the model's own default effort (`medium` on Claude Opus 5.5,
-  `high` on the other Claude 5 models). It previously defaulted to `xhigh`; set `effort = "xhigh"` to keep the old
-  behavior. An explicit `agent.reasoning_effort` or `/effort` still takes precedence.
-- Anthropic: `provider.anthropic.fallbacks` now defaults to `"default"`, so requests to the first-party Claude API for
-  models that support server-side refusal fallbacks (Claude Opus 5, Opus 5.5, Fable 5, and Fable 5.1) send
-  `fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta header. Other models and endpoints (Bedrock,
-  Vertex, Foundry, Anthropic-compatible providers) send nothing. Set `fallbacks = "off"` to opt out.
-- A provider refusal (`stop_reason: "refusal"`) now ends the turn as blocked: partial output is not committed as an
-  answer, tool calls in the refused response are not executed, and empty-response recovery does not resend the prompt.
-
-## v0.73.2 - 2026-01-29
 
 ## 0.169.1 - 2026-09-23
 
@@ -14576,6 +14570,11 @@ No significant changes.
 - chore: update homebrew formula to v0.73.1 (4ca75038)
 
 ### [Unreleased] - 2025-12-14
+
+## v0.73.2 - 2026-01-29
+
+* fix: update GitHub release title format and improve changelog generation (97571aa2)
+* chore: update homebrew formula to v0.73.1 (4ca75038)
 
 ## [Version 0.73.1] - 2026-01-28
 
