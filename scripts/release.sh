@@ -418,6 +418,37 @@ generate_structured_changelog() {
 	echo "$output"
 }
 
+# Insert a generated changelog entry above the newest version so the file stays
+# newest-first. A fixed anchor (e.g. `head -n 4`) is wrong: once the first entry is
+# present that line is itself a `## version` heading, so the next insert lands between
+# the previous heading and its body, orphaning the body under the new version.
+insert_changelog_entry() {
+	local entry=$1
+	local tmp
+	tmp=$(mktemp)
+
+	local first_version_line
+	first_version_line=$(grep -n '^## ' CHANGELOG.md | head -n1 | cut -d: -f1 || true)
+
+	if [[ -n "$first_version_line" ]]; then
+		head -n "$((first_version_line - 1))" CHANGELOG.md >"$tmp"
+	else
+		cat CHANGELOG.md >"$tmp"
+	fi
+
+	# Blank separator before the new entry (avoid doubling an existing trailing blank).
+	if [[ -n "$(tail -n1 "$tmp")" ]]; then
+		printf '\n' >>"$tmp"
+	fi
+	printf '%s\n' "$entry" >>"$tmp"
+
+	if [[ -n "$first_version_line" ]]; then
+		tail -n "+$first_version_line" CHANGELOG.md >>"$tmp"
+	fi
+
+	mv "$tmp" CHANGELOG.md
+}
+
 # Changelog generation using git-cliff
 update_changelog_from_commits() {
 	local version=$1
@@ -511,20 +542,12 @@ update_changelog_from_commits() {
 				if grep -q "^## $version " CHANGELOG.md; then
 					print_warning "Version $version already exists in CHANGELOG.md, skipping update"
 				else
-					# Use git-cliff's generated content, insert after header
-					local header
-					header=$(head -n 4 CHANGELOG.md)
-					local remainder
-					remainder=$(tail -n +5 CHANGELOG.md)
-					{
-						printf '%s\n' "$header"
-						if [[ -n "$version_section" ]]; then
-							printf '%s\n' "$version_section"
-						else
-							printf '%s\n' "$changelog_content"
-						fi
-						printf '%s\n' "$remainder"
-					} >CHANGELOG.md
+					# Insert git-cliff's generated content above the newest version
+					if [[ -n "$version_section" ]]; then
+						insert_changelog_entry "$version_section"
+					else
+						insert_changelog_entry "$changelog_content"
+					fi
 				fi
 			else
 				# Create new changelog with git-cliff output
@@ -615,16 +638,8 @@ update_changelog_builtin() {
 		if grep -q "^## $version " CHANGELOG.md; then
 			print_warning "Version $version already exists in CHANGELOG.md, skipping update"
 		else
-			# Insert new entry after the header
-			local header
-			header=$(head -n 4 CHANGELOG.md)
-			local remainder
-			remainder=$(tail -n +5 CHANGELOG.md)
-			{
-				printf '%s\n' "$header"
-				printf '%b\n' "$changelog_entry"
-				printf '%s\n' "$remainder"
-			} >CHANGELOG.md
+			# Insert new entry above the newest version
+			insert_changelog_entry "$changelog_entry"
 		fi
 	else
 		{
@@ -1104,7 +1119,14 @@ main() {
 	# 3. Cargo Release (version, tag, and push only)
 	print_info "Step 3: Running cargo release (version, tag, and push only)..."
 
-	local command=(cargo release "$release_argument" --workspace --config release.toml --execute --no-confirm --no-publish)
+	# `--registry crates-io` is passed even though we never publish here (--no-publish).
+	# Without it, cargo-release unconditionally fetches every workspace crate's entry from
+	# the crates.io sparse index (to decide `ensure_owners`). For freshly published crates
+	# those index paths are slow/uncached at the CDN edge and cargo-release has no retry, so a
+	# single 30s timeout aborts the whole release. Naming a registry short-circuits that lookup
+	# (cargo-release's `CratesIoIndex::krate` returns early when a registry is set) and is safe
+	# because `--no-publish` means the registry is otherwise unused.
+	local command=(cargo release "$release_argument" --workspace --config release.toml --execute --no-confirm --no-publish --registry crates-io)
 
 	if [[ "$dry_run" == 'true' ]]; then
 		print_info "Dry run - would run: ${command[*]}"
