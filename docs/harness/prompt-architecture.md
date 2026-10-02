@@ -43,8 +43,8 @@ At segment creation, `request_builder::build_prompt_output` produces the immutab
    a request-only tail-position turn-scoped system message (`recovery_mode_directive`, pushed in `build_turn_request`,
    never persisted to canonical history), keeping the system prompt and tool catalog byte-identical to tool-enabled
    turns for prefix-cache reuse (`tool_choice: none` prevents calls).
-8. **Runtime Tool Catalog** — `append_runtime_tool_prompt_sections` with the planning/capability filtered
-   `SessionToolCatalogSnapshot`.
+8. **Runtime Tool Catalog** — `append_runtime_tool_prompt_sections_for_profile` / `_for_model` with the
+   planning/capability filtered `SessionToolCatalogSnapshot`.
 9. **GitHub Copilot Client Tools** — only for the Copilot provider.
 10. **Active Primary Agent Runtime State** — model, reasoning effort, instructions, and `### Memory Appendix` if the
     agent has memory.

@@ -286,8 +286,9 @@ async fn validate_prompt_output_with_rebuild(
 mod tests {
     use std::sync::Arc;
 
+    use vtcode_core::config::types::ShellPromptProfile;
     use vtcode_core::core::agent::harness_kernel::SessionToolCatalogSnapshot;
-    use vtcode_core::prompts::append_runtime_tool_prompt_sections;
+    use vtcode_core::prompts::append_runtime_tool_prompt_sections_for_profile;
 
     use super::{PromptAssemblyOutput, validate_prompt_output_alignment};
     use crate::agent::runloop::unified::turn::turn_processing::llm_request::snapshot::capture_turn_request_snapshot;
@@ -323,7 +324,12 @@ mod tests {
 
         let aligned_snapshot = make_snapshot();
         let mut aligned_prompt = "Base prompt".to_string();
-        append_runtime_tool_prompt_sections(&mut aligned_prompt, &aligned_snapshot, true);
+        append_runtime_tool_prompt_sections_for_profile(
+            &mut aligned_prompt,
+            &aligned_snapshot,
+            true,
+            ShellPromptProfile::Auto.resolve_for_current_platform(),
+        );
         let aligned_output = PromptAssemblyOutput {
             system_prompt: aligned_prompt,
             tool_snapshot: aligned_snapshot,
