@@ -926,3 +926,32 @@ fn mode_border_uses_distinct_mode_colors() {
     assert!(build_fg.is_some() && plan_fg.is_some(), "mode border must carry a concrete color");
     assert_ne!(build_fg, plan_fg, "build and plan borders must be visually distinct");
 }
+
+#[test]
+fn shimmer_base_matches_accent_without_mode() {
+    let session = fresh_session();
+
+    assert_eq!(session.shimmer_base_style(), session.styles.accent_style().add_modifier(Modifier::DIM));
+}
+
+#[test]
+fn shimmer_base_tints_with_mode_color() {
+    let mut session = fresh_session();
+    let plain_fg = session.shimmer_base_style().fg;
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+    let build_fg = session.shimmer_base_style().fg;
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("plan".to_string()),
+        color: Some("plan".to_string()),
+    });
+    let plan_fg = session.shimmer_base_style().fg;
+
+    assert!(build_fg.is_some() && plan_fg.is_some(), "mode shimmer must carry a concrete color");
+    assert_ne!(build_fg, plan_fg, "build and plan shimmers must be visually distinct");
+    assert_ne!(build_fg, plain_fg, "mode shimmer must differ from the modeless accent sweep");
+}

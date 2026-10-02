@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Modifier,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph, Widget},
 };
@@ -40,6 +40,7 @@ pub struct FooterWidget<'a> {
     show_border: bool,
     spinner: Option<&'a str>,
     shimmer_phase: Option<f32>,
+    shimmer_base: Option<Style>,
 }
 
 impl<'a> FooterWidget<'a> {
@@ -54,6 +55,7 @@ impl<'a> FooterWidget<'a> {
             show_border: false,
             spinner: None,
             shimmer_phase: None,
+            shimmer_base: None,
         }
     }
 
@@ -106,6 +108,13 @@ impl<'a> FooterWidget<'a> {
         self
     }
 
+    /// Override the shimmer sweep base style (e.g. mode-tinted accent).
+    #[must_use]
+    pub(crate) fn shimmer_base(mut self, style: Style) -> Self {
+        self.shimmer_base = Some(style);
+        self
+    }
+
     fn build_status_line(&self, width: u16) -> Line<'static> {
         let mut spans = Vec::new();
 
@@ -113,11 +122,10 @@ impl<'a> FooterWidget<'a> {
         if let Some(left) = self.left_status {
             if status_requires_shimmer(left) {
                 if let Some(phase) = self.shimmer_phase {
-                    spans.extend(shimmer_spans_with_style_at_phase(
-                        left,
-                        self.styles.accent_style().add_modifier(Modifier::DIM),
-                        phase,
-                    ));
+                    let base = self
+                        .shimmer_base
+                        .unwrap_or_else(|| self.styles.accent_style().add_modifier(Modifier::DIM));
+                    spans.extend(shimmer_spans_with_style_at_phase(left, base, phase));
                 } else {
                     spans.push(Span::styled(left.to_string(), self.styles.muted_style()));
                 }
@@ -233,7 +241,7 @@ mod tests {
     use super::FooterWidget;
     use crate::tui::core_tui::session::styling::SessionStyles;
     use crate::tui::ui::tui::types::InlineTheme;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Style};
 
     #[test]
     fn build_right_status_spans_highlights_dominant_language() {
@@ -256,6 +264,20 @@ mod tests {
         let line = widget.build_status_line(40);
 
         assert!(line.spans.len() > 1);
+        let rendered = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+        assert!(rendered.contains("Approval required"));
+    }
+
+    #[test]
+    fn build_status_line_honors_shimmer_base_override() {
+        let styles = SessionStyles::new(InlineTheme::default());
+        let widget = FooterWidget::new(&styles)
+            .left_status("Approval required")
+            .shimmer_phase(0.5)
+            .shimmer_base(Style::new().fg(Color::Rgb(1, 2, 3)));
+
+        let line = widget.build_status_line(40);
+
         let rendered = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
         assert!(rendered.contains("Approval required"));
     }

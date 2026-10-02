@@ -381,7 +381,8 @@ impl<'a> SessionWidget<'a> {
             .left_status(left_status)
             .right_status(right_status)
             .hint(hint)
-            .mode(mode);
+            .mode(mode)
+            .shimmer_base(self.session.shimmer_base_style());
 
         if self.session.thinking_spinner.is_active {
             footer = footer.spinner(self.session.thinking_spinner.current_frame());

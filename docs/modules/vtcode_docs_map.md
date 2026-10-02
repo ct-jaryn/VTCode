@@ -790,7 +790,7 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/skills/SKILLS_GUIDE.md`
   - **Content**: Agent Skills Guide
-  - **Topics**: Discovery, Skill Structure, SKILL.md, Prompting Behavior, Commands
+  - **Topics**: Discovery, Skill Structure, SKILL.md, Prompting Behavior, Sub-LLM Tool Execution
   - **User Questions**: "What can you tell me about Agent Skills Guide?", "How does Discovery work?", "How does Skill Structure work?"
 
 - **File**: `docs/skills/AGENT_SKILLS_SPEC_IMPLEMENTATION.md`
