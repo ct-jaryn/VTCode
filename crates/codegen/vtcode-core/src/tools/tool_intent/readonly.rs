@@ -636,6 +636,43 @@ mod tests {
     }
 
     #[test]
+    fn awk_string_literal_operators_are_readonly() {
+        // The reported false positive: a quoted `"|"` passed to `index()` is a
+        // string literal, not a command pipe, so the lexer must not reject it.
+        for command in [
+            r#"awk '{n=index(rest,"|"); print n}' README.md"#,
+            r#"awk 'index($0,">")' README.md"#,
+            // `>=` comparison and `||` boolean operators are not redirection
+            // or a pipe.
+            r#"awk '$3>=100 && $4||$5 {print $1}' README.md"#,
+            // Division must not be mistaken for a regex literal.
+            r#"awk '{print $1 / $2}' README.md"#,
+            // Exact reported shape: a multi-line program whose `index(rest,"|")`
+            // carries a quoted pipe and a `# ...` comment line.
+            r#"awk 'NR>=208 && NR<=212 {line=$0; body=substr(line,1,length(line)-1); n=0; while (body ~ / \$/) { body=substr(body,1,length(body)-1); n++ }} # find guide start after label cell
+rest=substr(line,3); g=index(rest,"|")+1; guide=substr(rest,g+2); gp=0; gg=guide; while (gg ~ / \$/) { gg=substr(gg,1,length(gg)-1); gp++ } print "%d: linelen=%d labelcell=%s pad_before_final_pipe=%d guide_pad=%d\n", NR, length(line), substr(line,3,20), n, gp }' README.md"#,
+        ] {
+            assert!(is_readonly_command_session_command(&run_cmd(command)), "expected readonly command: {command}");
+        }
+    }
+
+    #[test]
+    fn awk_regex_with_quote_cannot_hide_pipe() {
+        // Adversarial shape for a naive quote-toggling scanner: `/a"b/` opens
+        // a "string" that stays open, hiding the real `|`; the later `/c"d/`
+        // rebalances the quote count, so an unbalanced-quote guard never
+        // fires. The lexer treats quotes as regex content and still catches
+        // the pipe.
+        for command in [
+            r#"awk '/a"b/ {print | "sort"} /c"d/' README.md"#,
+            // Regex alternation stays mutating (pinned conservative policy).
+            r#"awk '/a|b/ {print}' README.md"#,
+        ] {
+            assert!(!is_readonly_command_session_command(&run_cmd(command)), "expected mutating command: {command}");
+        }
+    }
+
+    #[test]
     fn cd_prefixed_exploration_is_readonly() {
         // Exact patterns from checkpoint turn_810 that plan mode rejected:
         // the model habitually prefixes exploration with `cd <workspace> &&`.

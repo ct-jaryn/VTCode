@@ -796,26 +796,115 @@ fn has_unsafe_awk_options(arguments: &[String]) -> bool {
 }
 
 /// Return whether an `awk` program can write files, pipe into commands,
-/// execute them, or load external code. `>` (unless the `>=` comparison)
-/// and bare `|` (unless the `||` operator) are output redirection and
-/// command pipes; `system()` runs shell commands; `@` invokes gawk indirect
-/// calls (`@func()`) and directives (`@include`, `@load`), which can execute
-/// or load arbitrary code — including a `system` name smuggled via `-v`.
-/// String and regex literals are not distinguished from code: a literal
-/// containing `>`, `|`, or `@` fails closed as a possible write instead
-/// of risking a missed redirection. Bare `>` comparisons (`$3>100`) and `|`
-/// alternations (`/a|b/`) therefore stay mutating by design.
+/// execute them, or load external code. `>` (unless the `>=` comparison) and
+/// bare `|` (unless the `||` operator) are output redirection and command
+/// pipes; `system()` runs shell commands; `@` invokes gawk indirect calls
+/// (`@func()`) and directives (`@include`, `@load`), which can execute or load
+/// arbitrary code — including a `system` name smuggled via `-v`.
+///
+/// Double-quoted string literals are scanned as data: a quoted `"|"` passed to
+/// `index()` is a literal, not a command pipe, so the read-only shape
+/// `awk '... index(rest,"|") ...' file` is not misclassified. To keep this
+/// safe the scanner distinguishes string literals, regex literals (`/.../`),
+/// and division using awk's operand-vs-operator rule, so a quote *inside* a
+/// regex (`/"/`, `/a"b/`) can never desync string tracking and hide a pipe.
+/// `@` and `system()` fail closed everywhere — including inside string and
+/// regex literals — and `>`/`|`/`@` inside regex literals stay mutating, so the
+/// pinned `/a|b/` and `"a@b"` shapes remain conservative.
 fn awk_program_may_write(program: &str) -> bool {
     let chars = program.chars().collect::<Vec<_>>();
     let mut index = 0;
+    // Whether the previous significant token can end an operand. This decides
+    // whether `/` opens a regex literal or is a division operator.
+    let mut prev_operand = false;
     while index < chars.len() {
         let character = chars[index];
+        if character.is_whitespace() {
+            index += 1;
+            continue;
+        }
+        if character == '"' {
+            index += 1;
+            let mut terminated = false;
+            while index < chars.len() {
+                let inner = chars[index];
+                if inner == '\\' {
+                    index += 2;
+                    continue;
+                }
+                if inner == '"' {
+                    index += 1;
+                    terminated = true;
+                    break;
+                }
+                // `@`/`system()` fail closed even inside a literal; `>`/`|`
+                // are literal data here and are skipped.
+                if inner == '@' {
+                    return true;
+                }
+                if (inner == 's' || inner == 'S') && awk_calls_system(&chars, index) {
+                    return true;
+                }
+                index += 1;
+            }
+            if !terminated {
+                return true;
+            }
+            prev_operand = true;
+            continue;
+        }
+        if character == '/' && !prev_operand {
+            // Regex literal. Quotes are regex content, not string delimiters,
+            // so they cannot desync string parsing; `>`/`|`/`@` inside still
+            // fail closed, matching the pinned `/a|b/` policy.
+            index += 1;
+            let mut terminated = false;
+            while index < chars.len() {
+                let inner = chars[index];
+                if inner == '\\' {
+                    index += 2;
+                    continue;
+                }
+                if inner == '/' {
+                    index += 1;
+                    terminated = true;
+                    break;
+                }
+                if inner == '@' {
+                    return true;
+                }
+                if inner == '>' {
+                    if chars.get(index + 1) == Some(&'=') {
+                        index += 2;
+                        continue;
+                    }
+                    return true;
+                }
+                if inner == '|' {
+                    if chars.get(index + 1) == Some(&'|') {
+                        index += 2;
+                        continue;
+                    }
+                    return true;
+                }
+                index += 1;
+            }
+            if !terminated {
+                return true;
+            }
+            prev_operand = true;
+            continue;
+        }
         if character == '@' {
+            return true;
+        }
+        if (character == 's' || character == 'S') && awk_calls_system(&chars, index) {
             return true;
         }
         if character == '>' {
             if chars.get(index + 1) == Some(&'=') {
                 index += 2;
+                prev_operand = false;
                 continue;
             }
             return true;
@@ -823,16 +912,62 @@ fn awk_program_may_write(program: &str) -> bool {
         if character == '|' {
             if chars.get(index + 1) == Some(&'|') {
                 index += 2;
+                prev_operand = false;
                 continue;
             }
             return true;
         }
-        if (character == 's' || character == 'S') && awk_calls_system(&chars, index) {
-            return true;
+        if character == '/' {
+            // Division: an operand precedes it.
+            prev_operand = false;
+            index += 1;
+            continue;
         }
+        if character.is_ascii_alphanumeric() || character == '_' {
+            let start = index;
+            while index < chars.len() && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
+                index += 1;
+            }
+            let word: String = chars[start..index].iter().collect();
+            prev_operand = !is_awk_keyword(&word);
+            continue;
+        }
+        if character == ')' || character == ']' || character == '$' {
+            prev_operand = true;
+            index += 1;
+            continue;
+        }
+        prev_operand = false;
         index += 1;
     }
     false
+}
+
+/// Awk keywords that do not end an operand, so a following `/` opens a regex
+/// literal (`print /re/`) rather than being a division operator. Kept minimal
+/// and conservative: an unlisted keyword is treated as an operand, which at
+/// worst misreads a regex as division — still fail-closed, because regex
+/// contents are then scanned as top-level code and any `>`/`|`/`@` is caught.
+fn is_awk_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "if" | "else"
+            | "while"
+            | "for"
+            | "do"
+            | "break"
+            | "continue"
+            | "next"
+            | "nextfile"
+            | "exit"
+            | "return"
+            | "delete"
+            | "in"
+            | "getline"
+            | "print"
+            | "printf"
+            | "function"
+    )
 }
 
 /// Return whether `chars[start..]` invokes awk's `system()` builtin: the

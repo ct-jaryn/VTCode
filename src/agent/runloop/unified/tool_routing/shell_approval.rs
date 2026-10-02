@@ -741,6 +741,28 @@ mod tests {
     }
 
     #[test]
+    fn awk_read_with_quoted_pipe_yields_family_pattern() {
+        // The reported shape: the quoted `"|"` argument to `index()` previously
+        // tripped the naive control-operator gate, so no family key was
+        // attached and every new `NR` range re-prompted. It must now learn.
+        let pattern = pattern_for(r#"awk 'NR>=208 && NR<=212 {n=index(rest,"|"); print n}' README.md"#)
+            .expect("quoted-pipe awk read must yield a family pattern");
+        assert!(pattern.key.starts_with("shell-pattern:awk README.md|sandbox_permissions="));
+        assert_eq!(pattern.label, "safe `awk` reads under `README.md`");
+
+        // Exact reported multi-line program (single-quoted, so `$0`/`\$` are
+        // literal awk text, not shell expansion) must also learn.
+        let reported = r#"awk 'NR>=208 && NR<=212 {line=$0; body=substr(line,1,length(line)-1); n=0; while (body ~ / \$/) { body=substr(body,1,length(body)-1); n++ }} # find guide start after label cell
+rest=substr(line,3); g=index(rest,"|")+1; guide=substr(rest,g+2); gp=0; gg=guide; while (gg ~ / \$/) { gg=substr(gg,1,length(gg)-1); gp++ } print "%d: linelen=%d labelcell=%s pad_before_final_pipe=%d guide_pad=%d\n", NR, length(line), substr(line,3,20), n, gp }' README.md"#;
+        let reported_pattern = pattern_for(reported).expect("reported multi-line awk read must yield a family pattern");
+        assert!(
+            reported_pattern
+                .key
+                .starts_with("shell-pattern:awk README.md|sandbox_permissions=")
+        );
+    }
+
+    #[test]
     fn awk_mutating_shapes_have_no_pattern() {
         for command in [
             "awk '{print > \"out.txt\"}' README.md",
