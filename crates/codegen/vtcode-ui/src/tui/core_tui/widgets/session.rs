@@ -382,9 +382,6 @@ impl<'a> SessionWidget<'a> {
             .right_status(right_status)
             .hint(hint)
             .mode(mode);
-        if let Some(highlight) = self.session.primary_mode_color() {
-            footer = footer.shimmer_highlight(highlight);
-        }
 
         if self.session.thinking_spinner.is_active {
             footer = footer.spinner(self.session.thinking_spinner.current_frame());

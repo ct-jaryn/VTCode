@@ -881,77 +881,16 @@ fn mode_pill_coexists_with_right_status() {
 }
 
 #[test]
-fn mode_border_adds_extra_height_without_subagent() {
+fn mode_adds_no_input_border_chrome() {
     let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+
+    // The composer stays borderless and compact in every mode: no titles, no
+    // extra border rows. Only shell (`!`) and subagent badges add chrome.
+    assert_eq!(session.shell_mode_border_title(), None);
+    assert!(session.active_subagent_input_title().is_none());
     assert_eq!(session.input_block_extra_height(), 0);
-
-    session.handle_command(InlineCommand::SetPrimaryAgent {
-        name: Some("build".to_string()),
-        color: Some("build".to_string()),
-    });
-    assert_eq!(session.input_block_extra_height(), 2);
-
-    session.handle_command(InlineCommand::SetPrimaryAgent { name: None, color: None });
-    assert_eq!(session.input_block_extra_height(), 0);
-}
-
-#[test]
-fn mode_border_yields_to_shell_prefix() {
-    let mut session = fresh_session();
-    session.handle_command(InlineCommand::SetPrimaryAgent {
-        name: Some("build".to_string()),
-        color: Some("build".to_string()),
-    });
-    session.set_input("!ls -la".to_string());
-
-    assert_eq!(session.input_block_extra_height(), 0);
-    assert_eq!(session.shell_mode_border_title(), Some(" ! Shell mode "));
-}
-
-#[test]
-fn mode_border_uses_distinct_mode_colors() {
-    let mut session = fresh_session();
-    session.handle_command(InlineCommand::SetPrimaryAgent {
-        name: Some("build".to_string()),
-        color: Some("build".to_string()),
-    });
-    let build_fg = session.active_subagent_input_border_style().expect("mode border style").fg;
-
-    session.handle_command(InlineCommand::SetPrimaryAgent {
-        name: Some("plan".to_string()),
-        color: Some("plan".to_string()),
-    });
-    let plan_fg = session.active_subagent_input_border_style().expect("mode border style").fg;
-
-    assert!(build_fg.is_some() && plan_fg.is_some(), "mode border must carry a concrete color");
-    assert_ne!(build_fg, plan_fg, "build and plan borders must be visually distinct");
-}
-
-#[test]
-fn mode_sweep_uses_session_mode_color_as_highlight() {
-    use crate::tui::core_tui::style::mode_shimmer_spans;
-    use ratatui::style::Style;
-
-    let mut session = fresh_session();
-    session.handle_command(InlineCommand::SetPrimaryAgent {
-        name: Some("build".to_string()),
-        color: Some("build".to_string()),
-    });
-    let highlight = session.primary_mode_color().expect("mode color");
-
-    // Same band geometry as the style unit test: band near 'b', 'h' outside it.
-    let spans = mode_shimmer_spans("abcdefgh", Style::default(), Some(highlight), 11.0 / 28.0);
-    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-    assert_eq!(text, "abcdefgh");
-
-    let band = spans
-        .iter()
-        .find(|span| span.content.as_ref().contains('b'))
-        .expect("band span");
-    assert_eq!(band.style.fg, Some(highlight));
-    let edge = spans
-        .iter()
-        .find(|span| span.content.as_ref().contains('h'))
-        .expect("edge span");
-    assert_eq!(edge.style.fg, None, "text outside the band must keep the base color");
 }

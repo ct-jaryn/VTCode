@@ -47,6 +47,7 @@ use regex::Regex;
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::LazyLock;
+use tui_shimmer::shimmer_spans_with_style_at_phase;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vtcode_commons::fs::{is_image_path, trim_trailing_image_path_str, unescape_whitespace};
 
@@ -289,14 +290,13 @@ impl Session {
         let shell_mode_title = self.shell_mode_border_title();
         let active_subagent_title = self.active_subagent_input_title();
         let active_subagent_border_style = self.active_subagent_input_border_style();
-        let has_mode_border = self.has_primary_mode();
-        let mut block = if shell_mode_title.is_some() || active_subagent_title.is_some() || has_mode_border {
+        let mut block = if shell_mode_title.is_some() || active_subagent_title.is_some() {
             Block::bordered()
         } else {
             Block::new()
         };
         block = block.style(background_style).padding(self.input_block_padding());
-        if shell_mode_title.is_some() || active_subagent_title.is_some() || has_mode_border {
+        if shell_mode_title.is_some() || active_subagent_title.is_some() {
             block = block.border_type(super::terminal_capabilities::get_border_type()).border_style(
                 active_subagent_border_style.unwrap_or_else(|| self.styles.accent_style().add_modifier(Modifier::BOLD)),
             );
@@ -398,8 +398,7 @@ impl Session {
     }
 
     pub(crate) fn input_block_extra_height(&self) -> u16 {
-        if !self.input_uses_shell_prefix() && (self.active_subagent_input_title().is_some() || self.has_primary_mode())
-        {
+        if self.active_subagent_input_title().is_some() && !self.input_uses_shell_prefix() {
             2
         } else {
             0
@@ -1052,10 +1051,9 @@ impl Session {
         if let Some(left_value) = left.as_ref() {
             let before: u16 = spans.iter().map(|s| measure_text_width(&s.content)).sum();
             if status_requires_shimmer(left_value) && self.appearance.should_animate_progress_status() {
-                spans.extend(super::super::style::mode_shimmer_spans(
+                spans.extend(shimmer_spans_with_style_at_phase(
                     left_value,
                     self.styles.accent_style().add_modifier(Modifier::DIM),
-                    self.primary_mode_color(),
                     self.shimmer_state.phase(),
                 ));
             } else {
@@ -1186,7 +1184,7 @@ impl Session {
         Some(Line::from(Span::styled(format!(" {label} "), style)).right_aligned())
     }
 
-    pub(crate) fn active_subagent_input_border_style(&self) -> Option<Style> {
+    fn active_subagent_input_border_style(&self) -> Option<Style> {
         // Use the primary agent color if available, otherwise fall back to badge color.
         if let Some(color_style) =
             super::super::style::agent_color_style(self.header_context.primary_agent_color.as_deref(), Color::Magenta)
@@ -1219,11 +1217,6 @@ impl Session {
             .filter(|name| !name.is_empty())
     }
 
-    /// Whether a primary agent mode is set, driving the persistent mode border.
-    fn has_primary_mode(&self) -> bool {
-        self.primary_mode_name().is_some()
-    }
-
     /// Mode pill for the input status line, reusing the header badge color.
     ///
     /// Returns `None` when no primary agent name is set so the default
@@ -1233,7 +1226,7 @@ impl Session {
     /// Resolved primary-agent mode color, sharing the header badge source.
     ///
     /// Returns `None` when no mode name is set so modeless chrome is unchanged.
-    pub(crate) fn primary_mode_color(&self) -> Option<Color> {
+    fn primary_mode_color(&self) -> Option<Color> {
         self.primary_mode_name()?;
         let fallback = self.theme.primary.map(ratatui_color_from_ansi).unwrap_or(Color::LightMagenta);
         super::super::style::agent_color_style(self.header_context.primary_agent_color.as_deref(), fallback).fg

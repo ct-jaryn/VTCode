@@ -1,6 +1,5 @@
 use anstyle::{Color as AnsiColorEnum, Style as AnsiStyle};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::ui::theme;
@@ -71,75 +70,6 @@ pub(crate) fn ratatui_style_from_ansi(style: AnsiStyle) -> Style {
     crate::design::style::anstyle_to_ratatui_style(style)
 }
 
-/// Shimmer sweep geometry shared with `tui-shimmer`.
-///
-/// `SHIMMER_PAD`/`SHIMMER_HALF_WIDTH` mirror the upstream constants so a
-/// mode-highlighted sweep stays positionally in sync with crate-driven sweeps
-/// (e.g. the transcript indicator row) at the same shared phase.
-const SHIMMER_PAD: isize = 10;
-const SHIMMER_HALF_WIDTH: usize = 5;
-
-/// Build a shimmer sweep over `text`, optionally highlighted in `highlight`.
-///
-/// With `None` this delegates to `tui-shimmer` unchanged (modeless behavior).
-/// With `Some` the base text keeps `base_style` untouched while the moving
-/// band renders in the highlight hue — no RGB math, so it stays deterministic
-/// on truecolor and ANSI16 terminals alike.
-pub(crate) fn mode_shimmer_spans(text: &str, base: Style, highlight: Option<Color>, phase: f32) -> Vec<Span<'static>> {
-    let Some(highlight) = highlight else {
-        return tui_shimmer::shimmer_spans_with_style_at_phase(text, base, phase);
-    };
-    let char_count = text.chars().count();
-    if char_count == 0 {
-        return Vec::new();
-    }
-
-    let phase = phase.rem_euclid(1.0);
-    let period = char_count as isize + SHIMMER_PAD * 2;
-    let pos = (phase * period as f32) as isize;
-
-    let mut spans = Vec::with_capacity(char_count);
-    let mut buffer = String::new();
-    let mut current_style: Option<Style> = None;
-
-    for (index, ch) in text.chars().enumerate() {
-        let dist = (index as isize + SHIMMER_PAD - pos).unsigned_abs() as f32;
-        let half = SHIMMER_HALF_WIDTH as f32;
-        // Cosine falloff matching the upstream intensity curve.
-        let intensity = if dist <= half {
-            0.5 * (1.0 + (std::f32::consts::PI * dist / half).cos())
-        } else {
-            0.0
-        };
-
-        let mut style = base;
-        if intensity >= 0.6 {
-            style = style.fg(highlight).add_modifier(Modifier::BOLD);
-        } else if intensity > 0.0 {
-            style = style.fg(highlight);
-        }
-
-        let same_style = current_style.as_ref().is_some_and(|current| current == &style);
-        if !same_style {
-            if let Some(prev_style) = current_style.take() {
-                if !buffer.is_empty() {
-                    spans.push(Span::styled(buffer, prev_style));
-                    buffer = String::new();
-                }
-            }
-            current_style = Some(style);
-        }
-        buffer.push(ch);
-    }
-
-    if let Some(final_style) = current_style {
-        if !buffer.is_empty() {
-            spans.push(Span::styled(buffer, final_style));
-        }
-    }
-    spans
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,41 +137,5 @@ mod tests {
 
         let invalid = agent_color_style(Some("not-a-color"), fallback);
         assert_eq!(invalid.fg, Some(fallback));
-    }
-
-    fn sweep_text(spans: &[Span<'_>]) -> String {
-        spans.iter().map(|span| span.content.as_ref()).collect()
-    }
-
-    #[test]
-    fn mode_sweep_delegates_without_highlight() {
-        let spans = mode_shimmer_spans("Running", Style::default(), None, 0.25);
-        assert!(!spans.is_empty());
-        assert_eq!(sweep_text(&spans), "Running");
-    }
-
-    #[test]
-    fn mode_sweep_yields_no_spans_for_empty_text() {
-        assert!(mode_shimmer_spans("", Style::default(), Some(Color::Red), 0.5).is_empty());
-    }
-
-    #[test]
-    fn mode_sweep_centers_highlight_on_band_and_preserves_base() {
-        // 8 chars -> period 28; phase 11/28 parks the band near 'b' (index 1).
-        // Assertions hold for either truncation side of the float product.
-        let base = Style::default();
-        let spans = mode_shimmer_spans("abcdefgh", base, Some(Color::Red), 11.0 / 28.0);
-        assert_eq!(sweep_text(&spans), "abcdefgh");
-
-        for ch in ['a', 'b'] {
-            let span = spans.iter().find(|span| span.content.as_ref().contains(ch)).expect("band span");
-            assert_eq!(span.style.fg, Some(Color::Red), "band should carry the highlight hue");
-        }
-        // 'h' sits outside the half-width band: base style untouched.
-        let edge = spans
-            .iter()
-            .find(|span| span.content.as_ref().contains('h'))
-            .expect("edge span");
-        assert_eq!(edge.style.fg, base.fg);
     }
 }
