@@ -89,3 +89,7 @@ Test (throwaway, not committed): temp nextest test in transcript_review.rs that 
 - If case 1 dominates instead, the cost is per-block reflow count → proceed to capping refresh_messages work per frame or throttling follow-while-open.
 - If all under budget, no structural change: close the lag report as fixed by the incremental-search + Esc changes in cf89fb8e4.
   Improve step (only if confirmed): smallest slice first — lazy-wrap just ReviewSourceKind::Tool blocks behind the existing CachedToolOutputBlock shape, keep Core path as-is; re-run the same timing test plus the 38 viewer tests.
+
+===
+
+check and fix to improve vcode program exit, it taking a long delay to exit from the TUI full-screen mode to the CLI shell. audit the shutdown sequence, pending PTY commands, and any blocking operations that may delay the exit.
