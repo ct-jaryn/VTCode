@@ -165,7 +165,7 @@ impl ToolOutputViewerState {
         self.width = width;
         self.height = height;
         self.source_revision = revision;
-        self.recompute_matches();
+        self.recompute_matches_after_refresh();
 
         let focused = self.focus_pending_target(height);
         if focused {
@@ -212,13 +212,11 @@ impl ToolOutputViewerState {
     }
 
     pub(crate) fn viewer_contains(&self, column: u16, row: u16) -> bool {
-        (self.viewer_area.width == 0 || self.viewer_area.height == 0)
-            || self.viewer_area.contains(Position { x: column, y: row })
+        rect_contains_or_empty(self.viewer_area, column, row)
     }
 
     pub(crate) fn body_contains(&self, column: u16, row: u16) -> bool {
-        (self.content_area.width == 0 || self.content_area.height == 0)
-            || self.content_area.contains(Position { x: column, y: row })
+        rect_contains_or_empty(self.content_area, column, row)
     }
 
     pub(crate) fn content_height_or(&self, fallback: u16) -> u16 {
@@ -230,31 +228,21 @@ impl ToolOutputViewerState {
     }
 
     pub(crate) fn mode_control_contains(&self, column: u16, row: u16) -> bool {
-        self.title_mode_hit_region
-            .is_some_and(|area| area.contains(Position { x: column, y: row }))
+        opt_rect_contains(self.title_mode_hit_region, column, row)
     }
 
     pub(crate) fn close_control_contains(&self, column: u16, row: u16) -> bool {
-        self.title_close_hit_region
-            .is_some_and(|area| area.contains(Position { x: column, y: row }))
+        opt_rect_contains(self.title_close_hit_region, column, row)
     }
 
     pub(crate) fn update_mode_hover(&mut self, column: u16, row: u16) -> bool {
         let hovered = self.mode_control_contains(column, row);
-        if self.hovered_mode_control == hovered {
-            return false;
-        }
-        self.hovered_mode_control = hovered;
-        true
+        set_hover(&mut self.hovered_mode_control, hovered)
     }
 
     pub(crate) fn update_close_hover(&mut self, column: u16, row: u16) -> bool {
         let hovered = self.close_control_contains(column, row);
-        if self.hovered_close_control == hovered {
-            return false;
-        }
-        self.hovered_close_control = hovered;
-        true
+        set_hover(&mut self.hovered_close_control, hovered)
     }
 
     #[cfg(test)]
@@ -310,36 +298,29 @@ impl ToolOutputViewerState {
     }
 
     pub(crate) fn scroll_line_up(&mut self, height: u16) {
-        self.scroll_top = self.scroll_top.saturating_sub(1);
-        self.clamp_scroll(height);
+        self.scroll_by(-1, height);
     }
 
     pub(crate) fn scroll_line_down(&mut self, height: u16) {
-        self.scroll_top = self.scroll_top.saturating_add(1).min(self.max_scroll(height));
+        self.scroll_by(1, height);
     }
 
     pub(crate) fn scroll_half_page_up(&mut self, height: u16) {
-        self.scroll_top = self.scroll_top.saturating_sub(Self::page_step(height).max(1) / 2);
-        self.clamp_scroll(height);
+        let half = (Self::page_step(height).max(1) / 2) as isize;
+        self.scroll_by(-half, height);
     }
 
     pub(crate) fn scroll_half_page_down(&mut self, height: u16) {
-        self.scroll_top = self
-            .scroll_top
-            .saturating_add(Self::page_step(height).max(1) / 2)
-            .min(self.max_scroll(height));
+        let half = (Self::page_step(height).max(1) / 2) as isize;
+        self.scroll_by(half, height);
     }
 
     pub(crate) fn scroll_full_page_up(&mut self, height: u16) {
-        self.scroll_top = self.scroll_top.saturating_sub(Self::page_step(height));
-        self.clamp_scroll(height);
+        self.scroll_by(-(Self::page_step(height) as isize), height);
     }
 
     pub(crate) fn scroll_full_page_down(&mut self, height: u16) {
-        self.scroll_top = self
-            .scroll_top
-            .saturating_add(Self::page_step(height))
-            .min(self.max_scroll(height));
+        self.scroll_by(Self::page_step(height) as isize, height);
     }
 
     pub(crate) fn scroll_to_top(&mut self) {
@@ -387,7 +368,10 @@ impl ToolOutputViewerState {
         self.search.query = self.search.restore_query.clone();
         self.search.current_match = self.search.restore_match;
         self.search.pending_query.clear();
-        self.recompute_matches();
+        // No rescan: typing only touched `pending_query`, so the committed
+        // query is unchanged and `matches` is already current (streaming
+        // refreshes kept it updated incrementally). The next `refresh`
+        // reconciles any transcript change that landed after the last frame.
     }
 
     pub(crate) fn commit_search(&mut self, height: u16) {
@@ -403,27 +387,17 @@ impl ToolOutputViewerState {
     }
 
     pub(crate) fn jump_next_match(&mut self, height: u16) {
-        if self.search.matches.is_empty() {
-            return;
+        if let Some(next) = next_match_index(self.search.current_match, self.search.matches.len(), true) {
+            self.search.current_match = Some(next);
+            self.jump_to_current_match(height);
         }
-        let next = match self.search.current_match {
-            Some(current) => (current + 1) % self.search.matches.len(),
-            None => 0,
-        };
-        self.search.current_match = Some(next);
-        self.jump_to_current_match(height);
     }
 
     pub(crate) fn jump_previous_match(&mut self, height: u16) {
-        if self.search.matches.is_empty() {
-            return;
+        if let Some(next) = next_match_index(self.search.current_match, self.search.matches.len(), false) {
+            self.search.current_match = Some(next);
+            self.jump_to_current_match(height);
         }
-        let next = match self.search.current_match {
-            Some(0) | None => self.search.matches.len().saturating_sub(1),
-            Some(current) => current.saturating_sub(1),
-        };
-        self.search.current_match = Some(next);
-        self.jump_to_current_match(height);
     }
 
     pub(crate) fn status_label(&self) -> String {
@@ -441,12 +415,10 @@ impl ToolOutputViewerState {
     }
 
     fn refresh_messages(&mut self, session: &Session, width: u16, width_changed: bool) {
-        let previous = self
-            .messages
-            .drain(..)
-            .map(|message| (message.key, message))
-            .collect::<HashMap<_, _>>();
-        let mut previous = previous;
+        let mut previous = HashMap::with_capacity(self.messages.len());
+        for message in self.messages.drain(..) {
+            previous.insert(message.key, message);
+        }
         let sources = collect_review_sources(session);
         let mut messages = Vec::with_capacity(sources.len());
 
@@ -483,24 +455,18 @@ impl ToolOutputViewerState {
         count.max(1)
     }
 
-    fn message_index_at(&self, row: usize) -> Option<(usize, usize)> {
+    fn block_at(&self, row: usize) -> Option<(&CachedToolOutputBlock, usize)> {
         if row >= self.total_lines || self.row_offsets.is_empty() {
             return None;
         }
 
         let message_index = self.row_offsets.partition_point(|offset| *offset <= row).saturating_sub(1);
         let local_index = row.saturating_sub(self.row_offsets[message_index]);
-        Some((message_index, local_index))
-    }
-
-    fn line_text_at(&self, row: usize) -> Option<&str> {
-        let (message_index, local_index) = self.message_index_at(row)?;
-        self.messages.get(message_index)?.lines.get(local_index).map(String::as_str)
+        self.messages.get(message_index).map(|message| (message, local_index))
     }
 
     fn line_for_mode_at(&self, row: usize) -> Option<Line<'static>> {
-        let (message_index, local_index) = self.message_index_at(row)?;
-        let message = self.messages.get(message_index)?;
+        let (message, local_index) = self.block_at(row)?;
         match self.mode {
             TranscriptRenderMode::Rich => message.rich_lines.get(local_index).cloned(),
             TranscriptRenderMode::Raw => message.lines.get(local_index).map(|line| Line::raw(line.clone())),
@@ -557,6 +523,60 @@ impl ToolOutputViewerState {
         self.search.current_match = (!self.search.matches.is_empty()).then_some(0);
     }
 
+    /// Incremental rescan after a transcript refresh. The committed query is
+    /// unchanged on this path (only `commit_search` changes it, via a full
+    /// rescan), so prefix matches stay valid: blocks reused from the previous
+    /// frame keep their cached lowercase lines, and only the suffix from the
+    /// first rebuilt block onward needs re-scanning. This keeps streaming
+    /// appends O(tail) instead of O(transcript) while search is active.
+    fn recompute_matches_after_refresh(&mut self) {
+        if self.search.query.is_empty() {
+            self.search.matches.clear();
+            self.search.current_match = None;
+            return;
+        }
+
+        let first_changed = self.messages.iter().position(|message| message.lowered_lines.is_none());
+        let Some(first_changed) = first_changed else {
+            // Nothing rebuilt (e.g. revision bump with identical sources).
+            return;
+        };
+
+        let base_row = self.row_offsets.get(first_changed).copied().unwrap_or(0);
+        // `matches` is built in row order, so a sorted truncate keeps the prefix.
+        let keep = self.search.matches.partition_point(|&row| row < base_row);
+        self.search.matches.truncate(keep);
+
+        let needle = self.search.query.to_ascii_lowercase();
+        let mode = self.mode;
+        let mut row_index = base_row;
+        for message in self.messages.iter_mut().skip(first_changed) {
+            let lowered_lines = message.lowered_lines.get_or_insert_with(|| match mode {
+                TranscriptRenderMode::Rich => message
+                    .rich_lines
+                    .iter()
+                    .map(line_text)
+                    .map(|line| line.to_ascii_lowercase())
+                    .collect(),
+                TranscriptRenderMode::Raw => message.lines.iter().map(|line| line.to_ascii_lowercase()).collect(),
+            });
+            for line in lowered_lines {
+                if line.contains(&needle) {
+                    self.search.matches.push(row_index);
+                }
+                row_index += 1;
+            }
+        }
+
+        if let Some(current) = self.search.current_match
+            && current < self.search.matches.len()
+        {
+            return;
+        }
+
+        self.search.current_match = (!self.search.matches.is_empty()).then_some(0);
+    }
+
     fn clamp_scroll(&mut self, height: u16) {
         self.scroll_top = self.scroll_top.min(self.max_scroll(height));
     }
@@ -569,6 +589,15 @@ impl ToolOutputViewerState {
         self.scroll_top >= self.max_scroll(height)
     }
 
+    fn scroll_by(&mut self, delta: isize, height: u16) {
+        if delta < 0 {
+            self.scroll_top = self.scroll_top.saturating_sub(delta.unsigned_abs());
+            self.clamp_scroll(height);
+        } else {
+            self.scroll_top = self.scroll_top.saturating_add(delta as usize).min(self.max_scroll(height));
+        }
+    }
+
     fn page_step(height: u16) -> usize {
         usize::from(height.max(2)).saturating_sub(1)
     }
@@ -578,14 +607,48 @@ impl ToolOutputViewerState {
 /// keybinding in both plain-text and segmented form.
 const COMPACT_ACTIVITY_HINT_TAIL: &str = "transcript · click to expand";
 
-pub(super) fn compact_activity_hint_text(session: &Session) -> Option<String> {
+fn rect_contains_or_empty(area: Rect, column: u16, row: u16) -> bool {
+    (area.width == 0 || area.height == 0) || area.contains(Position { x: column, y: row })
+}
+
+fn opt_rect_contains(region: Option<Rect>, column: u16, row: u16) -> bool {
+    region.is_some_and(|area| area.contains(Position { x: column, y: row }))
+}
+
+fn set_hover(current: &mut bool, hovered: bool) -> bool {
+    if *current == hovered {
+        return false;
+    }
+    *current = hovered;
+    true
+}
+
+fn next_match_index(current: Option<usize>, len: usize, forward: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    if forward {
+        Some(match current {
+            Some(index) => (index + 1) % len,
+            None => 0,
+        })
+    } else {
+        Some(match current {
+            Some(0) | None => len.saturating_sub(1),
+            Some(index) => index.saturating_sub(1),
+        })
+    }
+}
+
+fn review_hint_binding(session: &Session) -> Option<&str> {
     if !session.core.transcript_review_hints_visible() {
         return None;
     }
-    session
-        .core
-        .primary_binding_label(Action::OpenTranscriptReview)
-        .map(|binding| format!("{binding} {COMPACT_ACTIVITY_HINT_TAIL}"))
+    session.core.primary_binding_label(Action::OpenTranscriptReview)
+}
+
+pub(super) fn compact_activity_hint_text(session: &Session) -> Option<String> {
+    review_hint_binding(session).map(|binding| format!("{binding} {COMPACT_ACTIVITY_HINT_TAIL}"))
 }
 
 pub(super) fn compact_activity_segments(
@@ -595,9 +658,7 @@ pub(super) fn compact_activity_segments(
     let styles = crate::tui::ui::shell_syntax::ShellLineStyles::from_session(session);
     let mut segments = crate::tui::ui::shell_syntax::line_to_compact_segments(metadata, &styles);
 
-    if session.core.transcript_review_hints_visible()
-        && let Some(binding) = session.core.primary_binding_label(Action::OpenTranscriptReview)
-    {
+    if let Some(binding) = review_hint_binding(session) {
         let separator_style = session.core.styles.default_inline_style().dim();
         segments.push(crate::tui::core_tui::types::InlineSegment {
             text: " · ".to_string(),
@@ -627,15 +688,9 @@ pub(super) fn compact_activity_segments(
 }
 
 fn collect_review_sources(session: &Session) -> Vec<ReviewSource> {
-    let core_lines = session
-        .core
-        .lines
-        .iter()
-        .enumerate()
-        .map(|(index, _)| rendered_message_text(session, index))
-        .collect::<Vec<_>>();
+    let core_len = session.core.lines.len();
     let review_revisions = session.core.review_message_revisions();
-    let mut anchored_blocks = HashMap::<usize, Vec<usize>>::new();
+    let mut anchored_blocks = HashMap::<usize, Vec<usize>>::with_capacity(session.tool_output_blocks.len());
     let mut positioned_orphans = Vec::<(usize, usize)>::new();
 
     for (block_index, block) in session.tool_output_blocks.iter().enumerate() {
@@ -653,11 +708,11 @@ fn collect_review_sources(session: &Session) -> Vec<ReviewSource> {
     }
     positioned_orphans.sort_unstable();
 
-    let mut used_blocks = HashSet::new();
-    let mut sources = Vec::with_capacity(core_lines.len() + session.tool_output_blocks.len());
+    let mut used_blocks = HashSet::with_capacity(session.tool_output_blocks.len());
+    let mut sources = Vec::with_capacity(core_len + session.tool_output_blocks.len());
     let mut index = 0usize;
     let mut next_positioned_orphan = 0usize;
-    while index < core_lines.len() {
+    while index < core_len {
         while let Some(&(recorded_at_line, block_index)) = positioned_orphans.get(next_positioned_orphan)
             && recorded_at_line <= index
         {
@@ -681,7 +736,7 @@ fn collect_review_sources(session: &Session) -> Vec<ReviewSource> {
                 });
                 used_blocks.insert(block_index);
             }
-            index = tool_output_body_end(session, &core_lines, index, &anchored_blocks);
+            index = tool_output_body_end(session, index, &anchored_blocks);
         } else {
             sources.push(ReviewSource {
                 key: ReviewBlockKey::Core(index),
@@ -731,12 +786,7 @@ fn rendered_message_text(session: &Session, index: usize) -> String {
         .collect()
 }
 
-fn tool_output_body_end(
-    session: &Session,
-    core_lines: &[String],
-    anchor: usize,
-    anchored_blocks: &HashMap<usize, Vec<usize>>,
-) -> usize {
+fn tool_output_body_end(session: &Session, anchor: usize, anchored_blocks: &HashMap<usize, Vec<usize>>) -> usize {
     let Some(anchor_line) = session.core.lines.get(anchor) else {
         return anchor.saturating_add(1);
     };
@@ -749,13 +799,23 @@ fn tool_output_body_end(
         if anchored_blocks.contains_key(&end) {
             break;
         }
-        let text = core_lines.get(end).map(String::as_str).unwrap_or_default();
-        let is_detail = line.kind == InlineMessageKind::Info && (text.starts_with("  ") || text.starts_with("    "));
         let belongs_to_tool = match anchor_kind {
             InlineMessageKind::Pty => line.kind == InlineMessageKind::Pty,
             InlineMessageKind::Tool => matches!(line.kind, InlineMessageKind::Tool | InlineMessageKind::Pty),
             InlineMessageKind::Info => {
-                is_detail || matches!(line.kind, InlineMessageKind::Tool | InlineMessageKind::Pty)
+                if !matches!(line.kind, InlineMessageKind::Tool | InlineMessageKind::Pty) {
+                    // Detail text is only needed for Info-followed-by-Info;
+                    // render lazily so a full-transcript pass stays O(n)
+                    // without per-line ANSI stripping.
+                    if line.kind != InlineMessageKind::Info {
+                        break;
+                    }
+                    let text = rendered_message_text(session, end);
+                    if !(text.starts_with("  ") || text.starts_with("    ")) {
+                        break;
+                    }
+                }
+                true
             }
             _ => false,
         };
@@ -866,6 +926,9 @@ fn collect_tool_output_lines(block: &ToolOutputBlock, width: u16) -> Vec<String>
 }
 
 fn wrap_output_line(line: &str, width: usize) -> Vec<String> {
+    // Plain-text hard wrap for ANSI-free review/export lines. Kept separate
+    // from `text_utils::wrap_line` (styled, word-boundary wrapping) on purpose:
+    // unifying them would change wrapping behavior for tool output.
     if line.is_empty() {
         return vec![String::new()];
     }
@@ -951,7 +1014,8 @@ pub(crate) fn render_tool_output_viewer(
     let show_search = state.search_active();
     let show_footer =
         session.core.transcript_review_shortcut_guide_visible() && inner.height >= if show_search { 3 } else { 2 };
-    let mut constraints = vec![Constraint::Min(1)];
+    let mut constraints = Vec::with_capacity(3);
+    constraints.push(Constraint::Min(1));
     if show_search {
         constraints.push(Constraint::Length(2));
     }
@@ -973,9 +1037,10 @@ pub(crate) fn render_tool_output_viewer(
 
         let mut input_state = InputState::new();
         let query = state.search_query().to_string();
-        input_state.set_value(query.clone());
+        let cursor_steps = query.chars().count();
+        input_state.set_value(query);
         input_state.set_focused(true);
-        for _ in 0..query.chars().count() {
+        for _ in 0..cursor_steps {
             input_state.move_right();
         }
 
@@ -983,7 +1048,7 @@ pub(crate) fn render_tool_output_viewer(
     }
 
     if show_footer {
-        if let Some(hint) = transcript_review_shortcut_hint(session) {
+        if let Some(hint) = transcript_review_shortcut_hint(session, show_search) {
             let footer_index = chunks.len().saturating_sub(1);
             frame.render_widget(
                 Paragraph::new(Line::styled(hint, session.core.styles.default_style().dim())),
@@ -993,9 +1058,15 @@ pub(crate) fn render_tool_output_viewer(
     }
 }
 
-fn transcript_review_shortcut_hint(session: &Session) -> Option<String> {
+fn transcript_review_shortcut_hint(session: &Session, searching: bool) -> Option<String> {
     if !session.core.transcript_review_shortcut_guide_visible() {
         return None;
+    }
+
+    if searching {
+        // While the search input owns keys, `q`/scroll hints don't apply:
+        // typing goes to the query, Esc cancels, Enter finds.
+        return Some("Esc cancel · Enter find".to_string());
     }
 
     let mut hints = Vec::with_capacity(5);
@@ -1531,7 +1602,8 @@ mod tests {
         );
 
         assert!(compact_activity_hint_text(&session).is_none());
-        assert!(transcript_review_shortcut_hint(&session).is_none());
+        assert!(transcript_review_shortcut_hint(&session, false).is_none());
+        assert!(transcript_review_shortcut_hint(&session, true).is_none());
         assert!(!session.core.transcript_review_close_button_visible());
         let metadata = vtcode_commons::ui_protocol::CompactActivityMetadata {
             group_id: 1,
@@ -1644,5 +1716,126 @@ mod tests {
     fn wrapping_preserves_blank_output_lines() {
         assert_eq!(wrap_output_line("", 20), vec![String::new()]);
         assert_eq!(wrap_output_line("abcdef", 3), vec!["abc", "def"]);
+    }
+
+    #[test]
+    fn next_match_wraps_asymmetrically() {
+        assert_eq!(next_match_index(None, 0, true), None);
+        assert_eq!(next_match_index(Some(0), 0, false), None);
+        assert_eq!(next_match_index(None, 1, true), Some(0));
+        assert_eq!(next_match_index(Some(0), 1, true), Some(0));
+        assert_eq!(next_match_index(Some(0), 1, false), Some(0));
+        // Asymmetric pair: forward from last wraps to first, backward from first wraps to last.
+        assert_eq!(next_match_index(Some(2), 3, true), Some(0));
+        assert_eq!(next_match_index(Some(0), 3, false), Some(2));
+        assert_eq!(next_match_index(Some(1), 3, true), Some(2));
+        assert_eq!(next_match_index(Some(1), 3, false), Some(0));
+    }
+
+    #[test]
+    fn scroll_by_clamps_at_bounds() {
+        let mut session = test_session();
+        for _ in 0..20 {
+            add_block(&mut session, &["output"]);
+        }
+        let mut viewer = ToolOutputViewerState::open(&session, 40, 10);
+        viewer.scroll_to_top();
+        viewer.scroll_by(-100, 10);
+        assert_eq!(viewer.scroll_top, 0);
+        let max = viewer.max_scroll(10);
+        assert!(max > 0);
+        viewer.scroll_by(10_000, 10);
+        assert_eq!(viewer.scroll_top, max);
+        viewer.scroll_by(-10_000, 10);
+        assert_eq!(viewer.scroll_top, 0);
+    }
+
+    #[test]
+    fn streaming_append_extends_matches_incrementally() {
+        let mut session = test_session();
+        add_block(&mut session, &["alpha one"]);
+        add_block(&mut session, &["beta"]);
+        let mut viewer = ToolOutputViewerState::open(&session, 40, 10);
+        viewer.search.query = "alpha".to_string();
+        viewer.recompute_matches();
+        assert_eq!(viewer.search.matches, vec![0]);
+        assert_eq!(viewer.search.current_match, Some(0));
+
+        // Asymmetric tail: matching line appended after a non-match.
+        add_block(&mut session, &["alpha two"]);
+        viewer.refresh(&session, 40, 10);
+        assert_eq!(viewer.search.matches, vec![0, 2]);
+        // Prefix current selection is preserved, not reset.
+        assert_eq!(viewer.search.current_match, Some(0));
+    }
+
+    #[test]
+    fn refresh_without_changes_keeps_matches_untouched() {
+        let mut session = test_session();
+        add_block(&mut session, &["alpha one"]);
+        let mut viewer = ToolOutputViewerState::open(&session, 40, 10);
+        viewer.search.query = "alpha".to_string();
+        viewer.recompute_matches();
+        assert_eq!(viewer.search.matches, vec![0]);
+
+        viewer.refresh(&session, 40, 10);
+        assert_eq!(viewer.search.matches, vec![0]);
+        assert_eq!(viewer.search.current_match, Some(0));
+    }
+
+    #[test]
+    fn shortcut_hint_switches_while_searching() {
+        let session = test_session();
+        let idle = transcript_review_shortcut_hint(&session, false).expect("idle hint");
+        assert!(idle.contains("q/Esc close"));
+        let searching = transcript_review_shortcut_hint(&session, true).expect("search hint");
+        assert!(!searching.contains("q/Esc close"));
+        assert!(searching.contains("Esc cancel"));
+    }
+
+    #[test]
+    fn incremental_matches_full_after_mid_edit_row_shift() {
+        let mut session = test_session();
+        add_block(&mut session, &["alpha one"]);
+        add_block(&mut session, &["beta"]);
+        add_block(&mut session, &["alpha tail"]);
+        let mut viewer = ToolOutputViewerState::open(&session, 40, 10);
+        viewer.search.query = "alpha".to_string();
+        viewer.recompute_matches();
+        assert_eq!(viewer.search.matches, vec![0, 2]);
+
+        // Mid-list edit that shifts rows: expand the middle block to two lines,
+        // as a rebuilt block after ReplaceLast would.
+        viewer.messages[1].lowered_lines = None;
+        viewer.messages[1].lines = vec!["beta".to_string(), "alpha inserted".to_string()];
+        viewer.messages[1].rich_lines = vec![Line::raw("beta"), Line::raw("alpha inserted")];
+        viewer.update_row_offsets();
+        viewer.recompute_matches_after_refresh();
+
+        // Independent oracle: full rescan over the same state takes a
+        // different path (truncate nothing, scan from row 0).
+        let mut oracle = viewer.clone();
+        oracle.search.matches.clear();
+        oracle.search.current_match = None;
+        oracle.recompute_matches();
+        assert_eq!(viewer.search.matches, oracle.search.matches);
+        assert_eq!(viewer.search.matches, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn cancel_search_keeps_committed_matches() {
+        let mut session = test_session();
+        add_block(&mut session, &["alpha one"]);
+        let mut viewer = ToolOutputViewerState::open(&session, 40, 10);
+        viewer.search.query = "alpha".to_string();
+        viewer.recompute_matches();
+        assert_eq!(viewer.search.matches, vec![0]);
+
+        viewer.start_search();
+        viewer.insert_search_text("zzz");
+        viewer.cancel_search();
+        assert_eq!(viewer.search.query, "alpha");
+        assert_eq!(viewer.search.matches, vec![0]);
+        assert_eq!(viewer.search.current_match, Some(0));
     }
 }
