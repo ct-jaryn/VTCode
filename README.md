@@ -35,7 +35,10 @@
   - [Headless](#headless)
   - [Scheduled tasks](#scheduled-tasks)
   - [Sessions](#sessions)
-- [Integrations](#integrations)
+- [Extend and integrate](#extend-and-integrate)
+  - [Extensions](#extensions)
+  - [Editors](#editors)
+  - [Cross-session memory](#cross-session-memory)
 - [Documentation](#documentation)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -54,10 +57,10 @@ VT Code is an open-source terminal coding agent built in Rust. Explore a codebas
 edits in the interactive TUI, or run `vtcode exec` headless. You pick the model and permissions; the runtime handles
 context, tools, and execution policy.
 
-- **Plan and review:** read-only planning mode, then turn diffs.
-- **Sustain long sessions:** project instructions, compaction, resumption, execution logs.
+- **Plan, then review:** read-only planning, then turn diffs.
+- **Run long sessions:** project instructions, compaction, resumption, execution logs.
 - **Control execution:** command policy and sandboxing.
-- **Choose your stack:** hosted or local models, plus MCP, Skills, and Plugins.
+- **Pick your stack:** hosted or local models, plus MCP, Skills, and Plugins.
 
 <div align="center">
 
@@ -95,8 +98,7 @@ you can review before running.
 
 ### 2. Configure your project
 
-Open your project, initialize its configuration and instructions, then add credentials for your chosen provider. For
-example, with OpenAI:
+In your project, initialize configuration and instructions, then add provider credentials. For example, with OpenAI:
 
 ```bash
 cd path/to/your/project
@@ -127,9 +129,10 @@ results before committing. For automation and session commands, see [Usage](#usa
 
 ### Interactive
 
-Use `vtcode` to explore a codebase, plan a change, and implement it in the TUI. For larger tasks, start with
-[read-only planning](./docs/guides/planning-workflow.md) and review [turn diffs](./docs/development/diff-preview.md)
-before committing. See the [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
+Use `vtcode` to explore, plan, and implement changes in the TUI. For larger tasks, start with
+[read-only planning](./docs/guides/planning-workflow.md), then review
+[turn diffs](./docs/development/diff-preview.md) before committing. See the
+[interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
 ### Headless
 
@@ -179,24 +182,32 @@ vtcode trajectory
 
 Use `vtcode continue --session-id <id>` to fork an earlier session.
 
-## Integrations
+## Extend and integrate
 
 Enable these only when you need them; none are required for the quick start.
 
-- **Extensions:** [MCP servers](./docs/guides/mcp-integration.md), [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
-  [Plugins](./docs/guides/agent-plugins.md).
-- **Editor integration:** [ACP with Zed](./docs/guides/zed-acp.md).
-- **Cross-thread memory:** [Memcode MCP](./docs/guides/memcode-mcp.md) carries context between tasks; see the
-  [write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
-- **Browser editing:** [WebMCP](./docs/user-guide/webmcp.md) pairs the TUI with an authenticated browser editor:
+### Extensions
+
+[MCP servers](./docs/guides/mcp-integration.md), [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
+[Plugins](./docs/guides/agent-plugins.md).
+
+### Editors
+
+[ACP with Zed](./docs/guides/zed-acp.md) for editor integration. [WebMCP](./docs/user-guide/webmcp.md) pairs the TUI
+with an authenticated browser editor:
 
 ```bash
 /webmcp pair <origin>    # inside the TUI
 ```
 
 The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
-([mirror](https://vinhnx.github.io/VTCode/)) uses this authenticated, workspace-scoped bridge. See the
+([mirror](https://vinhnx.github.io/VTCode/)) uses this workspace-scoped bridge. See the
 [WebMCP user guide](./docs/user-guide/webmcp.md) and [deployment reference](./docs/reference/webmcp.md).
+
+### Cross-session memory
+
+[Memcode MCP](./docs/guides/memcode-mcp.md) carries context between tasks; see the
+[write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
 
 ## Documentation
 
@@ -206,9 +217,9 @@ Guides by task; the full catalog lives in the [documentation index](./docs/INDEX
 | Goal                 | Guides                                                                                                                                                                                                                                                                                                         |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Get started          | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [Providers](./docs/providers/PROVIDER_GUIDES.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md)                            |
-| Work interactively   | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
-| Automate tasks       | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md)                                                                                                            |
-| Extend VT Code       | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md)                                                    |
+| Work in the TUI      | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
+| Automate             | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md)                                                                                                            |
+| Extend and integrate | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md)                                                    |
 | Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md)                               |
 
 ## Development
@@ -225,7 +236,7 @@ graph LR
     CORE --> UI[vtcode-ui]
 ```
 
-Full 23-crate workspace map: [Architecture guide](./docs/ARCHITECTURE.md). Requires Rust 1.98.1+ (edition 2024) and
+Full 23-crate map: [Architecture guide](./docs/ARCHITECTURE.md). Requires Rust 1.98.1+ (edition 2024) and
 `cargo-nextest` for tests:
 
 ```bash
@@ -246,17 +257,17 @@ Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/r
 
 Contributions are welcome:
 
-- **Code**: pick or propose an issue; keep changes surgical and tested.
-- **Docs**: every user-facing feature lands with its documentation.
-- **Evals**: new suites and regression cases are high-leverage; see the [eval guide](./docs/guides/eval.md).
-- **Bug reports**: include `vtcode trajectory` output when possible.
+- **Code** — pick or propose an issue; keep changes surgical and tested.
+- **Docs** — every user-facing feature lands with its documentation.
+- **Evals** — new suites and regression cases are high-leverage; see the [eval guide](./docs/guides/eval.md).
+- **Bug reports** — include `vtcode trajectory` output when possible.
 
 Before a PR, see the [contribution guide](./docs/CONTRIBUTING.md): Conventional Commits (`type(scope): subject`),
 `./scripts/check-dev.sh` + `cargo nextest run`, and a focused diff.
 
 ## Community
 
-Thanks to everyone who builds, tests, and improves VT Code alongside me.
+Thanks to everyone who builds, tests, and improves VT Code.
 
 <details>
 <summary>View all contributors</summary>
