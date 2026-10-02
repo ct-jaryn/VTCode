@@ -160,6 +160,11 @@ Options:
   --skip-crates       Skip the crates.io publish handoff
   --skip-binaries     Skip building and uploading binaries (and Homebrew update)
   --skip-docs         Skip docs.rs rebuild trigger
+  --skip-release      Resume finalization for an already-tagged release: skip
+                      the local sanity build, cargo-release (version/tag/push),
+                      and the CI trigger, but still run Steps 4-6 (collect
+                      binaries, upload assets, Homebrew). Use with an explicit
+                      version, e.g. `./scripts/release.sh 0.171.5 --skip-release`.
   --full-ci           Use GitHub Actions for ALL platforms (including macOS)
                       Default: builds macOS locally, CI for Linux/Windows
   --ci-only           Trigger CI for Linux/Windows only (skip local macOS build)
@@ -882,6 +887,7 @@ main() {
 	local skip_crates=false
 	local skip_binaries=false
 	local skip_docs=false
+	local skip_release=false
 	local full_ci=false
 	local ci_only=false
 
@@ -921,6 +927,10 @@ main() {
 			;;
 		--skip-docs)
 			skip_docs=true
+			shift
+			;;
+		--skip-release)
+			skip_release=true
 			shift
 			;;
 		--full-ci)
@@ -1101,7 +1111,10 @@ main() {
 	fi
 
 	# 1. Local Build (both macOS architectures for Homebrew, or current platform on Linux)
-	if [[ "$skip_binaries" == 'false' ]]; then
+	# Skipped under --skip-release: the irreversible version bump already happened,
+	# so the pre-bump sanity build has no purpose and Step 4 rebuilds the real
+	# artifacts anyway.
+	if [[ "$skip_binaries" == 'false' && "$skip_release" == 'false' ]]; then
 		if [[ "$dry_run" == 'true' ]]; then
 			print_info "Step 1 (dry-run): Would build binaries for x86_64-apple-darwin and aarch64-apple-darwin"
 		else
@@ -1128,7 +1141,9 @@ main() {
 	# because `--no-publish` means the registry is otherwise unused.
 	local command=(cargo release "$release_argument" --workspace --config release.toml --execute --no-confirm --no-publish --registry crates-io)
 
-	if [[ "$dry_run" == 'true' ]]; then
+	if [[ "$skip_release" == 'true' ]]; then
+		print_info "Skipping cargo release (--skip-release); keeping existing version and tag $next_version."
+	elif [[ "$dry_run" == 'true' ]]; then
 		print_info "Dry run - would run: ${command[*]}"
 	else
 		env CARGO_BUILD_RUSTC_WRAPPER= RUSTC_WRAPPER= "${command[@]}"
@@ -1142,7 +1157,7 @@ main() {
 		exit 0
 	fi
 
-	if [[ "$skip_crates" == 'false' ]]; then
+	if [[ "$skip_crates" == 'false' && "$skip_release" == 'false' ]]; then
 		print_distribution "Publishing crates in dependency order..."
 		# Ensure publish script is executable (defensive against lost +x on fresh checkout or noexec FS)
 		if [[ ! -x "$SCRIPT_DIR/publish_extracted_crates.sh" ]]; then
@@ -1169,7 +1184,9 @@ main() {
 	fi
 
 	# 3.5 Trigger CI for Linux and Windows builds
-	if [[ "$skip_binaries" == 'false' ]]; then
+	# Skipped under --skip-release: the CI run for this tag already exists and
+	# Step 4's fallback discovery reuses its successful artifacts.
+	if [[ "$skip_binaries" == 'false' && "$skip_release" == 'false' ]]; then
 		print_info "Step 3.5: Triggering CI for Linux and Windows builds..."
 
 		if [[ "$dry_run" == 'true' ]]; then
