@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to vtcode will be documented in this file.
-## 0.171.4 - 2026-10-02
+
 ## 0.171.5 - 2026-10-02
 
 ### Highlights
@@ -13,6 +13,8 @@ All notable changes to vtcode will be documented in this file.
 #### Refactors
 
 - Dedup intent classification and remove dead helpers (e4d48bb2) 
+
+## 0.171.4 - 2026-10-02
 
 ### Highlights
 #### Bug Fixes
@@ -47,6 +49,7 @@ All notable changes to vtcode will be documented in this file.
 #### Refactors
 
 - Single-home guidance lines and sync goldens (0a083750) 
+
 ## 0.169.2 - 2026-09-24
 
 ## 0.171.3 - 2026-10-01
