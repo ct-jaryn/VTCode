@@ -66,7 +66,7 @@ On terminals that send the legacy control-code aliases, the same behavior is rea
 | Slash palette | `Tab` autocomplete, navigation via slash keys. |
 | History picker (`Ctrl+R`/`Ctrl+S`) | Type to filter, `Tab`/`Esc`/`Enter` accept, `Ctrl+C`/`Ctrl+G` or empty `Backspace` cancel; Ctrl-modified characters are always shortcuts, never search text. |
 | Modal list | `Tab`/`BackTab` move per modal, `Esc`/`Enter` cancel/submit per overlay. Modals and multi-step wizards without a search box number their options when nine or fewer are visible: `1`–`9` jumps to an option (`Enter` still confirms, except wizards confirm immediately). In numbered modals, out-of-range digits are swallowed, never typed into the composer. |
-| Local agents drawer | `Down` opens on empty composer; `Alt+S` focuses. `Enter` inspects; `Ctrl+K` stops; `Ctrl+X` force-terminates or closes. For `exec-session` rows, `Ctrl+R` toggles stdin focus and `Ctrl+P` previews the bounded snapshot. |
+| Local agents window | `Down` opens on empty composer; `Alt+S` focuses. `Enter` inspects; `Ctrl+K` stops; `Ctrl+X` force-terminates or closes. For `exec-session` rows, `Ctrl+R` toggles stdin focus and `Ctrl+P` previews the bounded snapshot. |
 | Queued-input edit | `Alt+Up` (or `Shift+Left` in tmux) pops newest queued message into composer. |
 
 ## Transcript Review and fullscreen

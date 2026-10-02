@@ -174,6 +174,11 @@ through its existing response contract.
   maps OpenAI tiers onto this vocabulary, drops unmapped ones (e.g.
   `ultrafast`) with a warning, and retries a priced-out tier once without it
   (serving standard) instead of failing.
+- No explicit `prompt_cache_breakpoint` markers: Merge's Responses-compatible
+  routes reject the field with 400 `invalid_parameter`, so VT Code sends
+  explicit cache breakpoints only to the native api.openai.com backend and
+  never through Merge Gateway. Caching still applies via session-key routing
+  and the upstream implicit latest-message breakpoint.
 - Reasoning output is absent: Merge reasoning controls are route-specific and
   are not projected into the generic VT Code reasoning fields; the reasoning
   effort is still honored on reasoning-capable routes.

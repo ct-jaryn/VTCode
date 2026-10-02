@@ -55,7 +55,7 @@ Any other frontmatter key warns during parsing (forward-compatible, value ignore
 
 - `license`: maximum 512 characters
 - `compatibility`: 1 to 500 characters if present
-- `allowed-tools`: space-delimited string (spec) or YAML list (Claude Code convention), normalized to a space-delimited string and limited to 16 tools
+- `allowed-tools`: space-delimited string (spec) or YAML list (Claude Code convention), normalized to a space-delimited string and limited to 16 tools; an empty value (empty string or empty list) is rejected at parse time
 - `metadata`: string-to-string map per the spec; the engine additionally accepts arrays and nested maps so real-world skills keep loading
 - `argument-hint`: slash-command style argument hint; non-string YAML values are coerced to a string
 

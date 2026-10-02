@@ -82,6 +82,22 @@ VT Code does not support `agents/openai.yaml`. That file is Codex-specific and i
 - Full `SKILL.md` bodies are loaded only when a skill is selected
 - Referenced resources are loaded on demand
 
+## Sub-LLM Tool Execution
+
+Skills run in a sub-conversation with their own model request. When the serving
+model emits no native function calls but embeds textual `<tool_call>` markup in
+its reply (common on gateway-served models), VT Code parses the first unfenced,
+cleanly named block and executes it as a native-equivalent tool call:
+
+- Shell aliases (`bash`, `shell`, `run`, …) are canonicalized to `exec_command`.
+- The parsed call flows through the same skill tool scope, permission policy,
+  and loop detection as a native call — nothing bypasses approval.
+- Markup inside fenced code blocks is documentation (skill docs, quoted
+  examples) and is never executed; mid-prose mentions that do not resolve to a
+  tool identifier are skipped.
+- If no parseable markup remains, the reply is treated as the skill's final
+  content and synthesized without tools.
+
 ## Commands
 
 List skills:

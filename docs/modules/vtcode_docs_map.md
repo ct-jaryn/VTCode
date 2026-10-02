@@ -148,6 +148,10 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Why This Workflow?, The 10-Step Process, Automation Level: 60% (Guided, Not Fully Automated), Typical Workflow, File Dependency Graph
   - **User Questions**: "What can you tell me about Model Addition Workflow Summary?", "How does Why This Workflow? work?", "How does The 10-Step Process work?"
 
+- **File**: `docs/development/model-profiles.md`
+  - **Content**: Model Profiles and Provider APIs
+  - **User Questions**: "What can you tell me about Model Profiles and Provider APIs?"
+
 - **File**: `docs/development/performance-hasher-policy.md`
   - **Content**: Performance Hasher Policy
   - **Topics**: Default, When `rustc_hash` Is Allowed, When It Is Not Allowed, Migration Gate
@@ -174,8 +178,8 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/development/rust-performance-principles.md`
   - **Content**: Rust-Specific Performance Principles for VT Code
-  - **Topics**: Core Insight: Rust Is Not Faster Than C/C++ — It Is *Safer While Being Equally Fast*, Destructive Move Semantics, Aliasing Guarantees (`noalias`), Immutable by Default & `const` Semantics, Bounds Checking & Iterator Elision
-  - **User Questions**: "What can you tell me about Rust-Specific Performance Principles for VT Code?", "How does Core Insight: Rust Is Not Faster Than C/C++ — It Is *Safer While Being Equally Fast* work?", "How does Destructive Move Semantics work?"
+  - **Topics**: Core Insight: Rust Is Not Faster Than C/C++ — It Is _Safer While Being Equally Fast_, Destructive Move Semantics, Aliasing Guarantees (`noalias`), Immutable by Default & `const` Semantics, Bounds Checking & Iterator Elision
+  - **User Questions**: "What can you tell me about Rust-Specific Performance Principles for VT Code?", "How does Core Insight: Rust Is Not Faster Than C/C++ — It Is _Safer While Being Equally Fast_ work?", "How does Destructive Move Semantics work?"
 
 - **File**: `docs/development/sandboxing-basics-reference.md`
   - **Content**: Sandboxing Basics — Reference Notes
@@ -219,8 +223,8 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/development/COMMAND_SECURITY_MODEL.md`
   - **Content**: VT Code Command Security Model
-  - **Topics**: Overview, Design Philosophy, Architecture, Safe Commands (Enabled by Default), Dangerous Commands (Always Denied)
-  - **User Questions**: "What can you tell me about VT Code Command Security Model?", "How does Overview work?", "How does Design Philosophy work?"
+  - **Topics**: Additional permission normalization, Overview, Design Philosophy, Architecture, Safe Commands (Enabled by Default)
+  - **User Questions**: "What can you tell me about VT Code Command Security Model?", "How does Additional permission normalization work?", "How does Overview work?"
 
 - **File**: `docs/development/EXECUTION_POLICY.md`
   - **Content**: VT Code Execution Policy
@@ -231,10 +235,6 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: WebMCP bridge development guide
   - **Topics**: Published deployments and exact origins, Boundaries, WebMCP API versus the VT Code bridge, Browser tool contracts and evals, Transport and pairing
   - **User Questions**: "What can you tell me about WebMCP bridge development guide?", "How does Published deployments and exact origins work?", "How does Boundaries work?"
-
-- **File**: `docs/development/model-profiles.md`
-  - **Content**: model-profiles.md
-  - **User Questions**: "What can you tell me about model-profiles.md?"
 
 - **File**: `docs/development/grep-quick-reference.md`
   - **Content**: rg Text Search Quick Reference Card
@@ -247,9 +247,9 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **User Questions**: "What can you tell me about vtcode Binary Gotchas?", "How does Startup, updates, and allocation work?", "How does Tool-budget and recovery contracts work?"
 
 - **File**: `docs/development/vtcode-crate-audit.md`
-  - **Content**: vtcode-* Crate Audit Report
+  - **Content**: vtcode-\* Crate Audit Report
   - **Topics**: Workspace Overview, MERGE RECOMMENDATIONS, RE-EXPORT CLEANUP (in vtcode-core), TEST DUPLICATES TO ELIMINATE, IMPLEMENTATION ORDER
-  - **User Questions**: "What can you tell me about vtcode-* Crate Audit Report?", "How does Workspace Overview work?", "How does MERGE RECOMMENDATIONS work?"
+  - **User Questions**: "What can you tell me about vtcode-\* Crate Audit Report?", "How does Workspace Overview work?", "How does MERGE RECOMMENDATIONS work?"
 
 ### Editor Integrations
 
@@ -661,6 +661,11 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Summary, Current Status: All Known Issues Fixed, Remaining Low-Risk Items, Safe I/O Patterns (Verified), Recommendations
   - **User Questions**: "What can you tell me about Audit: Raw println!/print! calls that could leak into the TUI?", "How does Summary work?", "How does Current Status: All Known Issues Fixed work?"
 
+- **File**: `docs/modules/vtcode_llm_environment.md`
+  - **Content**: LLM Environment
+  - **Topics**: `vtcode-llm` Environment Configuration Guide
+  - **User Questions**: "What can you tell me about LLM Environment?", "How does `vtcode-llm` Environment Configuration Guide work?"
+
 - **File**: `docs/modules/vtcode_config_migration.md`
   - **Content**: Migrating to the `vtcode-config` Crate
   - **Topics**: Migration Checklist, Rolling Adoption Strategy, Additional Resources
@@ -671,6 +676,16 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Workspace Paths, Telemetry, Error Reporting, Putting It Together
   - **User Questions**: "What can you tell me about Reference Implementations for `vtcode-commons`?", "How does Workspace Paths work?", "How does Telemetry work?"
 
+- **File**: `docs/modules/vtcode_tools_policy.md`
+  - **Content**: Tool Policy
+  - **Topics**: vtcode-tools Policy Customization Guide (Historical)
+  - **User Questions**: "What can you tell me about Tool Policy?", "How does vtcode-tools Policy Customization Guide (Historical) work?"
+
+- **File**: `docs/modules/vtcode_indexer.md`
+  - **Content**: VT Code Indexer
+  - **Topics**: Core concepts, Customizing persistence, Tailoring traversal, End-to-end example
+  - **User Questions**: "What can you tell me about VT Code Indexer?", "How does Core concepts work?", "How does Customizing persistence work?"
+
 - **File**: `docs/modules/vtcode_bash_runner.md`
   - **Content**: `vtcode-bash-runner`
   - **Topics**: Core Concepts, Shell Selection and Portability, Policy Hooks, Dry-Run and Testing Example, Pure-Rust Execution
@@ -680,11 +695,6 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: `vtcode-exec-events`
   - **Topics**: Event taxonomy, Versioning and compatibility, Feature flags, Integrating with VT Code runtimes, Examples
   - **User Questions**: "What can you tell me about `vtcode-exec-events`?", "How does Event taxonomy work?", "How does Versioning and compatibility work?"
-
-- **File**: `docs/modules/vtcode_llm_environment.md`
-  - **Content**: `vtcode-llm` Environment Configuration Guide
-  - **Topics**: Provider environment variables, Loading keys with `ProviderConfig`, Wiring workspace paths and telemetry, Using the optional mock client
-  - **User Questions**: "What can you tell me about `vtcode-llm` Environment Configuration Guide?", "How does Provider environment variables work?", "How does Loading keys with `ProviderConfig` work?"
 
 - **File**: `docs/modules/vtcode_markdown_store.md`
   - **Content**: `vtcode-markdown-store`
@@ -721,20 +731,10 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Topics**: Overview, Key Modules, Skill Lifecycle, Architecture Notes, Dependencies
   - **User Questions**: "What can you tell me about vtcode-skills?", "How does Overview work?", "How does Key Modules work?"
 
-- **File**: `docs/modules/vtcode_tools_policy.md`
-  - **Content**: vtcode-tools Policy Customization Guide (Historical)
-  - **Topics**: Custom storage location, Construct a `ToolPolicyManager` with your path
-  - **User Questions**: "What can you tell me about vtcode-tools Policy Customization Guide (Historical)?", "How does Custom storage location work?", "How does Construct a `ToolPolicyManager` with your path work?"
-
 - **File**: `docs/modules/vtcode_ui.md`
   - **Content**: vtcode-ui
   - **Topics**: Overview, Architecture, Key Components, Usage, Notes
   - **User Questions**: "What can you tell me about vtcode-ui?", "How does Overview work?", "How does Architecture work?"
-
-- **File**: `docs/modules/vtcode_indexer.md`
-  - **Content**: vtcode_indexer.md
-  - **Topics**: Core concepts, Customizing persistence, Tailoring traversal, End-to-end example
-  - **User Questions**: "What can you tell me about vtcode_indexer.md?", "How does Core concepts work?", "How does Customizing persistence work?"
 
 ### Other
 
@@ -827,6 +827,10 @@ This document serves as an index of all VT Code documentation. When users ask qu
   - **Content**: Background Agents Expanded Window
   - **Topics**: Report, [S1] Problem, [S2] Design, [S3] Out of Scope, Tasks
   - **User Questions**: "What can you tell me about Background Agents Expanded Window?", "How does Report work?", "How does [S1] Problem work?"
+
+- **File**: `docs/examples/background-subagent-demo.md`
+  - **Content**: Background Subagent Demo
+  - **User Questions**: "What can you tell me about Background Subagent Demo?"
 
 - **File**: `docs/analysis/BLOATY_ANALYSIS.md`
   - **Content**: Bloaty Analysis Report for vtcode
@@ -1300,12 +1304,8 @@ This document serves as an index of all VT Code documentation. When users ask qu
 
 - **File**: `docs/ansi/ANSTYLE_PARSE_INTEGRATION.md`
   - **Content**: anstyle-parse Integration Guide
-  - **Topics**: Step 1: Add Dependency, Step 2: Create Parser Wrapper Module, Step 3: Update Module Exports, Step 4: Replace Manual Parser in PTY, Step 5: Update ANSI Stripping
-  - **User Questions**: "What can you tell me about anstyle-parse Integration Guide?", "How does Step 1: Add Dependency work?", "How does Step 2: Create Parser Wrapper Module work?"
-
-- **File**: `docs/examples/background-subagent-demo.md`
-  - **Content**: background-subagent-demo.md
-  - **User Questions**: "What can you tell me about background-subagent-demo.md?"
+  - **Topics**: Implementation Steps for vtcode System, Step 1: Add Dependency, Step 2: Create Parser Wrapper Module, Step 3: Update Module Exports, Step 4: Replace Manual Parser in PTY
+  - **User Questions**: "What can you tell me about anstyle-parse Integration Guide?", "How does Implementation Steps for vtcode System work?", "How does Step 1: Add Dependency work?"
 
 - **File**: `docs/project/ROADMAP.md`
   - **Content**: vtcode Development Roadmap
