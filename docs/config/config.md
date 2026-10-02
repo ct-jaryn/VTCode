@@ -264,6 +264,7 @@ model = "gpt-5.6-sol"
 ```
 
 Notes:
+
 - `context_window` declares the provider's capability in tokens and drives the context size shown in the UI, compaction thresholds, and preflight token checks.
 - `api_format` is a hint to VT Code about how this provider / endpoint expects model traffic. Accepted values are: `auto`, `openai-chat`, `openai-responses`, and `anthropic-messages`. When omitted VT Code preserves legacy behavior and will try to autodetect; an explicit value is honored and VT Code will not silently fallback to a different format.
 
@@ -309,6 +310,7 @@ When determining a model's runtime shape VT Code applies values in the following
 Sampling values resolve on the same chain, with one extra global layer beneath the provider: profile → provider default → `agent.temperature` / `agent.reasoning_effort` globals → built-in per-task limits (`max_tokens` only). Two built-in behaviors sit above the profile chain: simple sub-tasks force `reasoning_effort = "minimal"` regardless of a profile pin, and backends that reject sampling during reasoning (native Anthropic/MiniMax, or custom profiles with `api_format = "anthropic-messages"`) drop `temperature` while reasoning is active.
 
 Additional rules:
+
 - An explicit boolean `false` in any overriding layer is honored and prevents a higher-level implicit `true` from taking effect.
 - Omitting `api_format` preserves legacy autodetection behavior; explicitly setting `api_format` to a value instructs VT Code to use this API shape and not silently fall back.
 - Profiles do not make a model available in the picker — use `model` or `models` to control availability.
@@ -352,7 +354,7 @@ file cannot set `base_url` or `api_key_env`; model-list-only overrides remain
 available there.
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `models` | `string[]` | Yes | List of model identifiers to add to the provider's model picker. |
 | `base_url` | `string` | No | Override the provider's default API endpoint. |
 | `api_key_env` | `string` | No | Override the provider's default API key environment variable. |
@@ -1246,6 +1248,7 @@ If VT Code is not behaving as expected with your configuration:
     ```
 
 3. Enable logging temporarily to see what's happening:
+
     ```toml
     [logging]
     enabled = true

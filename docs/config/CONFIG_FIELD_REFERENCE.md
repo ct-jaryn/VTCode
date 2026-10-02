@@ -9,7 +9,7 @@ python3 scripts/generate_config_field_reference.py
 ```
 
 | Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
+| ------- | ------ | ---------- | --------- | ------------- |
 | `acp.enabled` | `boolean` | no | `false` | Globally enable the ACP bridge |
 | `acp.zed.auth.auth_url` | `null \| string` | no | `null` | URL where users can get their API key (optional, for UI display) |
 | `acp.zed.auth.default_method` | `string` | no | `"agent"` | Default authentication method for ACP agents Options: "agent" (default - agent handles auth), "env_var", "terminal" |

@@ -14,7 +14,7 @@ This document describes VT Code's current Agent Skills behavior.
 
 ## Supported `SKILL.md` Fields
 
-Spec fields (per https://agentskills.io/specification.md):
+Spec fields (per <https://agentskills.io/specification.md>):
 
 Required:
 

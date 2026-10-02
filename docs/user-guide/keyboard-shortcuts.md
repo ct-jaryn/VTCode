@@ -3,6 +3,7 @@
 Single source of truth for VT Code terminal keyboard shortcuts. Press `?` on an empty input line while VT Code is running to open the in-app shortcut overlay (mirrors this guide).
 
 > Platform notes:
+>
 > - `Cmd` means `Super`/`Meta` (`KeyModifiers::SUPER | META`): macOS Command, Windows Super, Linux Meta/Super. It is not `Ctrl`.
 > - **Unified across terminals**: terminals using the Kitty keyboard protocol report `Cmd+Left/Right/Backspace` as `SUPER`-modified keys. Legacy macOS terminals (Terminal.app, iTerm2, VS Code, older emulators) instead map them to C0 control codes — `Cmd+Left` → `0x01` (`Ctrl+A`), `Cmd+Right` → `0x05` (`Ctrl+E`), `Cmd+Backspace` → `0x15` (`Ctrl+U`), `Cmd+Delete` → `0x0B` (`Ctrl+K`). VT Code folds both families into the same line-wise handlers, so the composer behaves identically either way. Because the legacy encoding cannot distinguish `Ctrl+A` from `Cmd+Left`, `Ctrl+A`/`Ctrl+E` are line-wise and `Ctrl+U` clears the current line by design.
 > - Terminals report `Shift+Tab` as `BackTab` (sometimes with the `SHIFT` bit); some report `Tab+SHIFT` or `Char('\t')+SHIFT`. All three cycle agents. Plain `Tab` never cycles — it enqueues.

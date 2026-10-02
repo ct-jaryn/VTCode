@@ -95,7 +95,7 @@ Review recent code changes. Focus on correctness, risky assumptions, missing tes
 and behavior regressions. Return findings in priority order with file references.
 ```
 
-5. Invoke it with natural language or an explicit mention:
+1. Invoke it with natural language or an explicit mention:
 
 ```text
 Use the code-reviewer agent on the auth changes
@@ -103,7 +103,7 @@ Use the code-reviewer agent on the auth changes
 Spawn a code-reviewer subagent and summarize only the important findings
 ```
 
-6. Use `/agent threads` to inspect delegated child runs and open completed transcripts. Use `Tab` on an empty idle composer when you want to switch the main session to another primary agent.
+1. Use `/agent threads` to inspect delegated child runs and open completed transcripts. Use `Tab` on an empty idle composer when you want to switch the main session to another primary agent.
 
 ## Discovery And Precedence
 
@@ -530,10 +530,10 @@ Focus on correctness, readability, and adherence to project conventions.
 Do not edit files directly; provide actionable feedback instead.
 ```
 
-2. Set `mode: primary` to make it available as a primary agent (or `mode: all` for both primary and subagent use).
-3. Use `tools` to restrict which tools the agent can access.
-4. Use `permissions.default` and optional tool lists to define the agent's granular permission policy.
-5. Press `Tab` on an empty idle composer to cycle to the new agent.
+1. Set `mode: primary` to make it available as a primary agent (or `mode: all` for both primary and subagent use).
+2. Use `tools` to restrict which tools the agent can access.
+3. Use `permissions.default` and optional tool lists to define the agent's granular permission policy.
+4. Press `Tab` on an empty idle composer to cycle to the new agent.
 
 The agent definition body (below the frontmatter) becomes the agent's runtime instructions when selected.
 
