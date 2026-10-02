@@ -139,20 +139,22 @@ pub(crate) const STATUS_LINE_COMMAND_TIMEOUT_MS: u64 = 200;
 
 // Agent/Mode color constants.
 //
-// Mode badges are identified by a **standard ANSI hue name** (red/green/blue/
-// magenta/...) rather than a hard-coded hex. The design system
-// (`vtcode-ui`) resolves each hue to a theme-appropriate variant at render
-// time: the brighter `Light*` ANSI variant on dark terminals, the base variant
-// on light terminals. This keeps a single, portable token readable on BOTH
-// dark and light terminals without per-theme hex tuning, and reuses the same
-// standard palette the rest of the UI already relies on (see `SAFE_ANSI_*`).
+// Mode badges resolve through one canonical token per mode. Most modes use a
+// **standard ANSI hue name** (green/blue/magenta/...), which the design system
+// (`vtcode-ui`) maps to a theme-appropriate variant at render time: the
+// brighter `Light*` ANSI variant on dark terminals, the base variant on light
+// terminals. This keeps a single, portable token readable on BOTH dark and
+// light terminals without per-theme hex tuning, and reuses the same standard
+// palette the rest of the UI already relies on (see `SAFE_ANSI_*`). Build is
+// the exception: it uses a fixed hex token that renders identically on both
+// appearances.
 //
 /// Standard ANSI hue names usable for agent/mode badges. Must stay in sync with
 /// the variant table in `vtcode-ui`'s design color resolver.
 const AGENT_HUE_NAMES: &[&str] = &["red", "green", "blue", "magenta", "yellow", "cyan"];
 
-/// Build agent hue - red (warm, implementation / go-signal).
-pub const AGENT_COLOR_BUILD: &str = "red";
+/// Build agent color - sage `#73a18e` (calm, implementation tone).
+pub const AGENT_COLOR_BUILD: &str = "#73a18e";
 /// Auto agent hue - green (autonomy and forward progress).
 pub const AGENT_COLOR_AUTO: &str = "green";
 /// Plan agent hue - blue (thoughtful, planning tone).
@@ -160,8 +162,8 @@ pub const AGENT_COLOR_PLAN: &str = "blue";
 /// Duck agent hue - magenta (soft, discussion-focused).
 pub const AGENT_COLOR_DUCK: &str = "magenta";
 
-/// Canonical primary-agent mode -> standard ANSI hue mapping (single source of
-/// truth). `subagents.rs` assigns the hue to each built-in spec from here.
+/// Canonical primary-agent mode -> color token mapping (single source of
+/// truth). `subagents.rs` assigns the color to each built-in spec from here.
 const AGENT_MODE_HUE: &[(&str, &str)] = &[
     ("build", AGENT_COLOR_BUILD),
     ("auto", AGENT_COLOR_AUTO),
@@ -169,8 +171,8 @@ const AGENT_MODE_HUE: &[(&str, &str)] = &[
     ("duck", AGENT_COLOR_DUCK),
 ];
 
-/// Resolve a primary-agent mode name to its standard ANSI hue
-/// (e.g. `"build"` -> `"red"`).
+/// Resolve a primary-agent mode name to its canonical color token
+/// (e.g. `"build"` -> `"#73a18e"`, `"plan"` -> `"blue"`).
 pub fn agent_mode_hue(mode: &str) -> Option<&'static str> {
     AGENT_MODE_HUE.iter().find(|(m, _)| *m == mode).map(|(_, h)| *h)
 }
@@ -313,10 +315,25 @@ mod tests {
     const DARK_BG: (u8, u8, u8) = (0x18, 0x18, 0x18);
     const LIGHT_BG: (u8, u8, u8) = (0xFD, 0xF6, 0xE3);
 
+    /// Parse a `#rrggbb` token to its RGB triple. Returns `None` for anything
+    /// else (hue names fall through to the variant table below).
+    fn hex_to_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+        let hex = hex.strip_prefix('#')?;
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        Some((channel(0)?, channel(2)?, channel(4)?))
+    }
+
     /// Standard ANSI variant RGB values used by the design system for each hue
-    /// (base + bright). The mode badge picks the bright variant on dark and the
-    /// base variant on light, so both appearances stay readable.
+    /// (base + bright), plus the fixed Build hex. Hue badges pick the bright
+    /// variant on dark and the base variant on light, so both appearances stay
+    /// readable; the hex renders identically on both.
     fn hue_rgb_on(hue: &str, light: bool) -> Option<(u8, u8, u8)> {
+        if let Some(rgb) = hex_to_rgb(hue) {
+            return Some(rgb);
+        }
         let (d, l) = match hue {
             "red" => ((0xFF, 0x5F, 0x5F), (0xCD, 0x00, 0x00)),
             "green" => ((0x5F, 0xFF, 0x5F), (0x00, 0xCD, 0x00)),
@@ -349,12 +366,11 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// Each mode hue must resolve to a standard ANSI variant that stays legible
-    /// on its matching background. Dark terminals clear the WCAG "large/bold
-    /// text" 3:1 bar comfortably. On light terminals three hues (red, magenta,
-    /// blue) also clear 3:1; the fourth (green) reaches ~2:1 — the best a
-    /// standard `Green` ANSI code can do against white, so the light threshold
-    /// is relaxed to 2:1 for the single weakest hue.
+    /// Each mode color must resolve to a variant that stays legible on its
+    /// matching background. Dark terminals clear the WCAG "large/bold text"
+    /// 3:1 bar comfortably. On light terminals the ANSI hues clear 3:1 except
+    /// green (~2:1 — the best a standard `Green` code can do against white),
+    /// and the Build hex clears 2.7:1, so the light threshold stays at 2:1.
     const MIN_CONTRAST_DARK: f32 = 3.0;
     const MIN_CONTRAST_LIGHT: f32 = 2.0;
 
@@ -371,9 +387,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_mode_colors_are_standard_ansi_hues() {
+    fn agent_mode_color_tokens_are_supported() {
         for (_, hue) in AGENT_MODE_HUE {
-            assert!(AGENT_HUE_NAMES.contains(hue), "mode hue {hue} is not in the supported standard ANSI hue list");
+            let supported = AGENT_HUE_NAMES.contains(hue) || hex_to_rgb(hue).is_some();
+            assert!(supported, "mode token {hue} is neither a standard ANSI hue nor #rrggbb");
         }
     }
 
@@ -410,7 +427,7 @@ mod tests {
     #[test]
     fn agent_mode_colors_are_wired_into_builtin_primary_agents() {
         // Guards against the constants drifting from the specs that expose them.
-        assert_eq!(AGENT_COLOR_BUILD, "red");
+        assert_eq!(AGENT_COLOR_BUILD, "#73a18e");
         assert_eq!(AGENT_COLOR_AUTO, "green");
         assert_eq!(AGENT_COLOR_PLAN, "blue");
         assert_eq!(AGENT_COLOR_DUCK, "magenta");

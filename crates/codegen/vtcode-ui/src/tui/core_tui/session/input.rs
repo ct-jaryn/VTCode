@@ -47,7 +47,6 @@ use regex::Regex;
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::LazyLock;
-use tui_shimmer::shimmer_spans_with_style_at_phase;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vtcode_commons::fs::{is_image_path, trim_trailing_image_path_str, unescape_whitespace};
 
@@ -1053,9 +1052,10 @@ impl Session {
         if let Some(left_value) = left.as_ref() {
             let before: u16 = spans.iter().map(|s| measure_text_width(&s.content)).sum();
             if status_requires_shimmer(left_value) && self.appearance.should_animate_progress_status() {
-                spans.extend(shimmer_spans_with_style_at_phase(
+                spans.extend(super::super::style::mode_shimmer_spans(
                     left_value,
-                    self.shimmer_base_style(),
+                    self.styles.accent_style().add_modifier(Modifier::DIM),
+                    self.primary_mode_color(),
                     self.shimmer_state.phase(),
                 ));
             } else {
@@ -1233,7 +1233,7 @@ impl Session {
     /// Resolved primary-agent mode color, sharing the header badge source.
     ///
     /// Returns `None` when no mode name is set so modeless chrome is unchanged.
-    fn primary_mode_color(&self) -> Option<Color> {
+    pub(crate) fn primary_mode_color(&self) -> Option<Color> {
         self.primary_mode_name()?;
         let fallback = self.theme.primary.map(ratatui_color_from_ansi).unwrap_or(Color::LightMagenta);
         super::super::style::agent_color_style(self.header_context.primary_agent_color.as_deref(), fallback).fg
@@ -1245,17 +1245,6 @@ impl Session {
         let label = super::header::primary_agent_header_label(Some(name));
         let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
         Some((format!("• {label}"), style))
-    }
-
-    /// Base style for activity shimmer sweeps, tinted by the primary agent mode.
-    ///
-    /// `tui-shimmer` blends its sweep from the base `fg` on truecolor terminals,
-    /// so a mode-tinted base carries the mode hue through the animation. On
-    /// ANSI16/no-color terminals the crate renders its fixed gray sweep and the
-    /// tint is a silent no-op.
-    pub(crate) fn shimmer_base_style(&self) -> Style {
-        let base = self.styles.accent_style().add_modifier(Modifier::DIM);
-        self.primary_mode_color().map_or(base, |color| base.fg(color))
     }
 
     fn shell_mode_status_hint(&self) -> Option<&'static str> {

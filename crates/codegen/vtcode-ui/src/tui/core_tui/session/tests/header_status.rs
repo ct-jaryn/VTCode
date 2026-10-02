@@ -928,30 +928,30 @@ fn mode_border_uses_distinct_mode_colors() {
 }
 
 #[test]
-fn shimmer_base_matches_accent_without_mode() {
-    let session = fresh_session();
+fn mode_sweep_uses_session_mode_color_as_highlight() {
+    use crate::tui::core_tui::style::mode_shimmer_spans;
+    use ratatui::style::Style;
 
-    assert_eq!(session.shimmer_base_style(), session.styles.accent_style().add_modifier(Modifier::DIM));
-}
-
-#[test]
-fn shimmer_base_tints_with_mode_color() {
     let mut session = fresh_session();
-    let plain_fg = session.shimmer_base_style().fg;
-
     session.handle_command(InlineCommand::SetPrimaryAgent {
         name: Some("build".to_string()),
         color: Some("build".to_string()),
     });
-    let build_fg = session.shimmer_base_style().fg;
+    let highlight = session.primary_mode_color().expect("mode color");
 
-    session.handle_command(InlineCommand::SetPrimaryAgent {
-        name: Some("plan".to_string()),
-        color: Some("plan".to_string()),
-    });
-    let plan_fg = session.shimmer_base_style().fg;
+    // Same band geometry as the style unit test: band near 'b', 'h' outside it.
+    let spans = mode_shimmer_spans("abcdefgh", Style::default(), Some(highlight), 11.0 / 28.0);
+    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+    assert_eq!(text, "abcdefgh");
 
-    assert!(build_fg.is_some() && plan_fg.is_some(), "mode shimmer must carry a concrete color");
-    assert_ne!(build_fg, plan_fg, "build and plan shimmers must be visually distinct");
-    assert_ne!(build_fg, plain_fg, "mode shimmer must differ from the modeless accent sweep");
+    let band = spans
+        .iter()
+        .find(|span| span.content.as_ref().contains('b'))
+        .expect("band span");
+    assert_eq!(band.style.fg, Some(highlight));
+    let edge = spans
+        .iter()
+        .find(|span| span.content.as_ref().contains('h'))
+        .expect("edge span");
+    assert_eq!(edge.style.fg, None, "text outside the band must keep the base color");
 }
