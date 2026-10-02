@@ -34,6 +34,12 @@ Interactive continuation:
 {"session_id":"7","chars":"\u0003"}
 ```
 
+Pipe commands now receive EOF on stdin by default. Set `"stdin": true` on `exec_command` when later input is
+required; PTY commands keep interactive input. Existing callers that write to a pipe must opt in at launch.
+Use `write_stdin` with `action: "inspect"`, `"terminate"`, or `"close"` to inspect, stop, or release an owned
+session without providing `chars`. Termination kills the process group and captures its final output; close
+cancels if necessary and removes the record. Missing handles return a typed error rather than rerunning commands.
+
 Patch edit (call `apply_patch` directly; it is never a shell executable):
 
 ```json
@@ -44,7 +50,10 @@ Patch edit (call `apply_patch` directly; it is never a shell executable):
 the patch function eagerly; native models retain their native representation. Planning and permission restrictions still
 block unauthorized editing.
 
-Context and deletion lines must match exactly. Missing or invalid arguments return a concrete JSON example and one
+Copy complete current context and deletion lines, preserving internal whitespace. The matcher supports boundary
+whitespace and Unicode punctuation normalization; partial lines and different internal spacing are rejected.
+Recover from the reported path rather than testing matching behavior through scratch edits or implementation searches.
+Missing or invalid arguments return a concrete JSON example and one
 correction retry. A typed context mismatch reports the affected path and bounded evidence, and permits one fresh
 targeted file read with a limit of 1–200 lines per affected path per turn. Use an available file read tool or a single
 `sed -n` range through `exec_command`, for example `{"cmd":"sed -n '1,100p' docs/example.md"}`. It can pass the per-path

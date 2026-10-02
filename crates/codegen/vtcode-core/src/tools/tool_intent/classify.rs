@@ -177,7 +177,19 @@ pub fn is_turn_budget_exempt_call(tool_name: &str, args: &Value) -> bool {
     if canonical_command_session_tool_name(tool_name).is_none() {
         return false;
     }
-    command_session_action_is(args, "wait") || command_session_action_is(args, "inspect")
+    command_session_action_is(args, "wait")
+        || command_session_action_is(args, "inspect")
+        || is_exec_session_cleanup_call(tool_name, args)
+}
+
+/// Cleanup stops or releases an owned execution session, never starts work.
+pub fn is_exec_session_cleanup_call(tool_name: &str, args: &Value) -> bool {
+    tool_name == tools::WRITE_STDIN
+        && matches!(
+            crate::tools::command_args::write_stdin_dispatch(args),
+            Ok(crate::tools::command_args::WriteStdinDispatch::Terminate
+                | crate::tools::command_args::WriteStdinDispatch::Close)
+        )
 }
 
 pub fn remap_file_operation_command_args_to_command_session(args: &Value) -> Option<Value> {
@@ -258,8 +270,16 @@ fn exec_command_intent(args: &Value) -> ToolIntent {
 fn write_stdin_intent(args: &Value) -> ToolIntent {
     match crate::tools::command_args::write_stdin_dispatch(args) {
         Ok(crate::tools::command_args::WriteStdinDispatch::Poll) => ToolIntent::read_only(),
-        Ok(crate::tools::command_args::WriteStdinDispatch::Wait) => ToolIntent::read_only(),
-        Ok(crate::tools::command_args::WriteStdinDispatch::Write) | Err(_) => ToolIntent::mutating(),
+        Ok(
+            crate::tools::command_args::WriteStdinDispatch::Wait
+            | crate::tools::command_args::WriteStdinDispatch::Inspect,
+        ) => ToolIntent::read_only(),
+        Ok(
+            crate::tools::command_args::WriteStdinDispatch::Write
+            | crate::tools::command_args::WriteStdinDispatch::Terminate
+            | crate::tools::command_args::WriteStdinDispatch::Close,
+        )
+        | Err(_) => ToolIntent::mutating(),
     }
 }
 

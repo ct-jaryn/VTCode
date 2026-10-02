@@ -13,7 +13,8 @@ use tokio::task::JoinHandle;
 #[cfg(windows)]
 use vtcode_bash_runner::GracefulTerminationResult;
 use vtcode_bash_runner::{
-    PipeSpawnOptions, ProcessHandle, graceful_kill_process_group_default_async, spawn_pipe_process_with_options,
+    PipeSpawnOptions, PipeStdinMode, ProcessHandle, graceful_kill_process_group_default_async,
+    spawn_pipe_process_with_options,
 };
 
 use crate::sandboxing::build_sanitized_env;
@@ -280,6 +281,7 @@ impl PipeSessionManager {
         working_dir: PathBuf,
         env: HashMap<String, String>,
         background: bool,
+        stdin_mode: PipeStdinMode,
     ) -> Result<VTCodeExecSession> {
         if command.is_empty() {
             return Err(anyhow!("exec session command cannot be empty"));
@@ -311,6 +313,7 @@ impl PipeSessionManager {
         let opts = PipeSpawnOptions::new(program.clone(), working_dir.clone())
             .args(args.clone())
             .env(env)
+            .stdin_mode(stdin_mode)
             .lossless_output(true);
         let spawned = spawn_pipe_process_with_options(opts)
             .await
@@ -819,7 +822,7 @@ impl ExecSessionManager {
     }
 
     /// Test-only convenience: production paths go through
-    /// [`Self::create_pipe_session_with_sandbox_and_background`].
+    /// [`Self::create_pipe_session_with_stdin`].
     #[cfg(test)]
     pub(crate) async fn create_pipe_session(
         &self,
@@ -832,6 +835,7 @@ impl ExecSessionManager {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_pipe_session_with_sandbox_and_background(
         &self,
         session_id: ExecSessionId,
@@ -841,13 +845,47 @@ impl ExecSessionManager {
         sandbox_active: bool,
         background: bool,
     ) -> Result<VTCodeExecSession> {
+        self.create_pipe_session_with_stdin(
+            session_id,
+            command,
+            working_dir,
+            env,
+            sandbox_active,
+            background,
+            PipeStdinMode::Piped,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Launch options preserve the existing internal session API while public pipe runs select stdin explicitly."
+    )]
+    pub(crate) async fn create_pipe_session_with_stdin(
+        &self,
+        session_id: ExecSessionId,
+        command: Vec<String>,
+        working_dir: PathBuf,
+        env: HashMap<String, String>,
+        sandbox_active: bool,
+        background: bool,
+        stdin_mode: PipeStdinMode,
+    ) -> Result<VTCodeExecSession> {
         let launch_mode = if background {
             ExecSessionLaunchMode::UserBackground
         } else {
             ExecSessionLaunchMode::Foreground
         };
-        self.create_pipe_session_with_launch_mode(session_id, command, working_dir, env, sandbox_active, launch_mode)
-            .await
+        self.create_pipe_session_with_launch_mode(
+            session_id,
+            command,
+            working_dir,
+            env,
+            sandbox_active,
+            launch_mode,
+            stdin_mode,
+        )
+        .await
     }
 
     pub(crate) async fn create_pipe_session_for_managed_background(
@@ -864,10 +902,15 @@ impl ExecSessionManager {
             env,
             false,
             ExecSessionLaunchMode::ManagedBackground,
+            PipeStdinMode::Null,
         )
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Internal session launch carries sandbox, lifecycle, and stdin policy through one spawning boundary."
+    )]
     async fn create_pipe_session_with_launch_mode(
         &self,
         session_id: ExecSessionId,
@@ -876,6 +919,7 @@ impl ExecSessionManager {
         env: HashMap<String, String>,
         sandbox_active: bool,
         launch_mode: ExecSessionLaunchMode,
+        stdin_mode: PipeStdinMode,
     ) -> Result<VTCodeExecSession> {
         let _create_guard = self.create_lock.lock().await;
         self.ensure_session_absent(&session_id).await?;
@@ -891,7 +935,7 @@ impl ExecSessionManager {
         };
         let metadata = match self
             .pipe_sessions
-            .create_session(session_id.clone(), command, working_dir, env, launch_mode.is_background())
+            .create_session(session_id.clone(), command, working_dir, env, launch_mode.is_background(), stdin_mode)
             .await
         {
             Ok(metadata) => metadata,

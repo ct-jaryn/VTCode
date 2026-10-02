@@ -109,6 +109,19 @@ remains inspectable until explicit close, while runtime shutdown closes all proc
 continues to emit the existing `ThreadEvent` item lifecycle events rather than introducing a parallel background-process
 event contract.
 
+Ordinary pipe launches use null stdin (EOF); `exec_command.stdin: true` explicitly keeps a writable pipe open.
+PTY input remains available. This prevents pathless searches such as `rg pattern` from waiting on an unused stdin
+pipe. Public `write_stdin` supports bounded `inspect`, process-group `terminate`, and record-releasing `close`
+actions as well as write/poll/wait. Cleanup remains available while edits await verification and uses the existing
+bounded control-call budget and permission checks.
+
+A running verifier response never clears the verification gate. The turn tracks its session identity and accepts
+only its terminal exit status; unrelated session completions cannot verify edits. At the assistant text cap, enabled
+autonomous verification runs promptly or waits for the existing verifier instead of spending reminder rounds.
+Fresh internal turns reuse an exact matching live verifier owned by the current runtime. Exhausted execution budgets
+produce a blocked handoff without announcing a verifier that cannot run. Only observed non-zero verifier exits
+consume the consecutive-failure budget; rejected calls and still-running results do not.
+
 Managed background subprocesses publish a terminal completion notification after their `BackgroundRecord` has been
 persisted as `Stopped` or `Error`; user-launched background exec sessions publish the same terminal signal directly from
 the shared exec-session watcher. Before publishing, the watcher makes a bounded attempt to drain and retain final

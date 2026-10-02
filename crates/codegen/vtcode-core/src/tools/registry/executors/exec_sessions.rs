@@ -142,13 +142,18 @@ impl ToolRegistry {
         let session_env = self.build_pipe_session_env(&request.shell_program, request.env_overrides);
         let session_metadata = self
             .exec_sessions
-            .create_pipe_session_with_sandbox_and_background(
+            .create_pipe_session_with_stdin(
                 request.session_id.clone().into(),
                 request.prepared_command.command,
                 request.working_dir_path,
                 session_env,
                 request.sandbox_active,
                 request.background,
+                if request.stdin {
+                    vtcode_bash_runner::PipeStdinMode::Piped
+                } else {
+                    vtcode_bash_runner::PipeStdinMode::Null
+                },
             )
             .await?;
 
@@ -399,6 +404,20 @@ impl ToolRegistry {
             "session_id": sid,
             "backend": session_metadata.backend
         }))
+    }
+
+    pub(super) async fn execute_command_session_terminate(&self, args: Value) -> Result<Value> {
+        let sid = resolve_exec_session_id(
+            &args,
+            "command session terminate requires a JSON object",
+            "session_id is required for command session terminate",
+            "command session terminate",
+        )?;
+        self.exec_sessions.force_terminate_session(&sid).await?;
+        let mut wait_args = args;
+        wait_args["session_id"] = json!(sid);
+        wait_args["wait_timeout_seconds"] = json!(5);
+        self.execute_command_session_wait(wait_args).await
     }
 
     fn build_pipe_session_env(

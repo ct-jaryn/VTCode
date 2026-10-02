@@ -45,7 +45,7 @@ pub const DEFAULT_APPLY_PATCH_INPUT_DESCRIPTION: &str = "Patch in VT Code format
 /// and states the unified-diff rejection and path rules as plain facts
 /// instead of shouted warnings. Registration sites append
 /// [`SEMANTIC_ANCHOR_GUIDANCE`] via [`with_semantic_anchor_guidance`].
-pub const APPLY_PATCH_TOOL_DESCRIPTION: &str = "Apply a patch in VT Code format (*** Begin Patch / *** Update File: path / @@ hunks with -/+ lines / *** End Patch); standard unified diffs (---/+++ format) are rejected. *** Add File: path, *** Delete File: path, and *** Move to: path (after *** Update File) are also supported. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected. Changes are applied after permission checks. Call this tool directly instead of through a shell; JSON calls use input (patch is an alias). Context/deletion lines match exactly. A typed context mismatch permits one fresh bounded file read range per affected path per turn; other limits remain authoritative.";
+pub const APPLY_PATCH_TOOL_DESCRIPTION: &str = "Apply a patch in VT Code format (*** Begin Patch / *** Update File: path / @@ hunks with -/+ lines / *** End Patch); standard unified diffs (---/+++ format) are rejected. *** Add File: path, *** Delete File: path, and *** Move to: path (after *** Update File) are also supported. Every patch path must be workspace-relative; absolute paths, `..`, and traversal-like forms are rejected. Changes are applied after permission checks. Call this tool directly instead of through a shell; JSON calls use input (patch is an alias). Use complete current context/deletion lines, preserving internal whitespace; boundary whitespace and Unicode punctuation normalization are supported, but partial lines are rejected. A typed context mismatch permits one fresh bounded file read range per affected path per turn; other limits remain authoritative.";
 
 /// Default model-visible preview budget for function-tool results.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
@@ -223,7 +223,8 @@ pub fn exec_command_parameters() -> Value {
             "cmd": {"type": "string", "description": "Shell command to execute, subject to command policy. The tool description lists covered tools."},
             "yield_time_ms": {"type": "integer", "description": "Wait before returning output (ms). If the command is still running, the response includes a session_id for write_stdin. Values above 10000 turn this into a single-call long run: no outer timeout applies and the response returns after the yield window or command exit, whichever is first.", "default": 10000},
             "background": {"type": "boolean", "description": "Start a retained background process and return after a bounded initial output window. At most three live background processes are allowed per VT Code runtime; use the returned session_id with write_stdin to wait, poll, write, inspect, terminate, or close.", "default": false},
-            "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 10000, "description": "Output token cap. Large or truncated output can return a spool_path; an active session may set spool_complete=false for a readable partial snapshot, while an exited pending spool is withheld until a later wait."},
+            "stdin": {"type": "boolean", "description": "Keep pipe stdin open for later write_stdin input. Defaults to false (EOF); enable only for commands that need input. PTY input is always available.", "default": false},
+            "max_output_tokens": {"type": "integer", "minimum": MIN_MAX_OUTPUT_TOKENS, "maximum": MAX_MAX_OUTPUT_TOKENS, "default": DEFAULT_MAX_OUTPUT_TOKENS, "description": "Output token cap. Large or truncated output can return a spool_path; an active session may set spool_complete=false for a readable partial snapshot, while an exited pending spool is withheld until a later wait."},
             "workdir": {"type": "string", "description": "Working directory."},
             "tty": {"type": "boolean", "description": "Run the command in PTY mode for interactive or terminal-sensitive commands.", "default": false},
             "sandbox_permissions": {
@@ -247,6 +248,9 @@ pub fn exec_command_parameters() -> Value {
     })
 }
 
+/// Shared model-facing description for execution session controls.
+pub const WRITE_STDIN_DESCRIPTION: &str = "Write input to an owned exec session (pipe runs require stdin: true at launch), poll for fresh output, wait until exit or deadline, inspect a bounded snapshot, terminate its process group, or close and release it. Wait never kills the process; use the returned exact session_id.";
+
 #[must_use]
 pub fn write_stdin_parameters() -> Value {
     json!({
@@ -254,15 +258,15 @@ pub fn write_stdin_parameters() -> Value {
         "required": ["session_id"],
         "properties": {
             "session_id": {"type": "string", "description": "Active execution session id."},
-            "action": {"type": "string", "enum": ["write", "poll", "wait"], "description": "Use wait to block until the command exits or wait_timeout_seconds expires; wait never kills the session."},
+            "action": {"type": "string", "enum": ["write", "poll", "wait", "inspect", "terminate", "close"], "description": "wait blocks until exit or deadline without killing; inspect reads a bounded snapshot; terminate kills the process group and captures output; close cancels and releases the session. poll sends no input."},
             "chars": {"type": "string", "description": "Bytes to write to stdin. Pass an empty string to poll without sending input."},
             "yield_time_ms": {"type": "integer", "description": "Wait before returning fresh session output (ms).", "default": 1000},
             "wait_timeout_seconds": {"type": "integer", "minimum": 1, "description": "Explicit wait deadline in seconds. A deadline returns an in-progress session that can be waited on again."},
-            "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 10000, "description": "Output token cap for the continuation response. Large or truncated output can return a spool_path; the response reports whether an active session has finished writing it."}
+            "max_output_tokens": {"type": "integer", "minimum": MIN_MAX_OUTPUT_TOKENS, "maximum": MAX_MAX_OUTPUT_TOKENS, "default": DEFAULT_MAX_OUTPUT_TOKENS, "description": "Output token cap for the continuation response. Large or truncated output can return a spool_path; the response reports whether an active session has finished writing it."}
         },
         "anyOf": [
             {"required": ["chars"]},
-            {"required": ["action"], "properties": {"action": {"const": "wait"}}}
+            {"required": ["action"], "properties": {"action": {"enum": ["poll", "wait", "inspect", "terminate", "close"]}}}
         ],
         "additionalProperties": false
     })
@@ -433,7 +437,7 @@ mod tests {
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("workspace-relative"));
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("permission checks"));
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("JSON calls use input (patch is an alias)"));
-        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("Context/deletion lines match exactly"));
+        assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("preserving internal whitespace"));
         assert!(APPLY_PATCH_TOOL_DESCRIPTION.contains("one fresh bounded file read range"));
         for description in [
             APPLY_PATCH_TOOL_DESCRIPTION,
@@ -552,14 +556,21 @@ mod tests {
         assert_eq!(stdin_params["required"], json!(["session_id"]));
         assert!(stdin_params["properties"]["session_id"].is_object());
         assert_eq!(stdin_params["properties"]["chars"]["type"], "string");
-        assert_eq!(stdin_params["properties"]["action"]["enum"], json!(["write", "poll", "wait"]));
+        assert_eq!(
+            stdin_params["properties"]["action"]["enum"],
+            json!(["write", "poll", "wait", "inspect", "terminate", "close"])
+        );
+        assert_eq!(exec_params["properties"]["stdin"]["default"], false);
         assert!(stdin_params["properties"]["wait_timeout_seconds"].is_object());
         assert!(
             stdin_params["properties"].get("timeout_seconds").is_none(),
             "write_stdin schema advertises only wait_timeout_seconds"
         );
         assert_eq!(stdin_params["anyOf"][1]["required"], json!(["action"]));
-        assert_eq!(stdin_params["anyOf"][1]["properties"]["action"]["const"], "wait");
+        assert_eq!(
+            stdin_params["anyOf"][1]["properties"]["action"]["enum"],
+            json!(["poll", "wait", "inspect", "terminate", "close"])
+        );
         assert!(
             stdin_params["properties"]["chars"]["description"]
                 .as_str()

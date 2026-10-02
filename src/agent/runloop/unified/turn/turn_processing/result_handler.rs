@@ -97,7 +97,7 @@ pub(crate) enum PendingVerificationTextOutcome {
     Continue,
     /// End the turn as verification-blocked.
     Block { reason: String },
-    /// Directive retries are exhausted: the harness should execute `command`
+    /// The text cap was reached: the harness should execute `command`
     /// itself through the normal tool pipeline instead of blocking.
     AutoVerify { command: String },
 }
@@ -141,14 +141,10 @@ impl TurnProcessingContext<'_> {
     /// Account for a text response while verification is pending.
     ///
     /// The model response is intentionally not stored or rendered. Under the
-    /// shared per-turn cap the turn continues; each cap-hit then grants a
-    /// bounded autonomous directive retry (project-aware directive + fresh
-    /// text budget). Only after those are exhausted does the harness run the
-    /// verifier itself (one shot per turn, fail-closed on missing commands
-    /// and denied permissions), and only after that fails or is unavailable
-    /// does the outer turn loop publish its deterministic fallback without
-    /// claiming unverified work; the session loop may then schedule bounded
-    /// cross-turn auto-recovery turns before writing a blocked handoff.
+    /// shared per-turn cap the turn continues, then the harness runs the
+    /// verifier once or waits for an existing verifier. Directive retries are
+    /// the fallback when autonomous execution is disabled or unavailable.
+    /// Exhausted execution budgets block immediately without reminder rounds.
     ///
     /// Tool-free recovery synthesis bypasses this accounting entirely (see the
     /// caller): with tools disabled no text could verify, so recovery budgets
@@ -159,6 +155,9 @@ impl TurnProcessingContext<'_> {
         assistant_text: &str,
     ) -> Result<PendingVerificationTextOutcome> {
         repeated_tool_attempts.mark_verification_pending();
+        if let Some(reason) = self.verification_execution_blocker(repeated_tool_attempts) {
+            return Ok(PendingVerificationTextOutcome::Block { reason });
+        }
         if !repeated_tool_attempts.verification_warning_emitted {
             // When the failed-verifier fix window is active the verifier already
             // ran and failed; the generic "run verification" notice would be
@@ -190,6 +189,11 @@ impl TurnProcessingContext<'_> {
             return Ok(PendingVerificationTextOutcome::Continue);
         }
 
+        // Prefer one real verifier outcome to repeated model-only reminders.
+        if let Some(command) = self.try_harness_auto_verify(repeated_tool_attempts) {
+            return Ok(PendingVerificationTextOutcome::AutoVerify { command });
+        }
+
         // In-turn autonomous recovery: name the exact project verifier and
         // grant a fresh text budget once more, instead of blocking immediately.
         // The streak reset mirrors the failed-verifier path (a verifier outcome
@@ -217,13 +221,22 @@ impl TurnProcessingContext<'_> {
             return Ok(PendingVerificationTextOutcome::Continue);
         }
 
-        if let Some(command) = self.try_harness_auto_verify(repeated_tool_attempts) {
-            return Ok(PendingVerificationTextOutcome::AutoVerify { command });
-        }
-
         Ok(PendingVerificationTextOutcome::Block {
             reason: PENDING_VERIFICATION_BLOCK_REASON.to_string(),
         })
+    }
+
+    fn verification_execution_blocker(&self, tracker: &helpers::LoopTracker) -> Option<String> {
+        let blocker = if self.harness_state.recovery_is_tool_free() {
+            Some("tools are disabled for recovery synthesis")
+        } else if self.harness_state.wall_clock_exhausted() {
+            Some("the turn wall-clock budget is exhausted")
+        } else if self.harness_state.tool_budget_exhausted() && tracker.pending_verifier_session_id.is_none() {
+            Some("the turn tool-call budget is exhausted")
+        } else {
+            None
+        };
+        blocker.map(|reason| format!("Verification is still pending: {reason}. No verifier was scheduled; resume with fresh execution budget."))
     }
 
     /// Shared gate for harness-executed verification: kill-switch,
@@ -235,13 +248,18 @@ impl TurnProcessingContext<'_> {
     fn try_harness_auto_verify(&mut self, repeated_tool_attempts: &mut helpers::LoopTracker) -> Option<String> {
         let max_failures = helpers::verification_max_consecutive_failures(self.vt_cfg);
         if helpers::verification_auto_execute_enabled(self.vt_cfg)
+            && self.verification_execution_blocker(repeated_tool_attempts).is_none()
             && self.session_stats.verification_consecutive_failures() < max_failures
             && repeated_tool_attempts.should_auto_execute_verifier()
         {
-            return helpers::resolve_harness_verifier_command(
-                self.vt_cfg,
-                self.tool_registry.workspace_root().as_path(),
-            );
+            let command =
+                helpers::resolve_harness_verifier_command(self.vt_cfg, self.tool_registry.workspace_root().as_path());
+            return command.or_else(|| {
+                repeated_tool_attempts
+                    .pending_verifier_session_id
+                    .as_ref()
+                    .map(|_| "pending verifier".to_string())
+            });
         }
         None
     }
@@ -261,6 +279,13 @@ fn last_tool_response_text(history: &[uni::Message], call_id: &str, window_start
         (message.role == uni::MessageRole::Tool && message.tool_call_id.as_deref() == Some(call_id))
             .then(|| message.content.as_text().to_string())
     })
+}
+
+fn verifier_response_has_nonzero_exit(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value.get("exit_code").and_then(serde_json::Value::as_i64))
+        .is_some_and(|code| code != 0)
 }
 
 /// Execute the project verifier on the harness's behalf after the model
@@ -294,19 +319,57 @@ pub(crate) async fn execute_harness_auto_verification(
 ) -> Result<TurnHandlerOutcome> {
     use vtcode_core::config::constants::tools as tool_names;
 
+    // A fresh internal turn may still own the previous turn's verifier. Reuse
+    // only an exact command match from this runtime, never archived handles.
+    if repeated_tool_attempts.pending_verifier_session_id.is_none() {
+        let sessions = ctx.tool_registry.in_progress_exec_sessions(32).await;
+        if let Some(session) = sessions.into_iter().find(|session| {
+            session.exit_code.is_none()
+                && session.lifecycle_state == Some(vtcode_core::tools::types::VTCodeSessionLifecycleState::Running)
+                && (session.command_label() == command
+                    || (std::path::Path::new(&session.command)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| matches!(name, "sh" | "bash" | "zsh" | "fish"))
+                        && session
+                            .args
+                            .windows(2)
+                            .any(|pair| matches!(pair[0].as_str(), "-c" | "-lc") && pair[1] == command)))
+        }) {
+            repeated_tool_attempts.pending_verifier_session_id = Some(session.id.to_string());
+        }
+    }
+
+    if let Some(reason) = ctx.verification_execution_blocker(repeated_tool_attempts) {
+        return Ok(TurnHandlerOutcome::Break(TurnLoopResult::Blocked { reason: Some(reason) }));
+    }
+    let pending_session = repeated_tool_attempts.pending_verifier_session_id.clone();
+    let (tool_name, args) = match pending_session {
+        Some(session_id) => (
+            tool_names::WRITE_STDIN,
+            serde_json::json!({"session_id": session_id, "action": "wait", "wait_timeout_seconds": 600, "max_output_tokens": 4000}),
+        ),
+        None => (tool_names::EXEC_COMMAND, serde_json::json!({"cmd": command, "max_output_tokens": 4000})),
+    };
+
     repeated_tool_attempts.record_auto_verification_executed();
+    let action = if tool_name == tool_names::WRITE_STDIN {
+        "waiting for the existing verifier"
+    } else {
+        "running the project verifier"
+    };
     ctx.renderer
-        .line(MessageStyle::Info, &format!("{} `{command}`", helpers::HARNESS_AUTO_VERIFICATION_WARNING))
+        .line(MessageStyle::Info, &format!("Harness auto-verification: {action}: `{command}`"))
         .unwrap_or(());
     ctx.working_history.push(uni::Message::system(format!(
-        "Harness auto-verification: running `{command}` via exec_command (standalone, output capped). \
+        "Harness auto-verification: {action}: `{command}` via {tool_name} (output capped). \
         This call is harness-issued autonomous recovery, not a model action; its result carries the same weight as a model-run verifier."
     )));
 
     let raw_call = uni::ToolCall::function(
         helpers::HARNESS_AUTO_VERIFY_CALL_ID.to_string(),
-        tool_names::EXEC_COMMAND.to_string(),
-        serde_json::json!({"cmd": command}).to_string(),
+        tool_name.to_string(),
+        args.to_string(),
     );
     let synthetic = PreparedAssistantToolCall::new(raw_call);
     if synthetic.args().is_none() {
@@ -326,15 +389,18 @@ pub(crate) async fn execute_harness_auto_verification(
             turn_modified_files: &mut *turn_modified_files,
         };
         let outcome = handle_tool_calls(&mut t_ctx_inner, std::slice::from_ref(&synthetic)).await?;
-        if t_ctx_inner.repeated_tool_attempts.verification_is_pending() {
-            // Gate still pending: success and failure both need bookkeeping,
-            // but only an executed verifier (one that left a tool response)
-            // counts toward the never-passing escalation budget.
+        if t_ctx_inner.repeated_tool_attempts.pending_verifier_session_id.is_some() {
+            // A running session has no verdict and must not consume failure budget.
+        } else if t_ctx_inner.repeated_tool_attempts.verification_is_pending() {
+            // Count only an observed non-zero exit. Policy/preflight rejections
+            // and missing results are not executed verification failures.
             if let Some(response_text) = last_tool_response_text(
                 t_ctx_inner.ctx.working_history,
                 helpers::HARNESS_AUTO_VERIFY_CALL_ID,
                 history_len_before_assistant,
-            ) {
+            )
+            .filter(|text| verifier_response_has_nonzero_exit(text))
+            {
                 let failures = t_ctx_inner
                     .ctx
                     .session_stats
@@ -910,6 +976,7 @@ mod tests {
     #[tokio::test]
     async fn anti_blind_auto_recovery_names_project_verifier() {
         let mut backing = TestTurnProcessingBacking::new(4).await;
+        backing.set_verification_override_for_test("rustc --version");
         let mut repeated_tool_attempts = LoopTracker::new();
         repeated_tool_attempts.consecutive_mutations =
             crate::agent::runloop::unified::turn::tool_outcomes::helpers::BLIND_EDITING_THRESHOLD;
@@ -939,16 +1006,16 @@ mod tests {
 
         assert_eq!(
             repeated_tool_attempts.verification_auto_recovery_attempts(),
-            1,
-            "second text response should consume the first auto-recovery attempt"
+            0,
+            "second text response should run the verifier without reminder rounds"
         );
         assert!(
-            backing.last_history_message_contains("Verification recovery (1/"),
-            "recovery directive must carry attempt counts"
+            !repeated_tool_attempts.verification_is_pending(),
+            "the configured verifier must clear the gate at the text cap"
         );
         assert!(
-            backing.last_history_message_contains("max_output_tokens"),
-            "recovery directive must name the truncation mechanism"
+            backing.last_history_message_contains("gate is cleared"),
+            "recovery must report the observed verifier outcome"
         );
     }
 
@@ -979,7 +1046,10 @@ mod tests {
             })
             .await
             .expect("pending-verification text should be handled");
-            if !matches!(outcome, TurnHandlerOutcome::Continue) {
+            if !matches!(outcome, TurnHandlerOutcome::Continue)
+                || repeated_tool_attempts.auto_verification_executed
+                || !repeated_tool_attempts.verification_is_pending()
+            {
                 break;
             }
         }
@@ -997,8 +1067,7 @@ mod tests {
             crate::agent::runloop::unified::turn::tool_outcomes::helpers::BLIND_EDITING_THRESHOLD;
         let mut turn_modified_files = BTreeSet::new();
 
-        // Six texts exhaust the 2+2 directive budget; the sixth fires the
-        // one-shot harness execution instead of blocking.
+        // The text cap fires one harness execution before directive retries.
         let outcome = drive_pending_texts(&mut backing, &mut repeated_tool_attempts, &mut turn_modified_files, 6).await;
         assert!(matches!(outcome, TurnHandlerOutcome::Continue));
         assert!(
@@ -1014,6 +1083,95 @@ mod tests {
             backing.last_history_message_contains("gate is cleared"),
             "success must leave an explicit gate-cleared note"
         );
+    }
+
+    #[tokio::test]
+    async fn exhausted_budget_blocks_verification_without_reminder_rounds() {
+        let mut backing = TestTurnProcessingBacking::new(1).await;
+        backing.set_verification_override_for_test("rustc --version");
+        let mut tracker = LoopTracker::new();
+        tracker.mark_verification_pending();
+        let mut ctx = backing.turn_processing_context();
+        ctx.harness_state.tool_calls = 1;
+        let outcome = ctx
+            .handle_pending_verification_text_response(&mut tracker, "The change is complete.")
+            .unwrap();
+        assert!(
+            matches!(outcome, super::PendingVerificationTextOutcome::Block { reason } if reason.contains("tool-call budget"))
+        );
+        assert_eq!(tracker.verification_auto_recovery_attempts(), 0);
+        assert!(!tracker.auto_verification_executed);
+        assert_eq!(ctx.session_stats.verification_consecutive_failures(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn harness_waits_for_a_running_verifier_instead_of_starting_another() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut backing = TestTurnProcessingBacking::new(8).await;
+        backing.set_verification_override_for_test("./rustc --version");
+        {
+            let ctx = backing.turn_processing_context();
+            let script = ctx.tool_registry.workspace_root().join("rustc");
+            std::fs::write(&script, "#!/bin/sh\nsleep 2\nprintf 'verifier-finished\\n'\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            ctx.tool_registry.allow_all_tools().await.unwrap();
+        }
+        let mut tracker = LoopTracker::new();
+        tracker.mark_verification_pending();
+        let mut modified = BTreeSet::new();
+        drive_model_tool_call(
+            &mut backing,
+            &mut tracker,
+            &mut modified,
+            "exec_command",
+            r#"{"cmd":"./rustc --version","background":true,"yield_time_ms":250}"#,
+        )
+        .await;
+        assert!(tracker.verification_is_pending());
+        assert!(
+            tracker.pending_verifier_session_id.is_some(),
+            "{:?}",
+            backing.turn_processing_context().working_history
+        );
+        // Recreate the turn-local tracker to exercise live-session rediscovery.
+        tracker = LoopTracker::new();
+        tracker.mark_verification_pending();
+        let mut ctx = backing.turn_processing_context();
+        super::execute_harness_auto_verification(
+            &mut ctx,
+            &mut tracker,
+            &mut modified,
+            2,
+            8,
+            4,
+            "./rustc --version".to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(!tracker.verification_is_pending());
+        assert_eq!(ctx.session_stats.verification_consecutive_failures(), 0);
+        let calls: Vec<_> = ctx
+            .working_history
+            .iter()
+            .filter_map(|message| message.tool_calls.as_ref())
+            .flatten()
+            .filter(|call| call.id == "harness-auto-verify")
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "write_stdin");
+    }
+
+    #[test]
+    fn verification_failure_attribution_requires_an_observed_exit() {
+        assert!(super::verifier_response_has_nonzero_exit(r#"{"exit_code":1}"#));
+        for response in [
+            r#"{"exit_code":0}"#,
+            r#"{"session_id":"run-live","lifecycle_state":"running"}"#,
+            r#"{"error":"budget exhausted","failure_kind":"policy"}"#,
+        ] {
+            assert!(!super::verifier_response_has_nonzero_exit(response));
+        }
     }
 
     #[tokio::test]
@@ -1042,6 +1200,8 @@ mod tests {
             backing.last_history_message_contains("did not clear the gate"),
             "failure must leave an explicit fix-window note"
         );
+        let ctx = backing.turn_processing_context();
+        assert_eq!(ctx.session_stats.verification_consecutive_failures(), 1);
     }
 
     /// Drive one model-issued tool call through the normal dispatch pipeline,

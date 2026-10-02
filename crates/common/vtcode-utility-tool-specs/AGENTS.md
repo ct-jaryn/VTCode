@@ -22,4 +22,4 @@
 - `rmcp` (MCP schema types)
 - `serde` / `serde_json` (serialization)
 
-`write_stdin` keeps legacy `session_id`/`chars` calls valid; explicit `action: "wait"` is the bounded long-command wait form. `exec_command.background` is opt-in and defaults to false.
+`write_stdin` keeps legacy `session_id`/`chars` calls valid; wait/inspect/terminate/close need no chars. `exec_command.background` and pipe `stdin` are opt-in and default to false; PTYs retain input.

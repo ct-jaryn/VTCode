@@ -77,12 +77,6 @@ pub(crate) const MAX_VERIFICATION_AUTO_RECOVERY_ATTEMPTS: u8 = 2;
 /// repeating the initial warning.
 pub(crate) const VERIFICATION_AUTO_RECOVERY_WARNING: &str =
     "[i] Verification still pending — autonomous recovery: run the named verifier now instead of replying with text.";
-/// Warning rendered when the harness executes the project verifier itself
-/// after the model exhausted its directive retries. Distinct from
-/// [`VERIFICATION_AUTO_RECOVERY_WARNING`] (a directive grant) so transcripts
-/// show the harness took action rather than asking once more.
-pub(crate) const HARNESS_AUTO_VERIFICATION_WARNING: &str =
-    "[i] Harness auto-verification: running the project verifier now instead of blocking.";
 /// Cross-turn counterpart to [`MAX_VERIFICATION_AUTO_RECOVERY_ATTEMPTS`]:
 /// how many additional autonomous turns the session loop may schedule after
 /// a verification-blocked turn before requiring manual `continue`.
@@ -1545,6 +1539,8 @@ pub(crate) struct LoopTracker {
     /// unbounded execute→text→execute cycle inside one turn. Cleared on
     /// verification success with the rest of the gate; never persisted.
     pub auto_verification_executed: bool,
+    /// Live verifier identity for this turn; a running response is not a verdict.
+    pub pending_verifier_session_id: Option<String>,
     /// Counter for consecutive read/search operations without action or synthesis
     pub consecutive_navigations: usize,
     /// Number of times navigation-loop recovery has fired in this session.
@@ -1582,6 +1578,7 @@ impl LoopTracker {
             piped_verification_notice_pending: false,
             verification_auto_recovery_attempts: 0,
             auto_verification_executed: false,
+            pending_verifier_session_id: None,
             consecutive_navigations: 0,
             navigation_loop_recoveries: 0,
             consecutive_low_signal_navigations: 0,
@@ -1773,6 +1770,7 @@ impl LoopTracker {
     /// but the next [`FAILED_VERIFICATION_FIX_ALLOWANCE`] successful mutations
     /// are admitted so a broken build can be repaired instead of deadlocking.
     pub(crate) fn record_failed_verification(&mut self) {
+        self.pending_verifier_session_id = None;
         self.verification_pending = true;
         self.fix_edits_remaining = FAILED_VERIFICATION_FIX_ALLOWANCE;
     }
@@ -1812,7 +1810,8 @@ impl LoopTracker {
     /// consume only directive retries, then the turn blocks for cross-turn
     /// recovery. Never true when the gate is clear.
     pub(crate) fn should_auto_execute_verifier(&self) -> bool {
-        self.verification_is_pending() && !self.auto_verification_executed
+        self.verification_is_pending()
+            && (!self.auto_verification_executed || self.pending_verifier_session_id.is_some())
     }
 
     /// Record that the harness executed the project verifier itself this
@@ -1824,6 +1823,7 @@ impl LoopTracker {
     }
 
     fn mark_verification_complete(&mut self) {
+        self.pending_verifier_session_id = None;
         self.consecutive_mutations = 0;
         self.verification_pending = false;
         self.fix_edits_remaining = 0;
@@ -2575,6 +2575,11 @@ pub(crate) fn mutation_blocked_until_verification(
     }
 
     let canonical_name = canonical_tool_name(name);
+    // Cleanup can only stop/release an owned exec session; it must remain
+    // reachable when workspace edits await verification. Permissions still apply.
+    if vtcode_core::tools::tool_intent::is_exec_session_cleanup_call(canonical_name, args) {
+        return false;
+    }
     if is_execution_tool(canonical_name) {
         // Classify the command the kernel will run: a verifier piped only
         // into `head`/`tail` executes standalone and is a verification.
@@ -2636,6 +2641,32 @@ pub(crate) fn update_repetition_tracker(
     let canonical_name = canonical_tool_name(name);
     let signature_key = signature_key_for(canonical_name, args);
     loop_tracker.record(signature_key.clone());
+    // Session cleanup never represents a workspace edit or a verifier verdict.
+    if vtcode_core::tools::tool_intent::is_exec_session_cleanup_call(canonical_name, args) {
+        if matches!(&outcome.status, ToolExecutionStatus::Success { .. })
+            && args.get("session_id").and_then(serde_json::Value::as_str)
+                == loop_tracker.pending_verifier_session_id.as_deref()
+            && loop_tracker.pending_verifier_session_id.is_some()
+        {
+            loop_tracker.pending_verifier_session_id = None;
+        }
+        return false;
+    }
+    if is_session_follow_up(canonical_name, args)
+        && loop_tracker.pending_verifier_session_id.is_some()
+        && args.get("session_id").and_then(serde_json::Value::as_str)
+            == loop_tracker.pending_verifier_session_id.as_deref()
+        && let ToolExecutionStatus::Success { output, .. } = &outcome.status
+        && let Some(exit_code) = output.get("exit_code").and_then(serde_json::Value::as_i64)
+    {
+        if exit_code == 0 {
+            loop_tracker.mark_verification_complete();
+        } else {
+            loop_tracker.record_failed_verification();
+        }
+        loop_tracker.reset_navigation_window(true);
+        return exit_code != 0;
+    }
     let navigation_family =
         crate::agent::runloop::unified::turn::tool_outcomes::handlers::low_signal_family_key(canonical_name, args);
     let low_signal_family = navigation_family
@@ -2707,7 +2738,18 @@ pub(crate) fn update_repetition_tracker(
                 loop_tracker.record_navigation_signal(is_low_signal_navigation);
             }
             ShellActivity::Verification => {
-                if matches!(&outcome.status, ToolExecutionStatus::Success { command_success: true, .. }) {
+                if let ToolExecutionStatus::Success { output, .. } = &outcome.status
+                    && output.get("exit_code").and_then(serde_json::Value::as_i64).is_none()
+                    && let Some(session_id) = output.get("session_id").and_then(serde_json::Value::as_str)
+                {
+                    loop_tracker.mark_verification_pending();
+                    loop_tracker.fix_edits_remaining = 0;
+                    loop_tracker.pending_verifier_session_id = Some(session_id.to_owned());
+                    loop_tracker.reset_navigation_window(true);
+                    return false;
+                }
+                if matches!(&outcome.status, ToolExecutionStatus::Success { output, .. } if output.get("exit_code").and_then(serde_json::Value::as_i64) == Some(0))
+                {
                     loop_tracker.mark_verification_complete();
                 } else if matches!(&outcome.status, ToolExecutionStatus::Success { command_success: false, .. }) {
                     // Only a verifier that actually ran and reported non-zero
@@ -2719,7 +2761,11 @@ pub(crate) fn update_repetition_tracker(
                 } else if loop_tracker.verification_is_pending()
                     && matches!(
                         &outcome.status,
-                        ToolExecutionStatus::Failure { .. } | ToolExecutionStatus::Timeout { .. }
+                        ToolExecutionStatus::Failure { error } | ToolExecutionStatus::Timeout { error }
+                            if !matches!(error.error_type, vtcode_core::tools::registry::ToolErrorType::InvalidParameters
+                                | vtcode_core::tools::registry::ToolErrorType::PermissionDenied
+                                | vtcode_core::tools::registry::ToolErrorType::PolicyViolation
+                                | vtcode_core::tools::registry::ToolErrorType::ToolNotFound)
                     )
                 {
                     // While the gate is pending, a verifier-level
@@ -2843,6 +2889,102 @@ pub(crate) fn check_is_argument_error(error_str: &str) -> bool {
 mod tests {
     use serde_json::json;
     use vtcode_core::config::constants::tools;
+
+    #[test]
+    fn rejected_verifier_does_not_grant_repair_edits() {
+        for kind in [
+            vtcode_core::tools::registry::ToolErrorType::InvalidParameters,
+            vtcode_core::tools::registry::ToolErrorType::PermissionDenied,
+            vtcode_core::tools::registry::ToolErrorType::PolicyViolation,
+        ] {
+            let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+            let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Failure {
+                error: vtcode_core::tools::registry::ToolExecutionError::new(
+                    tools::EXEC_COMMAND,
+                    kind,
+                    "verifier rejected",
+                ),
+            });
+            assert!(!update_repetition_tracker(
+                &mut tracker,
+                &outcome,
+                tools::EXEC_COMMAND,
+                &json!({"cmd":"cargo check --locked"})
+            ));
+            assert!(tracker.verification_is_pending());
+            assert_eq!(tracker.fix_edits_remaining, 0);
+            assert!(!tracker.take_verification_result_lost_notice());
+        }
+    }
+
+    #[test]
+    fn running_verifier_requires_its_own_terminal_session_result() {
+        for exit_code in [0, 1] {
+            let mut tracker = LoopTracker::new();
+            tracker.mark_verification_pending();
+            let running = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                output: json!({"session_id": "run-verifier", "lifecycle_state": "running"}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            });
+            update_repetition_tracker(
+                &mut tracker,
+                &running,
+                tools::EXEC_COMMAND,
+                &json!({"cmd": "cargo check --locked"}),
+            );
+            assert!(tracker.verification_is_pending());
+            assert_eq!(tracker.pending_verifier_session_id.as_deref(), Some("run-verifier"));
+            assert_eq!(tracker.fix_edits_remaining, 0);
+
+            let terminal = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                output: json!({"exit_code": exit_code}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: exit_code == 0,
+            });
+            update_repetition_tracker(
+                &mut tracker,
+                &terminal,
+                tools::WRITE_STDIN,
+                &json!({"session_id": "run-unrelated", "action": "wait"}),
+            );
+            assert!(tracker.verification_is_pending(), "unrelated completion cannot verify changes");
+            update_repetition_tracker(
+                &mut tracker,
+                &terminal,
+                tools::WRITE_STDIN,
+                &json!({"session_id": "run-verifier", "action": "wait"}),
+            );
+            assert_eq!(tracker.verification_is_pending(), exit_code != 0);
+            assert!(tracker.pending_verifier_session_id.is_none());
+            assert_eq!(
+                tracker.fix_edits_remaining,
+                if exit_code == 0 {
+                    0
+                } else {
+                    FAILED_VERIFICATION_FIX_ALLOWANCE
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn session_cleanup_remains_available_while_verification_is_pending() {
+        let mut tracker = LoopTracker::new();
+        tracker.mark_verification_pending();
+        for action in ["terminate", "close"] {
+            let args = json!({"session_id": "run-cleanup", "action": action});
+            assert!(!mutation_blocked_until_verification(&tracker, tools::WRITE_STDIN, &args));
+            assert!(vtcode_core::tools::tool_intent::is_turn_budget_exempt_call(tools::WRITE_STDIN, &args));
+        }
+        assert!(mutation_blocked_until_verification(
+            &tracker,
+            tools::WRITE_STDIN,
+            &json!({"session_id":"run-cleanup", "chars":"touch file\n"})
+        ));
+    }
 
     use super::*;
 
@@ -4229,7 +4371,7 @@ mod tests {
     fn only_a_completed_verification_clears_pending_mutation_pressure() {
         let mut tracker = LoopTracker::new();
         let edit = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
-            output: serde_json::json!({}),
+            output: serde_json::json!({"exit_code": 0}),
             stdout: None,
             modified_files: vec![],
             command_success: true,
@@ -4537,7 +4679,7 @@ mod tests {
     fn execution_tool_resets_mutation_counter() {
         let mut tracker = LoopTracker::new();
         let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
-            output: serde_json::json!({}),
+            output: serde_json::json!({"exit_code": 0}),
             stdout: None,
             modified_files: vec![],
             command_success: true,

@@ -14,6 +14,9 @@ pub(crate) enum WriteStdinDispatch {
     Write,
     Poll,
     Wait,
+    Inspect,
+    Terminate,
+    Close,
 }
 
 impl WriteStdinDispatch {
@@ -23,18 +26,31 @@ impl WriteStdinDispatch {
             Self::Write => "write",
             Self::Poll => "poll",
             Self::Wait => "wait",
+            Self::Inspect => "inspect",
+            Self::Terminate => "terminate",
+            Self::Close => "close",
         }
     }
 }
 
 pub(crate) fn write_stdin_dispatch(args: &Value) -> Result<WriteStdinDispatch, &'static str> {
     let payload = args.as_object().ok_or("write_stdin requires a JSON object")?;
-    if payload
-        .get("action")
-        .and_then(Value::as_str)
-        .is_some_and(|action| action.eq_ignore_ascii_case("wait"))
-    {
-        return Ok(WriteStdinDispatch::Wait);
+    if let Some(action) = payload.get("action") {
+        let action = action.as_str().ok_or("write_stdin action must be a string")?;
+        match action.to_ascii_lowercase().as_str() {
+            "wait" => return Ok(WriteStdinDispatch::Wait),
+            "inspect" => return Ok(WriteStdinDispatch::Inspect),
+            "terminate" => return Ok(WriteStdinDispatch::Terminate),
+            "close" => return Ok(WriteStdinDispatch::Close),
+            "poll" => {
+                if payload.get("chars").is_some_and(|chars| chars.as_str() != Some("")) {
+                    return Err("write_stdin poll cannot send chars");
+                }
+                return Ok(WriteStdinDispatch::Poll);
+            }
+            "write" => {}
+            _ => return Err("write_stdin action must be write, poll, wait, inspect, terminate, or close"),
+        }
     }
     let chars = payload
         .get("chars")
@@ -1381,6 +1397,21 @@ mod tests {
     fn write_stdin_dispatch_requires_public_chars() {
         assert_eq!(write_stdin_dispatch(&json!({"input": "status\n"})), Err("write_stdin requires string chars"));
         assert_eq!(write_stdin_dispatch(&json!({"chars": 1})), Err("write_stdin requires string chars"));
+    }
+
+    #[test]
+    fn write_stdin_dispatch_validates_control_actions() {
+        for (action, expected) in [
+            ("inspect", WriteStdinDispatch::Inspect),
+            ("terminate", WriteStdinDispatch::Terminate),
+            ("close", WriteStdinDispatch::Close),
+            ("poll", WriteStdinDispatch::Poll),
+        ] {
+            assert_eq!(write_stdin_dispatch(&json!({"action": action})), Ok(expected));
+        }
+        assert!(write_stdin_dispatch(&json!({"action": "typo", "chars": "echo unsafe\n"})).is_err());
+        assert!(write_stdin_dispatch(&json!({"action": "poll", "chars": "echo unsafe\n"})).is_err());
+        assert!(write_stdin_dispatch(&json!({"action": 1, "chars": ""})).is_err());
     }
 
     #[test]

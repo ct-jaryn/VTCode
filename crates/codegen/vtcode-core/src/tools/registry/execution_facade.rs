@@ -1614,19 +1614,7 @@ impl ToolRegistry {
                     self.execute_command_session_internal(exec_args, exec_settlement_mode).await
                 }
             } else if exec_settlement_mode.settle_noninteractive() && tool_name == tools::WRITE_STDIN {
-                let (exec_args, dispatch) = super::executors::normalize_write_stdin_args(&args)?;
-                match dispatch {
-                    crate::tools::command_args::WriteStdinDispatch::Write => {
-                        self.execute_command_session_write_for_tool(exec_args, tools::WRITE_STDIN).await
-                    }
-                    crate::tools::command_args::WriteStdinDispatch::Poll => {
-                        self.execute_command_session_poll_for_tool(exec_args, exec_settlement_mode, tools::WRITE_STDIN)
-                            .await
-                    }
-                    crate::tools::command_args::WriteStdinDispatch::Wait => {
-                        self.execute_command_session_wait(exec_args).await
-                    }
-                }
+                self.execute_write_stdin(args, exec_settlement_mode).await
             } else if let Some(registration) = self.inventory.registration_for(&tool_name) {
                 // Log deprecation warning if tool is deprecated
                 if registration.is_deprecated() {

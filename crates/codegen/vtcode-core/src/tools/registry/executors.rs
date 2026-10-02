@@ -53,6 +53,7 @@ struct PreparedExecRunRequest {
     cols: Option<u16>,
     sandbox_active: bool,
     background: bool,
+    stdin: bool,
 }
 
 struct ResolvedExecSandboxRequest {
@@ -294,6 +295,10 @@ impl ToolRegistry {
             .as_object()
             .ok_or_else(|| anyhow!("command execution requires a JSON object"))?;
         let background = payload.get("background").and_then(Value::as_bool).unwrap_or(false);
+        let stdin = match payload.get("stdin") {
+            None => false,
+            Some(value) => value.as_bool().ok_or_else(|| anyhow!("stdin must be a boolean"))?,
+        };
 
         let (command, auto_raw_command) = parse_command_parts(payload, missing_error, empty_error)?;
         let shell_program = match backend {
@@ -384,6 +389,7 @@ impl ToolRegistry {
             cols,
             sandbox_active,
             background,
+            stdin,
         })
     }
 
@@ -645,21 +651,28 @@ impl ToolRegistry {
     }
 
     pub(super) fn write_stdin_executor(&self, args: Value) -> BoxFuture<'_, Result<Value>> {
-        Box::pin(async move {
-            let (args, dispatch) = normalize_write_stdin_args(&args)?;
+        Box::pin(self.execute_write_stdin(args, ExecSettlementMode::Manual))
+    }
 
-            let response = match dispatch {
-                crate::tools::command_args::WriteStdinDispatch::Write => {
-                    self.execute_command_session_write_for_tool(args, tools::WRITE_STDIN).await
-                }
-                crate::tools::command_args::WriteStdinDispatch::Poll => {
-                    self.execute_command_session_poll_for_tool(args, ExecSettlementMode::Manual, tools::WRITE_STDIN)
-                        .await
-                }
-                crate::tools::command_args::WriteStdinDispatch::Wait => self.execute_command_session_wait(args).await,
-            }?;
-            Ok(response)
-        })
+    pub(super) async fn execute_write_stdin(&self, args: Value, settlement_mode: ExecSettlementMode) -> Result<Value> {
+        let (args, dispatch) = normalize_write_stdin_args(&args)?;
+
+        let response = match dispatch {
+            crate::tools::command_args::WriteStdinDispatch::Write => {
+                self.execute_command_session_write_for_tool(args, tools::WRITE_STDIN).await
+            }
+            crate::tools::command_args::WriteStdinDispatch::Poll => {
+                self.execute_command_session_poll_for_tool(args, settlement_mode, tools::WRITE_STDIN)
+                    .await
+            }
+            crate::tools::command_args::WriteStdinDispatch::Wait => self.execute_command_session_wait(args).await,
+            crate::tools::command_args::WriteStdinDispatch::Inspect => self.execute_command_session_inspect(args).await,
+            crate::tools::command_args::WriteStdinDispatch::Terminate => {
+                self.execute_command_session_terminate(args).await
+            }
+            crate::tools::command_args::WriteStdinDispatch::Close => self.execute_command_session_close(args).await,
+        }?;
+        Ok(response)
     }
 
     pub(super) fn send_pty_input_executor(&self, args: Value) -> BoxFuture<'_, Result<Value>> {

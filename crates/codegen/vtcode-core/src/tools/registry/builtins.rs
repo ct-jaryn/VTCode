@@ -25,9 +25,9 @@ use crate::tools::web_fetch::{WEB_FETCH_DESCRIPTION, WebFetchTool, web_fetch_par
 use crate::tools::web_search::{WEB_SEARCH_DESCRIPTION, WebSearchTool};
 use serde_json::json;
 use vtcode_utility_tool_specs::{
-    AGENT_DESCRIPTION, EXEC_COMMAND_DESCRIPTION, MCP_DESCRIPTION, SEARCH_TOOLS_DESCRIPTION, agent_parameters,
-    apply_patch_parameters, code_search_parameters, cron_parameters, exec_command_parameters, list_files_parameters,
-    mcp_parameters, search_tools_parameters, write_stdin_parameters,
+    AGENT_DESCRIPTION, EXEC_COMMAND_DESCRIPTION, MCP_DESCRIPTION, SEARCH_TOOLS_DESCRIPTION, WRITE_STDIN_DESCRIPTION,
+    agent_parameters, apply_patch_parameters, code_search_parameters, cron_parameters, exec_command_parameters,
+    list_files_parameters, mcp_parameters, search_tools_parameters, write_stdin_parameters,
 };
 
 use super::distributed::{BUILTIN_TOOLS, tool_config};
@@ -346,7 +346,7 @@ fn register_exec_pty_cmd(_plan_state: Option<&PlanningWorkflowState>) -> ToolReg
 #[distributed_slice(BUILTIN_TOOLS)]
 fn register_write_stdin(_plan_state: Option<&PlanningWorkflowState>) -> ToolRegistration {
     ToolRegistration::new(tools::WRITE_STDIN, CapabilityLevel::Bash, false, ToolRegistry::write_stdin_executor)
-        .with_description("Write characters to an active exec_command session, poll for fresh output, or use action=wait to block until it exits. Wait deadlines return a reusable in-progress session and never kill the process.")
+        .with_description(WRITE_STDIN_DESCRIPTION)
         .with_parameter_schema(write_stdin_parameters())
         .with_permission(ToolPolicy::Allow)
 }

@@ -26,6 +26,16 @@ For the live AI-facing tool call, pass the command through `exec_command.cmd`:
 {"cmd":"rg -n \"TODO\" src"}
 ```
 
+Pipe stdin defaults to EOF, so a pathless `rg` searches the working directory. Set `"stdin": true` only when
+you intend to send input later. Use the returned session ID for command lifecycle actions:
+
+| Action  | `write_stdin` arguments                        | Behavior                                              |
+| ------- | ---------------------------------------------- | ----------------------------------------------------- |
+| Wait    | `{"session_id":"run-id","action":"wait"}`      | Wait until exit or deadline; never kills the command. |
+| Inspect | `{"session_id":"run-id","action":"inspect"}`   | Read a bounded snapshot.                              |
+| Stop    | `{"session_id":"run-id","action":"terminate"}` | Kill the owned process group and capture output.      |
+| Release | `{"session_id":"run-id","action":"close"}`     | Cancel if necessary and remove the session record.    |
+
 ## Common Search Patterns
 
 | Task           | Regex                   | File filter          | Notes                             |
