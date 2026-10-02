@@ -328,7 +328,7 @@ impl ToolRegistry {
         };
         if !self.inventory.command_policy_allows(policy_command) {
             return Err(anyhow!(
-                "command '{}' is not permitted by the execution policy",
+                "Execution policy violation: command '{}' is not permitted by the execution policy",
                 prepared_command.requested_command_display
             ));
         }

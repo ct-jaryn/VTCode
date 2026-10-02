@@ -140,7 +140,9 @@ Exec-session lookup failures are typed `ResourceNotFound` errors with the existi
 Wait, poll, and inspect propagate missing-session/output errors immediately instead of returning empty success or
 spending the full wait deadline. Recover the exact ID from the original response and reuse recorded completion output. A
 missing handle does not prove a command failed; rerun only when fresh execution is needed. The pending-verification gate
-still requires a successful verifier when its result was lost.
+still requires a successful verifier when its result was lost. If the running verifier's session ID is known, a missing
+unrelated session cannot discard that ID or grant verifier repair edits. Session identity uses the same normalization as
+the execution tools for completion, cleanup, and loss recovery.
 
 Cross-turn resume hint body is transient, not universal guidance: when a turn ends with a live foreground session, the
 next turn start injects a bounded `Exec session resume:` hint via `append_transient_turn_notes` (same path for normal

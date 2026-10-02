@@ -2641,21 +2641,19 @@ pub(crate) fn update_repetition_tracker(
     let canonical_name = canonical_tool_name(name);
     let signature_key = signature_key_for(canonical_name, args);
     loop_tracker.record(signature_key.clone());
+    let targets_pending_verifier = loop_tracker
+        .pending_verifier_session_id
+        .as_deref()
+        .is_some_and(|session_id| vtcode_core::tools::command_args::session_id_text(args) == Some(session_id));
     // Session cleanup never represents a workspace edit or a verifier verdict.
     if vtcode_core::tools::tool_intent::is_exec_session_cleanup_call(canonical_name, args) {
-        if matches!(&outcome.status, ToolExecutionStatus::Success { .. })
-            && args.get("session_id").and_then(serde_json::Value::as_str)
-                == loop_tracker.pending_verifier_session_id.as_deref()
-            && loop_tracker.pending_verifier_session_id.is_some()
-        {
+        if matches!(&outcome.status, ToolExecutionStatus::Success { .. }) && targets_pending_verifier {
             loop_tracker.pending_verifier_session_id = None;
         }
         return false;
     }
     if is_session_follow_up(canonical_name, args)
-        && loop_tracker.pending_verifier_session_id.is_some()
-        && args.get("session_id").and_then(serde_json::Value::as_str)
-            == loop_tracker.pending_verifier_session_id.as_deref()
+        && targets_pending_verifier
         && let ToolExecutionStatus::Success { output, .. } = &outcome.status
         && let Some(exit_code) = output.get("exit_code").and_then(serde_json::Value::as_i64)
     {
@@ -2707,9 +2705,11 @@ pub(crate) fn update_repetition_tracker(
     // follow-up never classifies as ShellActivity::Verification. While the
     // gate is pending, treat it like a failed verifier so the model gets a
     // bounded fix/diagnostic window instead of deadlocking behind a gate
-    // that can no longer observe a successful verifier.
+    // that can no longer observe a successful verifier. When its identity is
+    // known, an unrelated missing session must not discard the live verifier.
     if is_session_follow_up(canonical_name, args)
         && loop_tracker.verification_is_pending()
+        && (loop_tracker.pending_verifier_session_id.is_none() || targets_pending_verifier)
         && let ToolExecutionStatus::Failure { error } = &outcome.status
         && (error.is_exec_session_not_found() || error_text_indicates_lost_session(&error.message))
     {
@@ -2955,7 +2955,7 @@ mod tests {
                 &mut tracker,
                 &terminal,
                 tools::WRITE_STDIN,
-                &json!({"session_id": "run-verifier", "action": "wait"}),
+                &json!({"session_id": " run-verifier ", "action": "wait"}),
             );
             assert_eq!(tracker.verification_is_pending(), exit_code != 0);
             assert!(tracker.pending_verifier_session_id.is_none());
@@ -3820,6 +3820,42 @@ mod tests {
         assert!(!tracker.verification_is_pending());
         assert_eq!(tracker.fix_edits_remaining, 0);
         assert!(!tracker.take_verification_result_lost_notice());
+    }
+
+    #[test]
+    fn missing_session_recovery_preserves_unrelated_running_verifier() {
+        for (args, grants_recovery) in [
+            (json!({"session_id": "run-verifier", "action": "wait"}), true),
+            (json!({"session_id": " run-verifier ", "action": "wait"}), true),
+            (json!({"s": "run-verifier", "action": "wait"}), true),
+            (json!({"session_id": "run-other", "action": "wait"}), false),
+            (json!({"action": "wait"}), false),
+        ] {
+            let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+            tracker.pending_verifier_session_id = Some("run-verifier".to_string());
+            let failure = ToolPipelineOutcome::from_status(ToolExecutionStatus::Failure {
+                error: vtcode_core::tools::registry::ToolExecutionError::new(
+                    tools::WRITE_STDIN,
+                    vtcode_core::tools::registry::ToolErrorType::ResourceNotFound,
+                    "session unavailable",
+                )
+                .with_debug_metadata("failure_code", "exec_session_not_found"),
+            });
+            assert_eq!(
+                update_repetition_tracker(&mut tracker, &failure, tools::WRITE_STDIN, &args),
+                grants_recovery,
+                "{args}"
+            );
+            assert!(tracker.verification_is_pending());
+            assert_eq!(tracker.take_verification_result_lost_notice(), grants_recovery);
+            if grants_recovery {
+                assert!(tracker.pending_verifier_session_id.is_none());
+                assert_eq!(tracker.fix_edits_remaining, FAILED_VERIFICATION_FIX_ALLOWANCE);
+            } else {
+                assert_eq!(tracker.pending_verifier_session_id.as_deref(), Some("run-verifier"));
+                assert_eq!(tracker.fix_edits_remaining, 0);
+            }
+        }
     }
 
     #[test]

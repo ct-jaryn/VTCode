@@ -23,6 +23,23 @@ use vtcode_commons::canonicalize;
 
 const CUSTOM_TOOL_NAME: &str = "custom_test_tool";
 
+#[tokio::test]
+async fn rejected_exec_policy_is_not_a_lost_execution_result() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    let mut commands = registry.commands_config();
+    commands.deny_list.push("rustc".to_string());
+    registry.apply_commands_config(&commands);
+    let response = registry
+        .execute_tool(tools::EXEC_COMMAND, json!({"cmd": "rustc --version"}))
+        .await?;
+    assert_eq!(response["error"]["error_type"], "PolicyViolation");
+    assert!(response.get("exit_code").is_none());
+    assert!(registry.in_progress_exec_sessions(32).await.is_empty());
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn public_pipe_stdin_defaults_to_eof_and_opt_in_accepts_input() -> Result<()> {

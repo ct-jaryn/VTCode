@@ -249,7 +249,7 @@ pub fn exec_command_parameters() -> Value {
 }
 
 /// Shared model-facing description for execution session controls.
-pub const WRITE_STDIN_DESCRIPTION: &str = "Write input to an owned exec session (pipe runs require stdin: true at launch), poll for fresh output, wait until exit or deadline, inspect a bounded snapshot, terminate its process group, or close and release it. Wait never kills the process; use the returned exact session_id.";
+pub const WRITE_STDIN_DESCRIPTION: &str = "Control an owned exec session using its exact session_id: write input (pipe requires stdin: true at launch), poll output, wait for exit or deadline, inspect, terminate the process group, or close and release it. Wait never kills.";
 
 #[must_use]
 pub fn write_stdin_parameters() -> Value {

@@ -1116,6 +1116,9 @@ mod tests {
             std::fs::write(&script, "#!/bin/sh\nsleep 2\nprintf 'verifier-finished\\n'\n").unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
             ctx.tool_registry.allow_all_tools().await.unwrap();
+            let mut commands = ctx.tool_registry.commands_config();
+            commands.allow_list.push("./rustc".to_string());
+            ctx.tool_registry.apply_commands_config(&commands);
         }
         let mut tracker = LoopTracker::new();
         tracker.mark_verification_pending();
