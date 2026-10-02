@@ -14,40 +14,43 @@
 [![Model Context Protocol](https://img.shields.io/badge/Model_Context_Protocol-A63333?style=flat-square&logo=modelcontextprotocol&logoColor=white)](./docs/guides/mcp-integration.md)
 [![Agent Plugins](https://img.shields.io/badge/Agent_Plugins-5865F2?style=flat-square)](./docs/guides/agent-plugins.md)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vinhnx/VTCode)
+
 <!-- markdownlint-disable-next-line MD013 -->
 <a href="https://www.producthunt.com/products/vt-code?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vt-code" target="_blank" rel="noopener noreferrer"><img alt="VT Code - Open-source coding agent harness built for long-running work | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1248210&amp;theme=light&amp;t=1789739815450"></a>
 
 </div>
 
-> [!TIP] New here? Start with [Installation](./docs/installation/README.md), then
-> [Getting Started](./docs/user-guide/getting-started.md).
-
 <details>
 <summary><strong>Contents</strong></summary>
 
-- [Overview](#overview)
-- [Quick start](#quick-start)
-  - [1. Install](#1-install)
-  - [2. Configure your project](#2-configure-your-project)
-  - [3. Run your first task](#3-run-your-first-task)
-- [Usage](#usage)
-  - [Interactive](#interactive)
-  - [Headless](#headless)
-  - [Scheduled tasks](#scheduled-tasks)
-  - [Sessions](#sessions)
-- [Extend and integrate](#extend-and-integrate)
-  - [Extensions](#extensions)
-  - [Editors](#editors)
-  - [Cross-session memory](#cross-session-memory)
-- [Documentation](#documentation)
-- [Development](#development)
-- [Contributing](#contributing)
-- [Community](#community)
-  - [Contact](#contact)
-  - [Resources](#resources)
-  - [Share VT Code](#share-vt-code)
-  - [Sponsorship](#sponsorship)
-- [License](#license)
+- [VT Code](#vt-code)
+  - [Overview](#overview)
+  - [Quick start](#quick-start)
+    - [1. Install](#1-install)
+    - [2. Configure your project](#2-configure-your-project)
+    - [3. Run your first task](#3-run-your-first-task)
+  - [Usage](#usage)
+    - [Interactive](#interactive)
+    - [Headless](#headless)
+    - [Scheduled tasks](#scheduled-tasks)
+    - [Sessions](#sessions)
+  - [Extend and integrate](#extend-and-integrate)
+    - [Extensions](#extensions)
+    - [Editors](#editors)
+    - [Cross-session memory](#cross-session-memory)
+  - [Documentation](#documentation)
+  - [Development](#development)
+  - [Contributing](#contributing)
+  - [Community](#community)
+    - [Security Advisors](#security-advisors)
+    - [Main Contributor](#main-contributor)
+    - [Core Contributors](#core-contributors)
+    - [Contributors](#contributors)
+    - [Contact](#contact)
+    - [Resources](#resources)
+    - [Share VT Code](#share-vt-code)
+    - [Sponsorship](#sponsorship)
+  - [License](#license)
 
 </details>
 
@@ -70,8 +73,6 @@ context, tools, and execution policy.
 <em>Plan, run, and review coding work from your terminal.</em>
 
 </div>
-
-> [!NOTE] **Status:** Active development; some automation flows are experimental.
 
 ## Quick start
 
@@ -275,6 +276,7 @@ Thanks to everyone who builds, tests, and improves VT Code.
 <!-- CONTRIBUTORS:START -->
 
 <!-- markdownlint-disable MD013 -->
+
 ### Security Advisors
 
 <a href="https://github.com/glmgbj233"><img src="https://avatars.githubusercontent.com/u/115564047?v=4&s=60" width="40" height="40" alt="@glmgbj233" title="@glmgbj233 GHSA-wqgw-crr5-cr2p (security advisory)" style="border-radius: 50%; border: 2px solid #FF6B6B;" /></a>&nbsp;
@@ -312,6 +314,7 @@ Thanks to everyone who builds, tests, and improves VT Code.
 <a href="https://github.com/EvoLinkAI"><img src="https://avatars.githubusercontent.com/u/253253881?v=4&s=60" width="40" height="40" alt="@EvoLinkAI" title="@EvoLinkAI Contributor (1 commit) - Evolink provider (#664)" style="border-radius: 50%; border: 2px solid #B19CD9;" /></a>&nbsp;
 <a href="https://github.com/ericcurtin"><img src="https://avatars.githubusercontent.com/u/1694275?v=4&s=60" width="40" height="40" alt="@ericcurtin" title="@ericcurtin Contributor (1 commit)" style="border-radius: 50%; border: 2px solid #B19CD9;" /></a>&nbsp;
 <a href="https://github.com/diegosouzapw"><img src="https://avatars.githubusercontent.com/u/8016841?v=4&s=60" width="40" height="40" alt="@diegosouzapw" title="@diegosouzapw Contributor (1 commit)" style="border-radius: 50%; border: 2px solid #B19CD9;" /></a>&nbsp;
+
 <!-- markdownlint-enable MD013 -->
 
 <!-- CONTRIBUTORS:END -->
@@ -354,17 +357,18 @@ If VT Code helped you ship something, telling other developers is the easiest wa
 
 VT Code is maintained in spare time; a [sponsorship](https://github.com/sponsors/vinhnx) keeps it independent.
 
-<!-- markdownlint-disable-next-line MD013 -->
-<a href="https://github.com/dnhn"><img src="https://avatars.githubusercontent.com/u/2561973" width="80" height="80" alt="@dnhn" style="border-radius: 50%" /></a>
-<!-- markdownlint-disable-next-line MD013 -->
-<a href="https://github.com/codemod"><img src="https://avatars.githubusercontent.com/u/78830094" width="80" height="80" alt="@codemod" style="border-radius: 50%" /></a>
-<!-- markdownlint-disable-next-line MD013 -->
-<a href="https://github.com/coderabbitai"><img src="https://avatars.githubusercontent.com/u/132028505" width="80" height="80" alt="@coderabbitai" style="border-radius: 50%" /></a>
-<!-- markdownlint-disable-next-line MD013 -->
-<a href="https://github.com/KhaiRyth"><img src="https://avatars.githubusercontent.com/u/273723951" width="80" height="80" alt="@KhaiRyth" style="border-radius: 50%" /></a>
+<div align="center">
 
+[![@dnhn](https://avatars.githubusercontent.com/u/2561973?s=80)](https://github.com/dnhn)&nbsp;
+[![@codemod](https://avatars.githubusercontent.com/u/78830094?s=80)](https://github.com/codemod)&nbsp;
+[![@coderabbitai](https://avatars.githubusercontent.com/u/132028505?s=80)](https://github.com/coderabbitai)&nbsp;
+[![@KhaiRyth](https://avatars.githubusercontent.com/u/273723951?s=80)](https://github.com/KhaiRyth)
+
+<!-- markdownlint-disable-next-line MD013 -->
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-30363D?style=for-the-badge&logo=github-sponsors&logoColor=%23EA4AAA)](https://github.com/sponsors/vinhnx)
 [![Buy Me a Coffee](./resources/screenshots/qr_donate.png)](https://buymeacoffee.com/vinhnx)
+
+</div>
 
 ## License
 
