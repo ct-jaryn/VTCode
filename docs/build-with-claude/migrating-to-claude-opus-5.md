@@ -5,7 +5,8 @@ API contract changes.
 
 ---
 
-> [!NOTE] This guide is specific to VT Code. For the underlying Anthropic API changes, see the official
+> [!NOTE]
+> This guide is specific to VT Code. For the underlying Anthropic API changes, see the official
 > [Migrating to Claude Opus 5](https://docs.anthropic.com/en/build-with-claude/migrating-to-claude-opus-5) guide. VT
 > Code's `AnthropicProvider` handles most wire-level translations automatically; the items below are what you need to
 > change in VT Code config or code.
@@ -213,7 +214,8 @@ thinking_display = "summarized"
 
 ### Opus 4.8 → Fable 5 / Mythos 5
 
-> [!NOTE] If you are on Opus 4.7 or earlier, apply the [Opus 4.7 → Opus 5](#opus-47--opus-5) changes first, then the
+> [!NOTE]
+> If you are on Opus 4.7 or earlier, apply the [Opus 4.7 → Opus 5](#opus-47--opus-5) changes first, then the
 > remaining delta below.
 
 #### Config changes
@@ -349,7 +351,8 @@ No other config changes are required for this hop. VT Code's request builder aut
 
 ### Opus 4.7 → Opus 5
 
-> [!NOTE] If you are on Opus 4.6 or earlier, use the [Opus 4.6 → Opus 5](#opus-46--opus-5) section instead. It includes
+> [!NOTE]
+> If you are on Opus 4.6 or earlier, use the [Opus 4.6 → Opus 5](#opus-46--opus-5) section instead. It includes
 > breaking changes (sampling parameters, prefill, tokenizer) that this hop does not cover.
 
 The same config changes as the Opus 4.8 → Opus 5 hop apply. The only additional item: if you used

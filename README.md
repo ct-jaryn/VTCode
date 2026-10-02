@@ -95,7 +95,8 @@ cargo install vtcode
 See the [installation guide](./docs/installation/README.md) for prerequisites, other methods, and the installer script
 you can review before running.
 
-> [!NOTE] Windows artifacts are best-effort and may lag behind macOS/Linux.
+> [!NOTE]
+> Windows artifacts are best-effort and may lag behind macOS/Linux.
 
 ### 2. Configure your project
 
@@ -111,11 +112,13 @@ Replace `openai` with your supported provider. Credentials can also come from en
 `.env`; `vtcode login` handles supported login flows. See [Getting started](./docs/user-guide/getting-started.md) and
 [Provider guides](./docs/providers/PROVIDER_GUIDES.md).
 
-> [!NOTE] ChatGPT OAuth reuses the Codex CLI's public client identity via an unofficial compatibility flow; prefer your
+> [!NOTE]
+> ChatGPT OAuth reuses the Codex CLI's public client identity via an unofficial compatibility flow; prefer your
 > own OpenAI API key. GitHub Copilot uses the official `copilot` CLI. See
 > [OAuth authentication](./docs/guides/oauth-authentication.md).
->
-> [!CAUTION] Never commit API keys or put them in `vtcode.toml`.
+
+> [!CAUTION]
+> Never commit API keys or put them in `vtcode.toml`.
 
 ### 3. Run your first task
 
