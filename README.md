@@ -27,10 +27,12 @@
 - [Quick start](#quick-start)
   - [1. Install](#1-install)
   - [2. Configure your project](#2-configure-your-project)
-  - [3. Start an interactive session](#3-start-an-interactive-session)
-- [Workflows](#workflows)
-  - [Headless runs](#headless-runs)
-  - [Scheduling and sessions](#scheduling-and-sessions)
+  - [3. Run your first task](#3-run-your-first-task)
+- [Usage](#usage)
+  - [Interactive](#interactive)
+  - [Headless](#headless)
+  - [Scheduled tasks](#scheduled-tasks)
+  - [Sessions](#sessions)
 - [Integrations](#integrations)
 - [Documentation](#documentation)
 - [Development](#development)
@@ -110,15 +112,15 @@ login flows. See [Getting started](./docs/user-guide/getting-started.md) and
 [Provider guides](./docs/providers/PROVIDER_GUIDES.md).
 
 > [!NOTE]
-> ChatGPT OAuth reuses the Codex CLI's public client identity through an
-> unofficial compatibility flow, so prefer your own OpenAI API key; GitHub
-> Copilot uses the official `copilot` CLI. See
+> ChatGPT OAuth reuses the Codex CLI's public client identity via an unofficial
+> compatibility flow; prefer your own OpenAI API key. GitHub Copilot uses the
+> official `copilot` CLI. See
 > [OAuth authentication](./docs/guides/oauth-authentication.md).
 
 > [!CAUTION]
 > Never commit API keys or put them in `vtcode.toml`.
 
-### 3. Start an interactive session
+### 3. Run your first task
 
 ```bash
 vtcode   # open the interactive TUI in your project
@@ -126,18 +128,18 @@ vtcode   # open the interactive TUI in your project
 
 Start with a focused request, such as “Explain how this project handles
 authentication,” then review the diff and test results before committing. For
-automation and session commands, see [Workflows](#workflows).
+automation and session commands, see [Usage](#usage).
 
-## Workflows
+## Usage
 
-### Interactive work
+### Interactive
 
 Use `vtcode` to explore a codebase, plan a change, and implement it in the TUI.
 For larger tasks, start with [read-only planning](./docs/guides/planning-workflow.md)
 and review [turn diffs](./docs/development/diff-preview.md) before committing.
 See the [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
-### Headless runs
+### Headless
 
 Run tasks without the TUI: `ask` for a tool-free answer, `exec` for a
 tool-enabled coding task, and `review` for uncommitted changes:
@@ -153,12 +155,13 @@ vtcode review                     # agent review of uncommitted changes
 fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. Full-auto's tool
 allow-list, explicit denies, and execution policy still apply. See
 [exec mode](./docs/user-guide/exec-mode.md) for trust and output options and
-[full automation](./docs/guides/full-automation.md) for configuration. For
-repeatable, environment-checked results, use the
+[full automation](./docs/guides/full-automation.md) for configuration.
+
+For repeatable, environment-checked results, use the
 [eval framework](./docs/guides/eval.md) — a completion message alone is not
 verification.
 
-### Scheduling and sessions
+### Scheduled tasks
 
 For recurring work, use [scheduled tasks](./docs/user-guide/scheduled-tasks.md):
 durable prompt jobs on the same exec runtime.
@@ -169,6 +172,10 @@ vtcode schedule create --name "weekly-dep-audit" \
   --cron "0 9 * * 1" \
   --prompt "Check for outdated dependencies and report known vulnerabilities"
 ```
+
+### Sessions
+
+Resume or inspect earlier work:
 
 ```bash
 # Resume the most recent interactive session
@@ -187,10 +194,10 @@ Use `vtcode continue --session-id <id>` to fork an earlier session.
 
 Enable these only when you need them; none are required for the quick start.
 
-- **Tools and extensions:** [MCP servers](./docs/guides/mcp-integration.md),
+- **Extensions:** [MCP servers](./docs/guides/mcp-integration.md),
   [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
   [Plugins](./docs/guides/agent-plugins.md).
-- **Editors:** [ACP with Zed](./docs/guides/zed-acp.md).
+- **Editor integration:** [ACP with Zed](./docs/guides/zed-acp.md).
 - **Cross-thread memory:** [Memcode MCP](./docs/guides/memcode-mcp.md) carries
   context between tasks; see the
   [write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
@@ -203,8 +210,8 @@ Enable these only when you need them; none are required for the quick start.
 
 The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
 ([mirror](https://vinhnx.github.io/VTCode/)) uses this authenticated,
-workspace-scoped bridge. Setup and deployment:
-[WebMCP user guide](./docs/user-guide/webmcp.md) ·
+workspace-scoped bridge. See the
+[WebMCP user guide](./docs/user-guide/webmcp.md) and
 [deployment reference](./docs/reference/webmcp.md).
 
 ## Documentation
