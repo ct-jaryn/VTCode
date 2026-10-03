@@ -440,8 +440,10 @@ impl OpenAIProvider {
     }
 
     fn supports_responses_allowed_tools(&self, model: &str) -> bool {
+        // `gpt-5` requires the Responses API but is intentionally absent from
+        // `RESPONSES_API_MODELS`; the resolved state (Required/Allowed vs
+        // Disabled) is the single source of truth for eligibility here.
         self.supports_tools(model)
-            && Self::is_responses_api_model(model)
             && !matches!(self.responses_api_state(model), ResponsesApiState::Disabled)
             && (self.is_native_openai_api() || self.is_chatgpt_backend())
     }

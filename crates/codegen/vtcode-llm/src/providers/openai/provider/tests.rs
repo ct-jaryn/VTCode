@@ -2871,8 +2871,9 @@ fn responses_payload_includes_prompt_cache_retention_for_native_openai() {
         None,
         None,
     );
-    // Responses API model
-    let payload = responses_payload_for(models::openai::GPT_5_CODEX, &provider);
+    // Responses API model (non-GPT-5.6: uses the legacy `prompt_cache_retention`
+    // field; GPT-5.6+ instead emits `prompt_cache_options.ttl`).
+    let payload = responses_payload_for(models::openai::GPT_5_1, &provider);
     assert_eq!(payload.get("prompt_cache_retention").and_then(Value::as_str), Some("24h"));
     // Chat Completions model - should NOT have it
     let chat_payload = chat_payload_for(models::openai::GPT_5, &provider);
@@ -3055,8 +3056,11 @@ fn responses_payload_uses_max_output_tokens_field() {
 
 #[test]
 fn chatgpt_backend_omits_max_output_tokens_and_blocks_unsupported_minimal_reasoning() {
-    let provider = chatgpt_backend_provider(models::openai::GPT_5_CODEX);
-    let mut request = sample_request(models::openai::GPT_5_CODEX);
+    // `gpt-5.6-sol` is the current Codex-family model (the deprecation
+    // replacement for `gpt-5-codex`); it advertises low/medium/high/xhigh/max,
+    // so `minimal` must fail closed rather than degrade silently.
+    let provider = chatgpt_backend_provider(models::openai::GPT_5_6_SOL);
+    let mut request = sample_request(models::openai::GPT_5_6_SOL);
     request.max_tokens = Some(512);
     assert_absent(&provider.convert_to_openai_responses_format(&request).expect("should succeed"), "max_output_tokens");
 
@@ -3076,9 +3080,9 @@ fn responses_payload_defaults_gpt_5_6_sol_reasoning_to_none() {
 }
 
 #[test]
-fn responses_payload_defaults_gpt_5_codex_reasoning_to_high() {
+fn responses_payload_defaults_gpt_5_6_terra_reasoning_to_high() {
     let payload =
-        responses_payload_for(models::openai::GPT_5_CODEX, &native_openai_provider(models::openai::GPT_5_CODEX));
+        responses_payload_for(models::openai::GPT_5_6_TERRA, &native_openai_provider(models::openai::GPT_5_6_TERRA));
     assert_eq!(payload.get("reasoning").and_then(|r| r.get("effort")).and_then(Value::as_str), Some("high"));
 }
 
@@ -3183,7 +3187,7 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
     let Some(server) = start_mock_server_or_skip().await else {
         return;
     };
-    let provider = test_provider(&server.uri(), models::openai::GPT_5_NANO);
+    let provider = test_provider(&server.uri(), models::openai::GPT_6_ASTRA);
     let seen_models = Arc::new(Mutex::new(Vec::new()));
     let seen_for_mock = Arc::clone(&seen_models);
 
@@ -3193,8 +3197,8 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
             let model = payload.get("model").and_then(Value::as_str).expect("model required");
             seen_for_mock.lock().expect("not poisoned").push(model.to_string());
             match model {
-                models::openai::GPT_5_NANO => ResponseTemplate::new(404).set_body_string("model_not_found"),
-                models::openai::GPT_5_MINI => ResponseTemplate::new(200).set_body_json(json!({
+                models::openai::GPT_6_ASTRA => ResponseTemplate::new(404).set_body_string("model_not_found"),
+                models::openai::GPT_5_6_SOL => ResponseTemplate::new(200).set_body_json(json!({
                     "id": "resp_fallback", "status": "completed",
                     "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fallback response"}]}]
                 })),
@@ -3205,7 +3209,7 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
     let response = provider
         .generate(provider::LLMRequest {
             messages: vec![provider::Message::user("Hello".to_string())].into(),
-            model: models::openai::GPT_5_NANO.to_string(),
+            model: models::openai::GPT_6_ASTRA.to_string(),
             ..Default::default()
         })
         .await
@@ -3214,8 +3218,8 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
     assert_eq!(
         seen_models.lock().expect("not poisoned").as_slice(),
         &[
-            models::openai::GPT_5_NANO.to_string(),
-            models::openai::GPT_5_MINI.to_string()
+            models::openai::GPT_6_ASTRA.to_string(),
+            models::openai::GPT_5_6_SOL.to_string()
         ]
     );
 }

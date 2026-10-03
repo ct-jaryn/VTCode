@@ -6,6 +6,30 @@
 
 //! Unified formatting utilities for UI and logging
 
+/// Case-insensitive ASCII substring search that does not allocate a lowercased
+/// copy of either input.
+///
+/// Equivalent to
+/// `haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())` for all
+/// inputs, because `[u8]::eq_ignore_ascii_case` is a length-preserving bytewise
+/// fold and byte comparison only matches at the same offset on both sides. Bytes
+/// `>= 0x80` are compared exactly (neither `to_ascii_lowercase` nor
+/// `eq_ignore_ascii_case` folds them), so non-ASCII haystacks and needles behave
+/// identically. An empty `needle` matches (as `str::contains` does).
+#[inline]
+pub fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    // `windows` yields nothing when the haystack is shorter than the needle, and
+    // the empty-needle `windows(0)` panic is guarded above.
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 /// Format file size in human-readable form (KB, MB, GB, etc.)
 pub fn format_size(size: u64) -> String {
     const KB: u64 = 1024;
@@ -799,6 +823,39 @@ mod tests {
     fn truncate_byte_budget_ascii() {
         assert_eq!(truncate_byte_budget("hello world", 5, "..."), "hello...");
         assert_eq!(truncate_byte_budget("hi", 10, "..."), "hi");
+    }
+
+    #[test]
+    fn contains_ignore_ascii_case_matches_str_contains_semantics() {
+        // Mixed case on both sides.
+        assert!(contains_ignore_ascii_case("MiniMax-M2.5", "minimax-m2.5"));
+        assert!(contains_ignore_ascii_case("minimax-m2.5", "MINIMAX"));
+        // Uppercase needle only (no lowercase form provided).
+        assert!(contains_ignore_ascii_case("openai/gpt-5", "GPT-5"));
+        // Empty needle matches, as `str::contains("")` does.
+        assert!(contains_ignore_ascii_case("anything", ""));
+        // Needle longer than the haystack.
+        assert!(!contains_ignore_ascii_case("glm", "glm-4.5"));
+        // No match.
+        assert!(!contains_ignore_ascii_case("openai/gpt-5", "minimax"));
+    }
+
+    #[test]
+    fn contains_ignore_ascii_case_matches_lowercased_contains_for_unicode() {
+        // ASCII needle inside a non-ASCII haystack: `to_ascii_lowercase` leaves
+        // multi-byte bytes untouched, so results must agree exactly.
+        for (haystack, needle) in [
+            ("café GLM-5", "glm-5"),
+            ("日本語 <THINK", "<think"),
+            ("straße", "STRASSE"),
+            ("naïve", "naïve"),
+        ] {
+            assert_eq!(
+                contains_ignore_ascii_case(haystack, needle),
+                haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase()),
+                "mismatch for haystack={haystack:?} needle={needle:?}"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::types as llm_types;
 use crate::utils::extract_reasoning_content;
 use futures::StreamExt;
 use serde_json::{Value, json};
+use vtcode_commons::formatting::contains_ignore_ascii_case;
 use vtcode_config::core::{PromptCachingConfig, ProviderPromptCachingConfig};
 
 use crate::providers::openai::tool_serialization::sanitize_openai_function_parameters;
@@ -220,6 +221,19 @@ pub(crate) fn serialize_message_content_openai(content: &MessageContent) -> Valu
                 return Value::String(String::new());
             }
 
+            // Filter first: most `Parts` payloads are text-only, so avoid
+            // building a `Vec<Value>` of JSON part objects only to discard it
+            // and keep the concatenated string.
+            if message_content_is_text_only(content) {
+                let mut text_only = String::new();
+                for part in parts {
+                    if let ContentPart::Text { text } = part {
+                        text_only.push_str(text);
+                    }
+                }
+                return Value::String(text_only);
+            }
+
             let mut has_non_text = false;
             let mut serialized_parts = Vec::with_capacity(parts.len());
             let mut text_only = String::new();
@@ -303,14 +317,16 @@ pub(crate) fn serialize_message_content_openai_for_model(message: &Message, mode
 /// Works across direct model ids and provider-qualified ids.
 #[inline]
 pub(crate) fn is_minimax_m2_model(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    lower.contains("minimax-m2.5") || lower.contains("minimax-m2.7") || lower.contains("minimax-m3")
+    contains_ignore_ascii_case(model, "minimax-m2.5")
+        || contains_ignore_ascii_case(model, "minimax-m2.7")
+        || contains_ignore_ascii_case(model, "minimax-m3")
 }
 
 #[inline]
 fn is_glm_interleaved_thinking_model(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    lower.contains("glm-5") || lower.contains("glm45") || lower.contains("glm-4.5")
+    contains_ignore_ascii_case(model, "glm-5")
+        || contains_ignore_ascii_case(model, "glm45")
+        || contains_ignore_ascii_case(model, "glm-4.5")
 }
 
 /// Returns true when the model family relies on interleaved `<think>...</think>`
@@ -322,12 +338,11 @@ pub(crate) fn is_interleaved_thinking_model(model: &str) -> bool {
 
 #[inline]
 fn text_contains_interleaved_reasoning_markup(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("<think")
-        || lower.contains("<thinking")
-        || lower.contains("<reasoning")
-        || lower.contains("<analysis")
-        || lower.contains("<thought")
+    contains_ignore_ascii_case(text, "<think")
+        || contains_ignore_ascii_case(text, "<thinking")
+        || contains_ignore_ascii_case(text, "<reasoning")
+        || contains_ignore_ascii_case(text, "<analysis")
+        || contains_ignore_ascii_case(text, "<thought")
 }
 
 fn message_content_is_text_only(content: &MessageContent) -> bool {
@@ -1425,6 +1440,7 @@ mod tests {
         extract_reasoning_text_from_serialized_details, float_to_json_number, is_interleaved_thinking_model,
         is_minimax_m2_model, normalize_reasoning_detail_object, parse_chat_request_openai_format,
         parse_response_openai_format, parse_usage_openai_format, read_provider_error_body, sampling_param_f64,
+        serialize_message_content_openai,
     };
     use crate::provider::{AssistantPhase, Message};
     use serde_json::{Value, json};
@@ -1449,6 +1465,25 @@ mod tests {
 
         assert_eq!(body.len(), PROVIDER_ERROR_BODY_MAX_BYTES);
         assert!(!body.contains("tail-that-must-not-be-read"));
+    }
+
+    #[test]
+    fn serialize_message_content_openai_text_only_parts_matches_concatenation() {
+        use crate::provider::{ContentPart, MessageContent};
+        // Text-only `Parts` take the fast path; it must equal the string form
+        // and must not emit a JSON array.
+        let content = MessageContent::parts(vec![
+            ContentPart::text("alpha".to_string()),
+            ContentPart::text("beta".to_string()),
+        ]);
+        assert_eq!(serialize_message_content_openai(&content), json!("alphabeta"));
+
+        // An image makes it non-text; the array form is preserved.
+        let with_image = MessageContent::parts(vec![
+            ContentPart::text("look".to_string()),
+            ContentPart::image("aGk=".to_string(), "image/png".to_string()),
+        ]);
+        assert!(serialize_message_content_openai(&with_image).is_array());
     }
 
     #[test]

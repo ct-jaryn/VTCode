@@ -583,7 +583,7 @@ including tools like Claude Code.
 - **Notable models:** `openai/gpt-oss-20b:huggingface`, `deepseek-ai/DeepSeek-R1`,
   `deepseek-ai/DeepSeek-V4-Pro:together`, `deepseek-ai/DeepSeek-V4-Pro:novita`, `zai-org/GLM-5.1:zai-org`,
   `zai-org/GLM-5.2:novita`, `moonshotai/Kimi-K3:together`, `moonshotai/Kimi-K2.6:novita`, `MiniMaxAI/MiniMax-M3:novita`,
-  `MiniMaxAI/MiniMax-M2.7:novita`, `stepfun-ai/Step-3.5-Flash:featherless-ai`
+  `MiniMaxAI/MiniMax-M2.7:novita`
 - **Features:** Access to various models through HuggingFace's inference API, including models from OpenAI, DeepSeek,
   Z.AI, Moonshot, MiniMax, and other providers
 

@@ -268,11 +268,14 @@ pub(crate) async fn initialize_session_ui(
     handle_for_palette.configure_file_palette(
         workspace_for_palette.clone(),
         vtcode_ui::tui::core_tui::app::session::file_palette::DirLister::new({
-            let ws = workspace_for_palette.clone();
+            // Build the indexer once: it is stateless for `discover_dir_entries`,
+            // and constructing it per directory would rebuild the excluded-dir
+            // config on every palette navigation.
+            let indexer = vtcode_core::SimpleIndexer::new(workspace_for_palette.clone());
             move |dir| {
                 // Symlink target and kind metadata are captured once per child
                 // here, so the render path never touches the filesystem.
-                vtcode_core::SimpleIndexer::new(ws.clone())
+                indexer
                     .discover_dir_entries(dir)
                     .into_iter()
                     .map(|(path, is_dir)| {

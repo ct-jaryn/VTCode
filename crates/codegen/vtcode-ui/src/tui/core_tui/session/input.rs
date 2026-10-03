@@ -9,6 +9,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Padding, Paragraph, Wrap},
 };
+use vtcode_commons::formatting::contains_ignore_ascii_case;
 
 /// Paint pre-wrapped lines into `area` without Paragraph wrapping.
 /// `base` is the Paragraph base style; span styles patch on top.
@@ -1598,7 +1599,7 @@ pub(crate) fn status_requires_shimmer(text: &str) -> bool {
         "ctrl+c",
         "/stop to stop",
     ];
-    if needles.iter().any(|needle| contains_ascii_ci(trimmed, needle)) {
+    if needles.iter().any(|needle| contains_ignore_ascii_case(trimmed, needle)) {
         return true;
     }
     let Some((indicator, rest)) = trimmed.split_once(' ') else {
@@ -1608,23 +1609,6 @@ pub(crate) fn status_requires_shimmer(text: &str) -> bool {
         return false;
     }
     is_spinner_frame(indicator)
-}
-
-/// Case-insensitive ASCII substring search without allocation.
-/// Compares byte windows of `haystack` against `needle` using
-/// `eq_ignore_ascii_case`, avoiding the `to_ascii_lowercase()` String.
-fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    if needle_bytes.is_empty() {
-        return true;
-    }
-    if needle_bytes.len() > haystack_bytes.len() {
-        return false;
-    }
-    haystack_bytes
-        .windows(needle_bytes.len())
-        .any(|window| window.eq_ignore_ascii_case(needle_bytes))
 }
 
 /// Data structure for input widget rendering

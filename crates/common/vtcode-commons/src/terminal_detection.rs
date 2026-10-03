@@ -430,7 +430,7 @@ pub fn is_ghostty_terminal(term_program: Option<&str>, term: Option<&str>) -> bo
 }
 
 fn terminal_name_contains(value: Option<&str>, needle: &str) -> bool {
-    value.map(|value| value.to_ascii_lowercase().contains(needle)).unwrap_or(false)
+    value.is_some_and(|value| crate::formatting::contains_ignore_ascii_case(value, needle))
 }
 
 #[cfg(test)]
