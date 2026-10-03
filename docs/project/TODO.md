@@ -63,12 +63,6 @@ Plan to audit + optimize VT Code for throughput/latency/CPU/mem/I/O/allocs:
 
 ===
 
-check session: session-vtcode-20261002T052326Z_160674-79696
-
-it seems vtcode still has pending PTY command running and it can't finish.
-
-===
-
 Plan for the cheap targeted timing test:
 
 Goal: decide whether open_focused's full wrap-upfront in build_cached_block (transcript_review.rs) is the open-freeze, before committing to lazy Tool wrapping.
@@ -94,531 +88,6 @@ Two audit claims turned out false on verification, so nothing was changed there:
 
 ===
 
-refactor src/agent/runloop/unified/tool_routing/shell_approval.rs
-
-===
-
-https://chatgpt.com/c/6abfb872-6424-83ec-85d3-20d2f312e5a0
-
-can you help me think through and implement this problem step by step?
-
-Yes. I’d frame the problem as **“how can VT Code help a human understand autonomous work without making them read the whole transcript?”**
-
-### Step 1: Define the actual problem
-
-The problem is probably not:
-
-> How do we make agent responses prettier?
-
-It is closer to:
-
-> As VT Code does more work autonomously, how does the user quickly understand what happened, why it happened, what changed, and where they should inspect?
-
-That gives you four core questions:
-
-1. What did the agent do?
-2. Why did it do that?
-3. What was the result?
-4. Where does the human need to pay attention?
-
-Everything else, diagrams, HTML, ASD-STE100, videos, is a **presentation layer** on top of those answers.
-
-### Step 2: Separate understanding from rendering
-
-I would avoid starting with `/explain --web` or diagrams.
-
-First define a structured internal representation:
-
-```rust
-struct Explanation {
-    goal: String,
-    actions: Vec<Action>,
-    decisions: Vec<Decision>,
-    changes: Vec<Change>,
-    verification: Vec<Verification>,
-    failures: Vec<Failure>,
-    attention: Vec<AttentionItem>,
-}
-```
-
-Conceptually:
-
-```text
-ThreadEvent + Diff + Plan + Tool results
-                 │
-                 ▼
-          ExplanationModel
-                 │
-       ┌─────────┼──────────┐
-       ▼         ▼          ▼
-      TUI      Diagram     Web
-```
-
-This is the key architectural decision.
-
-If you get this layer right, new presentation formats become cheap.
-
-### Step 3: Decide what should be deterministic
-
-This is important for VT Code.
-
-The LLM should not be responsible for remembering its own execution history.
-
-VT Code already knows facts such as:
-
-```text
-Tool called
-File edited
-Command executed
-Command failed
-Test passed
-Plan changed
-Permission requested
-Subagent spawned
-Retry occurred
-```
-
-Extract these directly.
-
-For example:
-
-```rust
-enum Action {
-    ReadFile(PathBuf),
-    Search { query: String },
-    EditFile(PathBuf),
-    RunCommand(String),
-    Delegate(String),
-}
-```
-
-Then let the model convert facts into concise explanations:
-
-```text
-raw event:
-run_terminal_cmd("cargo nextest run -p vtcode-core")
-exit_code: 1
-
-↓
-
-explanation:
-"vtcode-core tests failed after the first implementation."
-```
-
-That makes `/explain` trustworthy.
-
-### Step 4: Decide what information deserves compression
-
-A long session may contain:
-
-```text
-150 reads
-40 searches
-15 commands
-9 edits
-3 failed approaches
-2 subagents
-1 final implementation
-```
-
-Showing all of that defeats the feature.
-
-I would divide events into three levels.
-
-**Level 1: outcome**
-
-```text
-Implemented sticky transcript navigation.
-Changed 4 files.
-Tests pass.
-```
-
-**Level 2: important reasoning**
-
-```text
-Reused existing scroll state.
-Added message-position indexing.
-Rejected terminal-scrollback-dependent design.
-```
-
-**Level 3: raw evidence**
-
-```text
-src/tui/transcript.rs:120
-src/tui/state.rs:331
-cargo nextest run -p vtcode-ui
-...
-```
-
-Then `/explain` defaults to Levels 1 + 2.
-
-The transcript remains Level 3.
-
-### Step 5: Define the minimal `/explain`
-
-I would start very small:
-
-```text
-/explain
-```
-
-Output:
-
-```text
-Goal
-Implement sticky transcript messages.
-
-Changed
-• Added message position tracking.
-• Added sticky-header rendering.
-• Added jump-to-message behavior.
-
-Decisions
-• Reused existing transcript scroll state.
-• Kept the composer outside the scrollable region.
-
-Verification
-✓ cargo nextest run -p vtcode-ui
-✓ cargo check --locked
-
-Attention
-src/tui/transcript.rs:281
-Scroll-offset behavior changed.
-```
-
-No diagram yet.
-
-No browser.
-
-No generated app.
-
-This alone tests whether the concept is useful.
-
-### Step 6: The difficult part is “Decisions”
-
-Files and tests are easy.
-
-The interesting question is:
-
-> How does VT Code know which things were actual decisions?
-
-You could explicitly capture them during execution.
-
-For example:
-
-```rust
-ThreadEvent::Decision {
-    summary,
-    rationale,
-    alternatives,
-}
-```
-
-But I would hesitate to make the agent manually produce these constantly. It could add tokens and noise.
-
-Instead, infer candidates from existing events:
-
-```text
-plan change
-failed implementation → new implementation
-user approval
-tool rejection
-architecture choice
-explicit model language such as "I'll reuse..."
-```
-
-Then compress afterward.
-
-You could eventually promote especially important decisions into a real decision ledger.
-
-### Step 7: “Attention” could be the most valuable feature
-
-I think this deserves more thought than the diagrams.
-
-The user rarely needs:
-
-> Here are all 432 lines I changed.
-
-They need:
-
-> These 18 lines deserve your review.
-
-Use deterministic heuristics.
-
-Example:
-
-```rust
-fn review_attention(change: &Change) -> Attention {
-    if touches_security_boundary(change) {
-        High
-    } else if changes_public_api(change) {
-        High
-    } else if changes_control_flow(change) {
-        Medium
-    } else if tests_missing(change) {
-        Medium
-    } else {
-        Low
-    }
-}
-```
-
-Signals could include:
-
-- sandbox/security code
-- permissions
-- command execution
-- authentication
-- persistence
-- public API
-- dependency changes
-- unsafe Rust
-- configuration/schema migrations
-- large behavioral diff
-- test coverage absent
-- agent failed repeatedly in this area
-
-Then `/explain` could say:
-
-```text
-Review first
-
-HIGH  sandbox.rs:211
-Permission boundary changed.
-
-MEDIUM  runloop.rs:832
-Retry behavior changed.
-
-LOW  README.md
-Documentation only.
-```
-
-I think this gets closer to Karpathy's “human oversight at a higher abstraction.”
-
-### Step 8: Then add diagrams
-
-Once `ExplanationModel` works:
-
-```text
-/explain diagram
-```
-
-should simply be another renderer.
-
-For example:
-
-```text
-User request
-     │
-     ▼
-Inspect transcript state
-     │
-     ▼
-Design sticky positioning
-     │
-     ├──── first approach ──── ✗ test failure
-     │
-     ▼
-Reuse scroll-index model
-     │
-     ▼
-Implement
-     │
-     ▼
-Tests ✓
-```
-
-Useful particularly for:
-
-- architecture changes
-- debugging
-- multi-agent execution
-- complex plans
-- dependency flows
-
-I would avoid diagram generation for trivial changes.
-
-### Step 9: Web should come after terminal UX
-
-Karpathy's HTML idea is compelling, but I would make it an escalation:
-
-```text
-/explain
-/explain diagram
-/explain --web
-```
-
-`--web` becomes useful when the information has dimensions the terminal handles poorly:
-
-```text
-timeline
-dependency graph
-file graph
-agent tree
-diff navigation
-collapsible tool calls
-context/token consumption
-plan evolution
-```
-
-This can live naturally in WebMCP.
-
-For example:
-
-```text
-┌ Execution ────────────────────────┐
-│ 0s Search                        │
-│ 2s Read                          │
-│ 5s Subagent A ─────────────┐     │
-│ 6s Subagent B ────────┐    │     │
-│ 13s Edit               │    │     │
-│ 18s Test ✗             │    │     │
-│ 24s Fix                │    │     │
-│ 31s Test ✓             │    │     │
-└───────────────────────────────────┘
-```
-
-Click an event and jump directly to the associated transcript/tool call/diff.
-
-That would be substantially more useful than generating arbitrary HTML.
-
-### Step 10: ASD-STE100 belongs in the renderer
-
-I would not expose something like:
-
-```text
-/explain --asd-ste100
-```
-
-Instead, use those principles to define VT Code's explanation voice.
-
-Something like:
-
-```text
-Explanation writing rules:
-
-Use short sentences.
-Put the result first.
-Use one idea per sentence.
-Use concrete verbs.
-Avoid unnecessary qualifiers.
-Name files and commands precisely.
-Prefer evidence over interpretation.
-Explain uncommon terms once.
-```
-
-Perhaps prompt it as:
-
-> Write approximately 70–80% toward ASD-STE100 style while preserving normal software-engineering terminology.
-
-Strict STE100 may become awkward for software concepts.
-
-### Step 11: Think about cost
-
-A danger here is spending another large LLM call explaining the large LLM call.
-
-I would aim for:
-
-```text
-ThreadEvents
-    ↓
-deterministic extraction        cheap
-    ↓
-rule-based compression          cheap
-    ↓
-small LLM summarization         optional
-```
-
-For many sessions, you might not need another model call at all.
-
-For example:
-
-```text
-Goal
-<from user message>
-
-Files
-<from diff>
-
-Verification
-<from command results>
-
-Failures
-<from exit codes>
-
-Attention
-<heuristics>
-```
-
-Only `Decisions` and natural-language grouping really benefit from a model.
-
-You could even lazily generate them only when `/explain` is invoked.
-
-### Step 12: The MVP I would test
-
-I would implement only:
-
-```text
-/explain
-```
-
-with five sections:
-
-```text
-Goal
-Changes
-Decisions
-Verification
-Review first
-```
-
-Source data:
-
-```text
-ThreadEvent
-git diff
-command results
-current plan
-```
-
-Constraints:
-
-```text
-≤ 20 lines by default
-no new persistent state
-no browser
-no diagram generation
-no second event system
-LLM optional
-```
-
-Then use it personally for a week.
-
-The questions I'd test are:
-
-- Do I invoke `/explain` after long tasks?
-- Does it tell me anything I could not get from `git diff --stat`?
-- Does “Review first” point me to the right code?
-- Can I understand a failed 20-minute agent run in 30 seconds?
-- Does it reduce how often I scroll backward through the transcript?
-
-If those answers are good, then `/explain diagram` and `/explain --web` become justified.
-
-The core product idea becomes **a projection system over agent execution** rather than a summarization feature:
-
-```text
-                      ┌─ transcript
-                      ├─ explain
-Agent execution ──────┼─ review
-                      ├─ diagram
-                      ├─ timeline
-                      └─ web explorer
-```
-
-That architecture feels especially suitable for VT Code because the same underlying execution can serve different levels of human oversight without changing how the agent itself works.
-
-===
-
 Known limitations
 
 1. The interactive TUI uses alternate-screen fullscreen rendering (like vim or less). This limits terminal scrollback and some screen-reader virtual buffers. Workarounds: headless ask/exec, Transcript Review raw mode (R), [ for native scrollback, or v to read in your editor.
@@ -626,3 +95,52 @@ Known limitations
 3. Windows support and some terminal-specific key bindings (for example Shift+Enter multiline input) vary by terminal; the keyboard-shortcuts guide documents per-terminal notes and fallbacks.
 
 We treat these as bugs when they block real workflows. Reporting them helps us prioritize.
+
+===
+
+scan for large and monolith files and module and plan deduplication and refactor and extract reusable components.
+
+===
+
+Parse, don't validate — plan + status (2026-10-03)
+
+Source: eli.thegreenplace.net/2026/rusty-thoughts-on-parse-dont-validate/
+Principle: at a boundary, transform raw input into a type that *carries* the
+invariant (parse once), so downstream code never re-checks with is_empty/index/
+unwrap. Rules: rust-skills api-parse-dont-validate, type-newtype-validated.
+
+Foundation — crates/common/vtcode-commons/src/validation.rs
+- NonEmptyString: TryFrom + serde (Deserialize rejects empty/whitespace).
+- NonEmptyVec<T> { head, tail }: new/singleton/from_vec->Option/first()->&T/
+  TryFrom<Vec>->EmptyCollectionError/iter/push/into_vec, serde as array.
+- NonEmptySlice<'a,T> { first, rest }: from_slice/split_first/first()->&T/rest().
+- Re-exported from vtcode-commons lib.rs; documented in vtcode-commons/AGENTS.md.
+- 12 unit tests (asymmetric [a,b] vs [b,a], empty/singleton boundaries, serde).
+
+DONE (verified: clippy -D warnings + nextest + rustfmt)
+- vtcode-llm/src/utils.rs — parse_response_openai_format + parse_stream_event:
+  is_empty + choices[0] -> NonEmptySlice::from_slice (2 indexing sites removed).
+- vtcode-core/src/tools/command.rs — prepare_invocation + is_risky_command:
+  argv parsed once via NonEmptySlice (rest() for args); exec-boundary indexing removed.
+- vtcode-auth — AuthCredentialsStoreMode::effective_mode() now returns crate-private
+  ResolvedStoreMode { Keyring, File }; removed all 8 production
+  unreachable!("effective_mode() resolves Auto") arms; _exact_with_mode takes resolved type.
+- vtcode-core/src/tools/tool_intent/activity.rs — truncation-only verifier:
+  words[0] after !is_empty -> NonEmptySlice::from_slice.
+
+DEFERRED (analysis done; do NOT re-open without new reason)
+- vtcode-exec-events tool_outcome_from_status unreachable!(InProgress): correct
+  crash-loud invariant guard on a non-terminal status — keep the panic.
+- HookGroupConfig.hooks: Vec -> NonEmptyVec deletes Default (used via
+  ..Default::default() in ~40 test sites).
+- SkillManifest.name/description newtypes blocked by Default{String::new()} + 65 literals.
+- bound_file root/relative newtypes only relocate the same validation into fallible
+  call-site conversions (low payoff, sandbox-API risk).
+- SkillName/Description, MCP provider/tool-name, SessionId newtypes: lower payoff than
+  the resolved-type win above; revisit only if a real bug traces to them.
+
+NEXT (if pursued)
+- bound_file path newtypes (AbsoluteRootPath/RelativeFilePath) — only with a concrete
+  security bug forcing it; requires sandbox-boundary review + adversarial regression tests.
+- Migrate remaining validate_* call sites to typed returns opportunistically when the
+  enclosing struct is already being touched.
