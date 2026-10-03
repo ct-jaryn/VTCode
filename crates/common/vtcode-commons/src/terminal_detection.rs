@@ -40,13 +40,35 @@ pub fn installed_iterm2_profile_path(home: &Path) -> PathBuf {
     iterm2_dynamic_profiles_dir(home).join(ITERM2_DYNAMIC_PROFILE_FILENAME)
 }
 
+/// Named gate conditions for the one-shot iTerm2 profile switch.
+///
+/// Stable-Rust emulation of named arguments: call sites construct this
+/// struct with named fields instead of passing three positional `bool`s,
+/// so `iterm_session` cannot be confused with `tmux_session` at a glance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ITerm2ProfileConditions {
+    /// `ITERM_SESSION_ID` is present (real iTerm2 session).
+    pub iterm_session: bool,
+    /// `TMUX` is present (proprietary sequences do not pass through multiplexers).
+    pub tmux_session: bool,
+    /// Shipped dynamic profile is installed.
+    pub profile_installed: bool,
+}
+
+impl ITerm2ProfileConditions {
+    /// Pure gate evaluation.
+    pub fn should_apply(&self) -> bool {
+        self.iterm_session && !self.tmux_session && self.profile_installed
+    }
+}
+
 /// Pure gate for the one-shot iTerm2 profile switch.
 ///
 /// Switch only for a real iTerm2 session outside tmux (proprietary
 /// sequences do not pass through multiplexers) with the shipped profile
 /// installed, so removing the profile file disables the switch.
 pub fn should_apply_iterm2_profile(iterm_session: bool, tmux_session: bool, profile_installed: bool) -> bool {
-    iterm_session && !tmux_session && profile_installed
+    ITerm2ProfileConditions { iterm_session, tmux_session, profile_installed }.should_apply()
 }
 
 /// Environment plus install gate evaluated against the live process.
@@ -61,7 +83,12 @@ pub fn should_apply_iterm2_profile_now() -> bool {
         .map(|home| installed_iterm2_profile_path(&home))
         .map(|path| path.exists())
         .unwrap_or(false);
-    should_apply_iterm2_profile(iterm_session, tmux_session, installed)
+    ITerm2ProfileConditions {
+        iterm_session,
+        tmux_session,
+        profile_installed: installed,
+    }
+    .should_apply()
 }
 
 /// The profile name to restore after VT Code's one-shot icon switch.
@@ -491,6 +518,19 @@ mod tests {
         assert!(!should_apply_iterm2_profile(true, true, true));
         assert!(!should_apply_iterm2_profile(true, false, false));
         assert!(!should_apply_iterm2_profile(false, false, false));
+    }
+
+    #[test]
+    fn iterm2_profile_conditions_match_legacy_function() {
+        let named = ITerm2ProfileConditions {
+            iterm_session: true,
+            tmux_session: false,
+            profile_installed: true,
+        };
+        assert!(named.should_apply());
+        assert_eq!(named.should_apply(), should_apply_iterm2_profile(true, false, true));
+        let defaulted = ITerm2ProfileConditions { iterm_session: true, ..Default::default() };
+        assert!(!defaulted.should_apply());
     }
 
     #[test]

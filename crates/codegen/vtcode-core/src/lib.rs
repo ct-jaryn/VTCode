@@ -354,7 +354,7 @@ pub use tools::registry::{
     ToolSecurity, tool_groups,
 };
 pub use tools::{ToolRegistration, ToolRegistry};
-pub use ui::diff_renderer::DiffRenderer;
+pub use ui::diff_renderer::{DiffRenderer, DiffRendererOptions};
 pub use utils::dot_config::{
     CacheConfig, DotConfig, DotManager, LifecycleHookApprovalRecord, ProviderConfigs, UiConfig, UserPreferences,
     WorkspaceTrustRecord, WorkspaceTrustStore, initialize_dot_folder, load_lifecycle_hook_approval, load_user_config,
