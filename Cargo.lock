@@ -8537,6 +8537,7 @@ dependencies = [
  "left-right",
  "libc",
  "memchr",
+ "nucleo-matcher",
  "once_cell",
  "percent-encoding",
  "rand 0.10.3",

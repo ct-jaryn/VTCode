@@ -6,7 +6,7 @@
 
 ## Module Groups
 
-- Traits: `paths/`, `errors/`, `telemetry/`. Display: `ansi/`, `colors/`, `styling/`, `color256_theme/`, `color_policy/`; LLM: `llm/`; `diff/` and `diff_preview/` are one-release `vtcode-diff` compatibility re-exports. Filesystem: `fs/`, `paths/`, `vtcode_paths/`, `diff_paths/`, `vtcodegitignore/`, `workspace_snapshot/`; text: `tokens/`, `unicode/`, `sanitizer/`, `slug/`, `formatting/`. Async: `async_utils/`, `task_guard/`, `thread_safety/`, `runtime_diagnostics/`; interjection: `interjection/`; UI protocol: `ui_protocol/` (including global activity state); catalogs: `provider/`, `model_family/`, `reasoning/`; text: `at_pattern/`, `interner/`; traversal: `exclusions/`; other: `editor/`, `http/`, `project/`, `validation/`, `serde_helpers/`, `env_lock/`.
+- Traits: `paths/`, `errors/`, `telemetry/`. Display: `ansi/`, `colors/`, `styling/`, `color256_theme/`, `color_policy/`; LLM: `llm/`; `diff/` and `diff_preview/` are one-release `vtcode-diff` compatibility re-exports. Filesystem: `fs/`, `paths/`, `vtcode_paths/`, `diff_paths/`, `vtcodegitignore/`, `workspace_snapshot/`; text: `tokens/`, `unicode/`, `sanitizer/`, `slug/`, `formatting/`. Async: `async_utils/`, `task_guard/`, `thread_safety/`, `runtime_diagnostics/`; interjection: `interjection/`; UI protocol: `ui_protocol/` (including global activity state); catalogs: `provider/`, `model_family/`, `reasoning/`; text: `at_pattern/`, `interner/`; search: `search/` (nucleo-matcher fuzzy query primitives); traversal: `exclusions/`; other: `editor/`, `http/`, `project/`, `validation/`, `serde_helpers/`, `env_lock/`.
 
 ## Rules
 
@@ -25,3 +25,4 @@
 - `ui_protocol::tool_summary` contains renderer-independent compact activity metadata; keep grouping/output boundaries independent of TUI/runtime types and out of `ThreadEvent`. `MessageMetadata.intent_id` is optional wire metadata for durable steering recovery; preserve it through message serialization.
 - `task_guard::TaskGuard` is the canonical abort-on-drop task owner — use it instead of adding per-crate guard structs; `disarm()` releases the handle for documented-detached handoff.
 - `llm::Usage::billable_totals()` is the canonical aggregation boundary for prompt/completion/reasoning/cache usage; preserve raw provider counters separately from billable totals.
+- `search/` owns the canonical nucleo-matcher fuzzy primitives (`normalize_query`, `FuzzyQuery`, `fuzzy_match`, `fuzzy_score`, `fuzzy_subsequence`). `vtcode-core::ui::search` re-exports them unchanged and `vtcode-ui::tui::ui::search` layers its UI-only `ListSearchFilter`/`SearchCandidate`/`exact_terms_match` on top — do not fork the matcher.

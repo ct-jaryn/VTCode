@@ -58,6 +58,7 @@ pub mod reference;
 pub mod retry;
 pub mod runtime_diagnostics;
 pub mod sanitizer;
+pub mod search;
 pub mod serde_helpers;
 pub mod slug;
 #[doc(hidden)]
