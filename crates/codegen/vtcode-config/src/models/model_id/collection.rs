@@ -76,6 +76,8 @@ impl ModelId {
             ModelId::MergeGatewayOpenAIGpt6Sol,
             ModelId::MergeGatewayOpenAIGpt61Sol,
             ModelId::MergeGatewayOpenAIGpt6Luna,
+            ModelId::MergeGatewayXiaomimimoMimoV26Pro,
+            ModelId::MergeGatewayXiaomimimoMimoV26Flash,
             // Mistral models
             ModelId::MistralLarge3,
             // Z.AI models

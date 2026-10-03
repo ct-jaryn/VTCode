@@ -161,6 +161,12 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Diff Preview Architecture?", "How does Turn aggregation, event
     fields, and themes work?", "How does Readability: wrap and expand work?"
 
+- **File**: `docs/development/execution-explanations.md`
+  - **Content**: Execution explanations
+  - **Topics**: Canonical contract, Queries and reports, Validation
+  - **User Questions**: "What can you tell me about Execution explanations?", "How does Canonical contract work?", "How
+    does Queries and reports work?"
+
 - **File**: `docs/development/EXTENSION_BOUNDARIES.md`
   - **Content**: Extension Boundaries in VT Code
   - **Topics**: Why This Exists, Default Extension Order, What Counts As Internal, What Counts As External, Review
@@ -303,10 +309,10 @@ below based on the topic area.
 
 - **File**: `docs/development/webmcp.md`
   - **Content**: WebMCP bridge development guide
-  - **Topics**: Published deployments and exact origins, Boundaries, WebMCP API versus the VT Code bridge, Browser tool
-    contracts and evals, Transport and pairing
-  - **User Questions**: "What can you tell me about WebMCP bridge development guide?", "How does Published deployments
-    and exact origins work?", "How does Boundaries work?"
+  - **Topics**: Execution explanations, Published deployments and exact origins, Boundaries, WebMCP API versus the VT
+    Code bridge, Browser tool contracts and evals
+  - **User Questions**: "What can you tell me about WebMCP bridge development guide?", "How does Execution explanations
+    work?", "How does Published deployments and exact origins work?"
 
 - **File**: `docs/development/grep-quick-reference.md`
   - **Content**: rg Text Search Quick Reference Card

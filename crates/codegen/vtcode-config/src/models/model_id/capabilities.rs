@@ -265,6 +265,7 @@ impl ModelId {
                 | ModelId::MergeGatewayZaiGlm53Flashx
                 | ModelId::HuggingFaceGlm53FlashTogether
                 | ModelId::MiMoV26Flash
+                | ModelId::MergeGatewayXiaomimimoMimoV26Flash
         )
     }
 
@@ -298,6 +299,7 @@ impl ModelId {
                 | ModelId::MergeGatewayZaiGlm53Flashx
                 | ModelId::HuggingFaceGlm53FlashTogether
                 | ModelId::VercelDeepseekFlash
+                | ModelId::MergeGatewayXiaomimimoMimoV26Flash
         )
     }
 
@@ -354,6 +356,8 @@ impl ModelId {
                 | ModelId::MergeGatewayXaiGrok46
                 | ModelId::MergeGatewayXaiGrok47
                 | ModelId::VercelSpacexaiGrok47
+                | ModelId::MergeGatewayXiaomimimoMimoV26Pro
+                | ModelId::MergeGatewayXiaomimimoMimoV26Flash
         )
     }
 
@@ -417,6 +421,7 @@ impl ModelId {
             ModelId::OpenCodeGoGpt56Luna => "5.6-luna",
             ModelId::OpenCodeGoKimiK3 => "k3",
             ModelId::MiMoV26Pro | ModelId::MiMoV26Flash | ModelId::MiMoV26ProUltraspeed => "v2.6",
+            ModelId::MergeGatewayXiaomimimoMimoV26Pro | ModelId::MergeGatewayXiaomimimoMimoV26Flash => "v2.6",
             ModelId::OpenCodeGoMinimaxM3 => "m3",
             ModelId::OllamaGptOss20b => "oss",
             ModelId::OllamaGptOss20bCloud => "oss-cloud",

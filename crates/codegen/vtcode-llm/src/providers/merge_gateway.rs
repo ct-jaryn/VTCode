@@ -195,6 +195,7 @@ fn merge_reasoning_control_for_model(model: &str) -> Option<MergeReasoningContro
         || model.starts_with("qwen/")
         || model.starts_with("minimax/")
         || model.starts_with("thinkingmachines/")
+        || model.starts_with("xiaomimimo/")
     {
         Some(MergeReasoningControl::ThinkingBudget)
     } else {

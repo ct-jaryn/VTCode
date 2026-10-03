@@ -144,6 +144,10 @@ pub enum ModelId {
     MergeGatewayOpenAIGpt61Sol,
     /// OpenAI GPT-6 Luna through Merge Gateway
     MergeGatewayOpenAIGpt6Luna,
+    /// Xiaomi MiMo V2.6 Pro through Merge Gateway
+    MergeGatewayXiaomimimoMimoV26Pro,
+    /// Xiaomi MiMo V2.6 Flash through Merge Gateway
+    MergeGatewayXiaomimimoMimoV26Flash,
 
     // Mistral AI models
     /// Mistral Large 3 - State-of-the-art open-weight general-purpose multimodal model

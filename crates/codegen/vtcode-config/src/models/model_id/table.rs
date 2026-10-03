@@ -462,6 +462,20 @@ model_id_table! {
         display: "Claude Fable 5.1 (Merge Gateway)",
         description: "Anthropic Claude Fable 5.1 accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
+    MergeGatewayXiaomimimoMimoV26Pro {
+        provider: MergeGateway,
+        id: models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO,
+        parse: [models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO],
+        display: "MiMo V2.6 Pro (Merge Gateway)",
+        description: "Xiaomi MiMo V2.6 Pro flagship reasoning model accessed through Merge Gateway",
+    },
+    MergeGatewayXiaomimimoMimoV26Flash {
+        provider: MergeGateway,
+        id: models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH,
+        parse: [models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH],
+        display: "MiMo V2.6 Flash (Merge Gateway)",
+        description: "Xiaomi MiMo V2.6 Flash efficient reasoning model accessed through Merge Gateway",
+    },
     // Mistral models
     MistralLarge3 {
         provider: Mistral,

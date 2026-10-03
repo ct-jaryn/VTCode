@@ -28,6 +28,8 @@ pub const GOOGLE_GEMINI_3_8_FLASH: &str = "google/gemini-3.8-flash";
 pub const ANTHROPIC_CLAUDE_HAIKU_4_5_20251001: &str = "anthropic/claude-haiku-4-5-20251001";
 pub const ANTHROPIC_CLAUDE_FABLE_5_1: &str = "anthropic/claude-fable-5-1";
 pub const DEEPSEEK_FLASH: &str = "deepseek/deepseek-v4.1-flash";
+pub const XIAOMIMIMO_MIMO_V2_6_PRO: &str = "xiaomimimo/mimo-v2.6-pro";
+pub const XIAOMIMIMO_MIMO_V2_6_FLASH: &str = "xiaomimimo/mimo-v2.6-flash";
 
 pub const DEFAULT_MODEL: &str = DEFAULT_ROUTING;
 
@@ -62,6 +64,8 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     OPENAI_GPT_6_SOL,
     OPENAI_GPT_6_1_SOL,
     OPENAI_GPT_6_LUNA,
+    XIAOMIMIMO_MIMO_V2_6_PRO,
+    XIAOMIMIMO_MIMO_V2_6_FLASH,
 ];
 
 /// Routes that advertise provider-native `reasoning_effort` controls through
@@ -97,6 +101,8 @@ pub const THINKING_BUDGET_ROUTES: &[&str] = &[
     DEEPSEEK_FLASH,
     MINIMAX_H3,
     THINKINGMACHINES_INKLING,
+    XIAOMIMIMO_MIMO_V2_6_PRO,
+    XIAOMIMIMO_MIMO_V2_6_FLASH,
 ];
 
 /// Curated Merge Gateway routes that support reasoning. Reasoning is controlled
@@ -126,6 +132,8 @@ pub const REASONING_MODELS: &[&str] = &[
     OPENAI_GPT_6_SOL,
     OPENAI_GPT_6_1_SOL,
     OPENAI_GPT_6_LUNA,
+    XIAOMIMIMO_MIMO_V2_6_PRO,
+    XIAOMIMIMO_MIMO_V2_6_FLASH,
 ];
 
 /// Returns true when the route exposes a provider-native `reasoning_effort`
@@ -150,6 +158,7 @@ pub fn route_uses_thinking_budget(model: &str) -> bool {
         || model.starts_with("deepseek/")
         || model.starts_with("minimax/")
         || model.starts_with("thinkingmachines/")
+        || model.starts_with("xiaomimimo/")
 }
 
 /// Returns true when the route supports configurable reasoning through Merge

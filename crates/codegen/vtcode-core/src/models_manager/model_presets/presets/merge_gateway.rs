@@ -203,6 +203,20 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             1_050_000,
             false,
         ),
+        (
+            models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO,
+            "MiMo V2.6 Pro (Merge Gateway)",
+            "Xiaomi MiMo V2.6 Pro through Merge Gateway",
+            1_048_576,
+            false,
+        ),
+        (
+            models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH,
+            "MiMo V2.6 Flash (Merge Gateway)",
+            "Xiaomi MiMo V2.6 Flash through Merge Gateway",
+            1_048_576,
+            false,
+        ),
     ]
     .into_iter()
     .map(|(model, display_name, description, context_window, is_default)| {
