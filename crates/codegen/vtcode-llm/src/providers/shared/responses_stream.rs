@@ -99,7 +99,7 @@ fn response_stream_event_policy_for_type(event_type: &str) -> ResponsesStreamEve
     }
 }
 
-struct ResponsesNormalizedStreamProcessor<P> {
+pub(crate) struct ResponsesNormalizedStreamProcessor<P> {
     options: ResponsesNormalizedStreamOptions,
     parse_final_response: P,
     aggregator: StreamAggregator,
@@ -118,7 +118,7 @@ impl<P> ResponsesNormalizedStreamProcessor<P>
 where
     P: Fn(Value) -> Result<LLMResponse, LLMError>,
 {
-    fn new(options: ResponsesNormalizedStreamOptions, parse_final_response: P) -> Self {
+    pub(crate) fn new(options: ResponsesNormalizedStreamOptions, parse_final_response: P) -> Self {
         Self {
             aggregator: StreamAggregator::new(options.model.clone()),
             options,
@@ -145,7 +145,7 @@ where
         }
     }
 
-    fn is_done(&self) -> bool {
+    pub(crate) fn is_done(&self) -> bool {
         self.done
     }
 
@@ -156,7 +156,7 @@ where
         self.handle_payload_data(&serialized)
     }
 
-    fn handle_payload_data(&mut self, payload: &str) -> Result<Vec<NormalizedStreamEvent>, LLMError> {
+    pub(crate) fn handle_payload_data(&mut self, payload: &str) -> Result<Vec<NormalizedStreamEvent>, LLMError> {
         let event = ResponsesStreamAdapter::parse_sse_data_for_provider(self.options.provider_name, payload)?;
         self.handle_event(event)
     }
@@ -277,7 +277,7 @@ where
         index
     }
 
-    fn finish(self) -> Result<Vec<NormalizedStreamEvent>, LLMError> {
+    pub(crate) fn finish(self) -> Result<Vec<NormalizedStreamEvent>, LLMError> {
         let streamed = self.aggregator.finalize();
         let mut response = if let Some(final_response) = self.final_response {
             match (self.parse_final_response)(final_response.clone()) {

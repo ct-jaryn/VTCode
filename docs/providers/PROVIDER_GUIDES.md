@@ -228,9 +228,19 @@ disclosure does not replace the retained evidence or expose provider chain-of-th
   context, 128k max output, reasoning `low`/`medium`/`high`/`xhigh`/`max`, default `medium`). Same Responses API route,
   GPT-6 prompt contract, explicit cache breakpoints, and `30m` cache TTL as Astra; sampling and logprobs unsupported.
 - **Service tiers:** `provider.openai.service_tier` accepts `flex`, `priority`, and `ultrafast` (`ultrafast` is
-  native-OpenAI-only; see the config field reference). When OpenAI rejects the requested tier for a model — unsupported
+  native-OpenAI-only; see the config field reference). `ultrafast` is the fastest tier: GA for `gpt-6-astra`
+  (`model = "gpt-6-astra"` + `service_tier = "ultrafast"` on every `response.create`), preview-only for
+  `gpt-5.6-sol` (contact your OpenAI account team). It costs more, starts at low TPM limits (T1-3 500k / T4 1M /
+  T5 5M), and supports US/global processing only (no EU/regional endpoints). Pair it with
+  `provider.openai.websocket_mode = true` to keep one persistent Responses WebSocket + `previous_response_id`
+  chain across turns and tool results — HTTP handshake overhead erodes the speedup on agentic tool-call bursts.
+  When OpenAI rejects the requested tier for a model — unsupported
   tier, account/model enablement gap, or project policy — VT Code remembers the rejection for that model and retries the
   request once without the tier (serving the provider default) instead of failing the turn.
+- **WebSocket streaming:** `provider.openai.websocket_mode = true` covers generation and both streaming APIs.
+  One connection serializes responses and sends only new input when completed history matches. Startup
+  failure uses HTTP SSE once; failure after output emits a stream error without replay. Cancellation and
+  early drop clear the socket and continuation. See the [development guide](../development/responses-websocket-streaming.md).
 - File inputs are supported for native OpenAI Responses API requests through `input_file` parts.
 - Supported file input fields in VT Code message parts: `file_id`, `file_data`, `file_url`, `filename`.
 - `file_url` is Responses API only; VT Code rejects `file_url` when a request uses Chat Completions.

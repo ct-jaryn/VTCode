@@ -8,7 +8,9 @@ mod responses_adapter;
 mod responses_stream;
 mod tag_sanitizer;
 use crate::providers::split_reasoning_from_text;
-pub(crate) use responses_stream::{ResponsesNormalizedStreamOptions, create_responses_normalized_stream};
+pub(crate) use responses_stream::{
+    ResponsesNormalizedStreamOptions, ResponsesNormalizedStreamProcessor, create_responses_normalized_stream,
+};
 pub(crate) use responses_stream::{ResponsesStreamEventPolicy, response_stream_event_policy};
 use serde_json::{Map, Value};
 use std::borrow::Cow;

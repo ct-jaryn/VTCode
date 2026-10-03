@@ -217,6 +217,12 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Process Hardening?", "How does Architecture work?", "How does
     Security Measures work?"
 
+- **File**: `docs/development/responses-websocket-streaming.md`
+  - **Content**: Responses WebSocket streaming
+  - **Topics**: Lifecycle and cancellation, Continuation, Fallback and service tiers, Local verification
+  - **User Questions**: "What can you tell me about Responses WebSocket streaming?", "How does Lifecycle and
+    cancellation work?", "How does Continuation work?"
+
 - **File**: `docs/development/runtime-guidance.md`
   - **Content**: Runtime Guidance and Project Instructions
   - **Topics**: User-facing progress contract, Continuity and long-running work

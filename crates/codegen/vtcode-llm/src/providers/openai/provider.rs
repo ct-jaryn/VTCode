@@ -85,12 +85,13 @@ pub struct OpenAIProvider {
     responses_include: Vec<String>,
     service_tier: Option<OpenAIServiceTier>,
     hosted_shell: OpenAIHostedShellConfig,
-    websocket_session: AsyncMutex<Option<OpenAIResponsesWebSocketSession>>,
-    websocket_continuation_cache: Mutex<Option<OpenAIResponsesWebSocketContinuationCache>>,
+    websocket_session: Arc<AsyncMutex<Option<OpenAIResponsesWebSocketSession>>>,
+    websocket_continuation_cache: Arc<Mutex<Option<OpenAIResponsesWebSocketContinuationCache>>>,
+    websocket_streaming_ceiling: Duration,
     /// Cache of models where `service_tier=flex` was rejected by the backend.
     /// Once a model is marked unsupported, subsequent requests skip the flex
     /// tier entirely, avoiding the wasted first request + retry round-trip.
-    service_tier_unsupported_cache: Mutex<HashMap<String, bool>>,
+    service_tier_unsupported_cache: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl OpenAIProvider {
@@ -156,7 +157,7 @@ impl OpenAIProvider {
         model: String,
         http_client: reqwest::Client,
         base_url: String,
-        _timeouts: TimeoutsConfig,
+        timeouts: TimeoutsConfig,
     ) -> Self {
         use hashbrown::HashMap;
         use std::sync::Arc;
@@ -193,9 +194,14 @@ impl OpenAIProvider {
             responses_include: Vec::new(),
             service_tier: None,
             hosted_shell: OpenAIHostedShellConfig::default(),
-            websocket_session: AsyncMutex::new(None),
-            websocket_continuation_cache: Mutex::new(None),
-            service_tier_unsupported_cache: Mutex::new(HashMap::new()),
+            websocket_session: Arc::new(AsyncMutex::new(None)),
+            websocket_continuation_cache: Arc::new(Mutex::new(None)),
+            websocket_streaming_ceiling: Duration::from_secs(if timeouts.streaming_ceiling_seconds == 0 {
+                600
+            } else {
+                timeouts.streaming_ceiling_seconds
+            }),
+            service_tier_unsupported_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -359,9 +365,14 @@ impl OpenAIProvider {
             responses_include,
             service_tier,
             hosted_shell,
-            websocket_session: AsyncMutex::new(None),
-            websocket_continuation_cache: Mutex::new(None),
-            service_tier_unsupported_cache: Mutex::new(HashMap::new()),
+            websocket_session: Arc::new(AsyncMutex::new(None)),
+            websocket_continuation_cache: Arc::new(Mutex::new(None)),
+            websocket_streaming_ceiling: Duration::from_secs(if timeouts.streaming_ceiling_seconds == 0 {
+                600
+            } else {
+                timeouts.streaming_ceiling_seconds
+            }),
+            service_tier_unsupported_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

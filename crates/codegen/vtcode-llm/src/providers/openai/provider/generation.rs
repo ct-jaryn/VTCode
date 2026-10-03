@@ -30,8 +30,8 @@ fn truncate_for_log(input: &str, max_chars: usize) -> String {
 /// fallback. The `flex_` name is historical (built for flex first): any
 /// user-selectable tier can be rejected per model, account, or project
 /// policy, and omitting it resolves to the project default.
-fn payload_uses_flex_service_tier(payload: &Value) -> bool {
-    payload.get("service_tier").and_then(Value::as_str).is_some_and(|value| {
+pub(super) fn payload_uses_flex_service_tier(payload: &Value) -> bool {
+    payload_service_tier(payload).is_some_and(|value| {
         value.eq_ignore_ascii_case("flex")
             || value.eq_ignore_ascii_case("ultrafast")
             || value.eq_ignore_ascii_case("priority")
@@ -44,6 +44,38 @@ fn payload_without_service_tier(payload: &Value) -> Value {
         object.remove("service_tier");
     }
     payload
+}
+
+pub(super) fn payload_service_tier(payload: &Value) -> Option<&str> {
+    payload
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn is_ultrafast_service_tier(value: &str) -> bool {
+    value.eq_ignore_ascii_case("ultrafast")
+}
+
+/// Shared tier-rejection warn so Responses and Chat Completions stay in sync.
+/// Ultrafast carries extra access guidance (GA vs preview, residency).
+pub(super) fn log_service_tier_rejection(api: &str, model: &str, client_request_id: &str, tier: &str) {
+    if is_ultrafast_service_tier(tier) {
+        tracing::warn!(
+            model = %model,
+            client_request_id = %client_request_id,
+            tier = %tier,
+            "OpenAI {api} request rejected service_tier=ultrafast; retrying without it (ultrafast is GA for gpt-6-astra, preview-only for gpt-5.6-sol — contact your OpenAI account team for access; US/global processing only)"
+        );
+    } else {
+        tracing::warn!(
+            model = %model,
+            client_request_id = %client_request_id,
+            tier = %tier,
+            "OpenAI {api} request rejected service_tier; retrying without it"
+        );
+    }
 }
 
 fn append_manual_compaction_instructions(
@@ -108,7 +140,7 @@ impl OpenAIProvider {
 
     /// Mark `service_tier=flex` as unsupported for this model so future
     /// requests skip it entirely, avoiding the wasted first request + retry.
-    fn mark_flex_unsupported_for_model(&self, model: &str) {
+    pub(super) fn mark_flex_unsupported_for_model(&self, model: &str) {
         self.service_tier_unsupported_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -120,7 +152,7 @@ impl OpenAIProvider {
     /// for this model. Returns a borrowed reference when no modification is
     /// needed (the common case), avoiding a deep clone of the full request
     /// payload.
-    fn maybe_strip_flex_service_tier<'a>(&self, model: &str, payload: &'a Value) -> Cow<'a, Value> {
+    pub(super) fn maybe_strip_flex_service_tier<'a>(&self, model: &str, payload: &'a Value) -> Cow<'a, Value> {
         if self.is_flex_unsupported_for_model(model) && payload_uses_flex_service_tier(payload) {
             tracing::debug!(
                 model = %model,
@@ -132,7 +164,19 @@ impl OpenAIProvider {
         }
     }
 
-    async fn retry_without_service_tier(
+    /// Ultrafast is fastest on a persistent WebSocket; HTTP handshake overhead
+    /// erodes the gain on agentic tool-call bursts. Emit a one-line hint when
+    /// an ultrafast request will run over HTTP because `websocket_mode` is off.
+    pub(super) fn log_ultrafast_websocket_hint(&self, model: &str, payload: &Value) {
+        if payload_service_tier(payload).is_some_and(is_ultrafast_service_tier) && !self.websocket_mode_enabled(model) {
+            tracing::debug!(
+                model = %model,
+                "service_tier=ultrafast without websocket_mode; set provider.openai.websocket_mode=true to keep one Responses WebSocket + previous_response_id chain for tool-call bursts"
+            );
+        }
+    }
+
+    pub(super) async fn retry_without_service_tier(
         &self,
         url: &str,
         metadata: &Option<Value>,
@@ -320,6 +364,7 @@ impl OpenAIProvider {
             let openai_request = self.convert_to_openai_responses_format(&request)?;
             // Skip flex tier if it was previously rejected for this model
             let openai_request = self.maybe_strip_flex_service_tier(&request.model, &openai_request);
+            self.log_ultrafast_websocket_hint(&request.model, &openai_request);
             let url = &self.responses_url[..];
             let client_request_id = Self::new_client_request_id();
 
@@ -349,11 +394,8 @@ impl OpenAIProvider {
                 {
                     // Cache this so future requests skip flex tier entirely
                     self.mark_flex_unsupported_for_model(&request.model);
-                    tracing::warn!(
-                        model = %request.model,
-                        client_request_id = %client_request_id,
-                        "OpenAI Responses request rejected service_tier=flex; retrying without it"
-                    );
+                    let rejected_tier = payload_service_tier(&openai_request).unwrap_or("flex");
+                    log_service_tier_rejection("Responses", &request.model, &client_request_id, rejected_tier);
 
                     let (retry_response, retry_client_request_id) = self
                         .retry_without_service_tier(url, &request.metadata, &openai_request, true)
@@ -515,11 +557,8 @@ impl OpenAIProvider {
             {
                 // Cache this so future requests skip flex tier entirely
                 self.mark_flex_unsupported_for_model(&request.model);
-                tracing::warn!(
-                    model = %request.model,
-                    client_request_id = %client_request_id,
-                    "OpenAI Chat Completions request rejected service_tier=flex; retrying without it"
-                );
+                let rejected_tier = payload_service_tier(&openai_request).unwrap_or("flex");
+                log_service_tier_rejection("Chat Completions", &request.model, &client_request_id, rejected_tier);
 
                 let (retry_response, retry_client_request_id) = self
                     .retry_without_service_tier(url, &request.metadata, &openai_request, false)
@@ -571,12 +610,24 @@ impl OpenAIProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResponsesApiState, should_attempt_responses_api};
+    use super::{ResponsesApiState, is_ultrafast_service_tier, payload_service_tier, should_attempt_responses_api};
+    use serde_json::json;
 
     #[test]
     fn responses_attempt_logic_prefers_responses_for_allowed_and_required() {
         assert!(should_attempt_responses_api(ResponsesApiState::Allowed));
         assert!(should_attempt_responses_api(ResponsesApiState::Required));
         assert!(!should_attempt_responses_api(ResponsesApiState::Disabled));
+    }
+
+    #[test]
+    fn ultrafast_tier_detection_is_case_insensitive_and_trims() {
+        assert!(is_ultrafast_service_tier("ultrafast"));
+        assert!(is_ultrafast_service_tier("ULTRAFAST"));
+        assert!(!is_ultrafast_service_tier("flex"));
+        assert!(!is_ultrafast_service_tier("priority"));
+        assert_eq!(payload_service_tier(&json!({"service_tier": "ultrafast"})), Some("ultrafast"));
+        assert_eq!(payload_service_tier(&json!({"service_tier": "   "})), None);
+        assert_eq!(payload_service_tier(&json!({})), None);
     }
 }
