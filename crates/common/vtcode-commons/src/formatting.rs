@@ -746,6 +746,60 @@ pub fn collapse_whitespace(text: &str) -> String {
     result
 }
 
+/// Strip an optional leading `word` (case-insensitive) that is separated from the
+/// rest by whitespace, returning the trimmed remainder, or `input` unchanged
+/// when the prefix is absent or not word-boundary separated.
+///
+/// Canonical home for shell/file operand prefixes such as `on`/`from`.
+///
+/// ```
+/// # use vtcode_commons::formatting::strip_optional_word_prefix;
+/// assert_eq!(strip_optional_word_prefix("on src/main.rs", "on"), "src/main.rs");
+/// assert_eq!(strip_optional_word_prefix("From here", "from"), "here");
+/// // No whitespace boundary: left untouched.
+/// assert_eq!(strip_optional_word_prefix("onto x", "on"), "onto x");
+/// ```
+#[inline]
+pub fn strip_optional_word_prefix<'a>(input: &'a str, word: &str) -> &'a str {
+    let Some(prefix) = input.get(..word.len()) else {
+        return input;
+    };
+    if !prefix.eq_ignore_ascii_case(word) {
+        return input;
+    }
+    let remainder = &input[word.len()..];
+    if remainder.chars().next().is_some_and(char::is_whitespace) {
+        remainder.trim_start()
+    } else {
+        input
+    }
+}
+
+/// Trim surrounding whitespace, matched wrapping quotes (`"`/`'`), and trailing
+/// sentence punctuation (`. , ; ! ?`), repeating until the value is stable.
+///
+/// ```
+/// # use vtcode_commons::formatting::trim_wrapping_quotes_and_punctuation;
+/// assert_eq!(trim_wrapping_quotes_and_punctuation("'src/main.rs',"), "src/main.rs");
+/// assert_eq!(trim_wrapping_quotes_and_punctuation("  plain  "), "plain");
+/// ```
+#[inline]
+pub fn trim_wrapping_quotes_and_punctuation(target: &str) -> &str {
+    let mut normalized = target.trim();
+    loop {
+        let previous = normalized;
+        normalized = normalized.trim();
+        normalized = normalized.strip_prefix('"').unwrap_or(normalized);
+        normalized = normalized.strip_suffix('"').unwrap_or(normalized);
+        normalized = normalized.strip_prefix('\'').unwrap_or(normalized);
+        normalized = normalized.strip_suffix('\'').unwrap_or(normalized);
+        normalized = normalized.trim_end_matches(['.', ',', ';', '!', '?']).trim();
+        if normalized == previous {
+            return normalized;
+        }
+    }
+}
+
 /// Clean reasoning text by trimming trailing whitespace on each line and
 /// removing blank lines.
 ///
