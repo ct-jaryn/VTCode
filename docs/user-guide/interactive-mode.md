@@ -48,6 +48,19 @@ Multiline methods (`Shift+Enter`, `Option+Enter`, `\`+`Enter`, `Ctrl+J`, paste) 
 Composer triggers (`#`, `/`, `!`, `@`, `@agent-<name>`, `Alt+P`) are tabulated in
 [Keyboard Shortcuts](./keyboard-shortcuts.md#quick-commands).
 
+## Execution Explanations
+
+Enter `/explain` in the chat input to review the latest task without another model call. The five sections show its
+goal and outcome, successful recorded changes, public decisions, verification, and what to review first.
+
+Use `/explain --details` to open full public facts in Transcript Review. With mouse capture enabled, Alt+click a fact
+to inspect its canonical evidence; ordinary click and drag retain text selection. `/explain diagram` shows recorded
+execution relationships. Add `--scope session` to include earlier retained tasks.
+
+`/explain --web` opens the paired browser view, or creates and opens an offline HTML report when no live bridge is
+active. `/explain --export html` saves a report and prints its path without opening the browser. See
+[explanation usage](./commands.md#execution-explanations) for examples, attribution rules, and missing-evidence states.
+
 ## Reduced Motion
 
 Set `ui.reduce_motion_mode = true` to keep progress labels visible while stopping shimmer and spinner animation. You can

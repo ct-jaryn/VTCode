@@ -117,6 +117,8 @@ Replace `openai` with your supported provider. Credentials can also come from en
 > own OpenAI API key. GitHub Copilot uses the official `copilot` CLI. See
 > [OAuth authentication](./docs/guides/oauth-authentication.md).
 
+<!-- -->
+
 > [!CAUTION]
 > Never commit API keys or put them in `vtcode.toml`.
 
@@ -137,6 +139,11 @@ Use `vtcode` to explore, plan, and implement changes in the TUI. For larger task
 [read-only planning](./docs/guides/planning-workflow.md), then review
 [turn diffs](./docs/development/diff-preview.md) before committing. See the
 [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
+
+After a task, enter `/explain` to review its outcome, changes, recorded decisions, verification, and review priorities
+without another model call. Use `/explain --details` to inspect evidence, `/explain diagram` for execution relationships,
+or `/explain --web` for the browser view with an offline fallback. `/explain --export html` saves a standalone report.
+See [explanation usage](./docs/user-guide/commands.md#execution-explanations) for scopes and report options.
 
 ### Headless
 

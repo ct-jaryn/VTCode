@@ -46,6 +46,23 @@ page API on origin isolation and the `tools` Permissions Policy; the WebMCP app 
 `get_editor_state.webmcp_context` and keeps its normal fallback active when the API is unavailable. The authenticated VT
 Code bridge is separate and can still be used for workspace operations when explicitly paired.
 
+## Execution explanations
+
+In an active connected session, enter `/explain --web` in the TUI to open the app's **Explanation** view. Complete the
+pairing steps above if the browser is not connected. The view is available when the paired runtime advertises execution
+explanations; a standalone workspace bridge or the unpaired fallback may not support it.
+
+Select task or session scope to inspect the summary, timeline, recorded delegation, action/file relationships, plan
+changes, verification, and recorded usage. Evidence controls show the recorded source; terminal navigation focuses
+Transcript Review without submitting a prompt, executing a command, or editing a file. The current workspace diff is
+shown separately from agent-attributed changes. Reconnects reload authoritative state, and missing evidence stays
+visible.
+
+Without an active bridge, `/explain --web` creates and opens an offline HTML report. To save one without opening it,
+enter `/explain --export html`. The terminal prints its path under the session's `derived/explain/` directory. Offline
+reports embed available evidence and work without pairing or a network connection; navigation stays within the report.
+See [explanation usage](./commands.md#execution-explanations) for all command options and interpretation rules.
+
 ## Two integration paths
 
 The browser client has two interfaces that are easy to confuse:

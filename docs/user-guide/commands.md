@@ -40,20 +40,65 @@ The table below maps the primary subcommands to their purpose; detailed sections
 | `vtcode update`                                                        | Check for and install binary updates from GitHub Releases           |
 | `vtcode man`                                                           | Generate or display man pages                                       |
 
-## Headless / CI
+## Execution explanations
 
-Interactive execution explanations use no additional model call:
+Enter these slash commands in the interactive VT Code chat input. They summarize recorded execution without another
+model call.
 
 | Command | Purpose |
 | --- | --- |
 | `/explain` | Latest task's goal, changes, decisions, verification, and review priorities |
+| `/explain --scope task` | Explicitly select the latest task (the default) |
 | `/explain --scope session` | Explain all retained tasks |
 | `/explain --details` | Inspect public facts and evidence in Transcript Review |
 | `/explain diagram` | Show recorded execution order and file relationships |
+| `/explain diagram --scope session` | Show execution relationships across retained tasks |
 | `/explain --web` | Open the live Explanation view, or create an offline report |
 | `/explain --export html` | Export a private standalone HTML report |
 
-See [execution explanations](../development/execution-explanations.md) for evidence limits and attribution rules.
+Choose one output mode: the summary, `--details`, `diagram`, `--web`, or `--export html`. Add `--scope task` or
+`--scope session` to any mode. The default summary has five sections and at most 20 logical lines; wrapped terminal
+text can occupy more rows. Omission counts point to additional facts available in the detailed views.
+
+### Review a task
+
+1. Run `/explain` after the agent finishes. Read **Goal** for the outcome and **Review first** for inspection priorities.
+2. Run `/explain --details` for the full public facts. With mouse capture enabled, Alt+click a fact in Transcript Review
+   to inspect its recorded evidence. Ordinary click and drag still select text. Use the configured review binding
+   (default `Ctrl+T`) to close the viewer.
+3. Run `/explain diagram` to inspect recorded action order, failures, delegation, and file relationships.
+
+The latest task includes its initial request, active corrections, approval handoffs, retries, and autonomous
+continuations. A new request entered while the agent is idle starts a new task. Use `--scope session` to include earlier
+retained tasks.
+
+### Interpret the results
+
+- **Changes** attributes successful recorded file operations to the agent. A separate current workspace diff includes
+  staged and unstaged tracked changes against HEAD; it does not establish who made them and excludes untracked files.
+- **Decisions** shows optional public rationale reported by the agent. Missing rationale remains unavailable.
+- **Verification** passes only for a completed recorded check with exit code zero. Pending checks and absent exit codes
+  remain unconfirmed. Checks before later mutation attempts are marked stale, including failed or pending mutations.
+- **Review first** lists deterministic inspection signals with reasons and evidence. A priority is not a proven bug or
+  a claim of test coverage.
+- Missing, malformed, evicted, or unavailable evidence is reported explicitly. Usage, cost, timing, and ancestry appear
+  only when recorded.
+
+### Open or save a report
+
+`/explain --web` opens the existing WebMCP app's Explanation view when the live bridge is active. Complete browser
+pairing if needed; see the [WebMCP guide](./webmcp.md#execution-explanations). Without an active bridge, the command
+creates and opens an offline HTML report.
+
+`/explain --export html` saves a report without opening the browser and prints its path:
+`.vtcode/sessions/<session-id>/derived/explain/explanation-<id>.html`. Open that file directly in a browser. It embeds
+redacted public facts and available evidence, supports local evidence navigation, and needs no network connection or
+pairing credentials. Large or expired evidence is marked incomplete. A browser-opening failure leaves the report at
+the printed path.
+
+See the [development guide](../development/execution-explanations.md) for event and evidence limits.
+
+## Headless / CI
 
 `exec`, `ask --print`, and `review` are safe with no TTY. `stdout` carries only the result (`--json` streams events);
 diagnostics go to `stderr`. Failures exit non-zero and never block on a prompt.

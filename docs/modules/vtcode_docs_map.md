@@ -450,10 +450,10 @@ below based on the topic area.
 
 - **File**: `docs/user-guide/webmcp.md`
   - **Content**: WebMCP Browser Bridge User Guide
-  - **Topics**: Two integration paths, Evaluate the browser tool surface, Run the WebMCP app without a bridge, Connect
-    to a real workspace, Use the read-only remote MCP surface
-  - **User Questions**: "What can you tell me about WebMCP Browser Bridge User Guide?", "How does Two integration paths
-    work?", "How does Evaluate the browser tool surface work?"
+  - **Topics**: Execution explanations, Two integration paths, Evaluate the browser tool surface, Run the WebMCP app
+    without a bridge, Connect to a real workspace
+  - **User Questions**: "What can you tell me about WebMCP Browser Bridge User Guide?", "How does Execution explanations
+    work?", "How does Two integration paths work?"
 
 - **File**: `docs/user-guide/webmcp-demo.md`
   - **Content**: WebMCP browser bridge guide (legacy link)
@@ -1803,15 +1803,16 @@ below based on the topic area.
 
 - **File**: `docs/user-guide/commands.md`
   - **Content**: Command Reference
-  - **Topics**: Core command reference, Headless / CI, Search, Storage diagnostics, File operations
+  - **Topics**: Core command reference, Execution explanations, Headless / CI, Search, Storage diagnostics
   - **User Questions**: "What can you tell me about Command Reference?", "How does Core command reference work?", "How
-    does Headless / CI work?"
+    does Execution explanations work?"
 
 - **File**: `docs/user-guide/interactive-mode.md`
   - **Content**: Interactive Mode Reference
-  - **Topics**: Keyboard Shortcuts, Reduced Motion, Fullscreen Rendering, Scheduled Prompts And Reminders, Vim Mode
+  - **Topics**: Keyboard Shortcuts, Execution Explanations, Reduced Motion, Fullscreen Rendering, Scheduled Prompts And
+    Reminders
   - **User Questions**: "What can you tell me about Interactive Mode Reference?", "How does Keyboard Shortcuts work?",
-    "How does Reduced Motion work?"
+    "How does Execution Explanations work?"
 
 ## Enhanced Trigger Questions
 
