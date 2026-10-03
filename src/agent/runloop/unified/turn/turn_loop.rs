@@ -1465,6 +1465,11 @@ pub(crate) async fn run_turn_loop(
         // per-iteration `provider_name` binding is that provider's identity.
         accumulate_turn_usage(&provider_name, &mut turn_usage, &response_usage);
         turn_processing_ctx.session_stats.record_usage(&provider_name, &response_usage);
+        // Record prompt pressure immediately so mid-turn readers (e.g. the
+        // plan-approval modal's `Context: N% used` subtitle) see the current
+        // response's prompt tokens instead of the previous turn's stale value.
+        // The later `update_token_usage` before continue/break is idempotent.
+        turn_processing_ctx.context_manager.update_token_usage(&response_usage);
         // SEV-style prompt-cache health: a sustained hit-rate collapse warns
         // once per session instead of silently re-paying full input cost.
         if let Some(message) = turn_processing_ctx
