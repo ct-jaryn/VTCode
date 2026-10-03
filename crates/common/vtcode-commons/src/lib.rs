@@ -115,6 +115,7 @@ pub use task_guard::TaskGuard;
 pub use telemetry::{NoopTelemetry, TelemetrySink};
 pub use tokens::{estimate_tokens, truncate_to_tokens};
 pub use unicode::{UNICODE_MONITOR, UnicodeMonitor, UnicodeValidationContext};
+pub use validation::{EmptyCollectionError, NonEmptySlice, NonEmptyString, NonEmptyVec};
 pub use vtcode_paths::{
     MigrationEntry, MigrationFailure, MigrationReport, MigrationSkip, MigrationSkipReason, VtCodePaths,
 };

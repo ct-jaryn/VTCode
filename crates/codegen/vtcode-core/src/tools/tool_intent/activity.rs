@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use serde_json::Value;
+use vtcode_commons::validation::NonEmptySlice;
 
 use super::readonly::{
     command_words_are_readonly, static_shell_command_words, static_shell_command_words_with_output_plumbing,
@@ -514,13 +515,16 @@ fn is_pure_truncation_stage(stage: &str) -> bool {
         }
     }
     let words = match shell_words::split(trimmed) {
-        Ok(words) if !words.is_empty() => words,
-        _ => return false,
+        Ok(words) => words,
+        Err(_) => return false,
     };
-    let program = Path::new(&words[0])
+    let Some(parsed) = NonEmptySlice::from_slice(&words) else {
+        return false;
+    };
+    let program = Path::new(parsed.first())
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(&words[0])
+        .unwrap_or(parsed.first().as_str())
         .to_ascii_lowercase();
     matches!(program.as_str(), "head" | "tail")
 }

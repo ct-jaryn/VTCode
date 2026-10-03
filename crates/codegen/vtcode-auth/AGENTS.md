@@ -15,7 +15,7 @@
 
 ## Gotchas
 
-- `clear_openai_chatgpt_session_with_mode()` and `clear_oauth_token_with_mode()` accept storage mode — use the `_with_mode` variants for explicit control.
+- `clear_openai_chatgpt_session_with_mode()` and `clear_oauth_token_with_mode()` accept storage mode — use the `_with_mode` variants for explicit control. `AuthCredentialsStoreMode::effective_mode()` returns `ResolvedStoreMode` (crate-private, no `Auto` variant) so backend matches are exhaustive without `unreachable!`; `_exact_with_mode` methods take the resolved mode.
 - MCP OAuth is separate from provider OAuth — `mcp_oauth::McpOAuthService` handles it.
 - `credentials::keyring_entry` short-circuits when `keyring_disabled()` is true (`cfg!(debug_assertions)`, `cfg!(test)`, `VTCODE_DISABLE_KEYRING`, or `CI`), so debug builds, tests, and CI fall back to file storage and never trigger macOS Keychain prompts. Debug-keyring can be re-enabled with `VTCODE_DISABLE_KEYRING=0`. `is_keyring_functional()` caches its result to avoid repeated Keychain round trips.
 - API-key writes verify a secure-storage read-back; keep the configured `AuthCredentialsStoreMode` consistent between writes and runtime resolution. Encrypted auth directories are private (`0700`) and credential files are private (`0600`).
