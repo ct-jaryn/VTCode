@@ -2,6 +2,33 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.172.0 - 2026-10-03
+
+### Highlights
+#### Bug Fixes
+
+- Anchor changelog insert and repair top ordering (37a09f7c) 
+- Clarify wait/poll TUI labels and harness guidance (f32f5797) 
+- Overlap TUI teardown with the exit tail and kill PTYs immediately (b5631334) 
+- Record prompt pressure before approval modal (02155a6d) 
+#### Documentation
+
+- Add ACCESSIBILITY.md for GitHub accessibility tab (72a2351c) (@vinhnx)
+- Document usage and evidence navigation (7b7facc1) 
+#### Features
+
+- Stream Responses over persistent WebSockets (c2f9d38e) 
+- Add MiMo V2.6 Pro and Flash routes (10b50891) 
+- Add deterministic execution explanations (b6006467) 
+### Other Changes
+#### Performance
+
+- Filter-first scans, parse-once caches, alloc-free model checks (6e3421cb) 
+#### Refactors
+
+- Emulate named args with Options structs (e9d6d846) 
+- Split shell approval routing modules (53a04dd6) 
+- Carry non-empty and resolved invariants in types (da07a9e3) 
 ## Unreleased
 
 ### Features
