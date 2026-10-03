@@ -9,15 +9,8 @@ use vtcode_core::cli::args::Cli;
 
 use crate::startup::StartupContext;
 
-fn env_flag_enabled(var_name: &str) -> bool {
-    std::env::var(var_name)
-        .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on" | "debug"))
-        .unwrap_or(false)
-}
-
 pub(crate) fn debug_runtime_flag_enabled(debug_arg_enabled: bool, env_var: &str) -> bool {
-    cfg!(debug_assertions) && (debug_arg_enabled || env_flag_enabled(env_var))
+    cfg!(debug_assertions) && (debug_arg_enabled || vtcode_commons::utils::env_flag_enabled(env_var))
 }
 
 pub(crate) fn resolve_runtime_color_policy(args: &Cli) -> ColorOutputPolicy {

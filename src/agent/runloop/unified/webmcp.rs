@@ -292,25 +292,19 @@ fn build_turn_prompt(prompt: &str, proposal: Option<&PatchProposal>) -> String {
 }
 
 fn bounded_section(text: &str, max_bytes: usize, marker: &str) -> String {
+    use vtcode_commons::formatting::truncate_utf8_prefix;
+
     if text.len() <= max_bytes {
         return text.to_string();
     }
     if max_bytes <= marker.len() {
-        return truncate_utf8(marker, max_bytes).to_string();
+        return truncate_utf8_prefix(marker, max_bytes).to_string();
     }
-    let content = truncate_utf8(text, max_bytes - marker.len());
+    let content = truncate_utf8_prefix(text, max_bytes - marker.len());
     let mut bounded = String::with_capacity(max_bytes);
     bounded.push_str(content);
     bounded.push_str(marker);
     bounded
-}
-
-fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
-    let mut end = text.len().min(max_bytes);
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
 }
 
 /// Create the bounded prompt channel used between the WebMCP adapter and the

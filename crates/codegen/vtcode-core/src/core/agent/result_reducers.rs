@@ -112,11 +112,7 @@ fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
         return (text.to_string(), false);
     }
-    let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text[..end].to_string(), true)
+    (vtcode_commons::formatting::truncate_utf8_prefix(text, max_bytes).to_string(), true)
 }
 
 fn reduce_read_file_result(result: Value) -> Value {

@@ -637,6 +637,28 @@ pub fn format_float_display(value: f64) -> String {
     value.to_string()
 }
 
+/// Borrow the longest prefix of `text` that is at most `max_bytes` bytes,
+/// rounded down to the nearest UTF-8 char boundary.
+///
+/// This is the canonical byte-bounded prefix used by provider previews, PTY
+/// capture limits, and bounded WebMCP prompts; do not fork the boundary loop.
+///
+/// ```
+/// # use vtcode_commons::formatting::truncate_utf8_prefix;
+/// assert_eq!(truncate_utf8_prefix("hello world", 5), "hello");
+/// assert_eq!(truncate_utf8_prefix("hi", 10), "hi");
+/// // Never splits a multi-byte char: 4 bytes lands mid-`日`, so only 2 survive.
+/// assert_eq!(truncate_utf8_prefix("AB日", 4), "AB");
+/// ```
+#[inline]
+pub fn truncate_utf8_prefix(text: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Truncate a string so that the retained prefix is at most `max_bytes` bytes,
 /// rounded down to the nearest UTF-8 char boundary.  Returns the truncated
 /// prefix with `suffix` appended, or the original string when it already fits.
@@ -644,11 +666,7 @@ pub fn truncate_byte_budget(text: &str, max_bytes: usize, suffix: &str) -> Strin
     if text.len() <= max_bytes {
         return text.to_string();
     }
-    let mut end = max_bytes.min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{suffix}", &text[..end])
+    format!("{}{suffix}", truncate_utf8_prefix(text, max_bytes))
 }
 
 /// Whether `line` opens or closes a fenced markdown code block.

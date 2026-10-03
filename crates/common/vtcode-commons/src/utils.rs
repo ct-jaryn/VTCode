@@ -98,6 +98,24 @@ pub fn extract_readme_excerpt(md: &str, max_len: usize) -> String {
     crate::formatting::truncate_byte_budget(&excerpt, max_len, "...\n")
 }
 
+/// Whether the environment variable `var_name` is set to an affirmative flag.
+///
+/// Accepts `1`, `true`, `yes`, `on`, or `debug` (case-insensitive, surrounding
+/// whitespace ignored). This is the canonical env-flag parser; do not fork the
+/// accepted-value set per crate.
+///
+/// ```
+/// # use vtcode_commons::utils::env_flag_enabled;
+/// // Unset variables are disabled.
+/// assert!(!env_flag_enabled("VTCODE_ENV_FLAG_DOCTEST_DEFINITELY_UNSET"));
+/// ```
+#[must_use]
+pub fn env_flag_enabled(var_name: &str) -> bool {
+    std::env::var(var_name).ok().is_some_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on" | "debug")
+    })
+}
+
 /// Safe text replacement with validation
 pub fn safe_replace_text(content: &str, old_str: &str, new_str: &str) -> Result<String> {
     if old_str.is_empty() {
