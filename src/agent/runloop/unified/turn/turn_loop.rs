@@ -7,6 +7,7 @@
 //! - Verify: `cargo check -p vtcode && cargo test -p vtcode --bin vtcode turn_loop`
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use crate::agent::runloop::welcome::SessionBootstrap;
 use anyhow::Result;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::timeout;
 use vtcode_core::acp::ToolPermissionCache;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::core::agent::events::{tool_invocation_completed_event, tool_output_completed_event};
@@ -103,6 +105,12 @@ const RECOVERY_SYNTHESIS_MAX_TOKENS: u32 = 4096;
 /// forces the user to nudge "continue". The extra pass only fires when the
 /// model keeps emitting tool calls during a tool-free recovery window.
 const MAX_RECOVERY_RETRIES: u8 = 3;
+/// Outer budget for terminating exec sessions during turn-level Exit/Cancelled
+/// teardown. With `Immediate` PTY mode a healthy close is milliseconds; the cap
+/// only fires on a wedged backend close. On timeout the session-end backstop
+/// re-runs (2 s cap) and the OS reaps any remainder at process exit — never
+/// park the fullscreen TUI waiting for a child.
+const TURN_EXIT_EXEC_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 /// Hard cap on consecutive assistant text-only responses. Without this, the
 /// recovery / continuation logic can loop forever when the model has already
 /// produced a substantive final answer but the system keeps re-prompting it
@@ -2105,14 +2113,18 @@ async fn finalize_turn(
             "turn handoff metric"
         );
     }
-    if matches!(result, TurnLoopResult::Cancelled)
-        && let Err(err) = ctx.tool_registry.terminate_active_exec_sessions_async().await
-    {
-        tracing::warn!(error = %err, "Failed to terminate active exec sessions after turn cancellation");
-    } else if matches!(result, TurnLoopResult::Exit)
-        && let Err(err) = ctx.tool_registry.terminate_all_exec_sessions_async().await
-    {
-        tracing::warn!(error = %err, "Failed to terminate all exec sessions after turn exit");
+    if matches!(result, TurnLoopResult::Cancelled) {
+        terminate_exec_sessions_bounded(
+            ctx.tool_registry.terminate_active_exec_sessions_for_exit_async(),
+            "active exec sessions after turn cancellation",
+        )
+        .await;
+    } else if matches!(result, TurnLoopResult::Exit) {
+        terminate_exec_sessions_bounded(
+            ctx.tool_registry.terminate_all_exec_sessions_for_exit_async(),
+            "all exec sessions after turn exit",
+        )
+        .await;
     }
     if let Some(emitter) = ctx.harness_emitter {
         // Exit is a graceful user-initiated action, not a failure
@@ -2230,6 +2242,18 @@ async fn finalize_turn(
         result,
     )
     .await;
+}
+
+/// Terminate exec sessions during turn-level Exit/Cancelled teardown, bounded
+/// by [`TURN_EXIT_EXEC_SHUTDOWN_TIMEOUT`]. A timeout only skips waiting: the
+/// session-end backstop re-runs the sweep and the OS reaps any remainder at
+/// process exit.
+async fn terminate_exec_sessions_bounded(termination: impl Future<Output = Result<()>>, phase: &str) {
+    match timeout(TURN_EXIT_EXEC_SHUTDOWN_TIMEOUT, termination).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => tracing::warn!(error = %err, "Failed to terminate {phase}"),
+        Err(_elapsed) => tracing::warn!("timed out terminating {phase}; continuing teardown"),
+    }
 }
 
 #[cfg(test)]

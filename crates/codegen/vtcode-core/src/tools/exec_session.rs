@@ -20,7 +20,7 @@ use vtcode_bash_runner::{
 use crate::sandboxing::build_sanitized_env;
 use crate::tools::ExecSessionId;
 use crate::tools::output_spooler::{SpoolIntegrity, SpoolLineCounter, encode_digest_hex};
-use crate::tools::pty::PtySize;
+use crate::tools::pty::{PtyCloseMode, PtySize};
 use crate::tools::registry::{PtySessionGuard, PtySessionManager};
 use crate::tools::types::VTCodeExecSession;
 use crate::utils::path::{canonicalize_workspace, ensure_path_within_workspace};
@@ -46,7 +46,7 @@ const EXEC_SESSION_OUTPUT_READ_LOCK_TIMEOUT: tokio::time::Duration = tokio::time
 /// A missing runtime handle does not establish whether its command failed.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "exec session '{session_id}' not found. Copy the exact `session_id` from the original run response `next_wait_args`/`next_continue_args`. If completion is recorded, reuse its output. Missing session state does not prove failure; rerun only if fresh execution is still needed."
+    "exec session '{session_id}' not found in this runtime. Call `write_stdin` with the exact `session_id` copied from the original run response (`next_wait_args.session_id` or `next_continue_args` `s`/`session_id`); never guess the id. If a background completion or turn diagnostics already recorded output for this id, reuse its output. Missing session state does not prove failure; rerun only if fresh execution is still needed."
 )]
 pub(crate) struct ExecSessionNotFound {
     pub(crate) session_id: crate::types::CompactStr,
@@ -1374,6 +1374,14 @@ impl ExecSessionManager {
     }
 
     pub async fn close_session(&self, session_id: &str) -> Result<VTCodeExecSession> {
+        self.close_session_with_mode(session_id, PtyCloseMode::Graceful).await
+    }
+
+    /// Close with an explicit termination mode. `Immediate` is reserved for
+    /// exit-driven teardown: it skips the `exit\n` courtesy and the SIGTERM
+    /// grace window so a live PTY child cannot cost ~600 ms of shell-return
+    /// latency per session. The OS reaps survivors at process exit.
+    pub async fn close_session_with_mode(&self, session_id: &str, mode: PtyCloseMode) -> Result<VTCodeExecSession> {
         // Serialize removal with Ctrl+B promotion and new session creation so
         // a promotion cannot reserve a slot on a record that close has already
         // detached from the unified session map.
@@ -1394,7 +1402,7 @@ impl ExecSessionManager {
         // Capacity release must happen even if backend close times out: the
         // record is already detached, so leaving counters elevated pins
         // `Running PTY command...` and the composer lock forever.
-        let close_result = self.close_session_backend_bounded(session_id, &record).await;
+        let close_result = self.close_session_backend_bounded(session_id, &record, mode).await;
 
         self.release_foreground_pty_count(&record);
         if pending_background_request {
@@ -1419,6 +1427,7 @@ impl ExecSessionManager {
         &self,
         session_id: &str,
         record: &Arc<ExecSessionRecord>,
+        mode: PtyCloseMode,
     ) -> Result<VTCodeExecSession> {
         let background_watch = record.background_watch.lock().take();
         if let Some(watch) = background_watch {
@@ -1465,7 +1474,9 @@ impl ExecSessionManager {
                 let session_id_owned = session_id.to_string();
                 tokio::time::timeout(EXEC_SESSION_CLOSE_TIMEOUT, async move {
                     tokio::task::spawn_blocking(move || {
-                        pty_manager.close_session(&session_id_owned).map(VTCodeExecSession::from)
+                        pty_manager
+                            .close_session_with_mode(&session_id_owned, mode)
+                            .map(VTCodeExecSession::from)
                     })
                     .await
                     .map_err(|join_error| anyhow!("exec session close task failed: {join_error}"))?
@@ -1542,6 +1553,18 @@ impl ExecSessionManager {
     }
 
     pub(crate) async fn terminate_all_sessions_async(&self) -> Result<()> {
+        self.terminate_all_sessions_with_mode_async(PtyCloseMode::Graceful).await
+    }
+
+    /// Exit-path terminator: closes every session in `Immediate` mode so a
+    /// live PTY child is group-SIGKILLed instead of waiting out the SIGTERM
+    /// grace window. Callers still bound this with an outer timeout; the OS
+    /// reaps any remainder at process exit.
+    pub(crate) async fn terminate_all_sessions_for_exit_async(&self) -> Result<()> {
+        self.terminate_all_sessions_with_mode_async(PtyCloseMode::Immediate).await
+    }
+
+    async fn terminate_all_sessions_with_mode_async(&self, mode: PtyCloseMode) -> Result<()> {
         let ids = {
             let sessions = self.sessions.read().await;
             sessions.keys().cloned().collect::<Vec<_>>()
@@ -1549,7 +1572,7 @@ impl ExecSessionManager {
 
         let mut failures = Vec::new();
         for session_id in ids {
-            if let Err(err) = self.close_session(&session_id).await {
+            if let Err(err) = self.close_session_with_mode(&session_id, mode).await {
                 failures.push(format!("{session_id}: {err}"));
             }
         }
@@ -1566,6 +1589,16 @@ impl ExecSessionManager {
     }
 
     pub(crate) async fn terminate_active_sessions_async(&self) -> Result<()> {
+        self.terminate_active_sessions_with_mode_async(PtyCloseMode::Graceful).await
+    }
+
+    /// Exit-path variant of [`Self::terminate_active_sessions_async`] using
+    /// `Immediate` PTY termination (see [`Self::terminate_all_sessions_for_exit_async`]).
+    pub(crate) async fn terminate_active_sessions_for_exit_async(&self) -> Result<()> {
+        self.terminate_active_sessions_with_mode_async(PtyCloseMode::Immediate).await
+    }
+
+    async fn terminate_active_sessions_with_mode_async(&self, mode: PtyCloseMode) -> Result<()> {
         let ids = {
             let sessions = self.sessions.read().await;
             sessions
@@ -1582,7 +1615,7 @@ impl ExecSessionManager {
                 .await
                 .map(|record| !record.background.load(Ordering::Acquire))
                 .unwrap_or(false);
-            if should_close && let Err(err) = self.close_session(&session_id).await {
+            if should_close && let Err(err) = self.close_session_with_mode(&session_id, mode).await {
                 failures.push(format!("{session_id}: {err}"));
             }
         }
@@ -1988,7 +2021,7 @@ mod tests {
         bounded_completion_command,
     };
     use crate::config::PtyConfig;
-    use crate::tools::pty::PtySize;
+    use crate::tools::pty::{PtyCloseMode, PtySize};
     use crate::tools::registry::PtySessionManager;
     use crate::utils::path::canonicalize_workspace;
 
@@ -2848,6 +2881,123 @@ mod tests {
         timeout(Duration::from_secs(8), manager.close_session("pty-live-reap"))
             .await
             .expect("close_session must return after force-terminate")?;
+        Ok(())
+    }
+
+    /// Regression: `PtyCloseMode::Immediate` close must not wait out the
+    /// graceful SIGTERM window. The child traps TERM, so a Graceful close
+    /// would burn the full 500 ms grace before SIGKILL; an Immediate close
+    /// SIGKILLs the group right away and still reaps the child.
+    #[tokio::test]
+    async fn immediate_close_skips_grace_window_and_reaps_live_pty_child() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let foreground_count = Arc::new(AtomicUsize::new(0));
+        manager.set_foreground_pty_counter(Arc::clone(&foreground_count));
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        manager
+            .create_pty_session(
+                "immediate-live".to_string().into(),
+                vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "trap \"\" TERM; sleep 30".to_string(),
+                ],
+                workspace_root,
+                size,
+                HashMap::new(),
+                None,
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        let metadata =
+            timeout(Duration::from_secs(8), manager.close_session_with_mode("immediate-live", PtyCloseMode::Immediate))
+                .await
+                .expect("immediate close must return within the bounded reap budget")?;
+
+        // A Graceful close of a TERM-trapping child takes at least the 500 ms
+        // grace window; Immediate must finish well under it.
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "immediate close must skip the SIGTERM grace window, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            metadata.exit_code.is_some(),
+            "immediate close must reap the child to an exit status, got {:?}",
+            metadata.exit_code
+        );
+        assert!(manager.session_record("immediate-live").await.is_err());
+        assert_eq!(foreground_count.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    /// The turn-Cancelled terminator uses Immediate PTY termination and the
+    /// foreground-only filter: live foreground sessions die fast while
+    /// user-owned background sessions survive for later continuation.
+    #[tokio::test]
+    async fn terminate_active_for_exit_kills_foreground_and_preserves_background() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let workspace_root = canonicalize_workspace(temp_dir.path());
+        let pty_sessions = PtySessionManager::new(workspace_root.clone(), PtyConfig::default());
+        let manager = ExecSessionManager::new(workspace_root.clone(), pty_sessions);
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        manager
+            .create_pty_session(
+                "exit-active-fg".to_string().into(),
+                vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "trap \"\" TERM; sleep 30".to_string(),
+                ],
+                workspace_root.clone(),
+                size,
+                HashMap::new(),
+                None,
+            )
+            .await?;
+        manager
+            .create_pipe_session_with_sandbox_and_background(
+                "exit-active-bg".to_string().into(),
+                vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
+                workspace_root,
+                HashMap::new(),
+                false,
+                true,
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        timeout(Duration::from_secs(8), manager.terminate_active_sessions_for_exit_async())
+            .await
+            .expect("terminate_active_for_exit must return within the bounded close budget")?;
+
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "foreground Immediate close must skip the SIGTERM grace window, took {:?}",
+            started.elapsed()
+        );
+        assert!(manager.session_record("exit-active-fg").await.is_err());
+        assert!(
+            manager.session_record("exit-active-bg").await.is_ok(),
+            "background session must remain after the active-only terminator"
+        );
+        manager.close_session("exit-active-bg").await?;
         Ok(())
     }
 

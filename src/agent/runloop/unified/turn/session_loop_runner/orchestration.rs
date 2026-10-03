@@ -2544,6 +2544,16 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 continue;
             }
         }
+        // Tell the TUI to tear down at the START of the session tail, not at
+        // the end. The worker leaves the alternate screen, drains, and restores
+        // escape modes concurrently with the persistence work below (harness
+        // finish, exec termination, archive write, hooks, MCP), so a typed
+        // `exit`/`/quit` no longer keeps the fullscreen visible through the
+        // whole tail. `finalize_session` still sends its own shutdown as an
+        // idempotent backstop and joins the worker. Sends to a closed TUI
+        // channel are no-ops, so this is safe on every end reason, including
+        // NewSession/resume, which recreate the TUI afterwards.
+        handle.shutdown();
         if let Some(archive) = session_archive.as_mut() {
             archive.set_primary_agent(active_primary_agent.active().name());
             let skill_names: Vec<String> = loaded_skills.read().await.keys().cloned().collect();
@@ -2559,15 +2569,15 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 )
             }));
         }
-        if let Some(emitter) = harness_emitter.as_ref() {
+        let (outcome_code, subtype) = resolve_thread_completion_status(
+            &session_end_reason,
+            session_stats.budget_limit().is_some(),
+            last_approved_plan_summary_status,
+            last_turn_result.as_ref(),
+            last_turn_response_was_fallback,
+        );
+        let terminal_event_error = if let Some(emitter) = harness_emitter.as_ref() {
             let harness_snapshot = tool_registry.harness_context_snapshot();
-            let (outcome_code, subtype) = resolve_thread_completion_status(
-                &session_end_reason,
-                session_stats.budget_limit().is_some(),
-                last_approved_plan_summary_status,
-                last_turn_result.as_ref(),
-                last_turn_response_was_fallback,
-            );
             let result = subtype
                 .is_success()
                 .then(|| latest_assistant_result_text(&runtime.state.messages))
@@ -2584,32 +2594,112 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 total_cost_usd,
                 session_stats.total_turns(),
             );
-            // Always attempt exporter finalization after the terminal event.
-            // Optional exporters are isolated inside `HarnessEventEmitter`,
-            // while a canonical persistence error is retained and returned
-            // only after `finish()` has had a chance to drain/close the sink.
-            let terminal_event_error = emitter
+            // The terminal event is enqueued synchronously; exporter
+            // finalization happens in the concurrent group below.
+            emitter
                 .emit(event)
                 .err()
-                .map(|error| error.context("failed to emit canonical thread.completed event"));
-            // Fire one best-effort session-completion notification, mirroring the
-            // per-turn outcome helper. Reuses the same completion_success/failure
-            // gates as turn completion (no separate session config).
-            super::notifications::emit_session_completion_notification(subtype, session_stats.total_turns()).await;
-            if let Err(error) = emitter.finish().await {
-                tracing::error!(
-                    target: "vtcode.harness",
-                    phase = "canonical_finish",
-                    error = %error,
-                    "failed to finalize canonical session persistence"
-                );
-                if terminal_event_error.is_none() {
-                    return Err(error.context("failed to finalize canonical session persistence"));
+                .map(|error| error.context("failed to emit canonical thread.completed event"))
+        } else {
+            None
+        };
+        // Independent, individually-bounded teardown steps run concurrently:
+        // their worst-case caps overlap (max) instead of adding (sum) the way
+        // the previous sequential chain did. Every await carries a timeout; a
+        // timeout only skips waiting (the OS reaps children at process exit),
+        // it never leaks the terminal.
+        let (harness_finish_error, (), (), end_code_changes) = tokio::join!(
+            async {
+                let emitter = harness_emitter.as_ref()?;
+                // Fire one best-effort session-completion notification, mirroring
+                // the per-turn outcome helper. Reuses the same
+                // completion_success/failure gates as turn completion.
+                if timeout(
+                    Duration::from_millis(250),
+                    super::notifications::emit_session_completion_notification(subtype, session_stats.total_turns()),
+                )
+                .await
+                .is_err()
+                {
+                    tracing::debug!(target: "vtcode.harness", "session completion notification timed out during exit");
                 }
-            }
-            if let Some(error) = terminal_event_error {
+                // Always attempt exporter finalization after the terminal event.
+                // Optional exporters are isolated inside `HarnessEventEmitter`,
+                // while a canonical persistence error is retained and returned
+                // only after `finish()` has had a chance to drain/close the sink.
+                match timeout(Duration::from_millis(500), emitter.finish()).await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => {
+                        tracing::error!(
+                            target: "vtcode.harness",
+                            phase = "canonical_finish",
+                            error = %error,
+                            "failed to finalize canonical session persistence"
+                        );
+                        Some(error.context("failed to finalize canonical session persistence"))
+                    }
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            target: "vtcode.harness",
+                            phase = "canonical_finish",
+                            "canonical session persistence finish timed out during exit; continuing teardown"
+                        );
+                        None
+                    }
+                }
+            },
+            async {
+                if let Some(manager) = checkpoint_manager.as_ref() {
+                    let session_id = tool_registry.harness_context_snapshot().session_id;
+                    match timeout(Duration::from_millis(500), manager.complete_session_navigation(&session_id)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            tracing::debug!(%error, "checkpoint navigation trim failed after thread completion")
+                        }
+                        Err(_elapsed) => {
+                            tracing::debug!(%session_id, "checkpoint navigation trim timed out during exit")
+                        }
+                    }
+                }
+            },
+            async {
+                // Best-effort backstop: a Ctrl+C exit from idle (no turn
+                // running) can leave exec/PTY sessions alive because
+                // turn-level cancellation never ran. Terminate them before
+                // teardown so no child outlives the TUI. `Immediate` PTY mode
+                // (group SIGKILL, no SIGTERM grace window) because the user
+                // asked to leave.
+                if matches!(
+                    session_end_reason,
+                    SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::Error
+                ) {
+                    match timeout(
+                        EXIT_BACKGROUND_SHUTDOWN_TIMEOUT,
+                        tool_registry.terminate_all_exec_sessions_for_exit_async(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "failed to terminate exec sessions during session exit");
+                        }
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                "timed out terminating exec sessions during session exit; continuing teardown"
+                            );
+                        }
+                    }
+                }
+            },
+            capture_code_change_snapshot(&config.workspace, "end"),
+        );
+        if let Some(error) = harness_finish_error {
+            if terminal_event_error.is_none() {
                 return Err(error);
             }
+        }
+        if let Some(error) = terminal_event_error {
+            return Err(error);
         }
         // Empty shells (0 turns, terminal) are not worth keeping: they pollute
         // `.vtcode/sessions/` and hide real sessions. Runs on every close path
@@ -2618,17 +2708,10 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         if let Err(error) = vtcode_memory::evict_zero_turn_completed_store(&config.workspace, &turn_run_id.0) {
             tracing::debug!(target: "vtcode.harness", error = %error, "zero-turn session store cleanup failed");
         }
-        // Bound the finished session's rewind pins so completed threads cannot
-        // keep their full turn history protected for the snapshot age window.
         // A fully-checked task tracker is archived so it cannot leak into the
         // next session's memory envelope.
         {
             let session_id = tool_registry.harness_context_snapshot().session_id;
-            if let Some(manager) = checkpoint_manager.as_ref()
-                && let Err(error) = manager.complete_session_navigation(&session_id).await
-            {
-                tracing::debug!(%error, "checkpoint navigation trim failed after thread completion");
-            }
             if let Err(error) = vtcode_core::core::agent::harness_artifacts::archive_completed_current_task(
                 &config.workspace,
                 &session_id,
@@ -2696,32 +2779,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         if matches!(session_end_reason, SessionEndReason::NewSession) {
             next_session_primary_agent = Some(active_primary_agent.active().name().to_owned());
         }
-        // Best-effort backstop: a Ctrl+C exit from idle (no turn running) can
-        // leave exec/PTY sessions alive because turn-level cancellation never
-        // ran. Terminate them before teardown so no child outlives the TUI.
-        //
-        // Bounded: each session close can block up to ~12s on a stuck child
-        // reap (`EXEC_SESSION_CLOSE_TIMEOUT`), and closes run sequentially,
-        // so an unbounded await here parks the fullscreen TUI for many
-        // seconds on exit. The OS reaps any remainder at process exit; a
-        // timeout here only skips waiting, never leaks the terminal.
-        if matches!(session_end_reason, SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::Error)
-        {
-            match timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, tool_registry.terminate_all_exec_sessions_async()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "failed to terminate exec sessions during session exit");
-                }
-                Err(_elapsed) => {
-                    tracing::warn!("timed out terminating exec sessions during session exit; continuing teardown");
-                }
-            }
-        }
-        // Capture the end-of-session worktree state before teardown: finalize
-        // does not touch the worktree, so the snapshot is equivalent, and
-        // taking it here keeps the restore → summary window free of git
-        // subprocess work (the tty is already cooked and echoing by then).
-        let end_code_changes = capture_code_change_snapshot(&config.workspace, "end").await;
         let code_change_delta =
             compute_session_code_change_delta(start_code_changes.as_ref(), end_code_changes.as_ref());
         // The config-reload check is polling bookkeeping that only matters for
@@ -2740,31 +2797,49 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 )?;
             }
         }
-        let finalization_output = match finalize_session(
-            &mut renderer,
-            lifecycle_hooks.as_ref(),
-            &turn_id,
-            session_end_reason,
-            &mut session_archive,
-            &session_stats,
-            last_turn_diagnostics,
-            &runtime.state.messages,
-            linked_directories,
-            async_mcp_manager.as_deref(),
-            &handle,
-            &mut session,
-        )
-        .await
-        {
-            Ok(output) => Some(output),
-            Err(err) => {
-                tracing::error!("Failed to finalize session: {}", err);
-                renderer
-                    .line(MessageStyle::Error, &format!("Failed to finalize session: {err}"))
-                    .ok();
-                None
+        // Shut down background work before the postamble so no late task can
+        // write after the terminal is restored and the summary is printed.
+        // Bounded: nested close_tree walks can stall on contended locks, and
+        // this previously ran after the terminal was restored, directly
+        // delaying the shell return — now it overlaps the finalization below.
+        // Aborts only skip waiting; the process exit reaps any remainder.
+        let subagent_shutdown = async {
+            if let Some(controller) = tool_registry.subagent_controller() {
+                if timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, controller.signal_shutdown())
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("timed out shutting down subagent controller during session exit");
+                }
             }
         };
+        let ((), finalization_output) = tokio::join!(subagent_shutdown, async {
+            match finalize_session(
+                &mut renderer,
+                lifecycle_hooks.as_ref(),
+                &turn_id,
+                session_end_reason,
+                &mut session_archive,
+                &session_stats,
+                last_turn_diagnostics,
+                &runtime.state.messages,
+                linked_directories,
+                async_mcp_manager.as_deref(),
+                &handle,
+                &mut session,
+            )
+            .await
+            {
+                Ok(output) => Some(output),
+                Err(err) => {
+                    tracing::error!("Failed to finalize session: {}", err);
+                    renderer
+                        .line(MessageStyle::Error, &format!("Failed to finalize session: {err}"))
+                        .ok();
+                    None
+                }
+            }
+        });
         if let Some(next_resume) = resume_state.as_ref() {
             refresh_runtime_debug_context_for_next_session(config.workspace.as_path(), Some(next_resume)).await?;
             continue;
@@ -2819,20 +2894,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             let _ = vtcode_ui::tui::panic_hook::restore_tui();
         }
         let session_total_usage = session_stats.total_usage();
-        // Shut down background work before the postamble so no late task can
-        // write after the terminal is restored and the summary is printed.
-        // Bounded: nested close_tree walks can stall on contended locks, and
-        // this runs after the terminal is already restored, directly delaying
-        // the shell return. Aborts only skip waiting; the process exit reaps
-        // any remainder.
-        if let Some(controller) = tool_registry.subagent_controller() {
-            if timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, controller.signal_shutdown())
-                .await
-                .is_err()
-            {
-                tracing::warn!("timed out shutting down subagent controller during session exit");
-            }
-        }
         print_exit_summary(ExitData {
             app_name: "VT Code",
             version: env!("CARGO_PKG_VERSION"),
