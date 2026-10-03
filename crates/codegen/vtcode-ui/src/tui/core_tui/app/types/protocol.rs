@@ -106,6 +106,10 @@ pub enum InlineCommand {
     AppendCompactActivity(CompactActivityMetadata),
     /// Store a completed-edit review payload for explicit expand activation.
     RecordDiffReview(vtcode_commons::ui_protocol::DiffReviewAnchor),
+    /// Focus an existing capture in Transcript Review without submitting input.
+    FocusTranscriptReview {
+        id: ToolOutputId,
+    },
     /// Replace the current compact successful-command activity row with an
     /// updated contiguous group.
     ///
@@ -428,6 +432,13 @@ impl InlineHandle {
         let id = self.next_tool_output_id.fetch_add(1, Ordering::Relaxed);
         self.send_command(InlineCommand::RecordToolOutput { id, lines });
         id
+    }
+
+    /// Display retained canonical evidence using the existing review geometry.
+    pub fn review_evidence(&self, lines: Vec<String>) -> bool {
+        let id = self.next_tool_output_id.fetch_add(1, Ordering::Relaxed);
+        self.sender.send(InlineCommand::RecordToolOutput { id, lines }).is_ok()
+            && self.sender.send(InlineCommand::FocusTranscriptReview { id }).is_ok()
     }
 
     pub fn append_tool_output_line(&self, id: ToolOutputId, kind: InlineMessageKind, segments: Vec<InlineSegment>) {
@@ -918,6 +929,23 @@ impl crate::tui::core_tui::runner::TuiCommand for InlineCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_navigation_records_capture_before_focus_and_reports_closed_ui() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(sender);
+        assert!(handle.review_evidence(vec!["recorded event".into()]));
+        let InlineCommand::RecordToolOutput { id, lines } = receiver.try_recv().unwrap() else {
+            panic!("capture must precede focus")
+        };
+        assert_eq!(lines, ["recorded event"]);
+        assert!(
+            matches!(receiver.try_recv().unwrap(), InlineCommand::FocusTranscriptReview { id: focused } if focused == id)
+        );
+        assert!(receiver.try_recv().is_err(), "navigation must not submit input");
+        drop(receiver);
+        assert!(!handle.review_evidence(vec!["expired receiver".into()]));
+    }
 
     fn test_session() -> (InlineHandle, InlineSession, UnboundedSender<InlineEvent>) {
         let (command_sender, _command_receiver) = tokio::sync::mpsc::unbounded_channel();

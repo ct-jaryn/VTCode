@@ -6,6 +6,7 @@ import { createWebMcpEvidenceRecorder, type WebMcpEvidenceRecorder } from "./web
 import { createWebMcpTools, registerWebMcpTools, replaceExactText, type ModelContext, type StageTextEditInput, type ToolExecutionOptions, type WebMcpRegistration, type WebMcpTool } from "./webmcp.ts";
 import { BackendError, errorCode, errorMessage, isRecord, type BackendConnectionEvent, type BackendEvent, type ClientProposal, type EditorStateForWebMcp, type FileSnapshot, type Panel, type PatchProposal, type PersistedBrowserState, type RuntimeStatus, type SearchMatch, type SearchResult, type StatusPayload, type TreeNode, type WebMcpEnvironmentState, type WorkspaceFile } from "./types.ts";
 import "../styles.css";
+import { mountExplanation } from "./explanation.ts";
 
 interface AppElements {
   readonly [id: string]: HTMLElement;
@@ -107,6 +108,7 @@ function browserStorage(): StorageLike | null {
 const persistedBrowserState = loadBrowserState(browserStorage(), APP_INSTANCE);
 const persistedBrowserSettings = loadBrowserSettings(browserStorage(), APP_INSTANCE);
 let backend: Backend = createBackend(persistedBrowserState?.fallback_files);
+const explanationView = mountExplanation(() => backend);
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let openRequest = 0;
 let webMcpRegistration: WebMcpRegistration | null = null;
@@ -190,6 +192,7 @@ function log(text: string): void {
 }
 
 function recordRuntimeEvent(event: BackendEvent): void {
+  explanationView.refresh();
   const sequence = event.type === "event" ? ` #${event.sequence}` : "";
   log(`Runtime event${sequence}`);
   status("Runtime event received", "Refresh a clean file to inspect the latest backend snapshot.");
@@ -493,6 +496,7 @@ function updateTurnControl(): void {
 }
 
 function handleBackendConnection(event: BackendConnectionEvent): void {
+  explanationView.refresh();
   if (backend.kind !== "websocket") return;
   if (event.state === "connected") {
     $("supportStatus").textContent = "VT Code connected";
@@ -523,6 +527,7 @@ function handleBackendConnection(event: BackendConnectionEvent): void {
 }
 
 function handleBackendStatus(_payload: StatusPayload | null): void {
+  explanationView.refresh();
   if (backend.kind !== "websocket") return;
   renderSettings();
   updateTurnControl();
@@ -1120,6 +1125,7 @@ async function loadWorkspace(nextBackend: Backend, restoreState: PersistedBrowse
   state.unsubscribeStatus?.();
   if (nextBackend !== backend) backend.close?.();
   backend = nextBackend;
+  explanationView.refresh();
   openRequest += 1;
   state.files.clear();
   for (const [path, file] of nextFiles) state.files.set(path, file);

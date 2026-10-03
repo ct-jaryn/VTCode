@@ -254,6 +254,7 @@ mod tests {
                 2,
                 ThreadEvent::ItemCompleted(ItemCompletedEvent {
                     item: ThreadItem {
+                        context: None,
                         id: "msg-1".to_string(),
                         details: ThreadItemDetails::AgentMessage(AgentMessageItem {
                             text: "assistant reply".to_string(),
@@ -320,6 +321,7 @@ mod tests {
                 1,
                 ThreadEvent::ItemCompleted(ItemCompletedEvent {
                     item: ThreadItem {
+                        context: None,
                         id: "msg-1".to_string(),
                         details: ThreadItemDetails::AgentMessage(AgentMessageItem {
                             text: "<script>alert('xss')</script>".to_string(),
@@ -331,6 +333,7 @@ mod tests {
                 2,
                 ThreadEvent::ItemStarted(ItemStartedEvent {
                     item: ThreadItem {
+                        context: None,
                         id: "tool-1".to_string(),
                         details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                             tool_name: "exec_command".to_string(),
@@ -345,6 +348,7 @@ mod tests {
             sample_event_record(
                 3,
                 ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                    completed_at: None,
                     usage: Usage {
                         input_tokens: 10,
                         cached_input_tokens: 2,
@@ -555,6 +559,7 @@ mod tests {
                 7,
                 ThreadEvent::ItemCompleted(ItemCompletedEvent {
                     item: ThreadItem {
+                        context: None,
                         id: "cmd-1".to_string(),
                         details: ThreadItemDetails::CommandExecution(Box::new(CommandExecutionItem {
                             command: "cargo check".to_string(),
@@ -569,6 +574,7 @@ mod tests {
             "item.completed",
             "completed",
             &ThreadItem {
+                context: None,
                 id: "cmd-1".to_string(),
                 details: ThreadItemDetails::CommandExecution(Box::new(CommandExecutionItem {
                     command: "cargo check".to_string(),

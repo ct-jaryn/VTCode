@@ -729,6 +729,7 @@ mod tests {
             assert!(primary_agent_allows_tool(&active, tools::CODE_SEARCH), "{name} should expose code_search");
             assert!(primary_agent_allows_tool(&active, tools::EXEC_COMMAND), "{name} should expose exec_command");
             assert!(primary_agent_allows_tool(&active, tools::REQUEST_USER_INPUT));
+            assert!(primary_agent_allows_tool(&active, tools::RECORD_DECISION));
 
             assert!(!primary_agent_allows_tool(&active, tools::APPLY_PATCH), "{name} must not expose apply_patch");
             assert!(!primary_agent_allows_tool(&active, tools::RUN_PTY_CMD), "{name} must not expose run_pty_cmd");

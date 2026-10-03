@@ -76,6 +76,17 @@ bun run build
 
 ## Capture real-client evidence
 
+For recorded agent execution, use **Explain** after pairing with an active VT Code session that advertises execution
+explanations. Choose the latest task or retained session, select a fact to inspect its source event, and use **Focus in
+terminal review** to locate that evidence in the terminal. This view uses recorded facts and public rationale; review
+signals are prompts for inspection. Missing history and stale verification are shown explicitly.
+Recorded request-prefix token breakdowns show system prompts, tool schemas, instruction files, message history,
+cache read/write/miss counts, and subagent bootstrap counts when available, with links to their source events.
+
+The view loads a consistent paginated snapshot, renders 100 entries per section initially, and offers **Show next**
+for larger histories. Refreshes reuse an unchanged snapshot and preserve scroll position. Updates wait until an active
+text selection is cleared. Evidence previews stop at 1 MiB; a disconnected or unsupported adapter disables **Explain**.
+
 Open **Evidence** in the header, select **Chrome WebMCP Tool Inspector** or **ChatGPT in-app browser**, and choose
 **Start new run** before the external client uses the page. Run the browser-agent sequence in [GUIDE.md](GUIDE.md), then
 use **Copy JSON** or **Download JSON**. Keep the sanitized export with a tool-inspector screenshot or screen recording;

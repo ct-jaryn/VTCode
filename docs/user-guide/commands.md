@@ -42,6 +42,19 @@ The table below maps the primary subcommands to their purpose; detailed sections
 
 ## Headless / CI
 
+Interactive execution explanations use no additional model call:
+
+| Command | Purpose |
+| --- | --- |
+| `/explain` | Latest task's goal, changes, decisions, verification, and review priorities |
+| `/explain --scope session` | Explain all retained tasks |
+| `/explain --details` | Inspect public facts and evidence in Transcript Review |
+| `/explain diagram` | Show recorded execution order and file relationships |
+| `/explain --web` | Open the live Explanation view, or create an offline report |
+| `/explain --export html` | Export a private standalone HTML report |
+
+See [execution explanations](../development/execution-explanations.md) for evidence limits and attribution rules.
+
 `exec`, `ask --print`, and `review` are safe with no TTY. `stdout` carries only the result (`--json` streams events);
 diagnostics go to `stderr`. Failures exit non-zero and never block on a prompt.
 

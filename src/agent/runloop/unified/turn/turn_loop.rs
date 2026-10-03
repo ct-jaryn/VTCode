@@ -2191,6 +2191,7 @@ async fn finalize_turn(
                     ctx.harness_state.blocked_tool_calls,
                 ));
             let blocked_event = vtcode_core::exec::events::TurnBlockedEvent {
+                completed_at: None,
                 message: message.clone(),
                 last_tool,
                 blocked_streak,

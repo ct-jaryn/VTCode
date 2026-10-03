@@ -578,6 +578,7 @@ impl AgentRunner {
                 {
                     let message = error.to_string();
                     event_recorder.turn_blocked(vtcode_exec_events::TurnBlockedEvent {
+                        completed_at: None,
                         message: message.clone(),
                         last_tool: None,
                         blocked_streak: 0,
@@ -735,6 +736,7 @@ impl AgentRunner {
                     Err(error) => {
                         let message = error.to_string();
                         event_recorder.turn_blocked(vtcode_exec_events::TurnBlockedEvent {
+                            completed_at: None,
                             message: message.clone(),
                             last_tool: None,
                             blocked_streak: 0,

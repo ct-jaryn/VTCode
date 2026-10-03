@@ -343,6 +343,21 @@ pub(super) fn timeline_row_from_item(
 ) -> TimelineRow {
     let detail_json = pretty_json_string(&record.event);
     match &item.details {
+        ThreadItemDetails::Decision(d) => timeline_row(
+            record.sequence,
+            TIMELINE_SOURCE_THREAD_EVENTS,
+            event_type,
+            Some("decision"),
+            "decision",
+            Some(default_status),
+            record.turn_id.as_deref(),
+            record.submission_id.as_ref().map(|v| v.as_str()),
+            d.summary.clone(),
+            "Agent-reported public rationale".into(),
+            d.rationale.clone(),
+            detail_json,
+            false,
+        ),
         ThreadItemDetails::AgentMessage(message) => timeline_row(
             record.sequence,
             TIMELINE_SOURCE_THREAD_EVENTS,
@@ -550,7 +565,7 @@ pub(super) fn timeline_row_from_item(
             event_type,
             Some("harness"),
             "harness",
-            Some(harness_status_label(&event.event)),
+            Some(event.status.as_deref().unwrap_or_else(|| harness_status_label(&event.event))),
             record.turn_id.as_deref(),
             record.submission_id.as_ref().map(|value| value.as_str()),
             harness_title(&event.event).to_string(),
@@ -948,11 +963,13 @@ fn harness_title(event: &HarnessEventKind) -> &'static str {
         HarnessEventKind::SessionToolLimitIncreased => "Session tool limit increased",
         HarnessEventKind::ToolLoopLimitIncreased => "Tool loop limit increased",
         HarnessEventKind::BackgroundSubprocessCompleted => "Background subprocess completed",
+        HarnessEventKind::DelegatedAgentStatus => "Delegated agent status",
     }
 }
 
 fn harness_status_label(event: &HarnessEventKind) -> &'static str {
     match event {
+        HarnessEventKind::DelegatedAgentStatus => "observed",
         HarnessEventKind::PlanningCompleted
         | HarnessEventKind::EvaluationPassed
         | HarnessEventKind::VerificationPassed

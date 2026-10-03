@@ -84,6 +84,8 @@ struct CachedToolOutputBlock {
     lines: Vec<String>,
     /// Width-aware styled lines used by the default rich review mode.
     rich_lines: Vec<Line<'static>>,
+    /// Evidence target for each wrapped tool row, shared across its continuations.
+    evidence_links: Vec<Option<std::sync::Arc<str>>>,
     lowered_lines: Option<Vec<String>>,
 }
 
@@ -116,6 +118,18 @@ pub(crate) struct ToolOutputViewerState {
 }
 
 impl ToolOutputViewerState {
+    /// Uses the same body rectangle, wrapping, and scroll position as rendering.
+    pub(crate) fn evidence_at(&self, column: u16, row: u16) -> Option<&str> {
+        if !self.body_contains(column, row) || self.content_area.height == 0 {
+            return None;
+        }
+        let logical_row = self
+            .scroll_top
+            .saturating_add(usize::from(row.saturating_sub(self.content_area.y)));
+        let (message, local_row) = self.block_at(logical_row)?;
+        message.evidence_links.get(local_row)?.as_deref()
+    }
+
     pub(crate) fn open(session: &Session, width: u16, height: u16) -> Self {
         Self::open_focused(session, width, height, None)
     }
@@ -842,6 +856,7 @@ fn build_cached_block(session: &Session, source: ReviewSource, width: u16) -> Ca
                     revision: source.revision,
                     lines,
                     rich_lines,
+                    evidence_links: Vec::new(),
                     lowered_lines: None,
                 };
             }
@@ -860,12 +875,14 @@ fn build_cached_block(session: &Session, source: ReviewSource, width: u16) -> Ca
                 revision: source.revision,
                 lines,
                 rich_lines,
+                evidence_links: Vec::new(),
                 lowered_lines: None,
             }
         }
         ReviewSourceKind::Tool(index) => {
             let block = &session.tool_output_blocks[index];
-            let lines = collect_tool_output_lines(block, width);
+            let rows = collect_tool_output_rows(block, width);
+            let lines = rows.lines;
             let rich_lines = lines
                 .iter()
                 .map(|line| Line::styled(line.clone(), tool_output_line_style(session, line)))
@@ -875,6 +892,7 @@ fn build_cached_block(session: &Session, source: ReviewSource, width: u16) -> Ca
                 revision: source.revision,
                 lines,
                 rich_lines,
+                evidence_links: rows.evidence_links,
                 lowered_lines: None,
             }
         }
@@ -912,17 +930,48 @@ fn tool_output_line_style(session: &Session, line: &str) -> Style {
     style
 }
 
-fn collect_tool_output_lines(block: &ToolOutputBlock, width: u16) -> Vec<String> {
+struct ToolOutputRows {
+    lines: Vec<String>,
+    evidence_links: Vec<Option<std::sync::Arc<str>>>,
+}
+
+fn evidence_target(line: &str) -> Option<std::sync::Arc<str>> {
+    let (_, suffix) = line.split_once("[evidence](vtcode-evidence:")?;
+    let (reference, _) = suffix.split_once(')')?;
+    let mut parts = reference.split(':');
+    let session = parts.next()?;
+    if session.is_empty()
+        || session.len() > 256
+        || !session
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    parts.next()?.parse::<u64>().ok()?;
+    let digest = parts.next()?;
+    if parts.next().is_some() || digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("vtcode-evidence:{reference}").into())
+}
+
+fn collect_tool_output_rows(block: &ToolOutputBlock, width: u16) -> ToolOutputRows {
     let max_width = usize::from(width.max(1));
-    let mut lines = block
-        .lines
-        .iter()
-        .flat_map(|line| wrap_output_line(strip_ansi_codes(line).as_ref(), max_width))
-        .collect::<Vec<_>>();
+    let mut lines = Vec::new();
+    let mut evidence_links = Vec::new();
+    for line in &block.lines {
+        let clean = strip_ansi_codes(line);
+        let target = evidence_target(&clean);
+        let wrapped = wrap_output_line(&clean, max_width);
+        evidence_links.extend(std::iter::repeat_n(target, wrapped.len()));
+        lines.extend(wrapped);
+    }
     if lines.is_empty() {
         lines.push(String::new());
+        evidence_links.push(None);
     }
-    lines
+    ToolOutputRows { lines, evidence_links }
 }
 
 fn wrap_output_line(line: &str, width: usize) -> Vec<String> {

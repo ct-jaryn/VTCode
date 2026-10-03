@@ -7,6 +7,8 @@ pub const EXEC_COMMAND: &str = "exec_command";
 pub const WRITE_STDIN: &str = "write_stdin";
 /// Canonical patch application tool exposed to the model.
 pub const APPLY_PATCH: &str = "apply_patch";
+/// Optional public rationale recording within the canonical current task.
+pub const RECORD_DECISION: &str = "record_decision";
 /// Advanced bounded syntactic code search tool for VTCode-specific profiles.
 pub const CODE_SEARCH: &str = "code_search";
 

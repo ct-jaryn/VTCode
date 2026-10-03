@@ -60,6 +60,7 @@ impl ToolPack for HitlPack {
         _tool_config: &ToolConfigSnapshot,
     ) {
         let registrations = vec![
+            super::builtins::register_record_decision(None),
             ToolRegistration::from_tool_instance(
                 tools::REQUEST_USER_INPUT,
                 CapabilityLevel::Basic,

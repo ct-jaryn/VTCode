@@ -41,6 +41,7 @@ impl ActiveWebmcpBridge {
         config: Option<&VTCodeConfig>,
         origin: &str,
         prompt_sender: mpsc::Sender<String>,
+        explanation: Option<(super::inline_events::harness::HarnessEventEmitter, vtcode_ui::tui::app::InlineHandle)>,
     ) -> Result<Self> {
         let settings = config.map_or_else(WebmcpConfig::default, |config| config.webmcp.clone());
         let allowed_origins = configured_origins(&settings, origin)?;
@@ -48,7 +49,7 @@ impl ActiveWebmcpBridge {
             .await
             .context("failed to initialize the active WebMCP workspace")?
             .with_checks_allowed(false);
-        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender };
+        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender, explanation };
         let server = WebmcpServer::new(
             Arc::new(adapter),
             WebmcpServerConfig {
@@ -145,13 +146,65 @@ fn configured_origins(settings: &WebmcpConfig, requested_origin: &str) -> Result
 struct ActiveRuntimeAdapter {
     workspace: FilesystemWorkspace,
     prompt_sender: mpsc::Sender<String>,
+    explanation: Option<(super::inline_events::harness::HarnessEventEmitter, vtcode_ui::tui::app::InlineHandle)>,
 }
 
 #[async_trait]
 impl RuntimeAdapter for ActiveRuntimeAdapter {
+    async fn explanation_get(
+        &self,
+        scope: vtcode_memory::explanation::ExplanationScope,
+        offset: usize,
+    ) -> vtcode_webmcp::Result<vtcode_memory::explanation::ExplanationPage> {
+        let (emitter, _) = self
+            .explanation
+            .as_ref()
+            .ok_or_else(|| vtcode_webmcp::WebmcpError::Unsupported("execution explanations".into()))?;
+        let mut page = emitter
+            .explanation_page(scope, offset)
+            .await
+            .map_err(|e| vtcode_webmcp::WebmcpError::Adapter(e.to_string()))?;
+        if offset == 0 {
+            page.workspace_diff = Some(vtcode_core::git::capture_workspace_diff(self.workspace.root()).await);
+        }
+        Ok(page)
+    }
+    async fn explanation_evidence(
+        &self,
+        reference: vtcode_memory::explanation::EvidenceRef,
+        offset: usize,
+    ) -> vtcode_webmcp::Result<vtcode_memory::explanation::EvidencePage> {
+        let (emitter, _) = self
+            .explanation
+            .as_ref()
+            .ok_or_else(|| vtcode_webmcp::WebmcpError::Unsupported("execution evidence".into()))?;
+        emitter
+            .evidence(reference, offset)
+            .await
+            .map_err(|e| vtcode_webmcp::WebmcpError::InvalidRequest(e.to_string()))
+    }
+    async fn explanation_navigate(
+        &self,
+        reference: vtcode_memory::explanation::EvidenceRef,
+    ) -> vtcode_webmcp::Result<bool> {
+        let (emitter, handle) = self
+            .explanation
+            .as_ref()
+            .ok_or_else(|| vtcode_webmcp::WebmcpError::Unsupported("execution navigation".into()))?;
+        let page = emitter
+            .evidence(reference, 0)
+            .await
+            .map_err(|e| vtcode_webmcp::WebmcpError::InvalidRequest(e.to_string()))?;
+        let mut lines: Vec<_> = page.text.lines().map(str::to_owned).collect();
+        if page.next_offset.is_some() {
+            lines.push("Evidence continues in the browser; this capture is bounded.".into());
+        }
+        Ok(handle.review_evidence(lines))
+    }
     async fn status(&self) -> vtcode_webmcp::Result<RuntimeStatus> {
         let mut status = self.workspace.status().await?;
         status.turns_available = true;
+        status.explanations_available = self.explanation.is_some();
         status.approval_authority = "active VT Code terminal".into();
         Ok(status)
     }
@@ -272,17 +325,93 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn active_explanation_navigation_validates_evidence_without_queuing_input() {
+        use super::super::inline_events::harness::HarnessEventEmitter;
+        use vtcode_core::exec::events::{InputOrigin, ThreadEvent, TurnStartedEvent};
+        use vtcode_memory::explanation::ExplanationScope;
+        use vtcode_ui::tui::app::{InlineCommand, InlineHandle};
+
+        let workspace_root = tempdir().expect("workspace");
+        let workspace = FilesystemWorkspace::new(workspace_root.path(), [], false)
+            .await
+            .expect("workspace adapter");
+        let emitter = HarnessEventEmitter::new_async(workspace_root.path(), "review-session", None)
+            .await
+            .expect("canonical emitter");
+        emitter
+            .begin_task_turn("turn", "Review retained evidence", InputOrigin::User)
+            .expect("task");
+        emitter
+            .emit(ThreadEvent::TurnStarted(TurnStartedEvent::default()))
+            .expect("turn event");
+        let (prompt_sender, mut prompt_receiver) = prompt_channel();
+        let (command_sender, mut command_receiver) = mpsc::unbounded_channel();
+        let adapter = ActiveRuntimeAdapter {
+            workspace,
+            prompt_sender,
+            explanation: Some((emitter.clone(), InlineHandle::new_for_tests(command_sender))),
+        };
+
+        assert!(adapter.status().await.expect("status").explanations_available);
+        let page = adapter.explanation_get(ExplanationScope::Task, 0).await.expect("explanation");
+        assert_eq!(page.model.goals[0].label, "Review retained evidence");
+        let reference = page.model.goals[0].evidence.clone();
+        let evidence = adapter.explanation_evidence(reference.clone(), 0).await.expect("evidence");
+        assert!(evidence.text.contains("Review retained evidence"));
+        assert!(matches!(
+            adapter.explanation_evidence(reference.clone(), usize::MAX).await,
+            Err(vtcode_webmcp::WebmcpError::InvalidRequest(_))
+        ));
+        let exhausted = adapter
+            .explanation_get(ExplanationScope::Session, usize::MAX)
+            .await
+            .expect("exhausted page");
+        assert!(exhausted.model.goals.is_empty());
+        assert_eq!(exhausted.next_offset, None);
+
+        for invalid_reference in [
+            vtcode_memory::explanation::EvidenceRef { digest: "expired".into(), ..reference.clone() },
+            vtcode_memory::explanation::EvidenceRef {
+                session_id: "other-session".into(),
+                ..reference.clone()
+            },
+        ] {
+            assert!(matches!(
+                adapter.explanation_navigate(invalid_reference).await,
+                Err(vtcode_webmcp::WebmcpError::InvalidRequest(_))
+            ));
+            assert!(command_receiver.try_recv().is_err());
+        }
+        assert!(adapter.explanation_navigate(reference.clone()).await.expect("focus"));
+        let InlineCommand::RecordToolOutput { id, lines } = command_receiver.try_recv().expect("captured evidence")
+        else {
+            panic!("navigation must retain evidence before focusing review");
+        };
+        assert_eq!(lines.join("\n"), evidence.text);
+        assert!(
+            matches!(command_receiver.try_recv(), Ok(InlineCommand::FocusTranscriptReview { id: focused }) if focused == id)
+        );
+        assert!(command_receiver.try_recv().is_err());
+        assert!(prompt_receiver.try_recv().is_err());
+        drop(command_receiver);
+        assert!(!adapter.explanation_navigate(reference).await.expect("closed review channel"));
+        assert!(prompt_receiver.try_recv().is_err());
+        emitter.finish().await.expect("finish emitter");
+    }
+
+    #[tokio::test]
     async fn active_adapter_reports_runtime_and_queues_turns() {
         let workspace_root = tempdir().expect("workspace");
         let workspace = FilesystemWorkspace::new(workspace_root.path(), [workspace_root.path().to_path_buf()], false)
             .await
             .expect("filesystem workspace");
         let (prompt_sender, mut prompt_receiver) = prompt_channel();
-        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender };
+        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender, explanation: None };
 
         let status = adapter.status().await.expect("runtime status");
         assert!(status.connected);
         assert!(status.turns_available);
+        assert!(!status.explanations_available);
         assert!(!status.mutations_allowed);
         assert_eq!(status.approval_authority, "active VT Code terminal");
 
@@ -298,7 +427,7 @@ mod tests {
             .await
             .expect("filesystem workspace");
         let (prompt_sender, _prompt_receiver) = prompt_channel();
-        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender };
+        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender, explanation: None };
 
         assert!(matches!(adapter.request_turn("  ", None).await, Err(vtcode_webmcp::WebmcpError::InvalidRequest(_))));
     }
@@ -320,7 +449,7 @@ mod tests {
             .await
             .expect("proposal");
         let (prompt_sender, mut prompt_receiver) = prompt_channel();
-        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender };
+        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender, explanation: None };
 
         let result = adapter
             .request_turn("Apply the staged change", Some(&proposal.proposal_id))
@@ -356,7 +485,7 @@ mod tests {
             .expect("proposal");
         std::fs::write(workspace_root.path().join("main.js"), "const value = 99;\n").expect("external edit");
         let (prompt_sender, mut prompt_receiver) = prompt_channel();
-        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender };
+        let adapter = ActiveRuntimeAdapter { workspace, prompt_sender, explanation: None };
 
         assert!(matches!(
             adapter

@@ -1173,6 +1173,11 @@ impl AppSession {
             InlineCommand::CloseTransient => self.close_transient(),
             InlineCommand::ShowTransient { request } => self.show_transient(*request),
             InlineCommand::RecordDiffReview(anchor) => self.record_diff_review(anchor),
+            InlineCommand::FocusTranscriptReview { id } => self.open_tool_output_viewer(
+                self.core.transcript_width.max(1),
+                self.core.transcript_rows.max(1),
+                Some(id),
+            ),
             InlineCommand::UpdateFilePaletteSearch { files } => {
                 if let Some(palette) = &mut self.file_palette {
                     palette.set_search_index(files);
@@ -1263,6 +1268,7 @@ fn to_core_command(command: &InlineCommand) -> Option<crate::tui::core_tui::type
             link_ranges: link_ranges.clone(),
         },
         InlineCommand::RecordToolOutput { .. }
+        | InlineCommand::FocusTranscriptReview { .. }
         | InlineCommand::AppendToolOutputLine { .. }
         | InlineCommand::AppendCompactActivity(_)
         | InlineCommand::ReplaceCompactActivity(_)

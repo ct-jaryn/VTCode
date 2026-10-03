@@ -2973,6 +2973,45 @@ mod tests {
     }
 
     #[test]
+    fn review_evidence_alt_click_uses_wrapped_rows_without_stealing_plain_selection() {
+        for width in [24, 100] {
+            let mut session = build_session();
+            let target = format!("vtcode-evidence:session:0:{}", "a".repeat(64));
+            session.record_tool_output_block(81, vec![format!("Inspect storage [evidence]({target})")]);
+            session.open_tool_output_viewer(width, 24, Some(81));
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, 24)).expect("terminal");
+            terminal.draw(|frame| session.render(frame)).expect("render");
+            let row = (0..24)
+                .find(|row| {
+                    session
+                        .tool_output_viewer_state()
+                        .is_some_and(|viewer| viewer.evidence_at(1, *row).is_some())
+                })
+                .expect("evidence row");
+            let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            let mut mouse = MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 1,
+                row,
+                modifiers: KeyModifiers::NONE,
+            };
+            session.handle_event(CrosstermEvent::Mouse(mouse), &sender, None);
+            assert!(receiver.try_recv().is_err());
+            mouse.kind = MouseEventKind::Up(crossterm::event::MouseButton::Left);
+            session.handle_event(CrosstermEvent::Mouse(mouse), &sender, None);
+            mouse.kind = MouseEventKind::Down(crossterm::event::MouseButton::Left);
+            mouse.modifiers = KeyModifiers::ALT;
+            session.handle_event(CrosstermEvent::Mouse(mouse), &sender, None);
+            assert!(matches!(receiver.try_recv(), Ok(InlineEvent::OpenUrl(url)) if url == target));
+            assert!(session.tool_output_viewer_state().is_some());
+            session.tool_output_viewer_state_mut().unwrap().toggle_render_mode();
+            terminal.draw(|frame| session.render(frame)).expect("raw render");
+            assert_eq!(session.tool_output_viewer_state().unwrap().evidence_at(1, row), Some(target.as_str()));
+            assert!(session.tool_output_viewer_state().unwrap().evidence_at(0, 0).is_none());
+        }
+    }
+
+    #[test]
     fn transcript_review_header_close_button_closes_on_mouse_click_and_shows_guide() {
         let mut session = build_session();
         add_compact_activity(&mut session, 46, "printf close");

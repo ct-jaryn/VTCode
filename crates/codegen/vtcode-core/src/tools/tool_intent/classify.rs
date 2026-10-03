@@ -323,6 +323,7 @@ fn builtin_tool_behavior_canonical(tool: &str) -> Option<ToolBehavior> {
         | tools::LIST_SKILLS
         | tools::LOAD_SKILL_RESOURCE
         | tools::TASK_TRACKER
+        | tools::RECORD_DECISION
         | tools::GET_ERRORS
         | tools::SEARCH_TOOLS
         | tools::MCP_SEARCH_TOOLS

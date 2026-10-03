@@ -142,6 +142,7 @@ impl ResponseBuilder {
                     emitter,
                     "vtcode.turn_blocked",
                     json!({
+                        "completed_at": evt.completed_at,
                         "message": evt.message,
                         "last_tool": evt.last_tool,
                         "blocked_streak": evt.blocked_streak,
@@ -158,6 +159,7 @@ impl ResponseBuilder {
                     emitter,
                     "vtcode.thread_completed",
                     json!({
+                        "completed_at": evt.completed_at,
                         "thread_id": evt.thread_id,
                         "session_id": evt.session_id,
                         "subtype": evt.subtype.as_str(),
@@ -619,6 +621,12 @@ impl ResponseBuilder {
 
     fn convert_thread_item(&mut self, item: &ThreadItem, status: ItemStatus) -> OutputItem {
         match &item.details {
+            ThreadItemDetails::Decision(decision) => OutputItem::Custom(CustomItem {
+                id: item.id.clone().into(),
+                status,
+                custom_type: "vtcode:decision".into(),
+                data: json!({"decision": decision, "context": item.context}),
+            }),
             ThreadItemDetails::AgentMessage(msg) => OutputItem::Message(MessageItem {
                 id: item.id.clone().into(),
                 status,
@@ -1239,6 +1247,7 @@ mod tests {
         // Turn completed
         builder.process_event(
             &ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                completed_at: None,
                 usage: Usage {
                     input_tokens: 100,
                     cached_input_tokens: 50,
@@ -1269,6 +1278,7 @@ mod tests {
 
         // Item started
         let item = ThreadItem {
+            context: None,
             id: "msg_1".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Hello".to_string() }),
         };
@@ -1276,6 +1286,7 @@ mod tests {
 
         // Item completed
         let completed_item = ThreadItem {
+            context: None,
             id: "msg_1".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Hello, world!".to_string() }),
         };
@@ -1300,6 +1311,7 @@ mod tests {
 
         // Complete item without prior start (atomic)
         let item = ThreadItem {
+            context: None,
             id: "msg_atomic".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Atomic message".to_string() }),
         };
@@ -1326,6 +1338,7 @@ mod tests {
 
         // Update without prior start
         let item = ThreadItem {
+            context: None,
             id: "msg_implicit".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Hello".to_string() }),
         };
@@ -1343,6 +1356,7 @@ mod tests {
 
         // Start with emoji
         let item1 = ThreadItem {
+            context: None,
             id: "msg_unicode".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Hello 👋".to_string() }),
         };
@@ -1350,6 +1364,7 @@ mod tests {
 
         // Update with more content
         let item2 = ThreadItem {
+            context: None,
             id: "msg_unicode".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Hello 👋 World 🌍".to_string() }),
         };
@@ -1370,6 +1385,7 @@ mod tests {
 
         // Start with some text
         let item1 = ThreadItem {
+            context: None,
             id: "msg_edit".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Original text".to_string() }),
         };
@@ -1377,6 +1393,7 @@ mod tests {
 
         // Update with completely different text (non-append)
         let item2 = ThreadItem {
+            context: None,
             id: "msg_edit".to_string(),
             details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "Completely different".to_string() }),
         };
@@ -1402,6 +1419,7 @@ mod tests {
         let mut emitter = VecStreamEmitter::new();
 
         let item = ThreadItem {
+            context: None,
             id: "plan_1".to_string(),
             details: ThreadItemDetails::Plan(PlanItem { text: "- Step 1\n- Step 2".to_string() }),
         };
@@ -1470,6 +1488,7 @@ mod tests {
         });
 
         let item = ThreadItem {
+            context: None,
             id: "tool_1".to_string(),
             details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                 tool_name: "exec_command".to_string(),
@@ -1506,6 +1525,7 @@ mod tests {
             "max_output_tokens": 512
         });
         let item = ThreadItem {
+            context: None,
             id: "tool_2".to_string(),
             details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                 tool_name: "write_stdin".to_string(),
@@ -1540,6 +1560,7 @@ mod tests {
             "command": ["git", "status"]
         });
         let item = ThreadItem {
+            context: None,
             id: "tool_legacy".to_string(),
             details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                 tool_name: "shell".to_string(),
@@ -1570,6 +1591,7 @@ mod tests {
         builder.process_event(
             &ThreadEvent::ItemStarted(ItemStartedEvent {
                 item: ThreadItem {
+                    context: None,
                     id: "tool_1:output".to_string(),
                     details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                         call_id: "tool_1".to_string(),
@@ -1586,6 +1608,7 @@ mod tests {
         builder.process_event(
             &ThreadEvent::ItemUpdated(vtcode_exec_events::ItemUpdatedEvent {
                 item: ThreadItem {
+                    context: None,
                     id: "tool_1:output".to_string(),
                     details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                         call_id: "tool_1".to_string(),
@@ -1602,6 +1625,7 @@ mod tests {
         builder.process_event(
             &ThreadEvent::ItemCompleted(ItemCompletedEvent {
                 item: ThreadItem {
+                    context: None,
                     id: "tool_1:output".to_string(),
                     details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                         call_id: "tool_1".to_string(),
@@ -1647,6 +1671,7 @@ mod tests {
         builder.process_event(
             &ThreadEvent::ItemCompleted(ItemCompletedEvent {
                 item: ThreadItem {
+                    context: None,
                     id: "tool_1:output".to_string(),
                     details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                         call_id: "tool_1".to_string(),
@@ -1678,6 +1703,7 @@ mod tests {
         builder.process_event(
             &ThreadEvent::ItemCompleted(ItemCompletedEvent {
                 item: ThreadItem {
+                    context: None,
                     id: "tool_1:output".to_string(),
                     details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                         call_id: "tool_1".to_string(),
@@ -1707,6 +1733,7 @@ mod tests {
 
         for item in [
             ThreadItem {
+                context: None,
                 id: "tool_1".to_string(),
                 details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                     tool_name: "exec_command".to_string(),
@@ -1717,6 +1744,7 @@ mod tests {
                 })),
             },
             ThreadItem {
+                context: None,
                 id: "tool_2".to_string(),
                 details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                     tool_name: "exec_command".to_string(),
@@ -1727,6 +1755,7 @@ mod tests {
                 })),
             },
             ThreadItem {
+                context: None,
                 id: "tool_2:output".to_string(),
                 details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                     call_id: "tool_2".to_string(),
@@ -1771,6 +1800,7 @@ mod tests {
         builder.process_event(
             &ThreadEvent::ItemCompleted(ItemCompletedEvent {
                 item: ThreadItem {
+                    context: None,
                     id: "cmd_1".to_string(),
                     details: ThreadItemDetails::CommandExecution(Box::new(CommandExecutionItem {
                         command: "git status".to_string(),
@@ -1805,11 +1835,16 @@ mod tests {
             &mut emitter,
         );
         builder.process_event(
-            &ThreadEvent::TurnFailed(vtcode_exec_events::TurnFailedEvent { message: "boom".to_string(), usage: None }),
+            &ThreadEvent::TurnFailed(vtcode_exec_events::TurnFailedEvent {
+                completed_at: None,
+                message: "boom".to_string(),
+                usage: None,
+            }),
             &mut emitter,
         );
         builder.process_event(
             &ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                completed_at: None,
                 usage: Usage::default(),
                 in_progress_exec_sessions: Vec::new(),
             }),

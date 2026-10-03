@@ -218,6 +218,12 @@ const COMMAND_SKILL_SPECS: &[CommandSkillSpec] = &[
         "integration"
     ),
     built_in_command_spec!(
+        "explain",
+        "Explain recorded execution without a model call",
+        "/explain [--scope task|session] [--details|diagram|--web|--export html]",
+        "status"
+    ),
+    built_in_command_spec!(
         "plugin",
         "Open interactive Agent Plugins manager (usage: /plugin, /plugin manager)",
         "/plugin [manager|list|info <name>|add <source> [--name <id>]|remove <name>|validate <path>|refresh|help]",

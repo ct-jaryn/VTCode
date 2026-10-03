@@ -24,6 +24,7 @@ Entry point for VT Code contributor workflows.
 - [Execution Policy](./EXECUTION_POLICY.md) - Command policy model.
 - [Command Security Model](./COMMAND_SECURITY_MODEL.md) - Command validation and threat model.
 - [WebMCP bridge](./webmcp.md) - Authenticated browser editing, pairing, runtime adapters, and security boundaries.
+- [Execution explanations](./execution-explanations.md) - Canonical projection, decisions, evidence, and reports.
 - [Security Guide](../guides/security.md) - Process sandbox boundaries, MCP inheritance, and provider diagnostic
   redaction.
 - [Sandboxing Basics Reference](./sandboxing-basics-reference.md) - Distilled notes on the Emilua sandboxing-basics

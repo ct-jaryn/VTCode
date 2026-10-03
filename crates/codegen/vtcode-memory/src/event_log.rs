@@ -679,6 +679,38 @@ impl SessionEventLog {
     }
 
     /// Flush pending event bytes and metadata to the session store.
+    /// Visit one consistent retained range, including records outside turns.
+    /// Reads are streamed while cap rewrites and appends are excluded.
+    pub fn visit_snapshot<F>(&self, mut visitor: F) -> Result<SessionManifest, SessionStoreError>
+    where
+        F: FnMut(u64, &[u8]),
+    {
+        use std::io::{BufRead, BufReader};
+        let _eviction_guard = self.shared.eviction_lock.lock().map_err(poison)?;
+        let mut st = self.shared.state.lock().map_err(poison)?;
+        self.persist_meta_locked(&mut st)?;
+        let mut file_slot = self.shared.file.lock().map_err(poison)?;
+        let file = file_slot.as_mut().ok_or_else(|| self.event_file_unavailable())?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| SessionStoreError::io(&self.events_path, e))?;
+        let mut reader = BufReader::new(file.take(st.next_offset));
+        let mut offset = 0;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let length = reader
+                .read_until(b'\n', &mut line)
+                .map_err(|e| SessionStoreError::io(&self.events_path, e))?;
+            if length == 0 {
+                break;
+            }
+            visitor(offset, &line);
+            offset += length as u64;
+        }
+        Ok(st.manifest.clone())
+    }
+
+    /// Flush pending event bytes and metadata to the session store.
     pub fn flush(&self) -> Result<(), SessionStoreError> {
         let _eviction_guard = self.shared.eviction_lock.lock().map_err(poison)?;
         let mut st = self.shared.state.lock().map_err(poison)?;
@@ -1143,6 +1175,11 @@ pub struct SessionManifest {
 }
 
 impl SessionManifest {
+    /// Number of turns preceding the retained canonical range.
+    #[must_use]
+    pub fn evicted_turn_count(&self) -> u64 {
+        self.retained_turn_base.unwrap_or(1).saturating_sub(1)
+    }
     /// Create a fresh manifest for a session.
     #[must_use]
     pub(crate) fn new(session_id: &str) -> Self {
@@ -1264,6 +1301,7 @@ mod borrowed_envelope_tests {
             ThreadEvent::ThreadStarted(ThreadStartedEvent { thread_id: "thread".to_string() }),
             ThreadEvent::TurnStarted(TurnStartedEvent::default()),
             ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                completed_at: None,
                 usage: Usage::default(),
                 in_progress_exec_sessions: Vec::new(),
             }),
@@ -1300,6 +1338,7 @@ mod lifecycle_state_machine_tests {
         );
         assert_eq!(
             LifecycleKind::from_event(&ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                completed_at: None,
                 usage: Usage::default(),
                 in_progress_exec_sessions: Vec::new()
             })),
@@ -1307,6 +1346,7 @@ mod lifecycle_state_machine_tests {
         );
         assert_eq!(
             LifecycleKind::from_event(&ThreadEvent::TurnFailed(TurnFailedEvent {
+                completed_at: None,
                 message: "err".to_string(),
                 usage: None,
             })),
@@ -1318,6 +1358,7 @@ mod lifecycle_state_machine_tests {
         );
         assert_eq!(
             LifecycleKind::from_event(&ThreadEvent::ThreadCompleted(Box::new(ThreadCompletedEvent {
+                completed_at: None,
                 thread_id: "x".to_string(),
                 session_id: "x".to_string(),
                 subtype: ThreadCompletionSubtype::Success,

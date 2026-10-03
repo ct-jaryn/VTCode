@@ -100,6 +100,19 @@ After pairing, an authenticated `status` response includes the adapter's workspa
 refresh this snapshot, but the active TUI remains authoritative for origins, roots, permissions, and writes. Pairing
 codes and session tokens are not part of the settings payload.
 
+Active sessions with canonical persistence advertise `explanations_available: true` and support three authenticated
+operations. They use the same origin-bound pairing token and request limits as workspace operations.
+
+| Operation | Behavior |
+| --------- | -------- |
+| `explanation.get` | Return a bounded page of recorded task or session facts; follow `next_offset` for subsequent collection pages. Page zero may include a separate `workspace_diff` snapshot with explicit ownership, scope, time, and availability. |
+| `explanation.evidence` | Return redacted evidence at a UTF-8 byte offset; references identify the retained session, record position, length, and digest. |
+| `explanation.navigate` | Capture retained evidence in terminal Transcript Review; `focused` reports whether the UI accepted the review request. |
+
+Explanation navigation never queues an agent turn or executes commands. Expired or mismatched evidence references fail
+without opening review. The standalone filesystem adapter advertises `explanations_available: false` and returns
+`unsupported` for all three operations.
+
 In an active TUI session, `/webmcp pair <origin>` starts the listener or issues a code for another configured origin
 when the listener is already running. Existing sessions remain active when another origin is paired. The command prints
 the endpoint, exact browser origin, one-time code, and expiry. `/webmcp pair --replace <origin>` asks for terminal

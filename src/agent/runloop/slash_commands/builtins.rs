@@ -565,6 +565,7 @@ pub(in crate::agent::runloop::slash_commands) async fn execute_built_in_command_
         "title" => handle_title_command(args, renderer),
         "clear" => handle_clear_command(args, renderer),
         "transcript" => handle_transcript_command(args, renderer),
+        "explain" => Ok(SlashCommandOutcome::Explain { args: args.to_owned() }),
         "compact" | "context" => handle_compact_command(args, renderer),
         "copy" => handle_copy_command(args, renderer),
         "status" => Ok(SlashCommandOutcome::ShowStatus),

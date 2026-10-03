@@ -810,9 +810,17 @@ fn profile_allows_tool(profile: ToolProfile, tool_name: &str, planning_active: b
                 | tools::GREP_FILE
                 | tools::CODE_SEARCH
                 | tools::REQUEST_USER_INPUT
+                | tools::RECORD_DECISION
         ),
         ToolProfile::VtCode => {
-            matches!(tool_name, tools::EXEC_COMMAND | tools::WRITE_STDIN | tools::APPLY_PATCH | tools::SEARCH_TOOLS)
+            matches!(
+                tool_name,
+                tools::EXEC_COMMAND
+                    | tools::WRITE_STDIN
+                    | tools::APPLY_PATCH
+                    | tools::SEARCH_TOOLS
+                    | tools::RECORD_DECISION
+            )
         }
         ToolProfile::AdvancedVtCode => !matches!(
             tool_name,

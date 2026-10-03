@@ -142,6 +142,23 @@ macro_rules! delegate_to_self {
 }
 
 impl ToolRegistry {
+    pub(super) fn record_decision_executor(&self, args: Value) -> BoxFuture<'_, Result<Value>> {
+        Box::pin(async move {
+            let decision = crate::core::agent::events::validate_decision_input(args)?;
+            let task = self
+                .harness_context_snapshot()
+                .task_id
+                .context("decision recording requires current task identity")?;
+            let validator = self
+                .harness_context
+                .decision_validator
+                .read()
+                .clone()
+                .context("canonical decision recording is unavailable")?;
+            validator(task, decision.evidence_ids).await?;
+            Ok(json!({"recorded":true,"rationale_source":"agent-reported"}))
+        })
+    }
     /// Unified `cron` executor: dispatches on `action` (create | list | delete).
     /// For legacy alias calls that omit `action`, the action is inferred from
     /// the argument shape: `prompt` implies create, `id` implies delete,

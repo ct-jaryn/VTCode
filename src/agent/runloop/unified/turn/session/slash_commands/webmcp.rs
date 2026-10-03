@@ -115,6 +115,7 @@ pub(crate) async fn handle_start_webmcp(
         ctx.vt_cfg.as_ref(),
         &origin,
         ctx.webmcp_prompt_sender.clone(),
+        ctx.harness_emitter.map(|e| (e.clone(), ctx.handle.clone())),
     )
     .await?;
     let endpoint = bridge.endpoint().to_string();

@@ -17,6 +17,7 @@ const TOOL_GREP_FILE: &str = tools::GREP_FILE;
 const TOOL_APPLY_PATCH: &str = tools::APPLY_PATCH;
 const TOOL_REQUEST_USER_INPUT: &str = tools::REQUEST_USER_INPUT;
 const TOOL_TASK_TRACKER: &str = tools::TASK_TRACKER;
+const PUBLIC_DECISION_GUIDANCE: &str = "- Use optional `record_decision` for consequential choices, rejected approaches, or recovery changes. Give concise public rationale; ordinary reads and commands need no record.";
 const TOOL_START_PLANNING: &str = tools::START_PLANNING;
 
 const OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE: &str = "- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.";
@@ -151,6 +152,9 @@ pub(crate) fn generate_tool_guidelines_with_capabilities(
             }
             let presence = ToolPresence::of(available_tools);
             let mut lines = vec!["\n\n## Active Tools".to_owned()];
+            if available_tools.iter().any(|name| name == "record_decision") {
+                lines.push(PUBLIC_DECISION_GUIDANCE.to_owned());
+            }
             lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_owned());
             if let Some(mode) = capability_mode_line(capability_level, presence.exec, presence.apply_patch) {
                 lines.push(mode.to_owned());
@@ -281,6 +285,9 @@ pub(crate) fn generate_tool_guidelines_for_profile(
         return String::new();
     }
 
+    if available_tools.iter().any(|name| name == "record_decision") {
+        lines.push(PUBLIC_DECISION_GUIDANCE.to_owned());
+    }
     format!("\n\n## Active Tools\n{}", lines.join("\n"))
 }
 
@@ -526,6 +533,9 @@ fn generate_runtime_tool_guidelines_for_profile(
     }
     if has_search || has_exec {
         lines.push("- If calls repeat without progress, tighten the plan instead of retrying identically.".to_string());
+    }
+    if available_tools.iter().any(|name| name == "record_decision") {
+        lines.push(PUBLIC_DECISION_GUIDANCE.to_owned());
     }
 
     format!("\n\n## Active Tools\n{}", lines.join("\n"))
@@ -818,6 +828,30 @@ mod tests {
             default,
             "\n\n## Active Tools\n- `verify: [skip Markdown lint if unavailable]`: report skipped; review diff/links without installing tools. Lint errors remain failures.\n- Capabilities: read-only. Analyze and search, but do not modify files or run shell commands.\n- Use available read-only repository tools for browsing; do not modify files.\n- Batch independent read-only calls; use bounded `read_file` ranges, order dependencies, serialize mutations; narrow the range on `line_truncated`."
         );
+    }
+
+    #[test]
+    fn public_decision_guidance_is_optional_and_bounded() {
+        for profile in [ToolGuidanceProfile::Minimal, ToolGuidanceProfile::Default] {
+            let enabled = generate_tool_guidelines_with_capabilities(
+                &[TOOL_READ_FILE.into(), "record_decision".into()],
+                None,
+                ResolvedShellPromptProfile::UnixLike,
+                profile,
+                false,
+            );
+            let disabled = generate_tool_guidelines_with_capabilities(
+                &[TOOL_READ_FILE.into()],
+                None,
+                ResolvedShellPromptProfile::UnixLike,
+                profile,
+                false,
+            );
+            assert!(enabled.contains(PUBLIC_DECISION_GUIDANCE));
+            assert!(!disabled.contains("record_decision"));
+            assert!(enabled.len().saturating_sub(disabled.len()) < 300);
+            assert!(!enabled.contains("chain of thought"));
+        }
     }
 
     #[test]

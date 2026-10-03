@@ -38,6 +38,7 @@ pub(super) async fn route_outcome(
         | SlashCommandOutcome::ShowJobsPanel
         | SlashCommandOutcome::ShowStatus
         | SlashCommandOutcome::ShowTranscriptStats
+        | SlashCommandOutcome::Explain { .. }
         | SlashCommandOutcome::ExportTranscript { .. }
         | SlashCommandOutcome::ShowWebmcpStatus
         | SlashCommandOutcome::ShowWebmcpHelp
@@ -121,6 +122,7 @@ async fn route_runtime_outcome(
         SlashCommandOutcome::ClearScreen => handlers::handle_clear_screen(ctx).await,
         SlashCommandOutcome::ClearConversation => handlers::handle_clear_conversation(ctx).await,
         SlashCommandOutcome::ShowTranscriptStats => handlers::handle_show_transcript_stats(ctx).await,
+        SlashCommandOutcome::Explain { args } => super::explain::handle_explain(ctx, &args).await,
         SlashCommandOutcome::ExportTranscript { path } => handlers::handle_export_transcript(ctx, path).await,
         SlashCommandOutcome::CompactConversation { command } => {
             handlers::handle_compact_conversation(ctx, command).await

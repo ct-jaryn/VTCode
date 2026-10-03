@@ -1,5 +1,14 @@
 # WebMCP bridge development guide
 
+## Execution explanations
+
+The browser Explanation view uses the shared Rust projection through authenticated `explanation.get`,
+`explanation.evidence`, and `explanation.navigate` operations. Status exposes optional `explanations_available`;
+adapters without a canonical execution source remain unsupported. Queries and evidence are paged under existing byte
+limits. Navigation opens terminal review evidence through a typed UI channel and cannot submit prompts or run commands.
+Reconnects re-query canonical state. `/explain --web` selects this view, with a standalone offline report fallback.
+See [execution explanations](./execution-explanations.md) for canonical facts, attribution, completeness, and export rules.
+
 VT Code's first-class WebMCP bridge lets a browser editor inspect a workspace and submit structured change proposals
 without giving the browser direct filesystem access. The bridge ships in the main `vtcode` binary and the
 `vtcode-webmcp` crate, is opt-in at runtime, and keeps the terminal as the authority for origins, roots, pairing, and

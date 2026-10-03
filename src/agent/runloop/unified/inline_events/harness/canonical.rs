@@ -10,6 +10,29 @@ pub(crate) struct CanonicalEventSink {
 }
 
 impl CanonicalEventSink {
+    pub(crate) fn decision_validator(&self) -> vtcode_core::core::agent::events::DecisionEvidenceValidator {
+        self.inner.decision_validator()
+    }
+    pub(crate) async fn explanation(
+        &self,
+        scope: vtcode_memory::explanation::ExplanationScope,
+    ) -> Result<vtcode_memory::explanation::ExplanationModel> {
+        self.inner.explanation(scope).await
+    }
+    pub(crate) async fn explanation_page(
+        &self,
+        scope: vtcode_memory::explanation::ExplanationScope,
+        offset: usize,
+    ) -> Result<vtcode_memory::explanation::ExplanationPage> {
+        self.inner.explanation_page(scope, offset).await
+    }
+    pub(crate) async fn evidence(
+        &self,
+        reference: vtcode_memory::explanation::EvidenceRef,
+        offset: usize,
+    ) -> Result<vtcode_memory::explanation::EvidencePage> {
+        self.inner.evidence(reference, offset).await
+    }
     /// Open the workspace-local canonical session store.
     pub(crate) async fn open(workspace: &Path, session_id: &str) -> Result<Self> {
         Ok(Self {

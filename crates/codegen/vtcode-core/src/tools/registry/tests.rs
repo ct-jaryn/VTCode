@@ -24,6 +24,48 @@ use vtcode_commons::canonicalize;
 const CUSTOM_TOOL_NAME: &str = "custom_test_tool";
 
 #[tokio::test]
+async fn public_decision_requires_canonical_task_and_validates_even_without_evidence() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    let args = json!({"summary":"Reuse existing parser","rationale":"Preserve validated input handling"});
+    assert!(registry.record_decision_executor(args.clone()).await.is_err());
+    registry.set_harness_task(Some("task-test".into()));
+    assert!(registry.record_decision_executor(args.clone()).await.is_err());
+    let called = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&called);
+    registry.set_decision_evidence_validator(Arc::new(move |task, ids| {
+        assert_eq!(task, "task-test");
+        assert!(ids.is_empty());
+        observed.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }));
+    assert_eq!(registry.record_decision_executor(args.clone()).await?["recorded"], true);
+    assert_eq!(called.load(Ordering::SeqCst), 1);
+    let mut budgeted_args = args.clone();
+    budgeted_args["max_output_tokens"] = json!(100);
+    assert_eq!(registry.execute_tool(tools::RECORD_DECISION, budgeted_args.clone()).await?["recorded"], true);
+    assert_eq!(called.load(Ordering::SeqCst), 2);
+    budgeted_args["max_output_tokens"] = json!(0);
+    assert!(registry.execute_tool(tools::RECORD_DECISION, budgeted_args).await.is_err());
+    assert_eq!(called.load(Ordering::SeqCst), 2);
+    registry.set_tool_policy(tools::RECORD_DECISION, ToolPolicy::Deny).await?;
+    assert!(registry.execute_tool(tools::RECORD_DECISION, args.clone()).await.is_err());
+    assert_eq!(called.load(Ordering::SeqCst), 2);
+    registry.set_tool_policy(tools::RECORD_DECISION, ToolPolicy::Allow).await?;
+    registry.set_harness_task(Some("next-task".into()));
+    let observed = Arc::clone(&called);
+    registry.set_decision_evidence_validator(Arc::new(move |task, _| {
+        assert_eq!(task, "next-task");
+        observed.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { anyhow::bail!("canonical persistence failed") })
+    }));
+    let failed = registry.execute_tool(tools::RECORD_DECISION, args).await?;
+    assert!(failed.get("error").is_some(), "{failed}");
+    assert_eq!(called.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+#[tokio::test]
 async fn rejected_exec_policy_is_not_a_lost_execution_result() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
@@ -316,6 +358,7 @@ async fn public_tool_projections_stay_in_sync() -> Result<()> {
             tools::EXEC_COMMAND.to_string(),
             tools::WRITE_STDIN.to_string(),
             tools::SEARCH_TOOLS.to_string(),
+            tools::RECORD_DECISION.to_string(),
         ]
     );
     for removed_tool in [

@@ -983,6 +983,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     }
                 }
 
+                let mut active_task_follow_up = false;
                 let interaction_outcome = if pending_approved_plan_execution_input {
                     // An approved-plan handoff is an internal state transition,
                     // not ordinary user steering. Consume it directly so a
@@ -997,6 +998,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         turn_id,
                     }
                 } else if let Some(input) = runtime.run_until_idle() {
+                    active_task_follow_up = true;
                     let turn_id = SessionId::generate().into_inner();
                     InteractionOutcome::Continue { input, prompt_message_index: None, turn_id }
                 } else {
@@ -1427,6 +1429,23 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 };
                 if next_turn_input.trim().is_empty() {
                     continue;
+                }
+                if let Some(emitter) = harness_emitter.as_ref() {
+                    use vtcode_core::exec::events::InputOrigin;
+                    let origin = if executing_approved_plan {
+                        InputOrigin::PlanApproval
+                    } else if crate::agent::runloop::unified::turn::is_internal_harness_follow_up(&next_turn_input) {
+                        InputOrigin::Continuation
+                    } else if active_task_follow_up {
+                        InputOrigin::Correction
+                    } else {
+                        InputOrigin::User
+                    };
+                    let task_id = emitter.begin_task_turn(&turn_id, &next_turn_input, origin)?;
+                    if let Some(validator) = emitter.decision_validator() {
+                        tool_registry.set_decision_evidence_validator(validator);
+                    }
+                    tool_registry.set_harness_task(Some(task_id));
                 }
                 let (session_state, runtime_steering) = runtime.split_mut();
                 let working_history = std::sync::Arc::make_mut(&mut session_state.messages);

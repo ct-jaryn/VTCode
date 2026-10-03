@@ -1531,6 +1531,7 @@ fn other_name(command: &InlineCommand) -> &'static str {
         InlineCommand::Inline { .. } => "Inline",
         InlineCommand::ReplaceLast { .. } => "ReplaceLast",
         InlineCommand::RecordToolOutput { .. } => "RecordToolOutput",
+        InlineCommand::FocusTranscriptReview { .. } => "FocusTranscriptReview",
         InlineCommand::AppendToolOutputLine { .. } => "AppendToolOutputLine",
         InlineCommand::AppendCompactActivity(_) => "AppendCompactActivity",
         InlineCommand::RecordDiffReview(_) => "RecordDiffReview",

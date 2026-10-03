@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -42,6 +42,7 @@ pub(crate) struct InlineEventContext<'a> {
     editor_open_sender: Option<EditorOpenRequestSender>,
     editor_open_dispatcher: Option<Arc<EditorOpenDispatcher>>,
     exec_sessions: Option<ExecSessionManager>,
+    harness_emitter: Option<&'a HarnessEventEmitter>,
 }
 
 impl<'a> InlineEventContext<'a> {
@@ -99,6 +100,7 @@ impl<'a> InlineEventContext<'a> {
 
         Self {
             handle,
+            harness_emitter,
             state,
             modal,
             ctrl_c_state,
@@ -307,6 +309,39 @@ impl<'a> InlineEventContext<'a> {
                 InlineLoopAction::Continue
             }
             InlineEvent::OpenUrl(url) => {
+                if let Some(reference) = url.strip_prefix("vtcode-evidence:") {
+                    let mut fields = reference.split(':');
+                    let session = fields.next();
+                    let offset = fields.next().and_then(|s| s.parse::<u64>().ok());
+                    let digest = fields.next();
+                    if fields.next().is_none()
+                        && let Some(emitter) = self.harness_emitter
+                        && let (Some(session), Some(offset), Some(digest)) = (session, offset, digest)
+                    {
+                        let evidence = async {
+                            let model = emitter
+                                .explanation(vtcode_memory::explanation::ExplanationScope::Session)
+                                .await?;
+                            let reference = model
+                                .evidence_references()
+                                .into_iter()
+                                .find(|e| e.session_id == session && e.offset == offset && e.digest == digest)
+                                .context("evidence expired")?;
+                            emitter.evidence(reference, 0).await
+                        }
+                        .await;
+                        match evidence {
+                            Ok(page) => {
+                                self.handle.review_evidence(page.text.lines().map(str::to_owned).collect());
+                            }
+                            Err(_) => self
+                                .state
+                                .renderer()
+                                .line(MessageStyle::Warning, "Evidence is unavailable or expired.")?,
+                        }
+                    }
+                    return Ok(InlineLoopAction::Continue);
+                }
                 self.state.reset_interrupt_state();
                 self.modal.request_url_guard(self.state.renderer(), url)?
             }

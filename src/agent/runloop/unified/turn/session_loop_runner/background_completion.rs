@@ -293,6 +293,7 @@ pub(crate) fn background_completion_thread_event(event: &BackgroundCompletionEve
     let message = event.summary.clone().or_else(|| event.error.clone());
     ThreadEvent::ItemCompleted(ItemCompletedEvent {
         item: ThreadItem {
+            context: None,
             id: format!("background-completion:{}", completion_identity(event)),
             details: ThreadItemDetails::Harness(Box::new(HarnessEventItem {
                 event: HarnessEventKind::BackgroundSubprocessCompleted,

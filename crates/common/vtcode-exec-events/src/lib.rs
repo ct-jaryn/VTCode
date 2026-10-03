@@ -24,7 +24,7 @@ pub mod atif;
 pub mod trace;
 
 /// Semantic version of the serialized event schema exported by this crate.
-pub const EVENT_SCHEMA_VERSION: &str = "0.16.0";
+pub const EVENT_SCHEMA_VERSION: &str = "0.17.0";
 
 /// Wraps a [`ThreadEvent`] with schema metadata so downstream consumers can
 /// negotiate compatibility before processing an event stream.
@@ -517,6 +517,9 @@ impl CompactionMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct ThreadCompletedEvent {
+    /// Runtime completion timestamp, absent from legacy events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
     /// Stable thread identifier for the session.
     pub thread_id: String,
     /// Stable session identifier for the runtime that produced the thread.
@@ -604,14 +607,75 @@ pub struct ContextResetEvent {
     pub tool_budget_reset: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct TurnStartedEvent {
     /// Optional decomposition of the assembled first-request prefix so
     /// downstream consumers can attribute token overhead without inventing
     /// parallel event types.
     #[serde(skip_serializing_if = "Option::is_none")]
-    token_breakdown: Option<TokenBreakdown>,
+    token_breakdown: Option<Box<TokenBreakdown>>,
+    /// Task identity and public input recorded at the request boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Box<ExecutionContext>>,
+}
+
+impl TurnStartedEvent {
+    /// Recorded prefix token breakdown, absent when the producer did not capture it.
+    pub fn token_breakdown(&self) -> Option<&TokenBreakdown> {
+        self.token_breakdown.as_deref()
+    }
+}
+
+/// Origin of a turn's input; internal turns retain their parent task.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum InputOrigin {
+    User,
+    Correction,
+    PlanApproval,
+    Continuation,
+    Retry,
+}
+
+/// Optional recorded execution ancestry. Absent fields are historical gaps.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+pub struct ExecutionContext {
+    pub task_id: String,
+    pub turn_id: String,
+    pub actor_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_actor_id: Option<String>,
+    pub origin: InputOrigin,
+    pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+}
+
+/// Recorded shell classification, supplied by the runtime's shared classifier.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CommandActivity {
+    Inspection,
+    Verification,
+    Mutation,
+}
+
+/// Item identity, timing, and command semantics for explanation consumers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+pub struct ItemContext {
+    pub task_id: String,
+    pub turn_id: String,
+    pub actor_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_actor_id: Option<String>,
+    pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<CommandActivity>,
 }
 
 /// Per-request token-budget breakdown for the assembled first-request prefix.
@@ -645,6 +709,8 @@ pub const MAX_IN_PROGRESS_EXEC_SESSIONS: usize = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct TurnCompletedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<Box<String>>,
     /// Token usage summary for the completed turn.
     pub usage: Usage,
     /// Exec sessions still running when the turn ended (bounded, newest
@@ -662,6 +728,8 @@ pub struct TurnCompletedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct TurnFailedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<Box<String>>,
     /// Human-readable explanation describing why the turn failed.
     pub message: String,
     /// Optional token usage that was consumed before the failure occurred.
@@ -672,6 +740,9 @@ pub struct TurnFailedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct TurnBlockedEvent {
+    /// Runtime terminal timestamp, absent from legacy events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
     /// Human-readable explanation describing why the turn was blocked.
     pub message: String,
     /// Display label of the last blocked tool call, when known.
@@ -869,6 +940,8 @@ pub struct PlanApprovalResolvedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct ThreadItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Box<ItemContext>>,
     /// Stable identifier associated with the item.
     pub id: String,
     /// Embedded event details for the item type.
@@ -885,7 +958,9 @@ pub enum ThreadItemDetails {
     /// Structured plan content authored by the agent in Planning workflow.
     Plan(PlanItem),
     /// Free-form reasoning text produced during a turn.
-    Reasoning(ReasoningItem),
+    Reasoning(Box<ReasoningItem>),
+    /// Public rationale explicitly recorded by the agent; never private reasoning.
+    Decision(Box<DecisionItem>),
     /// Command execution lifecycle update for an actual shell/PTY process.
     CommandExecution(Box<CommandExecutionItem>),
     /// Tool invocation lifecycle update.
@@ -909,6 +984,18 @@ pub enum ThreadItemDetails {
 pub struct AgentMessageItem {
     /// Textual content of the agent message.
     pub text: String,
+}
+
+/// A consequential choice and the agent's reported public rationale.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+pub struct DecisionItem {
+    pub summary: String,
+    pub rationale: String,
+    #[serde(default)]
+    pub alternatives: Vec<String>,
+    #[serde(default)]
+    pub evidence_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1071,6 +1158,9 @@ pub struct ToolOutputItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct FileChangeItem {
+    /// Captured preview was truncated, suppressed, or unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_incomplete: Option<bool>,
     /// List of individual file updates included in the change set.
     pub changes: Vec<FileUpdateChange>,
     /// Whether the patch application succeeded.
@@ -1206,6 +1296,8 @@ pub enum HarnessEventKind {
     ToolLoopLimitIncreased,
     /// A background subprocess or exec session reached a terminal state.
     BackgroundSubprocessCompleted,
+    /// A native delegated agent's public status and ancestry were observed.
+    DelegatedAgentStatus,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1254,6 +1346,9 @@ pub enum RedirectKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 pub struct InterjectedEvent {
+    /// Public correction text, when recorded by the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<Box<String>>,
     /// How the interjection reached the running turn.
     pub source: InterjectionSource,
     /// Number of image attachments that accompanied the interjection.
@@ -1368,6 +1463,7 @@ mod tests {
 
         // Populated fields survive a round trip.
         let populated = FileChangeItem {
+            diff_incomplete: None,
             changes: legacy.changes.clone(),
             status: PatchApplyStatus::Completed,
             unified_diff: Some("diff --git a/x b/x\n".to_string()),
@@ -1383,6 +1479,7 @@ mod tests {
     #[test]
     fn thread_event_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::TurnCompleted(TurnCompletedEvent {
+            completed_at: None,
             usage: Usage {
                 input_tokens: 1,
                 cached_input_tokens: 2,
@@ -1402,6 +1499,7 @@ mod tests {
     #[test]
     fn turn_blocked_event_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::TurnBlocked(Box::new(TurnBlockedEvent {
+            completed_at: None,
             message: "Blocked tool-call limit reached after 3 consecutive blocked calls.".to_string(),
             last_tool: Some("exec_command".to_string()),
             blocked_streak: 4,
@@ -1459,6 +1557,7 @@ mod tests {
     fn turn_completed_in_progress_sessions_round_trip_and_bound() -> Result<(), Box<dyn Error>> {
         assert_eq!(MAX_IN_PROGRESS_EXEC_SESSIONS, 4);
         let event = ThreadEvent::TurnCompleted(TurnCompletedEvent {
+            completed_at: None,
             usage: Usage::default(),
             in_progress_exec_sessions: vec!["run-1".to_string(), "run-2".to_string()],
         });
@@ -1652,6 +1751,7 @@ mod tests {
     fn versioned_json_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "item-1".to_string(),
                 details: ThreadItemDetails::AgentMessage(AgentMessageItem { text: "hello".to_string() }),
             },
@@ -1685,6 +1785,7 @@ mod tests {
     fn tool_invocation_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "tool_1".to_string(),
                 details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                     tool_name: "read_file".to_string(),
@@ -1725,6 +1826,7 @@ mod tests {
     fn tool_invocation_outcome_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "tool_1".to_string(),
                 details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
                     tool_name: "exec_command".to_string(),
@@ -1747,6 +1849,7 @@ mod tests {
     fn tool_output_round_trip_preserves_raw_tool_call_id() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "tool_1:output".to_string(),
                 details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                     call_id: "tool_1".to_string(),
@@ -1770,6 +1873,7 @@ mod tests {
     fn harness_item_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "harness_1".to_string(),
                 details: ThreadItemDetails::Harness(Box::new(HarnessEventItem {
                     event: HarnessEventKind::VerificationFailed,
@@ -1801,6 +1905,7 @@ mod tests {
     fn background_completion_harness_item_preserves_terminal_identity() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "background-completion:task:exec:0".to_string(),
                 details: ThreadItemDetails::Harness(Box::new(HarnessEventItem {
                     event: HarnessEventKind::BackgroundSubprocessCompleted,
@@ -1836,6 +1941,7 @@ mod tests {
     fn blocked_handoff_resolved_uses_stable_wire_name() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
+                context: None,
                 id: "harness_resolved".to_string(),
                 details: ThreadItemDetails::Harness(Box::new(HarnessEventItem {
                     event: HarnessEventKind::BlockedHandoffResolved,
@@ -1867,6 +1973,7 @@ mod tests {
     #[test]
     fn thread_completed_round_trip() -> Result<(), Box<dyn Error>> {
         let event = ThreadEvent::ThreadCompleted(Box::new(ThreadCompletedEvent {
+            completed_at: None,
             thread_id: "thread-1".to_string(),
             session_id: "session-1".to_string(),
             subtype: ThreadCompletionSubtype::ErrorMaxBudgetUsd,

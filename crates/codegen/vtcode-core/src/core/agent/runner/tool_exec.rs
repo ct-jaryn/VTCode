@@ -121,7 +121,10 @@ fn finish_successful_tool_output(
         call_item_id,
         Some(tool_call_id),
         ToolCallStatus::Completed,
-        None,
+        output
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|code| i32::try_from(code).ok()),
         &payload.aggregated_output,
         payload.spool_path.as_deref(),
     );
@@ -166,6 +169,15 @@ fn apply_tool_success(
         None,
     );
     finish_successful_tool_output(event_recorder, &tool_call_item.call_item_id, call_id, &optimized_result);
+    event_recorder.record_exec_session_output(&tool_call_item.call_item_id, name, args, &optimized_result);
+    if let Some(event) = crate::core::agent::events::file_change_completed_event(
+        &tool_call_item.call_item_id,
+        name,
+        args,
+        &optimized_result,
+    ) {
+        event_recorder.record_thread_event(event);
+    }
 }
 
 /// The outcome of evaluating whether a tool failure should halt further tool
@@ -858,6 +870,21 @@ impl AgentRunner {
         );
         event_recorder.tool_output_started(&tool_call_item.call_item_id, Some(call_id));
         finish_successful_tool_output(event_recorder, &tool_call_item.call_item_id, call_id, &optimized_result);
+        event_recorder.record_exec_session_output(
+            &tool_call_item.call_item_id,
+            tool_name,
+            tool_args,
+            &optimized_result,
+        );
+
+        if let Some(event) = crate::core::agent::events::file_change_completed_event(
+            &tool_call_item.call_item_id,
+            tool_name,
+            tool_args,
+            &optimized_result,
+        ) {
+            event_recorder.record_thread_event(event);
+        }
 
         Ok(())
     }

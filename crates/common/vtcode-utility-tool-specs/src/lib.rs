@@ -49,6 +49,16 @@ pub const APPLY_PATCH_TOOL_DESCRIPTION: &str = "Apply a patch in VT Code format 
 
 /// Default model-visible preview budget for function-tool results.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
+
+/// Wire schema for optional public decision recording.
+pub fn record_decision_parameters() -> Value {
+    serde_json::json!({"type":"object","additionalProperties":false,"required":["summary","rationale"],"properties":{
+        "summary":{"type":"string","minLength":1,"maxLength":240},
+        "rationale":{"type":"string","minLength":1,"maxLength":1000},
+        "alternatives":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":1000}},
+        "evidence_ids":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":240}}
+    }})
+}
 /// Smallest valid model-visible preview budget for a function-tool result.
 pub const MIN_MAX_OUTPUT_TOKENS: usize = 1;
 /// Largest valid model-visible preview budget for a function-tool result.

@@ -31,6 +31,7 @@ use crate::agent::runloop::unified::workspace_links::LinkedDirectory;
 use crate::agent::runloop::welcome::SessionBootstrap;
 use vtcode_core::utils::ansi::AnsiRenderer;
 
+mod explain;
 mod handlers;
 mod outcome_router;
 pub mod secrets;

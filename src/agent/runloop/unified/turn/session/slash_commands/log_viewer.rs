@@ -168,6 +168,7 @@ fn read_events_from_file(path: PathBuf) -> Result<Vec<LogEntry>> {
 fn item_type_label(details: &vtcode_core::exec::events::ThreadItemDetails) -> &'static str {
     use vtcode_core::exec::events::ThreadItemDetails;
     match details {
+        ThreadItemDetails::Decision(_) => "Public decision",
         ThreadItemDetails::AgentMessage(_) => "AgentMessage",
         ThreadItemDetails::Plan(_) => "Plan",
         ThreadItemDetails::Reasoning(_) => "Reasoning",

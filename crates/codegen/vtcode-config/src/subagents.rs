@@ -748,6 +748,7 @@ fn builtin_readonly_tool_ids() -> Vec<String> {
 fn builtin_primary_readonly_tool_ids() -> Vec<String> {
     let mut ids = builtin_readonly_tool_ids();
     ids.push(tools::REQUEST_USER_INPUT.to_string());
+    ids.push(tools::RECORD_DECISION.to_string());
     ids
 }
 
@@ -770,13 +771,13 @@ fn readonly_agent_permissions() -> AgentPermissionsConfig {
 }
 
 /// Read-only agents that talk to the user (duck, plan) also list
-/// `request_user_input` in their tool set, so the permission rules must
-/// allow it explicitly: the default-deny fallback otherwise rejects it
-/// (semantic kind "other") and the wire catalog filter hides the only
-/// interview tool even though `builtin_primary_readonly_tool_ids` lists it.
+/// `request_user_input` and `record_decision` in their tool set. Allow both
+/// explicitly: the default-deny fallback otherwise rejects their semantic
+/// kind "other" and hides them from the wire catalog.
 fn readonly_interview_agent_permissions() -> AgentPermissionsConfig {
     let mut permissions = readonly_agent_permissions();
     permissions.allow.push("request_user_input".to_string());
+    permissions.allow.push(tools::RECORD_DECISION.to_string());
     permissions
 }
 
@@ -2196,6 +2197,7 @@ Hook prompt"#,
         ];
         let mut expected_primary_readonly_tools = expected_readonly_tools.clone();
         expected_primary_readonly_tools.push(tools::REQUEST_USER_INPUT.to_string());
+        expected_primary_readonly_tools.push(tools::RECORD_DECISION.to_string());
         let default = builtins
             .iter()
             .find(|spec| spec.name == "default")
@@ -2244,7 +2246,11 @@ Hook prompt"#,
                 // `request_user_input` for the interview, and (plan only)
                 // `bash` for read-only exec_command inspection gated by the
                 // planning dispatch checks.
-                let mut expected_allow = vec!["read".to_string(), "request_user_input".to_string()];
+                let mut expected_allow = vec![
+                    "read".to_string(),
+                    "request_user_input".to_string(),
+                    tools::RECORD_DECISION.to_string(),
+                ];
                 if name == "plan" {
                     expected_allow.push("bash".to_string());
                 }

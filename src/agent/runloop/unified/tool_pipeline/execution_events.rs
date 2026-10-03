@@ -148,12 +148,163 @@ pub(crate) fn emit_tool_completion_for_status(
         output_payload.spool_path.as_deref(),
         output_payload.aggregated_output,
     );
+    if tool_execution_started
+        && tool_started_emitted
+        && let Some(emitter) = harness_emitter
+        && let ToolExecutionStatus::Success { output, .. } = tool_status
+    {
+        let _ = emitter.emit_exec_session_output(tool_item_id, tool_name, args, output);
+    }
+    if tool_execution_started
+        && tool_started_emitted
+        && let Some(emitter) = harness_emitter
+        && let ToolExecutionStatus::Success { output, command_success: true, .. } = tool_status
+        && let Some(event) =
+            vtcode_core::core::agent::events::file_change_completed_event(tool_item_id, tool_name, args, output)
+    {
+        let _ = emitter.emit(event);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn verifier_poll_completion_updates_the_launch_through_canonical_output() {
+        use vtcode_core::exec::events::{InputOrigin, ThreadEvent, TurnStartedEvent};
+        use vtcode_memory::explanation::ExplanationScope;
+        let workspace = tempfile::tempdir().unwrap();
+        let emitter = HarnessEventEmitter::new_async(workspace.path(), "interactive-verifier", None)
+            .await
+            .unwrap();
+        emitter.begin_task_turn("turn", "Verify changes", InputOrigin::User).unwrap();
+        emitter.emit(ThreadEvent::TurnStarted(TurnStartedEvent::default())).unwrap();
+        let launch_args = json!({"cmd":"cargo check --locked"});
+        assert!(emit_tool_start_if_needed(
+            Some(&emitter),
+            false,
+            "launch",
+            "launch-call",
+            "exec_command",
+            &launch_args
+        ));
+        emit_tool_completion_for_status(
+            Some(&emitter),
+            true,
+            true,
+            "launch",
+            "launch-call",
+            "exec_command",
+            &launch_args,
+            &ToolExecutionStatus::Success {
+                output: json!({"session_id":"running-verifier","output":"checking"}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            },
+        );
+        let pending = emitter.explanation(ExplanationScope::Task).await.unwrap();
+        assert_eq!(pending.verification.len(), 1);
+        assert_eq!(pending.verification[0].fact.status, "pending");
+        let poll_args = json!({"session_id":"running-verifier","chars":""});
+        assert!(emit_tool_start_if_needed(Some(&emitter), false, "poll", "poll-call", "write_stdin", &poll_args));
+        emit_tool_completion_for_status(
+            Some(&emitter),
+            true,
+            true,
+            "poll",
+            "poll-call",
+            "write_stdin",
+            &poll_args,
+            &ToolExecutionStatus::Success {
+                output: json!({"session_id":"running-verifier","exit_code":0,"output":"finished"}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            },
+        );
+        let verified = emitter.explanation(ExplanationScope::Task).await.unwrap();
+        assert_eq!(verified.verification.len(), 1);
+        assert_eq!(verified.verification[0].fact.status, "passed");
+        assert!(verified.verification[0].fresh);
+        assert_eq!(verified.verification[0].exit_code, Some(0));
+        let source = emitter
+            .evidence(verified.verification[0].fact.evidence.clone(), 0)
+            .await
+            .unwrap();
+        assert!(source.text.contains("launch:exec-session-output"));
+        assert!(source.text.contains("finished"));
+        emitter.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn background_verifier_completion_keeps_raw_and_derived_facts_in_the_original_task() {
+        use vtcode_core::exec::events::{
+            InputOrigin, ItemCompletedEvent, ThreadEvent, ThreadItem, ThreadItemDetails, TurnStartedEvent,
+        };
+        use vtcode_memory::explanation::ExplanationScope;
+        let workspace = tempfile::tempdir().unwrap();
+        let emitter = HarnessEventEmitter::new_async(workspace.path(), "background-verifier", None)
+            .await
+            .unwrap();
+        let original = emitter
+            .begin_task_turn("old-turn", "Verify first task", InputOrigin::User)
+            .unwrap();
+        emitter.emit(ThreadEvent::TurnStarted(TurnStartedEvent::default())).unwrap();
+        let args = json!({"cmd":"cargo check --locked"});
+        assert!(emit_tool_start_if_needed(Some(&emitter), false, "launch", "call", "exec_command", &args));
+        emit_tool_completion_for_status(
+            Some(&emitter),
+            true,
+            true,
+            "launch",
+            "call",
+            "exec_command",
+            &args,
+            &ToolExecutionStatus::Success {
+                output: json!({"session_id":"running-verifier"}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            },
+        );
+        let current = emitter
+            .begin_task_turn("new-turn", "Inspect second task", InputOrigin::User)
+            .unwrap();
+        emitter.emit(ThreadEvent::TurnStarted(TurnStartedEvent::default())).unwrap();
+        emitter
+            .emit(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                item: ThreadItem {
+                    id: "raw-exit".into(),
+                    context: None,
+                    details: ThreadItemDetails::Harness(Box::new(
+                        serde_json::from_value(json!({
+                            "event":"background_subprocess_completed", "task_id":"exec:running-verifier",
+                            "session_id":"running-verifier", "exec_session_id":"running-verifier", "exit_code":0,
+                            "message":"Earlier verifier exited",
+                        }))
+                        .unwrap(),
+                    )),
+                },
+            }))
+            .unwrap();
+        let task = emitter.explanation(ExplanationScope::Task).await.unwrap();
+        assert_eq!(task.task_id.as_deref(), Some(current.as_str()));
+        assert!(task.actions.is_empty());
+        assert!(task.verification.is_empty());
+        let session = emitter.explanation(ExplanationScope::Session).await.unwrap();
+        assert_eq!(session.verification.len(), 1);
+        assert_eq!(session.verification[0].fact.status, "passed");
+        assert!(
+            session
+                .actions
+                .iter()
+                .all(|action| action.task_id.as_deref() == Some(original.as_str()))
+        );
+        emitter.finish().await.unwrap();
+    }
 
     #[test]
     fn aggregates_command_output_without_duplicates() {

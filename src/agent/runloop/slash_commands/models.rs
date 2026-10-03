@@ -105,6 +105,9 @@ pub(crate) enum SlashCommandOutcome {
     Handled,
     ThemeChanged(String),
     ShowTranscriptStats,
+    Explain {
+        args: String,
+    },
     ExportTranscript {
         path: Option<String>,
     },

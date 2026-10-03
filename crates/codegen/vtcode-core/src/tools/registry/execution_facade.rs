@@ -1074,6 +1074,9 @@ impl ToolRegistry {
         }
 
         let fresh_patch_read = self.consume_patch_recovery_read(&tool_name, args);
+        // Public decisions must validate the current canonical task on every
+        // call, including repeats after a task or permission change.
+        let reusable_result = readonly_classification && tool_name != tools::RECORD_DECISION;
         let skip_loop_detection = self.should_skip_loop_detection_for_exec_continuation(&tool_name, args).await;
         if skip_loop_detection {
             trace!(
@@ -1096,7 +1099,7 @@ impl ToolRegistry {
         // (`is_verification_command` is bound once at preview-budget
         // resolution above; the stripped output-metadata field does not
         // affect shell classification.)
-        if readonly_classification && !is_verification_command && !skip_loop_detection && !fresh_patch_read {
+        if reusable_result && !is_verification_command && !skip_loop_detection && !fresh_patch_read {
             let fast_reuse_max_age = Duration::from_secs(60);
             let fast_reused = self
                 .execution_history
@@ -1189,7 +1192,7 @@ impl ToolRegistry {
                 // the model to see "success" and keep retrying.
                 let hard_block = loop_result.repeat_count >= LOOP_HARD_BLOCK_REPEAT_COUNT;
 
-                if readonly_classification && !hard_block && !fresh_patch_read {
+                if reusable_result && !hard_block && !fresh_patch_read {
                     let reuse_max_age = Duration::from_secs(120);
                     let reused = self
                         .execution_history

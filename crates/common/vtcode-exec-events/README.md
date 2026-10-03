@@ -34,8 +34,8 @@ attribution. See the `trace` module for details.
 
 - `VersionedThreadEvent` — schema-versioned event wrapper
 - `ThreadEvent` — concrete event enum (started, completed, item updates, turn lifecycle, plan approval lifecycle, …)
-- `EVENT_SCHEMA_VERSION` — current schema version (`"0.16.0"`; preserves the bounded exec-session resume fields and adds
-  terminal background-process completion identity/status fields)
+- `EVENT_SCHEMA_VERSION` — current schema version (`"0.17.0"`; adds optional task/turn context, input origin,
+  recorded terminal timestamps, command activity, public decisions, and native delegation status while preserving legacy decoding)
 - `EventEmitter` trait — sink for processing events
 
 ## Usage
