@@ -522,43 +522,43 @@ fn record_prepared_tool_response_metrics(
 }
 
 fn compact_next_continue_args(value: &serde_json::Value) -> serde_json::Value {
-    let Some(obj) = value.as_object() else {
-        return value.clone();
-    };
     let Some(parsed) = PtyContinuationArgs::from_value(value) else {
         return value.clone();
     };
-
-    let mut compacted = match parsed.to_compact_value() {
-        serde_json::Value::Object(map) => map,
-        _ => return value.clone(),
-    };
-    for (key, nested_value) in obj {
-        if key != "action" && key != "session_id" && key != "s" {
-            compacted.insert(key.clone(), nested_value.clone());
-        }
-    }
-    serde_json::Value::Object(compacted)
+    let compacted = parsed.to_compact_value();
+    merge_compaction_extras(value, compacted, &["action", "session_id", "s"])
 }
 
 fn compact_next_read_args(value: &serde_json::Value) -> serde_json::Value {
-    let Some(obj) = value.as_object() else {
-        return value.clone();
-    };
     let Some(parsed) = ReadChunkContinuationArgs::from_value(value) else {
         return value.clone();
     };
+    let compacted = parsed.to_compact_value();
+    merge_compaction_extras(value, compacted, &["path", "offset", "limit", "p", "o", "l"])
+}
 
-    let mut compacted = match parsed.to_compact_value() {
-        serde_json::Value::Object(map) => map,
-        _ => return value.clone(),
+/// Merge non-canonical keys from the original object onto its compact form.
+///
+/// Single home for the clone-and-preserve-extras pattern (DRY): both
+/// continuation shapes compact their identity keys and keep any extra
+/// steering fields verbatim for the harness.
+fn merge_compaction_extras(
+    original: &serde_json::Value,
+    compacted: serde_json::Value,
+    exclude: &[&str],
+) -> serde_json::Value {
+    let Some(obj) = original.as_object() else {
+        return original.clone();
+    };
+    let serde_json::Value::Object(mut map) = compacted else {
+        return original.clone();
     };
     for (key, nested_value) in obj {
-        if !matches!(key.as_str(), "path" | "offset" | "limit" | "p" | "o" | "l") {
-            compacted.insert(key.clone(), nested_value.clone());
+        if !exclude.contains(&key.as_str()) {
+            map.insert(key.clone(), nested_value.clone());
         }
     }
-    serde_json::Value::Object(compacted)
+    serde_json::Value::Object(map)
 }
 
 fn is_false_bool(value: &serde_json::Value) -> bool {
@@ -821,5 +821,40 @@ mod tests {
             "raw=true must still apply reduce_tool_result line caps, got {} lines",
             visible.lines().count()
         );
+    }
+
+    #[test]
+    fn compact_continuation_preserves_extras_asymmetrically() {
+        // Asymmetric: continue carries a wait hint extra, read carries a path-extra.
+        // Both must compact identity keys yet keep their own extras verbatim.
+        let continued = compact_next_continue_args(&json!({
+            "session_id": "run-continue-1",
+            "next_hint": "wait-again"
+        }));
+        assert_eq!(continued["s"], json!("run-continue-1"));
+        assert!(continued.get("session_id").is_none());
+        assert_eq!(continued["next_hint"], json!("wait-again"));
+
+        let read = compact_next_read_args(&json!({
+            "path": "a.log",
+            "offset": 81,
+            "limit": 40,
+            "spool_chunked": true
+        }));
+        assert_eq!(read["p"], json!("a.log"));
+        assert_eq!(read["o"], json!(81));
+        assert!(read.get("path").is_none());
+        assert_eq!(read["spool_chunked"], json!(true));
+    }
+
+    #[test]
+    fn compact_continuation_passes_through_unparsable() {
+        // Boundary: non-object and missing-identity inputs must round-trip untouched,
+        // never produce an empty compact object the harness would misread.
+        let scalar = json!("not-an-object");
+        assert_eq!(compact_next_continue_args(&scalar), scalar);
+        let missing = json!({"unrelated": 1});
+        assert_eq!(compact_next_continue_args(&missing), missing);
+        assert_eq!(compact_next_read_args(&missing), missing);
     }
 }

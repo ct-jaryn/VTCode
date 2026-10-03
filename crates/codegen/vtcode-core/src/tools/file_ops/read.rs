@@ -534,7 +534,7 @@ impl FileOpsTool {
                                 builder = builder.field(
                                     "next_action",
                                     json!(
-                                        "Use the `next_read_args` field above to continue, or `exec_command.cmd` with `rg` and a specific pattern. Re-reading the same offset returns nothing new and counts toward the per-turn spool chunk cap, which blocks further reads."
+                                        "Call file read again with the `next_read_args` object above verbatim as arguments to get the next chunk, or narrow with `exec_command.cmd` using `rg` and a specific pattern. Re-reading the same offset returns nothing new and counts toward the per-turn spool chunk cap, which blocks further reads."
                                     ),
                                 );
                             }
@@ -558,10 +558,10 @@ impl FileOpsTool {
                             let next_offset = requested_offset.saturating_add(lines_returned);
                             let next_action = if capped_by_limit {
                                 "Read clamped to max_read_lines. \
-                                 Use `next_read_args` to continue reading subsequent chunks; \
+                                 Call file read again with `next_read_args` verbatim to get subsequent chunks; \
                                  do not re-read the same range."
                             } else {
-                                "Use `next_read_args` to continue reading subsequent chunks; \
+                                "Call file read again with `next_read_args` verbatim to get subsequent chunks; \
                                  do not re-read the same range."
                             };
                             builder = builder

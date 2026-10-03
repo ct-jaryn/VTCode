@@ -564,7 +564,7 @@ pub(super) fn exec_session_param_detail(args: &Value) -> Option<String> {
         .iter()
         .find_map(|key| args.get(key).and_then(Value::as_u64))
         .filter(|secs| *secs > 0)
-        .map(|secs| format!("wait {secs}s"));
+        .map(|secs| format!("wait up to {secs}s"));
 
     let parts = [session, wait].into_iter().flatten().collect::<Vec<_>>();
     (!parts.is_empty()).then(|| parts.join(" · "))
@@ -799,13 +799,13 @@ mod tests {
         });
         // Token caps, the yield window, and the raw stdin payload must not each
         // become their own tree row.
-        assert_eq!(exec_session_param_detail(&args).as_deref(), Some("Session run-2d5752f2 · wait 600s"));
+        assert_eq!(exec_session_param_detail(&args).as_deref(), Some("Session run-2d5752f2 · wait up to 600s"));
     }
 
     #[test]
     fn exec_session_param_detail_accepts_timeout_alias() {
         let args = json!({ "session_id": "run-abc", "timeout_seconds": 30 });
-        assert_eq!(exec_session_param_detail(&args).as_deref(), Some("Session run-abc · wait 30s"));
+        assert_eq!(exec_session_param_detail(&args).as_deref(), Some("Session run-abc · wait up to 30s"));
     }
 
     #[test]

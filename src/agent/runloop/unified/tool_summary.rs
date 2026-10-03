@@ -10,7 +10,7 @@ use vtcode_commons::ui_protocol::{CompactToolSummaryLine, CompactToolSummaryLine
 
 use vtcode_core::config::ToolDisplayMode;
 use vtcode_core::config::constants::tools as tool_names;
-use vtcode_core::tools::registry::labels::tool_action_label;
+use vtcode_core::tools::registry::labels::{tool_action_label, unified_exec_action_label, write_stdin_action_label};
 use vtcode_core::tools::tool_intent;
 use vtcode_core::ui::theme;
 use vtcode_core::utils::ansi::{AnsiRenderer, MessageStyle};
@@ -732,24 +732,26 @@ pub(crate) fn describe_tool_action(
             .map(|(desc, used)| with_mcp(desc, used))
             .unwrap_or_else(|| fallback("command")),
         actual_name if actual_name == tool_names::UNIFIED_EXEC => {
-            match tool_intent::command_session_action(args).unwrap_or("run") {
-                "run" => describe_shell_command(args)
+            // Single source of truth lives in `vtcode-core` labels (DRY):
+            // `run` shows the command text, every other action reuses the
+            // canonical session label so TUI and approval surfaces agree.
+            // Check the action, not the label text, so a label rename can
+            // never silently reroute the run headline (KISS).
+            let is_run =
+                tool_intent::command_session_action(args).is_none_or(|action| action.eq_ignore_ascii_case("run"));
+            if is_run {
+                describe_shell_command(args)
                     .map(|(desc, used)| with_mcp(desc, used))
-                    .unwrap_or_else(|| fallback("command")),
-                "write" => with_mcp("Send command input".into(), HashSet::new()),
-                "poll" => with_mcp("Read command session".into(), HashSet::new()),
-                "continue" => with_mcp("Continue command session".into(), HashSet::new()),
-                "inspect" => with_mcp("Inspect command output".into(), HashSet::new()),
-                "list" => with_mcp("List command sessions".into(), HashSet::new()),
-                "close" => with_mcp("Close command session".into(), HashSet::new()),
-                "code" => with_mcp("Run code".into(), HashSet::new()),
-                _ => with_mcp("exec_command".into(), HashSet::new()),
+                    .unwrap_or_else(|| fallback("command"))
+            } else {
+                with_mcp(unified_exec_action_label(args).to_string(), HashSet::new())
             }
         }
-        // Session follow-ups name their action directly. Without these arms the
-        // generic `Use write_stdin` headline survives `build_tool_summary` and
-        // the row reads `Send command input Use write_stdin`.
-        actual_name if actual_name == tool_names::WRITE_STDIN => with_mcp("Send command input".into(), HashSet::new()),
+        // Session follow-ups delegate to `vtcode-core` labels (DRY). A pure
+        // wait/poll must not render as a send (screenshot 2026-10-02).
+        actual_name if actual_name == tool_names::WRITE_STDIN => {
+            with_mcp(write_stdin_action_label(args).to_string(), HashSet::new())
+        }
         actual_name if actual_name == tool_names::SEND_PTY_INPUT => {
             with_mcp("Send command input".into(), HashSet::new())
         }
@@ -941,7 +943,7 @@ mod tests {
         // The four plumbing rows from the screenshot collapse to one row that
         // carries only the session identity and the wait deadline.
         assert_eq!(data.summary, "Send command input");
-        assert_eq!(data.details, vec!["Session run-2d5752f2 · wait 600s".to_string()]);
+        assert_eq!(data.details, vec!["Session run-2d5752f2 · wait up to 600s".to_string()]);
         // The generic capture label beside a session row reads as a stutter.
         assert_eq!(data.stream_label, None);
     }
@@ -962,8 +964,32 @@ mod tests {
         let data = prepare_summary_data(tool_names::WRITE_STDIN, &args, None, Some("output"));
 
         assert_eq!(data.summary, "Send command input");
-        assert_eq!(data.details, vec!["Session run-abc · wait 600s".to_string()]);
+        assert_eq!(data.details, vec!["Session run-abc · wait up to 600s".to_string()]);
         assert_eq!(data.stream_label, None);
+    }
+
+    #[test]
+    fn prepare_summary_data_labels_pure_waits_as_waits() {
+        // Screenshot 2026-10-02: two pure waits (no stdin payload) rendered as
+        // `Send command input`. A wait with no input must read as a wait.
+        for tool in [tool_names::WRITE_STDIN, tool_names::UNIFIED_EXEC] {
+            let args = json!({
+                "session_id": "run-6b54fe59",
+                "action": "wait",
+                "wait_timeout_seconds": 60
+            });
+            let data = prepare_summary_data(tool, &args, None, Some("output"));
+            assert_eq!(data.summary, "Wait for command session", "tool: {tool}");
+            assert_eq!(data.details, vec!["Session run-6b54fe59 · wait up to 60s".to_string()]);
+        }
+    }
+
+    #[test]
+    fn prepare_summary_data_labels_session_poll_without_input_as_read() {
+        // A session_id-only follow-up polls output; it must not claim to send.
+        let args = json!({ "session_id": "run-abc" });
+        let data = prepare_summary_data(tool_names::WRITE_STDIN, &args, None, Some("output"));
+        assert_eq!(data.summary, "Read command session");
     }
 
     #[test]

@@ -1268,7 +1268,8 @@ mod tests {
         assert!(inline_output.contains("exec_command"));
         assert!(inline_output.contains("cat, sed, or rg"));
         assert!(!inline_output.contains("read_file/grep_file"));
-        assert!(inline_output.contains("Reuse `next_continue_args`."));
+        assert!(inline_output.contains("Still running — check again for more output."));
+        assert!(!inline_output.contains("next_continue_args"));
     }
 
     #[tokio::test]

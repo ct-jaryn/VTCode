@@ -252,7 +252,7 @@ pub fn exec_command_parameters() -> Value {
 }
 
 /// Shared model-facing description for execution session controls.
-pub const WRITE_STDIN_DESCRIPTION: &str = "Control an owned exec session using its exact session_id: write input (pipe requires stdin: true at launch), poll output, wait for exit or deadline, inspect, terminate the process group, or close and release it. Wait never kills.";
+pub const WRITE_STDIN_DESCRIPTION: &str = "Control an owned exec session using its exact session_id (copy verbatim from next_wait_args/next_continue_args; never guess): action=\"write\" sends stdin (pipe runs require stdin:true at launch), action=\"wait\" blocks until exit or wait_timeout_seconds (preferred over polling for long runs; never kills), action=\"poll\" returns the latest output immediately, action=\"inspect\" reads a bounded snapshot, action=\"terminate\" kills the process group, action=\"close\" releases the session.";
 
 #[must_use]
 pub fn write_stdin_parameters() -> Value {
@@ -260,11 +260,11 @@ pub fn write_stdin_parameters() -> Value {
         "type": "object",
         "required": ["session_id"],
         "properties": {
-            "session_id": {"type": "string", "description": "Active execution session id."},
-            "action": {"type": "string", "enum": ["write", "poll", "wait", "inspect", "terminate", "close"], "description": "wait blocks until exit or deadline without killing; inspect reads a bounded snapshot; terminate kills the process group and captures output; close cancels and releases the session. poll sends no input."},
-            "chars": {"type": "string", "description": "Bytes to write to stdin. Pass an empty string to poll without sending input."},
+            "session_id": {"type": "string", "description": "Active execution session id copied verbatim from the run response."},
+            "action": {"type": "string", "enum": ["write", "poll", "wait", "inspect", "terminate", "close"], "description": "write sends chars to stdin; wait blocks until exit or wait_timeout_seconds without killing (preferred for long runs); poll returns latest output immediately and sends no input; inspect reads a bounded snapshot; terminate kills the process group and captures output; close cancels and releases the session."},
+            "chars": {"type": "string", "description": "Bytes to write to stdin; only for action=\"write\". Omit only when action is wait/poll/inspect/terminate/close; an empty string sends no input (polls)."},
             "yield_time_ms": {"type": "integer", "description": "Wait before returning fresh session output (ms).", "default": 1000},
-            "wait_timeout_seconds": {"type": "integer", "minimum": 1, "description": "Explicit wait deadline in seconds. A deadline returns an in-progress session that can be waited on again."},
+            "wait_timeout_seconds": {"type": "integer", "minimum": 1, "description": "Deadline for action=\"wait\" in seconds. A deadline-expired wait returns an in-progress session; call wait again with the same session_id. wait/inspect are exempt from the per-turn tool-call budget."},
             "max_output_tokens": {"type": "integer", "minimum": MIN_MAX_OUTPUT_TOKENS, "maximum": MAX_MAX_OUTPUT_TOKENS, "default": DEFAULT_MAX_OUTPUT_TOKENS, "description": "Output token cap for the continuation response. Large or truncated output can return a spool_path; the response reports whether an active session has finished writing it."}
         },
         "anyOf": [
