@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use vtcode_commons::ui_protocol::ActivityState;
 use vtcode_config::loader::SimpleConfigWatcher;
@@ -70,12 +70,13 @@ use crate::agent::runloop::unified::workspace_links::LinkedDirectory;
 use crate::updater::{InlineUpdateOutcome, display_update_notice, run_inline_update_prompt};
 
 mod session_bootstrap;
+mod session_teardown;
 
 pub(crate) use session_bootstrap::BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX;
 pub(super) use session_bootstrap::resolve_thread_completion_status;
 use session_bootstrap::{
-    EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, apply_startup_plan_agent_selection, background_completion_continuation_prompt,
-    load_archived_prompts_for_history, persist_primary_agent, record_plan_selection_failure_tail,
+    apply_startup_plan_agent_selection, background_completion_continuation_prompt, load_archived_prompts_for_history,
+    persist_primary_agent, record_plan_selection_failure_tail,
 };
 
 #[cfg_attr(feature = "profiling", hotpath::measure)]
@@ -2471,96 +2472,17 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         } else {
             None
         };
-        // Independent, individually-bounded teardown steps run concurrently:
-        // their worst-case caps overlap (max) instead of adding (sum) the way
-        // the previous sequential chain did. Every await carries a timeout; a
-        // timeout only skips waiting (the OS reaps children at process exit),
-        // it never leaks the terminal.
-        let (harness_finish_error, (), (), end_code_changes) = tokio::join!(
-            async {
-                let emitter = harness_emitter.as_ref()?;
-                // Fire one best-effort session-completion notification, mirroring
-                // the per-turn outcome helper. Reuses the same
-                // completion_success/failure gates as turn completion.
-                if timeout(
-                    Duration::from_millis(250),
-                    super::notifications::emit_session_completion_notification(subtype, session_stats.total_turns()),
-                )
-                .await
-                .is_err()
-                {
-                    tracing::debug!(target: "vtcode.harness", "session completion notification timed out during exit");
-                }
-                // Always attempt exporter finalization after the terminal event.
-                // Optional exporters are isolated inside `HarnessEventEmitter`,
-                // while a canonical persistence error is retained and returned
-                // only after `finish()` has had a chance to drain/close the sink.
-                match timeout(Duration::from_millis(500), emitter.finish()).await {
-                    Ok(Ok(())) => None,
-                    Ok(Err(error)) => {
-                        tracing::error!(
-                            target: "vtcode.harness",
-                            phase = "canonical_finish",
-                            error = %error,
-                            "failed to finalize canonical session persistence"
-                        );
-                        Some(error.context("failed to finalize canonical session persistence"))
-                    }
-                    Err(_elapsed) => {
-                        tracing::warn!(
-                            target: "vtcode.harness",
-                            phase = "canonical_finish",
-                            "canonical session persistence finish timed out during exit; continuing teardown"
-                        );
-                        None
-                    }
-                }
-            },
-            async {
-                if let Some(manager) = checkpoint_manager.as_ref() {
-                    let session_id = tool_registry.harness_context_snapshot().session_id;
-                    match timeout(Duration::from_millis(500), manager.complete_session_navigation(&session_id)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => {
-                            tracing::debug!(%error, "checkpoint navigation trim failed after thread completion")
-                        }
-                        Err(_elapsed) => {
-                            tracing::debug!(%session_id, "checkpoint navigation trim timed out during exit")
-                        }
-                    }
-                }
-            },
-            async {
-                // Best-effort backstop: a Ctrl+C exit from idle (no turn
-                // running) can leave exec/PTY sessions alive because
-                // turn-level cancellation never ran. Terminate them before
-                // teardown so no child outlives the TUI. `Immediate` PTY mode
-                // (group SIGKILL, no SIGTERM grace window) because the user
-                // asked to leave.
-                if matches!(
-                    session_end_reason,
-                    SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::Error
-                ) {
-                    match timeout(
-                        EXIT_BACKGROUND_SHUTDOWN_TIMEOUT,
-                        tool_registry.terminate_all_exec_sessions_for_exit_async(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "failed to terminate exec sessions during session exit");
-                        }
-                        Err(_elapsed) => {
-                            tracing::warn!(
-                                "timed out terminating exec sessions during session exit; continuing teardown"
-                            );
-                        }
-                    }
-                }
-            },
-            capture_code_change_snapshot(&config.workspace, "end"),
-        );
+        let session_teardown::SessionTeardownOutput { harness_finish_error, end_code_changes } =
+            session_teardown::drain_session_teardown(session_teardown::SessionTeardownContext {
+                harness_emitter: harness_emitter.as_ref(),
+                checkpoint_manager: checkpoint_manager.as_ref(),
+                tool_registry: &tool_registry,
+                workspace: &config.workspace,
+                session_stats: &session_stats,
+                subtype,
+                session_end_reason,
+            })
+            .await;
         if let Some(error) = harness_finish_error {
             if terminal_event_error.is_none() {
                 return Err(error);
@@ -2569,24 +2491,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         if let Some(error) = terminal_event_error {
             return Err(error);
         }
-        // Empty shells (0 turns, terminal) are not worth keeping: they pollute
-        // `.vtcode/sessions/` and hide real sessions. Runs on every close path
-        // (including NewSession / resume continues) after `emitter.finish()`
-        // has dropped the liveness lock. Best-effort; retention catches strays.
-        if let Err(error) = vtcode_memory::evict_zero_turn_completed_store(&config.workspace, &turn_run_id.0) {
-            tracing::debug!(target: "vtcode.harness", error = %error, "zero-turn session store cleanup failed");
-        }
-        // A fully-checked task tracker is archived so it cannot leak into the
-        // next session's memory envelope.
-        {
-            let session_id = tool_registry.harness_context_snapshot().session_id;
-            if let Err(error) = vtcode_core::core::agent::harness_artifacts::archive_completed_current_task(
-                &config.workspace,
-                &session_id,
-            ) {
-                tracing::debug!(%error, "completed task tracker archive failed after thread completion");
-            }
-        }
+        session_teardown::cleanup_completed_artifacts(&config.workspace, &turn_run_id.0, &tool_registry);
         agent_touched_paths.extend(context_manager.tracked_instruction_activity_paths());
         // Skip persistent memory on interrupt-exits (it makes LLM API calls which
         // delay shutdown significantly). For normal exits, wait up to 5 s for
@@ -2594,48 +2499,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         // detaches and keeps running (coordinated by the memory lock) while
         // the TUI finalizes, instead of being dropped mid-flight.
         if !matches!(session_end_reason, SessionEndReason::Exit) {
-            let finalize_config = config.clone();
-            let finalize_vt_cfg = vt_cfg.clone();
-            let finalize_messages = runtime.state.messages.clone();
-            let finalize_session_id = turn_run_id.0.clone();
-            let mut finalize_task = tokio::spawn(async move {
-                vtcode_core::persistent_memory::finalize_persistent_memory(
-                    &finalize_config,
-                    finalize_vt_cfg.as_ref(),
-                    &finalize_messages,
-                    &finalize_session_id,
-                )
-                .await
-            });
-            match timeout(Duration::from_secs(5), &mut finalize_task).await {
-                Ok(Ok(Ok(_))) => {}
-                Ok(Ok(Err(err))) => {
-                    tracing::warn!("Failed to update persistent memory at session finalization: {}", err);
-                }
-                Ok(Err(join_error)) => {
-                    tracing::warn!("Persistent memory finalization task failed: {}", join_error);
-                }
-                Err(_elapsed) => {
-                    tracing::info!("Persistent memory finalization continues in the background");
-                    // Detached by design after the 5 s wait, but not silent:
-                    // an observer task logs the eventual outcome instead of
-                    // dropping the JoinHandle and losing any error.
-                    tokio::spawn(async move {
-                        match finalize_task.await {
-                            Ok(Ok(_)) => {}
-                            Ok(Err(err)) => {
-                                tracing::warn!("Background persistent memory finalization failed: {}", err);
-                            }
-                            Err(join_error) => {
-                                tracing::warn!(
-                                    "Background persistent memory finalization task panicked or was aborted: {}",
-                                    join_error
-                                );
-                            }
-                        }
-                    });
-                }
-            }
+            session_teardown::finalize_persistent_memory(
+                config.clone(),
+                vt_cfg.clone(),
+                runtime.state.messages.clone(),
+                turn_run_id.0.clone(),
+            )
+            .await;
         }
 
         // Capture the response before finalization shuts down the inline TUI
@@ -2671,17 +2541,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         // this previously ran after the terminal was restored, directly
         // delaying the shell return — now it overlaps the finalization below.
         // Aborts only skip waiting; the process exit reaps any remainder.
-        let subagent_shutdown = async {
-            if let Some(controller) = tool_registry.subagent_controller() {
-                if timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, controller.signal_shutdown())
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("timed out shutting down subagent controller during session exit");
-                }
-            }
-        };
-        let ((), finalization_output) = tokio::join!(subagent_shutdown, async {
+        let ((), finalization_output) = tokio::join!(session_teardown::shutdown_subagents(&tool_registry), async {
             match finalize_session(
                 &mut renderer,
                 lifecycle_hooks.as_ref(),

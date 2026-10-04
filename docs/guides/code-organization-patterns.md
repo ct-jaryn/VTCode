@@ -120,3 +120,20 @@ processing task:
 - Aborts lingering task on drop
 
 See: `crates/codegen/vtcode-core/src/tools/exec_session.rs`.
+
+## Refactored Runtime Boundaries
+
+- `src/agent/runloop/unified/turn/session_loop_runner/orchestration/mod.rs` owns session transitions.
+  Its `session_teardown.rs` child owns bounded exit drains, completed-artifact cleanup,
+  persistent-memory finalization, and subagent shutdown. Emit the terminal event before
+  draining persistence; retain the existing ordering and error precedence in the caller.
+- `src/agent/runloop/tool_output/mod.rs` dispatches output. Its `tracker.rs` child owns
+  tracker transcript rows, panel metadata, and rendering. Shared Git-diff detection stays
+  in the dispatch module, and existing callers use its re-exported tracker helpers.
+- `crates/codegen/vtcode-core/src/tools/registry/execution_history.rs` owns the bounded
+  shared record deque and public facade. Its private children separate replay and
+  invalidation (`replay.rs`), task telemetry (`telemetry.rs`), and repeated-call detection
+  (`loop_detection.rs`). Preserve spool verification and read-shape checks during extraction.
+- Headless normal and fallback tool execution share `record_successful_tool_result` in
+  `core/agent/runner/tool_exec.rs`: output completion precedes exec-session correlation
+  and file-change events. Invocation admission and completion remain with each caller.

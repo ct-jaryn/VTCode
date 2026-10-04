@@ -1,6 +1,7 @@
 //! Inline task-tracker block rendering (progress rows, tree rows, transcript lines).
 
 use super::*;
+pub(super) use crate::agent::runloop::tool_output::is_git_diff_payload;
 
 pub(super) fn is_run_pty_tool(name: &str, args_val: &serde_json::Value) -> bool {
     renders_pty_command_header(name, args_val)
@@ -39,13 +40,6 @@ pub(super) fn compact_run_completion_line(output: &serde_json::Value, status: To
         ToolDisplayStatus::Warning => Some("⚠ completed with warnings".to_string()),
         ToolDisplayStatus::Success => None,
     }
-}
-
-pub(super) fn is_git_diff_payload(output: &serde_json::Value) -> bool {
-    output
-        .get("content_type")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|content_type| content_type == "git_diff")
 }
 
 pub(super) fn has_renderable_stream_content(output: &serde_json::Value) -> bool {

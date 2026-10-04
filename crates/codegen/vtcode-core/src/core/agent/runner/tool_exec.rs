@@ -110,10 +110,12 @@ fn complete_tool_invocation(
     super::tool_dispatch_common::drain_and_record_runtime_events(runtime, event_recorder);
 }
 
-fn finish_successful_tool_output(
+fn record_successful_tool_result(
     event_recorder: &mut ExecEventRecorder,
     call_item_id: &str,
     tool_call_id: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
     output: &serde_json::Value,
 ) {
     let payload = tool_output_payload_from_value(output);
@@ -128,6 +130,11 @@ fn finish_successful_tool_output(
         &payload.aggregated_output,
         payload.spool_path.as_deref(),
     );
+    event_recorder.record_exec_session_output(call_item_id, tool_name, args, output);
+    if let Some(event) = crate::core::agent::events::file_change_completed_event(call_item_id, tool_name, args, output)
+    {
+        event_recorder.record_thread_event(event);
+    }
 }
 
 #[allow(
@@ -168,16 +175,7 @@ fn apply_tool_success(
         ToolCallStatus::Completed,
         None,
     );
-    finish_successful_tool_output(event_recorder, &tool_call_item.call_item_id, call_id, &optimized_result);
-    event_recorder.record_exec_session_output(&tool_call_item.call_item_id, name, args, &optimized_result);
-    if let Some(event) = crate::core::agent::events::file_change_completed_event(
-        &tool_call_item.call_item_id,
-        name,
-        args,
-        &optimized_result,
-    ) {
-        event_recorder.record_thread_event(event);
-    }
+    record_successful_tool_result(event_recorder, &tool_call_item.call_item_id, call_id, name, args, &optimized_result);
 }
 
 /// The outcome of evaluating whether a tool failure should halt further tool
@@ -869,23 +867,59 @@ impl AgentRunner {
             None,
         );
         event_recorder.tool_output_started(&tool_call_item.call_item_id, Some(call_id));
-        finish_successful_tool_output(event_recorder, &tool_call_item.call_item_id, call_id, &optimized_result);
-        event_recorder.record_exec_session_output(
+        record_successful_tool_result(
+            event_recorder,
             &tool_call_item.call_item_id,
+            call_id,
             tool_name,
             tool_args,
             &optimized_result,
         );
 
-        if let Some(event) = crate::core::agent::events::file_change_completed_event(
-            &tool_call_item.call_item_id,
-            tool_name,
-            tool_args,
-            &optimized_result,
-        ) {
-            event_recorder.record_thread_event(event);
-        }
-
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::events::{ThreadEvent, ThreadItemDetails};
+    use serde_json::json;
+
+    #[test]
+    fn successful_result_records_output_before_file_change() {
+        let mut recorder = ExecEventRecorder::new("thread-result", None, None);
+        recorder.take_events();
+        let args = json!({"path":"a.rs", "content":"new"});
+        let output = json!({"success":true,"output":"updated a.rs","diff":[{
+            "path":"a.rs","operation":"updated", "content":"--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new",
+            "additions":1,"deletions":1
+        }]});
+        record_successful_tool_result(&mut recorder, "invocation", "call-write", "write_file", &args, &output);
+        let events = recorder.take_events();
+        assert_eq!(events.len(), 2);
+        let ThreadEvent::ItemCompleted(completed_output) = &events[0] else {
+            panic!("completed output expected")
+        };
+        let ThreadItemDetails::ToolOutput(result) = &completed_output.item.details else {
+            panic!("tool output expected")
+        };
+        assert_eq!(result.call_id, "invocation");
+        assert_eq!(result.tool_call_id.as_deref(), Some("call-write"));
+        assert_eq!(
+            result.output,
+            "diff preview for a.rs (updated) (+1 -1):\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\nupdated a.rs"
+        );
+        assert_eq!(result.status, ToolCallStatus::Completed);
+        let ThreadEvent::ItemCompleted(completed_change) = &events[1] else {
+            panic!("completed change expected")
+        };
+        let ThreadItemDetails::FileChange(change) = &completed_change.item.details else {
+            panic!("file change expected")
+        };
+        assert_eq!(change.changes.len(), 1);
+        assert_eq!(change.changes[0].path, "a.rs");
+        assert_eq!(change.additions, Some(1));
+        assert_eq!(change.deletions, Some(1));
     }
 }
