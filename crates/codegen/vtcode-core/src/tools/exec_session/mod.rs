@@ -59,7 +59,10 @@ fn missing_exec_session_error(session_id: &str) -> anyhow::Error {
 /// Maximum number of live background command sessions owned by one runtime.
 pub const MAX_BACKGROUND_PROCESSES: usize = 3;
 
-/// Result of the Ctrl+B foreground-session handoff request.
+pub use manager::ExecSessionManager;
+pub use output_buffer::BackgroundShortcutResult;
+pub use record::{ExecSessionBackend, ExecSessionCompletionEvent, ExecSessionUiSnapshot};
+
 mod manager;
 mod output_buffer;
 mod pipe;

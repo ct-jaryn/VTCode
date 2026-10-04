@@ -2,6 +2,7 @@
 
 use super::*;
 
+/// Result of the Ctrl+B foreground-session handoff request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundShortcutResult {
     /// A live foreground session was reserved for background promotion.
