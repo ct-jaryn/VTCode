@@ -1341,6 +1341,15 @@ fn command_path_args<'a>(program: &str, words: &'a [String]) -> Vec<&'a str> {
 
 fn derived_shell_approval_prefixes(key: &str) -> Vec<String> {
     let (command_text, scope_signature) = split_shell_approval_entry(key);
+    // Opaque learned-family keys (`shell-pattern:<program> <family>`) are not
+    // shell command text. Running the shell tokenizer on them would treat
+    // `shell-pattern:awk README.md` as program `shell-pattern:awk` and derive a
+    // `shell-pattern:awk` prefix that matches *every* awk family — silently
+    // widening a scoped family approval. Family keys are matched by their exact
+    // persisted value, so derive nothing.
+    if command_text.starts_with("shell-pattern:") {
+        return Vec::new();
+    }
     let words = shell_command_words_for_approval(command_text);
     if words.len() < 2 {
         return Vec::new();
@@ -1694,6 +1703,29 @@ api_key_env = "STALE_API_KEY"
 
         assert!(manager.has_approval_cache_key(
             "ls /Users/me/project/docs|sandbox_permissions=\"use_default\"|additional_permissions=null"
+        ));
+    }
+
+    #[tokio::test]
+    async fn opaque_family_keys_do_not_derive_shell_prefixes() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("tool-policy.json");
+        let mut manager = ToolPolicyManager::new_with_config_path(&config_path).await.expect("manager");
+
+        manager
+            .add_approval_cache_key_with_segments(
+                "shell-pattern:awk README.md|sandbox_permissions=\"use_default\"|additional_permissions=null",
+            )
+            .await
+            .expect("persist family key");
+
+        // The exact family matches...
+        assert!(manager.has_approval_cache_key(
+            "shell-pattern:awk README.md|sandbox_permissions=\"use_default\"|additional_permissions=null"
+        ));
+        // ...but a different family must not inherit a derived `shell-pattern:awk` prefix.
+        assert!(!manager.has_approval_cache_key(
+            "shell-pattern:awk src|sandbox_permissions=\"use_default\"|additional_permissions=null"
         ));
     }
 

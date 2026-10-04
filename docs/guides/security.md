@@ -171,6 +171,12 @@ Three-tier approval system for tool execution:
 2. **Allow for Session** - Approved for current session only
 3. **Always approve** - Permanently saved for this workspace
 
+For a demonstrably safe, read-only shell command (a learned family such as `sed -n <range> <path>`, `find <dir>`, or a
+write-free `awk <program> <path>`), **Always approve** and **Allow for Session** are scoped to the family rather than the
+exact invocation, so an equivalent read with different arguments (for example a new `awk` line range) reuses the
+approval instead of re-prompting. The learned family is only derived for read-only shapes — mutating forms such as
+`awk 'print > file'`, `find -delete`, or `sed -i` stay exact-only and can never inherit the family approval.
+
 #### Workspace Lifecycle Hook Approval
 
 Lifecycle hooks declared in workspace-controlled configuration — a repository's `vtcode.toml`, `.vtcode/` files, project

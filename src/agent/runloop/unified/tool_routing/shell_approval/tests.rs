@@ -322,6 +322,35 @@ rest=substr(line,3); g=index(rest,"|")+1; guide=substr(rest,g+2); gp=0; gg=guide
 }
 
 #[test]
+fn safe_awk_read_offers_learned_family_permanent_target() {
+    // "Always approve" must scope to the safe learned family, not the exact
+    // line range, so a new `awk 'NR>=a && NR<=b' README.md` does not re-prompt.
+    for command in [
+        r#"awk 'NR>=208 && NR<=212 {n=index(rest,"| "); print n}' README.md"#,
+        "awk 'NR>=1 && NR<=5' README.md",
+        "awk -F: '{print $1}' README.md",
+    ] {
+        let args = json!({"action": "run", "command": command});
+        match persistent_approval_target("exec_command", Some(&args), "Run Command") {
+            PersistentApprovalTarget::LearnedPattern { key, display_label } => {
+                assert!(key.starts_with("shell-pattern:awk README.md|sandbox_permissions="), "got {key}");
+                assert_eq!(display_label, "safe `awk` reads under `README.md`");
+            }
+            other => panic!("expected learned family target for {command}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn mutating_awk_keeps_exact_permanent_target() {
+    let args = json!({"action": "run", "command": "awk '{print > \"out.txt\"}' README.md"});
+    assert!(matches!(
+        persistent_approval_target("exec_command", Some(&args), "Run Command"),
+        PersistentApprovalTarget::ExactInvocation { .. }
+    ));
+}
+
+#[test]
 fn awk_mutating_shapes_have_no_pattern() {
     for command in [
         "awk '{print > \"out.txt\"}' README.md",

@@ -243,6 +243,13 @@ User requests: "Run the build and check for errors"
 7. Pattern saved to disk
 ```
 
+For a demonstrably safe read-only shell command that belongs to a learned family (for example a write-free
+`awk 'NR>=a && NR<=b' README.md`, `sed -n <range> <path>`, or `find <dir>` read), the "Always approve" row is scoped to
+the family instead of the exact invocation — the subtitle names the family (for example, "Remember safe awk reads under
+README.md in this workspace"), and an equivalent read with different arguments reuses the approval instead of
+re-prompting. Mutating shapes such as `awk 'print > file'`, `find -delete`, or `sed -i` are never part of a learned
+family.
+
 ## Learning System
 
 ### Approval Rate Calculation

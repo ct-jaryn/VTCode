@@ -138,6 +138,15 @@ such as `find src -name '*.rs'` remain valid, but destructive options such as `-
 This is a deliberate fail-closed rule: commands that need dynamic shell syntax must be rewritten into explicit arguments
 or reviewed through an approval path that does not grant a learned `find` family exemption.
 
+The same learned read-only families also back persistent approvals. Choosing **Always approve** on a safe family member
+(for example one `awk 'NR>=a && NR<=b' README.md` read) persists the family key rather than the exact invocation, so an
+equivalent read with a different line range, field separator, or argument reuses the approval instead of re-prompting.
+The persisted key is a scoped, opaque `shell-pattern:<program> <workspace-family>` value, and lookup only matches it when
+the candidate invocation independently qualifies for the same read-only family. Mutating shapes — `print > file`,
+`print | "cmd"`, `system()`, `@include`, `find -delete`/`-exec`, `sed -i` — never carry a family key, so they cannot
+inherit the approval. Opaque `shell-pattern:` keys deliberately derive no shell token prefixes, so a scoped family
+approval can never widen into a bare-program (for example `shell-pattern:awk`) match across unrelated families.
+
 ### Layer 7: Workspace Lifecycle Hook Approval
 
 VT Code loads configuration from layered sources, including the workspace-root `vtcode.toml`, the workspace

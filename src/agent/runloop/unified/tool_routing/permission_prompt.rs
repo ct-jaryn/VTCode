@@ -670,6 +670,7 @@ fn build_tool_permission_options(
         let short_label = match target {
             PersistentApprovalTarget::ToolLevel => "this tool".to_string(),
             PersistentApprovalTarget::ExactInvocation { display_label }
+            | PersistentApprovalTarget::LearnedPattern { display_label, .. }
             | PersistentApprovalTarget::PrefixRule { display_label, .. } => {
                 // Middle-truncation keeps both the executable prefix and the
                 // trailing flags/destinations that can change what is
@@ -1319,6 +1320,27 @@ mod tests {
         .collect::<Vec<_>>();
         assert!(titles.iter().any(|title| title == "Always approve"));
         assert!(!titles.iter().any(|title| title == "Always Deny"));
+    }
+
+    #[test]
+    fn shell_prompt_labels_learned_family_permanent_option() {
+        let items = build_tool_permission_options(
+            ToolPermissionPromptKind::Standard,
+            Some(&PersistentApprovalTarget::LearnedPattern {
+                key: "shell-pattern:awk README.md|sandbox_permissions=\"use_default\"|additional_permissions=null"
+                    .to_string(),
+                display_label: "safe `awk` reads under `README.md`".to_string(),
+            }),
+        );
+        let permanent = items
+            .iter()
+            .find(|item| item.title == "Always approve")
+            .expect("permanent option");
+        assert_eq!(
+            permanent.subtitle.as_deref(),
+            Some("Remember safe `awk` reads under `README.md` in this workspace")
+        );
+        assert_eq!(permanent.badge.as_deref(), Some("Permanent"));
     }
 
     #[test]
