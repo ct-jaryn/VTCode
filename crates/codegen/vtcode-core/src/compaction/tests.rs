@@ -991,7 +991,7 @@ async fn native_inline_fork_reuses_parent_prefix_when_supplied() {
 
 #[test]
 fn inline_compaction_edits_follow_the_documented_ladder_order() {
-    use super::anthropic_inline_compaction_edits;
+    use super::native_inline::anthropic_inline_compaction_edits;
 
     let edits = anthropic_inline_compaction_edits(Some("keep decisions"), true);
     let types: Vec<&str> = edits
