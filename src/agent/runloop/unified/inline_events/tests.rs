@@ -123,6 +123,7 @@ async fn focused_exec_session_does_not_capture_slash_commands() {
             "command": "read line; printf received",
             "tty": false,
             "background": true,
+            "stdin": true,
             "yield_time_ms": 250,
         }))
         .await
