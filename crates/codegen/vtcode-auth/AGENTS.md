@@ -6,7 +6,7 @@
 
 ## Modules
 
-`openai_chatgpt_oauth/` OpenAI ChatGPT OAuth | `openai_refresh_policy/` pure refresh classification | `openai_session_storage/` typed session persistence | `openrouter_oauth/` OpenRouter OAuth | `openrouter_token_storage/` typed token persistence | `mcp_oauth/` MCP server OAuth | `oauth_server/` local callback server | `pkce/` PKCE challenge generation | `credentials/` credential storage (keyring + file) | `auth_service/` OpenAIAccountAuthService | `config/` AuthConfig types | `storage_paths/` path resolution | `codex_auth_import.rs` Codex CLI auth.json reuse
+`openai_chatgpt_oauth/` OpenAI ChatGPT OAuth (`session.rs` model/handle/flow, `refresh.rs` token exchange + storage, `jwt.rs` claim parsing) | `openai_refresh_policy/` pure refresh classification | `openai_session_storage/` typed session persistence | `openrouter_oauth/` OpenRouter OAuth | `openrouter_token_storage/` typed token persistence | `mcp_oauth/` MCP server OAuth | `oauth_server/` local callback server | `pkce/` PKCE challenge generation | `credentials/` credential storage (keyring + file) | `auth_service/` OpenAIAccountAuthService | `config/` AuthConfig types | `storage_paths/` path resolution | `codex_auth_import.rs` Codex CLI auth.json reuse
 
 ## Rules
 
