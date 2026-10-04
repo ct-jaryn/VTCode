@@ -127,9 +127,13 @@ See: `crates/codegen/vtcode-core/src/tools/exec_session.rs`.
   Its `session_teardown.rs` child owns bounded exit drains, completed-artifact cleanup,
   persistent-memory finalization, and subagent shutdown. Emit the terminal event before
   draining persistence; retain the existing ordering and error precedence in the caller.
+  Completed-artifact filesystem cleanup runs on the blocking pool and is awaited before
+  persistent-memory finalization, so tracker archival finishes before the next phase.
 - `src/agent/runloop/tool_output/mod.rs` dispatches output. Its `tracker.rs` child owns
   tracker transcript rows, panel metadata, and rendering. Shared Git-diff detection stays
   in the dispatch module, and existing callers use its re-exported tracker helpers.
+  Panel and compact transcript focus use the same typed-row selection helper; selecting
+  the current transcript task does not require constructing the full panel vectors.
 - `crates/codegen/vtcode-core/src/tools/registry/execution_history.rs` owns the bounded
   shared record deque and public facade. Its private children separate replay and
   invalidation (`replay.rs`), task telemetry (`telemetry.rs`), and repeated-call detection

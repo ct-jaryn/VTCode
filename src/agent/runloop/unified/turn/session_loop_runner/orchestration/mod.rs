@@ -2491,7 +2491,12 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         if let Some(error) = terminal_event_error {
             return Err(error);
         }
-        session_teardown::cleanup_completed_artifacts(&config.workspace, &turn_run_id.0, &tool_registry);
+        session_teardown::cleanup_completed_artifacts(
+            &config.workspace,
+            &turn_run_id.0,
+            &tool_registry.harness_context_snapshot().session_id,
+        )
+        .await;
         agent_touched_paths.extend(context_manager.tracked_instruction_activity_paths());
         // Skip persistent memory on interrupt-exits (it makes LLM API calls which
         // delay shutdown significantly). For normal exits, wait up to 5 s for

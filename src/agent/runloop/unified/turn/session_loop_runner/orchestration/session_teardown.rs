@@ -128,7 +128,23 @@ pub(super) async fn drain_session_teardown(context: SessionTeardownContext<'_>) 
     SessionTeardownOutput { harness_finish_error, end_code_changes }
 }
 
-pub(super) fn cleanup_completed_artifacts(workspace: &Path, turn_run_id: &str, tool_registry: &ToolRegistry) {
+/// Await filesystem cleanup on the blocking pool before starting the next lifecycle phase.
+pub(super) async fn cleanup_completed_artifacts(workspace: &Path, turn_run_id: &str, session_id: &str) {
+    let workspace = workspace.to_path_buf();
+    let turn_run_id = turn_run_id.to_owned();
+    let session_id = session_id.to_owned();
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        cleanup_completed_artifacts_blocking(&workspace, &turn_run_id, &session_id);
+    })
+    .await
+    {
+        tracing::warn!(%error, "completed session artifact cleanup task failed");
+    }
+}
+
+/// # Blocking
+/// Reads and removes session files and renames completed tracker artifacts.
+fn cleanup_completed_artifacts_blocking(workspace: &Path, turn_run_id: &str, session_id: &str) {
     // Empty shells (0 turns, terminal) are not worth keeping: they pollute
     // `.vtcode/sessions/` and hide real sessions. Runs on every close path
     // (including NewSession / resume continues) after `emitter.finish()`
@@ -139,9 +155,8 @@ pub(super) fn cleanup_completed_artifacts(workspace: &Path, turn_run_id: &str, t
     // A fully-checked task tracker is archived so it cannot leak into the
     // next session's memory envelope.
     {
-        let session_id = tool_registry.harness_context_snapshot().session_id;
         if let Err(error) =
-            vtcode_core::core::agent::harness_artifacts::archive_completed_current_task(workspace, &session_id)
+            vtcode_core::core::agent::harness_artifacts::archive_completed_current_task(workspace, session_id)
         {
             tracing::debug!(%error, "completed task tracker archive failed after thread completion");
         }
@@ -202,5 +217,51 @@ pub(super) async fn shutdown_subagents(tool_registry: &ToolRegistry) {
         {
             tracing::warn!("timed out shutting down subagent controller during session exit");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_completed_artifacts;
+    use vtcode_core::core::agent::harness_artifacts::current_task_path;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cleanup_archives_completed_tracker_before_returning() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let task_path = current_task_path(workspace.path());
+        std::fs::create_dir_all(task_path.parent().expect("tasks directory")).expect("create tasks");
+        let content = "# Work\n- [x] first\n- [X] second\n";
+        std::fs::write(&task_path, content).expect("write tracker");
+
+        cleanup_completed_artifacts(workspace.path(), "run-id", "session-id").await;
+
+        assert!(!task_path.exists(), "cleanup must finish before the next lifecycle phase");
+        let archives = std::fs::read_dir(task_path.parent().expect("tasks directory").join("archive"))
+            .expect("archive directory")
+            .map(|entry| entry.expect("archive entry").path())
+            .collect::<Vec<_>>();
+        assert_eq!(archives.len(), 1);
+        assert!(
+            archives[0]
+                .file_name()
+                .expect("archive name")
+                .to_string_lossy()
+                .starts_with("current_task-session-id-")
+        );
+        assert_eq!(std::fs::read_to_string(&archives[0]).expect("archived tracker"), content);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cleanup_preserves_unfinished_tracker() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let task_path = current_task_path(workspace.path());
+        std::fs::create_dir_all(task_path.parent().expect("tasks directory")).expect("create tasks");
+        let content = "# Work\n- [x] first\n- [ ] second\n";
+        std::fs::write(&task_path, content).expect("write tracker");
+
+        cleanup_completed_artifacts(workspace.path(), "run-id", "session-id").await;
+
+        assert_eq!(std::fs::read_to_string(&task_path).expect("unfinished tracker"), content);
+        assert!(!task_path.parent().expect("tasks directory").join("archive").exists());
     }
 }

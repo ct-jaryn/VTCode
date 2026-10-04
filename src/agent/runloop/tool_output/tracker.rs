@@ -133,7 +133,13 @@ pub(crate) fn tracker_tree_body_lines(val: &Value) -> Vec<String> {
 /// emphasis. The focused index is `None` when nothing is actionable.
 pub(crate) fn tracker_panel_rows(val: &Value) -> (Vec<String>, Vec<TaskItemStatus>, Option<usize>) {
     let rows = tracker_rich_tree_rows(val);
-    let mut current = None;
+    let current = tracker_current_row_index(&rows);
+    let (texts, statuses) = rows.into_iter().map(|row| (row.text, row.status)).unzip();
+    (texts, statuses, current)
+}
+
+/// Prefer actionable leaves, then status priority and original tree order.
+fn tracker_current_row_index(rows: &[TrackerRow]) -> Option<usize> {
     for want_leaf in [true, false] {
         for status in [
             TaskItemStatus::InProgress,
@@ -141,17 +147,11 @@ pub(crate) fn tracker_panel_rows(val: &Value) -> (Vec<String>, Vec<TaskItemStatu
             TaskItemStatus::Blocked,
         ] {
             if let Some(index) = rows.iter().position(|row| row.status == status && row.leaf == want_leaf) {
-                current = Some(index);
-                break;
+                return Some(index);
             }
         }
-        if current.is_some() {
-            break;
-        }
     }
-    let texts = rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>();
-    let statuses = rows.into_iter().map(|row| row.status).collect::<Vec<_>>();
-    (texts, statuses, current)
+    None
 }
 
 /// Glyphless tree rows with typed statuses, in tree order.
@@ -234,9 +234,9 @@ pub(crate) fn is_tracker_current_row(line: &str) -> bool {
 /// uses the distinct `  ▶ ` visual without a status glyph; styling carries
 /// the status.
 pub(crate) fn tracker_current_tree_row(val: &Value) -> Option<TrackerLine> {
-    let (texts, statuses, current) = tracker_panel_rows(val);
-    let index = current?;
-    Some(TrackerLine::row(format_tracker_current_row(&texts[index]), statuses[index]))
+    let rows = tracker_rich_tree_rows(val);
+    let row = rows.get(tracker_current_row_index(&rows)?)?;
+    Some(TrackerLine::row(format_tracker_current_row(&row.text), row.status))
 }
 
 /// Map a status glyph token to its typed status.

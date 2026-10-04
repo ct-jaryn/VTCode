@@ -1124,6 +1124,31 @@ fn tracker_transcript_lines_compact_shows_header_plus_current_task() {
 }
 
 #[test]
+fn tracker_panel_and_transcript_focus_actionable_leaf_before_parent() {
+    let payload = json!({
+        "status": "updated",
+        "checklist": {
+            "title": "Release",
+            "items": [
+                { "index_path": "1", "description": "Prepare release", "status": "in_progress" },
+                { "index_path": "1.1", "description": "Update version", "status": "completed" },
+                { "index_path": "1.2", "description": "Run checks", "status": "pending" },
+                { "index_path": "2", "description": "Publish", "status": "blocked" }
+            ]
+        }
+    });
+
+    let (texts, statuses, current) = tracker_panel_rows(&payload);
+    assert_eq!(current, Some(2));
+    assert!(texts[2].ends_with("Run checks"));
+    assert_eq!(statuses[2], TaskItemStatus::Pending);
+    assert_eq!(
+        tracker_current_tree_row(&payload),
+        Some(TrackerLine::row("  ▶ Run checks".to_string(), TaskItemStatus::Pending))
+    );
+}
+
+#[test]
 fn tracker_current_tree_row_prefers_in_progress_over_pending_and_blocked() {
     // Asymmetric statuses: pending comes first in document order, but the
     // in-progress leaf later must win as current.
