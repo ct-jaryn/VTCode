@@ -774,6 +774,7 @@ mod tests {
         let verb_cues = [
             "Use ",
             "Create ",
+            "Control ",
             "List ",
             "Fetch ",
             "Search ",

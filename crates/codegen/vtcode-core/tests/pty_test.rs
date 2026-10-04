@@ -477,6 +477,7 @@ async fn test_exec_command_write_preserves_whitespace() {
             "exec_command",
             json!({
                 "mode": "pty",
+                "stdin": true,
                 "command": ["bash", "-lc", "IFS= read -r line; printf '<%s>' \"$line\""],
                 "yield_time_ms": 0,
             }),
@@ -518,6 +519,7 @@ async fn test_exec_command_write_stdin_continues_session() {
             "exec_command",
             json!({
                 "cmd": "cat",
+                "stdin": true,
                 "yield_time_ms": 0,
             }),
         )
@@ -565,6 +567,7 @@ async fn test_write_stdin_empty_chars_polls_without_sending_input() {
             "exec_command",
             json!({
                 "cmd": "IFS= read -r line; printf '<%s>\\n' \"$line\"",
+                "stdin": true,
                 "yield_time_ms": 0,
             }),
         )
@@ -934,6 +937,7 @@ async fn test_write_stdin_reports_missing_and_closed_session_ids() {
             "exec_command",
             json!({
                 "cmd": "cat",
+                "stdin": true,
                 "yield_time_ms": 0,
             }),
         )
@@ -984,6 +988,7 @@ spool_max_age_secs = 12
             "exec_command",
             json!({
                 "cmd": "cat",
+                "stdin": true,
                 "yield_time_ms": 0,
             }),
         )
