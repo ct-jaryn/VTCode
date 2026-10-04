@@ -176,6 +176,9 @@ The recommendations above are maintainability proposals, not verified bugs.
 
 ## Implementation progress
 
+Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
+(`refactor(providers): extract shared wire helpers and deduplicate defaults`).
+
 ### Step 1: small deduplication
 
 - OpenCode Go and Zen delegate normalized request validation to one helper in
@@ -223,3 +226,27 @@ The recommendations above are maintainability proposals, not verified bugs.
 - Updated the LLM crate's module map and facade/visibility guidance.
 - Next step: planning artifact decomposition, preserving validation and repair
   feedback through the existing `validate_plan_content` facade.
+
+### Step 3: planning artifact decomposition
+
+- Reduced `planning_workflow/artifacts.rs` from 2,071 lines to a 25-line facade
+  over section parsing, quote-aware step parsing, tracker conversion, validation,
+  and verification classification. Existing caller imports and public APIs remain
+  stable; shared internal helpers have module-scoped visibility.
+- Kept validator-owned repair feedback, acceptance rules, embedded tracker markers,
+  and path pairing unchanged. Parsing serves both validation and tracker conversion
+  without circular module dependencies. Existing agentic-testing cases now live in
+  a dedicated test module; no new dependencies or behavior changes.
+- Structural comparison with `ast-grep` verified all 75 function bodies, three
+  structs, one enum, the report implementation, and 17 constants. Comparison permits
+  module-local visibility, indentation, and optional trailing commas while preserving
+  string literals. Verified all 10 public declarations retain facade exports.
+- `cargo nextest run --locked -p vtcode-core -E 'test(planning_workflow) | test(planning_task_tracker)'`:
+  122 passed, 3,929 skipped. This covers planning artifacts, tracker persistence,
+  metadata parsing, command checks, policy transitions, and planning runtime callers.
+- `./scripts/check-dev.sh --quiet` passed formatting, warnings-denied Clippy,
+  compilation, and shell lint. Final `cargo check --locked -p vtcode-core`, scoped
+  whitespace checks, and `git diff --check` passed. No full workspace test run.
+- Audited core module guidance and recorded the new artifact responsibility map.
+- Next step: application decomposition, starting with the WebMCP controllers and
+  their existing evidence, persistence, and editor boundaries.
