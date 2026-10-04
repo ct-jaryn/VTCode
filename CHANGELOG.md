@@ -2,6 +2,68 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.172.1 - 2026-10-04
+
+### Highlights
+#### Bug Fixes
+
+- Gate test-only executor fixtures out of release builds (7b017cd3) 
+- Sync stale expectations with record_decision, stdin gating, and next_action contracts (4f6197a0) 
+- Opt pipe exec sessions into stdin and accept Control verb cue (639e9741) 
+- Seed process env in copilot sanitizer test instead of assuming CI (29b80081) 
+- Re-export exec_session public types after module split (dfec28ff) 
+- Restore inline MCP render and record all MCP spellings (80c3ac8e) 
+### Other Changes
+#### Other
+
+- Fmt policy-denial assertion in execution_result tests (8e5a8bb4) 
+#### Performance
+
+- Add DebugNoInline derive and outline fan-out error Debug impls (383258ca) 
+#### Refactors
+
+- Consolidate forked truncation, env-flag, and whitespace helpers (2a51f41f) 
+- Share operand prefix/quote normalization (0e8cd912) 
+- Canonicalize fuzzy query in vtcode-commons (803e393d) 
+- Extract inline test modules into sibling tests.rs files (fd7a1ee1) 
+- Extract inline test modules into sibling tests.rs files (07512e54) 
+- Extract inline test modules into sibling tests.rs files (1951406b) 
+- Extract inline test modules into sibling tests.rs files (60059cd4) 
+- Add parse_env_bool, first_json_block, humanize_duration_compact (ce13f18a) 
+- Route seven truncate forks through vtcode-commons (e5a2086e) 
+- Single infer_provider_from_model; drop dead http-client twin (1a04dd46) 
+- Shared SSE pump helper for provider stream loops (8af872ba) 
+- Single usage alias-chain helper for Responses-style blocks (a1194c97) 
+- Split tool_output_handler into concern submodules (3d28e17a) 
+- Split tool_outcomes/helpers into concern submodules (825328af) 
+- Split run_loop_context into concern submodules (3d744616) 
+- Split compaction/mod.rs into concern submodules (73c8d347) 
+- Split merge_gateway into concern submodules (9cc39004) 
+- Split exec_session into concern submodules (9f91aa66) 
+- Single MCP tool-name parser shared across TUI surfaces (e2dce535) 
+- Split lib.rs into concern submodules (ea00c6cb) 
+- Split subagents.rs into concern submodules (87c36b29) 
+- Split core/agent.rs into domain config submodules (9a2511ed) 
+- Split openai_chatgpt_oauth.rs into concern submodules (49d49156) 
+- Split prompts/system.rs into concern submodules (e489086e) 
+- Split modal/render.rs into concern submodules (41bd6aa8) 
+- Collapse duplicate TurnExecutionPhase enum into TurnPhase (00306c34) 
+- Single AnsiRenderer::is_compact_display predicate (2f6534b4) 
+- Route display truncation through truncate_utf8_prefix (d8abeb12) 
+- Label MCP failure panel events with bare tool name (cc04528a) 
+- One parser call decides MCP label and bare name (961426ed) 
+- Split app/session/events.rs into concern submodules (3c44343a) 
+- Split transcript_review.rs into concern submodules (0176482e) 
+- Split tool_output/streams.rs into concern submodules (b4226931) 
+- Split utils/ansi.rs into concern submodules (96a45caa) 
+- Split open_responses/bridge.rs into concern submodules (0f5bd9d8) 
+- Split openai/provider/websocket.rs into concern submodules (86e3102d) 
+- Split gemini/helpers.rs into concern submodules (295cc93f) 
+- Split session bootstrap helpers out of orchestration.rs (2b6150f0) 
+- Narrow re-exports to actual consumer scope (5bacfaac) 
+#### Tests
+
+- Lock is_compact_display normalization contract (7f754b99) 
 ## 0.172.0 - 2026-10-03
 
 ### Highlights
