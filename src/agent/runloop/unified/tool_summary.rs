@@ -703,14 +703,13 @@ pub(crate) fn describe_tool_action(
     args: &Value,
     workspace_root: Option<&Path>,
 ) -> (String, HashSet<String>) {
-    // Check if this is an MCP tool based on the original naming convention
     // MCP tools are named with an `mcp::`, `mcp__`, or `mcp_` prefix. A bare
     // `fetch` is the built-in web-fetch tool and must not be labeled as MCP.
-    let is_mcp_tool = tool_name.starts_with("mcp::") || tool_name.starts_with("mcp_");
-
-    // For the actual matching, use the canonical MCP name parser so every
-    // surface extracts the bare tool name identically.
-    let actual_tool_name = mcp_tool_display_name(tool_name).unwrap_or(tool_name);
+    // One parser call decides both the label and the bare tool name, so the
+    // two can never disagree.
+    let actual_tool_name = mcp_tool_display_name(tool_name);
+    let is_mcp_tool = actual_tool_name.is_some();
+    let actual_tool_name = actual_tool_name.unwrap_or(tool_name);
 
     let with_mcp = |desc: String, used: HashSet<String>| -> (String, HashSet<String>) {
         (format!("{}{}", mcp_label(is_mcp_tool), desc), used)
