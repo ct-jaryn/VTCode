@@ -1,22 +1,3 @@
-awk repeat-prompt is expected with current keys — not a cache bug:
-Root cause:
-
-1. Exact key changes every time: src/agent/runloop/unified/tool_routing/shell_approval.rs:90 + src/agent/runloop/unified/tool_routing/mod.rs:573 store awk 'NR>=208 && NR<=212 {...}' README.md|scope. Different NR range = different key, so Approve Once / Session / Permanent-exact never hit.
-2. Family key that would group them is suppressed:
-
-- src/agent/runloop/unified/tool_routing/permission_prompt.rs:78 — shell_command_contains_control_operators does naive contains("&&"/"|"). Your program has && and index(rest,"|") inside single quotes, so shell_command_supports_persistent_approval:114 = false, no PrefixRule offered.
-- crates/codegen/vtcode-core/src/tools/command_args.rs:808 — awk_program_may_write fails closed on any bare | (string/regex literals not distinguished by design). "|" → has_unsafe_awk_options:757 = true → not readonly → learned_awk_read_pattern:466 in shell_approval.rs returns None, so no shell-pattern:awk README.md family promotion.
-
-3. Truncated Remember command 'awk 'NR>=208 && NR<=2,ne,3,20)...' in screenshot is by design: MAX_APPROVAL_LABEL_CHARS=60 middle-truncation in permission_prompt.rs:365,678.
-   Plan options:
-1. Workaround (no code): use sed -n '208,212p' README.md or read_file — both have working family keys (sed -n <range>, generic readonly).
-1. Fix persistent gate to be quote-aware: replace substring check with split_command_words_on_operators + parse_shell_commands (same as learned_awk_read_pattern:489 does) so &&/| inside quotes don't block PrefixRule. Low risk, enables Always approve commands starting with awk.
-1. Fix awk_program_may_write to skip double-quoted strings ("...") when scanning for >/|/@, keeping print | "cmd" (bare | outside string) blocked. Enables shell-pattern:awk README.md auto-approve after 3 approvals. Needs security review + fuzz regression.
-1. Don't auto-allow awk in vtcode-safety/src/exec_policy/manager.rs:285 safe_commands — keep prompt, fix grouping only.
-   Recommended: 2 + 3 together, with tests for awk '... "|" ...' README.md still blocking print > file, print | "sort", system(), @include.
-
-===
-
 Plan to audit + optimize VT Code for throughput/latency/CPU/mem/I/O/allocs:
 
 1. Orient (read-only, cheap)
@@ -101,3 +82,5 @@ We treat these as bugs when they block real workflows. Reporting them helps us p
 scan for large and monolith files and module and plan deduplication and refactor and extract reusable components.
 
 ===
+
+prioritized refactor plan (docs/development/refactor-scan-2026-10-04.md) and full Rust file inventory (docs/development/refactor-scan-2026-10-04.csv).

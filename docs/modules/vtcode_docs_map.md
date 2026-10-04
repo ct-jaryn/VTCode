@@ -179,6 +179,13 @@ below based on the topic area.
   - **Topics**: Scope, Oracles, Fuzzer-first fixes, Basic Commands, Corpus and Artifacts
   - **User Questions**: "What can you tell me about Fuzzing Guide?", "How does Scope work?", "How does Oracles work?"
 
+- **File**: `docs/development/refactor-scan-2026-10-04.md`
+  - **Content**: Large-file and reusable-component refactor plan
+  - **Topics**: Inventory and interpretation, Production responsibility hotspots, Concrete deduplication opportunities,
+    Incremental execution plan, Verification required during implementation
+  - **User Questions**: "What can you tell me about Large-file and reusable-component refactor plan?", "How does
+    Inventory and interpretation work?", "How does Production responsibility hotspots work?"
+
 - **File**: `docs/development/markdown-quality.md`
   - **Content**: Markdown Quality
   - **User Questions**: "What can you tell me about Markdown Quality?"
