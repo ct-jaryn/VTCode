@@ -8,7 +8,6 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use vtcode_commons::ui_protocol::TaskItemStatus;
-use vtcode_core::config::ToolDisplayMode;
 use vtcode_core::config::constants::tools;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::tools::tool_intent;
@@ -80,7 +79,7 @@ async fn handle_success_common(
         // Display-mode split: compact transcript shows header plus the current
         // task; expanded appends the truncated tree. The docked panel body
         // always keeps the full tree with per-row statuses for text-styling.
-        let expanded = ctx.renderer.tool_display_mode() != ToolDisplayMode::Compact;
+        let expanded = !ctx.renderer.is_compact_display();
         let (panel_lines, panel_statuses, panel_current) =
             crate::agent::runloop::tool_output::tracker_panel_rows(payload.output);
         let progress_lines = task_tracker_block_lines(payload.output, expanded);
@@ -148,9 +147,8 @@ fn handle_non_success_common(
     // inline block. Compact PTY tools suppress that block, so retain the
     // command summary for failures and cancellations instead of relying on a
     // header that was never emitted.
-    let has_live_pty_preview = ctx.renderer.supports_inline_ui()
-        && is_run_pty_tool(name, args_val)
-        && ctx.renderer.tool_display_mode() != ToolDisplayMode::Compact;
+    let has_live_pty_preview =
+        ctx.renderer.supports_inline_ui() && is_run_pty_tool(name, args_val) && !ctx.renderer.is_compact_display();
 
     match status {
         ToolExecutionStatus::Failure { error } | ToolExecutionStatus::Timeout { error } => {

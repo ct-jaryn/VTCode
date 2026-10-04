@@ -287,6 +287,15 @@ impl AnsiRenderer {
         self.tool_display_mode
     }
 
+    /// Whether per-call tool transitions render in compact (grouped) form.
+    ///
+    /// Single source of truth for the compact-vs-expanded decision so every
+    /// call site agrees; the stored mode is already normalized to
+    /// `Compact`/`Expanded` by [`Self::set_tool_display_mode`].
+    pub fn is_compact_display(&self) -> bool {
+        self.tool_display_mode == ToolDisplayMode::Compact
+    }
+
     pub fn set_diff_preview_mode(&mut self, mode: vtcode_commons::ui_protocol::DiffPreviewMode) {
         self.diff_preview_mode = mode;
     }

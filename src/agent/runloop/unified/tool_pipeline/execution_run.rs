@@ -5,7 +5,6 @@ use anyhow::anyhow;
 use serde_json::Value;
 use tokio::sync::Notify;
 use vtcode_core::ToolCatalog;
-use vtcode_core::config::ToolDisplayMode;
 use vtcode_core::config::constants::tools;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::core::agent::features::FeatureSet;
@@ -435,8 +434,7 @@ pub(crate) async fn run_tool_call_with_args(
     if budget_excluded_wait {
         ctx.harness_state.begin_budget_excluded_wait();
     }
-    let show_live_pty_preview =
-        !ctx.renderer.supports_inline_ui() || ctx.renderer.tool_display_mode() != ToolDisplayMode::Compact;
+    let show_live_pty_preview = !ctx.renderer.supports_inline_ui() || !ctx.renderer.is_compact_display();
     let execution = execute_with_cache_and_streaming(
         ctx.tool_registry,
         ctx.tool_result_cache,

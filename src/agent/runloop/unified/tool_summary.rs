@@ -8,7 +8,6 @@ use vtcode_commons::color_policy;
 use vtcode_commons::formatting::{wrap_shell_command_lines, wrap_shell_command_with_continuations};
 use vtcode_commons::ui_protocol::{CompactToolSummaryLine, CompactToolSummaryLineKind};
 
-use vtcode_core::config::ToolDisplayMode;
 use vtcode_core::config::constants::tools as tool_names;
 use vtcode_core::tools::registry::labels::{tool_action_label, unified_exec_action_label, write_stdin_action_label};
 use vtcode_core::tools::tool_intent;
@@ -180,7 +179,7 @@ pub(crate) fn render_tool_call_summary(
 ) -> Result<()> {
     let data = prepare_summary_data(tool_name, args, ctx.workspace_root, stream_label);
 
-    if renderer.tool_display_mode() == ToolDisplayMode::Compact {
+    if renderer.is_compact_display() {
         return render_compact_tool_summary_data(renderer, &data);
     }
 

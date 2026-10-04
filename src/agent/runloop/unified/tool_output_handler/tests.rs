@@ -1427,7 +1427,7 @@ async fn expanded_command_summary_carries_capture_identity() {
     let (sender, mut receiver) = unbounded_channel();
     let handle = InlineHandle::new_for_tests(sender);
     let mut renderer = AnsiRenderer::with_inline_ui(handle.clone(), Default::default());
-    renderer.set_tool_display_mode(ToolDisplayMode::Expanded);
+    renderer.set_tool_display_mode(vtcode_core::config::ToolDisplayMode::Expanded);
 
     render_tool_output_common(
         &mut renderer,

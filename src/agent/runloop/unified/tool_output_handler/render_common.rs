@@ -30,8 +30,7 @@ pub(super) async fn render_tool_output_common(
     // completion row so the transcript does not jump through transient PTY
     // replacements.
     let inline_pty_command = inline_run_tool && is_command_output_call(name, args_val);
-    let compact_pty_without_live_preview =
-        inline_pty_command && renderer.tool_display_mode() == ToolDisplayMode::Compact;
+    let compact_pty_without_live_preview = inline_pty_command && renderer.is_compact_display();
     if inline_pty_command && !git_diff_payload {
         // Prefer the complete PTY spool (or the complete inline result) for
         // the session-local tool-output viewer. The live PTY block, when
@@ -56,7 +55,7 @@ pub(super) async fn render_tool_output_common(
             Some(handle.record_tool_output(viewer_lines))
         };
 
-        let compact_success = renderer.tool_display_mode() == ToolDisplayMode::Compact
+        let compact_success = renderer.is_compact_display()
             && is_command_output_call(name, args_val)
             && matches!(status, ToolDisplayStatus::Success)
             && !has_compact_command_artifact(output, complete_capture.as_deref());
@@ -108,7 +107,7 @@ pub(super) async fn render_tool_output_common(
         }
 
         if !has_renderable_stream_content(output) && matches!(status, ToolDisplayStatus::Success) {
-            if renderer.tool_display_mode() != ToolDisplayMode::Compact {
+            if !renderer.is_compact_display() {
                 renderer.line(MessageStyle::Info, "(no output)")?;
             }
             return Ok(());
@@ -159,11 +158,11 @@ pub(super) async fn render_tool_output_common(
 
     let compact_command = renderer.supports_inline_ui()
         && is_command_output_call(name, args_val)
-        && renderer.tool_display_mode() == ToolDisplayMode::Compact
+        && renderer.is_compact_display()
         && matches!(status, ToolDisplayStatus::Success)
         && !git_diff_payload;
     let compact_file_diff = renderer.supports_inline_ui()
-        && renderer.tool_display_mode() == ToolDisplayMode::Compact
+        && renderer.is_compact_display()
         && matches!(status, ToolDisplayStatus::Success)
         && crate::agent::runloop::unified::tool_summary::is_file_modification_tool(name, args_val)
         && has_file_operation_diff(output);

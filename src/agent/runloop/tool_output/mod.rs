@@ -22,10 +22,10 @@ use streams::render_stream_section;
 pub(crate) use streams::{render_code_fence_blocks, resolve_stdout_tail_limit};
 use styles::{GitStyles, LsStyles};
 use vtcode_commons::ui_protocol::TaskItemStatus;
+use vtcode_core::config::ToolOutputMode;
 use vtcode_core::config::constants::tools;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::config::mcp::McpRendererProfile;
-use vtcode_core::config::{ToolDisplayMode, ToolOutputMode};
 use vtcode_core::tools::continuation::{
     NEXT_CONTINUE_PROMPT, NEXT_READ_PROMPT, PtyContinuationArgs, ReadChunkContinuationArgs,
 };
@@ -831,7 +831,7 @@ fn render_tracker_view(renderer: &mut AnsiRenderer, val: &Value) -> Result<bool>
     // Non-inline fallback honors display mode: compact shows header plus the
     // current task, expanded appends the truncated tree. Glyphless plain text;
     // status styling applies on the inline surface.
-    let expanded = renderer.tool_display_mode() != ToolDisplayMode::Compact;
+    let expanded = !renderer.is_compact_display();
     let lines: Vec<String> = tracker_transcript_lines(val, expanded)
         .into_iter()
         .map(|line| line.text)
