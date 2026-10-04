@@ -8,6 +8,13 @@
 
 **An open-source terminal coding agent built in Rust.**
 
+**Plan, run, and review coding work from your terminal — with hosted or local models, sandboxed execution, and
+resumable sessions.**
+
+[![CI](https://github.com/vinhnx/VTCode/actions/workflows/ci.yml/badge.svg)](https://github.com/vinhnx/VTCode/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/vtcode.svg)](https://crates.io/crates/vtcode)
+[![GitHub release](https://img.shields.io/github/release/vinhnx/vtcode.svg)](https://github.com/vinhnx/vtcode/releases)
+[![Rust](https://img.shields.io/badge/rust-1.98.1%2B-000000?style=flat-square&logo=rust&logoColor=white)](https://github.com/vinhnx/VTCode)
 [![License](https://img.shields.io/badge/License-MIT_OR_Apache--2.0-30363D?style=flat-square)](#license)
 [![Agent Skills](https://img.shields.io/badge/Agent_Skills-BFB38F?style=flat-square)](https://agentskills.io/)
 [![Agent Client Protocol](https://img.shields.io/badge/Agent_Client_Protocol-383B73?style=flat-square&logo=zedindustries&logoColor=white)](./docs/guides/zed-acp.md)
@@ -17,6 +24,12 @@
 
 <!-- markdownlint-disable-next-line MD013 -->
 <a href="https://www.producthunt.com/products/vt-code?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vt-code" target="_blank" rel="noopener noreferrer"><img alt="VT Code - Open-source coding agent harness built for long-running work | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1248210&amp;theme=light&amp;t=1789739815450"></a>
+
+<!-- markdownlint-disable-next-line MD013 -->
+<img src="./resources/gif/vtcode.gif" alt="VT Code demo: plan, then review changes in the terminal" width="70%" />
+<br />
+
+<em>Plan, run, and review coding work from your terminal.</em>
 
 </div>
 
@@ -60,21 +73,17 @@ VT Code is an open-source terminal coding agent built in Rust. Explore a codebas
 edits in the interactive TUI, or run `vtcode exec` headless. You pick the model and permissions; the runtime handles
 context, tools, and execution policy.
 
-- **Plan, then review:** read-only planning, then turn diffs.
-- **Run long sessions:** project instructions, compaction, resumption, execution logs.
-- **Control execution:** command policy and sandboxing.
-- **Pick your stack:** hosted or local models, plus MCP, Skills, and Plugins.
-
-<div align="center">
-
-<img src="./resources/gif/vtcode.gif" alt="VT Code demo" width="60%" />
-<br />
-
-<em>Plan, run, and review coding work from your terminal.</em>
-
-</div>
+| At a glance      | What you get                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| **Planning**     | [Read-only planning](./docs/guides/planning-workflow.md), then reviewable turn diffs. |
+| **Safety**       | [Command policy and sandboxing](./docs/security/SECURITY_MODEL.md) you can audit.     |
+| **Long runs**    | [Headless exec](./docs/user-guide/exec-mode.md), compaction, resumption, and logs.    |
+| **Integrations** | [MCP](./docs/guides/mcp-integration.md), Skills, plugins, and editor bridges.         |
+| **Models**       | [Hosted or local providers](./docs/README.md#provider-index), chosen per task.        |
 
 ## Quick start
+
+Requirements: macOS, Linux, or Windows/WSL. The Cargo path also needs Rust 1.98.1+ (edition 2024).
 
 ### 1. Install
 
@@ -88,12 +97,12 @@ The installer also sets up `ripgrep` and `ast-grep` on macOS/Linux. Or use Homeb
 brew trust vinhnx/tap
 brew install vinhnx/tap/vtcode
 
-# Or install with Rust
+# Or install with Rust (requires Rust 1.98.1+)
 cargo install vtcode
 ```
 
-See the [installation guide](./docs/installation/README.md) for prerequisites, other methods, and the installer script
-you can review before running.
+Verify the install with `vtcode --version`, then see the [installation guide](./docs/installation/README.md) for
+prerequisites, other methods, and the installer script you can review before running.
 
 > [!NOTE]
 > Windows artifacts are best-effort and may lag behind macOS/Linux.
