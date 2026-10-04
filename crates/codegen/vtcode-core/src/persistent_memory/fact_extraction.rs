@@ -15,7 +15,7 @@ pub fn truncate_for_fact(text: &str, max_chars: usize) -> String {
     if trimmed.chars().count() <= max_chars {
         return trimmed.to_string();
     }
-    format!("{}...", trimmed.chars().take(max_chars.saturating_sub(3)).collect::<String>())
+    vtcode_commons::formatting::truncate_text(trimmed, max_chars.saturating_sub(3), "...")
 }
 
 pub fn maybe_extract_tool_fact(message: &Message) -> Option<GroundedFactRecord> {

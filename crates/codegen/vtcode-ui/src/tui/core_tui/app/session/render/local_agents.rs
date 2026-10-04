@@ -289,10 +289,7 @@ fn truncate_row(text: String, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text;
     }
-
-    let mut truncated = text.chars().take(max_chars.saturating_sub(1)).collect::<String>();
-    truncated.push('…');
-    truncated
+    vtcode_commons::formatting::truncate_within(&text, max_chars, "…")
 }
 
 fn local_agents_divider_style(session: &Session, selected_index: Option<usize>, entries: &[LocalAgentEntry]) -> Style {

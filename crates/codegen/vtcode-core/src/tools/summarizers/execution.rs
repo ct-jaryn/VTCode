@@ -219,9 +219,7 @@ fn truncate_command(cmd: &str, max_len: usize) -> String {
     if cmd.len() <= max_len {
         cmd.to_string()
     } else {
-        let target = max_len.saturating_sub(3);
-        let end = cmd.char_indices().map(|(i, _)| i).rfind(|&i| i <= target).unwrap_or(0);
-        format!("{}...", &cmd[..end])
+        vtcode_commons::formatting::truncate_byte_budget(cmd, max_len.saturating_sub(3), "...")
     }
 }
 

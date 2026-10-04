@@ -23,7 +23,7 @@ fn should_attempt_responses_api(state: ResponsesApiState) -> bool {
 }
 
 fn truncate_for_log(input: &str, max_chars: usize) -> String {
-    input.chars().take(max_chars).collect()
+    vtcode_commons::formatting::truncate_text(input, max_chars, "")
 }
 
 /// Whether the payload carries a tier eligible for the strip-and-retry

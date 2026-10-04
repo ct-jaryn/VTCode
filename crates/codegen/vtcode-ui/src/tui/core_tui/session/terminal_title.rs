@@ -336,15 +336,7 @@ fn is_stripped_terminal_title_char(ch: char) -> bool {
 }
 
 fn truncate_title(title: &str) -> String {
-    const ELLIPSIS: &str = crate::design::constants::ELLIPSIS_ASCII;
-    let char_count = title.chars().count();
-    if char_count <= MAX_TITLE_LENGTH {
-        return title.to_string();
-    }
-
-    let keep = MAX_TITLE_LENGTH.saturating_sub(ELLIPSIS.chars().count());
-    let truncated = title.chars().take(keep).collect::<String>();
-    format!("{truncated}{ELLIPSIS}")
+    vtcode_commons::formatting::truncate_within(title, MAX_TITLE_LENGTH, crate::design::constants::ELLIPSIS_ASCII)
 }
 
 fn normalize_title_part(value: &str) -> String {
