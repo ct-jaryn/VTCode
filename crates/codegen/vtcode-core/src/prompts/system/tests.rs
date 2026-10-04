@@ -1,8 +1,15 @@
+use super::cache::*;
+use super::compose::*;
+use super::types::*;
 use super::*;
 use crate::config::VTCodeConfig;
 use crate::config::constants::tools;
+use crate::config::types::ShellPromptProfile;
 use crate::config::types::{ResolvedShellPromptProfile, SystemPromptMode};
+use crate::prompts::context::PromptContext;
+use crate::prompts::guidelines::generate_tool_guidelines_for_profile;
 use std::path::PathBuf;
+use vtcode_commons::estimate_tokens;
 
 const REMOVED_MODEL_FACING_TOOL_NAMES: &[&str] = &[
     "command_session",
