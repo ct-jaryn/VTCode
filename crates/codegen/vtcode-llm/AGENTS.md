@@ -6,7 +6,7 @@
 
 ## Key Modules
 
-`provider/` trait + shared types | `providers/` per-provider impls (gemini `helpers/` splits capabilities/cache/request/convert) | `providers/custom_provider.rs` custom profile router | `provider.rs` re-exports | `client.rs` + `capabilities.rs` capability detection | `reasoning_effort.rs` effort levels | `copilot/` (feature-gated) | `open_responses/` (bridge/ splits items/normalized/emitter) | `factory_types.rs` + `provider_config_types.rs` config | `system_prompt.rs` injection | `http_client.rs` | `types.rs` shared types | `utils.rs` + `single_response.rs` + `tool_bridge.rs` + `config_adapter.rs` + `rig_adapter.rs` + `provider_base.rs` + `error_display.rs` + `model_resolver.rs` + `usage_cost.rs` (shared normalized usage and raw/effective cost) infra (merged from core) | `process_env.rs` provider child environment policy
+`provider/` trait + shared types | `providers/` per-provider impls (gemini `helpers/` splits capabilities/cache/request/convert; openai `provider/websocket/` splits session/provider/events) | `providers/custom_provider.rs` custom profile router | `provider.rs` re-exports | `client.rs` + `capabilities.rs` capability detection | `reasoning_effort.rs` effort levels | `copilot/` (feature-gated) | `open_responses/` (bridge/ splits items/normalized/emitter) | `factory_types.rs` + `provider_config_types.rs` config | `system_prompt.rs` injection | `http_client.rs` | `types.rs` shared types | `utils.rs` + `single_response.rs` + `tool_bridge.rs` + `config_adapter.rs` + `rig_adapter.rs` + `provider_base.rs` + `error_display.rs` + `model_resolver.rs` + `usage_cost.rs` (shared normalized usage and raw/effective cost) infra (merged from core) | `process_env.rs` provider child environment policy
 
 ## Architecture Notes
 

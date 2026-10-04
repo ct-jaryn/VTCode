@@ -1,5 +1,6 @@
 //! Response conversion and interaction stream assembly.
 
+use super::request::GeminiToolSpec;
 use super::*;
 use crate::provider::{ContentPart, MessageContent, ToolDefinition};
 use std::collections::BTreeMap;
@@ -7,7 +8,7 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct InteractionStreamOutputBuilder {
+struct InteractionStreamOutputBuilder {
     pub output_type: String,
     pub text: String,
     pub summary: String,
@@ -36,7 +37,7 @@ impl InteractionStreamOutputBuilder {
 pub(crate) struct InteractionStreamState {
     pub interaction_id: Option<String>,
     pub status: Option<String>,
-    pub outputs: BTreeMap<usize, InteractionStreamOutputBuilder>,
+    outputs: BTreeMap<usize, InteractionStreamOutputBuilder>,
     pub usage: Option<wire::interactions::InteractionUsage>,
     pub completed: bool,
 }

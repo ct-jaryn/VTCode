@@ -54,7 +54,7 @@ pub(super) fn should_strip_inline_local_link_underline(target: &str) -> bool {
     }
 }
 
-pub(super) fn is_remote_link_target(target: &str) -> bool {
+fn is_remote_link_target(target: &str) -> bool {
     target.starts_with("http://") || target.starts_with("https://")
 }
 

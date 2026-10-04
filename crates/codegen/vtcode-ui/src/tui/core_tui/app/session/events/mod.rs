@@ -35,20 +35,20 @@ mod submit;
 mod viewer;
 
 pub(super) use emit::emit_inline_event;
-pub(super) use history::{input_history_entries, open_history_picker};
-pub(super) use modal_keys::{is_inline_lists_toggle_shortcut, maybe_show_help_modal};
-pub(super) use paste::{
-    copy_selected_input_if_requested, handle_image_paste_shortcut_with, handle_paste,
-    handle_raw_text_paste_shortcut_with, is_image_paste_shortcut, is_raw_text_paste_shortcut,
+use history::input_history_entries;
+pub(super) use history::open_history_picker;
+use modal_keys::{is_inline_lists_toggle_shortcut, maybe_show_help_modal};
+pub(super) use paste::handle_paste;
+use paste::{
+    copy_selected_input_if_requested, handle_image_paste_shortcut_with, handle_raw_text_paste_shortcut_with,
+    is_image_paste_shortcut, is_raw_text_paste_shortcut,
 };
-pub(super) use secure_prompt::handle_secure_prompt_key;
-pub(super) use submit::{
+use secure_prompt::handle_secure_prompt_key;
+use submit::{
     clear_submitted_input, enqueue_tab_draft, extract_slash_command_name, handle_running_slash_command_block,
     handle_running_slash_command_block_for_input, maybe_handle_busy_steering_command, take_submitted_input,
 };
-pub(super) use viewer::{
-    DiffPreviewKeyResult, ToolOutputViewerKeyResult, handle_diff_preview_key, handle_tool_output_viewer_key,
-};
+use viewer::{DiffPreviewKeyResult, ToolOutputViewerKeyResult, handle_diff_preview_key, handle_tool_output_viewer_key};
 
 pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<InlineEvent> {
     process_key_with_clipboard_readers(session, key, read_clipboard_image, read_clipboard_text)

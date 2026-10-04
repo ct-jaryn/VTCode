@@ -12,7 +12,7 @@ const WEBSOCKET_AUTH_RETRY_STATUSES: [&str; 2] = ["401", "403"];
 // connection-local state, and every websocket request still sends `store=false`.
 use crate::provider::LLMError;
 
-pub(super) fn is_websocket_active_response_error(err: &LLMError) -> bool {
+fn is_websocket_active_response_error(err: &LLMError) -> bool {
     let message = match err {
         LLMError::Provider { message, .. } | LLMError::Network { message, .. } => message,
         LLMError::Authentication { .. } | LLMError::RateLimit { .. } | LLMError::InvalidRequest { .. } => return false,
@@ -21,7 +21,7 @@ pub(super) fn is_websocket_active_response_error(err: &LLMError) -> bool {
     message.contains(WEBSOCKET_ACTIVE_RESPONSE_ERROR_PREFIX)
 }
 
-pub(super) fn is_websocket_connection_limit_error(err: &LLMError) -> bool {
+fn is_websocket_connection_limit_error(err: &LLMError) -> bool {
     let message = match err {
         LLMError::Provider { message, .. } | LLMError::Network { message, .. } => message,
         LLMError::Authentication { .. } | LLMError::RateLimit { .. } | LLMError::InvalidRequest { .. } => return false,
@@ -30,7 +30,7 @@ pub(super) fn is_websocket_connection_limit_error(err: &LLMError) -> bool {
     message.contains(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
 }
 
-pub(super) fn is_websocket_previous_response_not_found_error(err: &LLMError) -> bool {
+fn is_websocket_previous_response_not_found_error(err: &LLMError) -> bool {
     let message = match err {
         LLMError::Provider { message, .. } | LLMError::Network { message, .. } => message,
         LLMError::Authentication { .. } | LLMError::RateLimit { .. } | LLMError::InvalidRequest { .. } => return false,
@@ -39,11 +39,11 @@ pub(super) fn is_websocket_previous_response_not_found_error(err: &LLMError) -> 
     message.contains(PREVIOUS_RESPONSE_NOT_FOUND_CODE)
 }
 
-pub(super) fn is_websocket_reconnect_error(err: &LLMError) -> bool {
+fn is_websocket_reconnect_error(err: &LLMError) -> bool {
     matches!(err, LLMError::Network { .. })
 }
 
-pub(super) fn is_websocket_auth_retryable(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+fn is_websocket_auth_retryable(error: &tokio_tungstenite::tungstenite::Error) -> bool {
     let message = error.to_string();
     WEBSOCKET_AUTH_RETRY_STATUSES.iter().any(|status| message.contains(status))
 }
@@ -53,16 +53,14 @@ mod provider;
 mod session;
 
 #[cfg(test)]
-pub(super) use events::apply_generate_mode;
-pub(super) use events::{
+use events::apply_generate_mode;
+use events::{
     canonical_history, completed_replay_output, format_network_error, format_provider_error, input_is_incremental,
     prepare_websocket_event, read_websocket_event, responses_websocket_url,
 };
-pub(super) use session::PreparedWebSocketEvent;
-pub(super) use session::{
-    OpenAIResponsesWebSocketContinuationCache, OpenAIResponsesWebSocketSession, WebSocketLease,
-    completed_websocket_stream, websocket_deadline_error,
-};
+use session::PreparedWebSocketEvent;
+pub(super) use session::{OpenAIResponsesWebSocketContinuationCache, OpenAIResponsesWebSocketSession};
+use session::{WebSocketLease, completed_websocket_stream, websocket_deadline_error};
 
 #[cfg(test)]
 mod tests;
