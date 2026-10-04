@@ -250,3 +250,32 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Audited core module guidance and recorded the new artifact responsibility map.
 - Next step: application decomposition, starting with the WebMCP controllers and
   their existing evidence, persistence, and editor boundaries.
+
+### Step 4a: WebMCP evidence and settings controllers
+
+- Reduced `apps/webmcp/src/main.ts` from 1,846 to 1,533 lines. Extracted the typed
+  required-element lookup to `app-elements.ts`, evidence presentation/observation
+  to `evidence-controller.ts`, and bridge settings/setup presentation to
+  `settings-controller.ts`. Event wiring and editor/proposal/backend ownership stay
+  in the application entry point.
+- Controllers consume narrow callbacks and current connection facts. Settings read
+  the live backend on each render, preserving pairing/disconnection updates.
+  Evidence uses the existing bounded, sanitized recorder; failures remain isolated
+  from the instrumented tool's result or original error. No dependencies added.
+- TypeScript syntax-tree comparison verified 22 moved and 69 retained function
+  bodies. The only body adaptations are current-backend access in settings and
+  discovery-name setter calls in registration. Existing strings, dialog guards,
+  setup command quoting, and approval logic remain unchanged.
+- Added six controller tests for post-call editor state, result/error identity,
+  failing evidence capture, discovery reset, literal display, backend replacement,
+  modal guards/focus, setup command quoting, and credential-free persistence with
+  storage recovery. `bun run test`: 66 passed, zero skipped.
+- `bun run typecheck`, `bun run build`, `bun audit --audit-level=high`,
+  `./scripts/check-dev.sh --quiet`, and `git diff --check` passed. Vite reports
+  a JavaScript chunk larger than 500 kB; this extraction does not split bundles.
+- Rendered browser checks could not run: the browser-use runtime was unavailable
+  and the computer-use browser inventory was empty. DOM tests do not establish
+  real dialog geometry, keyboard behavior, or connected-browser integration.
+- Added app-local module guidance after auditing the new ownership boundaries.
+- Next increment: VS Code views and terminal/config services within step 4;
+  rendered WebMCP checks remain an explicit validation gap.
