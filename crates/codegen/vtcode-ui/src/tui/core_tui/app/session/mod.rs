@@ -38,7 +38,7 @@ pub(crate) mod slash;
 /// Slash command palette widget.
 pub mod slash_palette;
 mod task_panel;
-#[path = "transcript_review.rs"]
+#[path = "transcript_review/mod.rs"]
 mod tool_output_viewer;
 mod transient;
 /// Workspace trust state management.
