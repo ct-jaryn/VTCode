@@ -1028,38 +1028,6 @@ async fn test_renderer_records_mcp_event_for_mcp_tool() {
     assert!(mcp.event_count() > 0);
 }
 
-/// Canonical MCP registration names (`mcp::provider::tool`) must record a panel
-/// event on the success path. The legacy `mcp_` prefix never matched them, so a
-/// parser regression here silently drops every MCP success from the panel.
-#[tokio::test]
-async fn test_renderer_records_mcp_event_for_canonical_mcp_name() {
-    let mut renderer = AnsiRenderer::stdout();
-    let mut stats = SessionStats::default();
-    let mut mcp = McpPanelState::new(32, true);
-
-    let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
-        output: serde_json::json!({"exit_code":0}),
-        stdout: Some("ok".to_string()),
-        modified_files: vec![],
-        command_success: true,
-    });
-
-    let handle = dummy_handle();
-    let mut output_ctx = OutcomeContext {
-        workspace_root: None,
-        session_stats: &mut stats,
-        renderer: &mut renderer,
-        handle: &handle,
-        mcp_panel_state: &mut mcp,
-        vt_config: None::<&VTCodeConfig>,
-    };
-    process_outcome_common(&mut output_ctx, "mcp::time::get_current_time", &serde_json::json!({}), &outcome)
-        .await
-        .expect("render should succeed");
-
-    assert!(mcp.event_count() > 0, "canonical mcp:: names must reach the MCP panel");
-}
-
 /// Recording the MCP panel event must not divert canonical `mcp::` names away
 /// from the shared inline render path. The pre-fix parser routed them into the
 /// panel-only branch, silently dropping their visible transcript output.

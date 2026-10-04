@@ -171,14 +171,16 @@ pub(crate) async fn handle_tool_execution_result<'a>(
     }
 
     // 2. Record MCP specific events for non-success outcomes. Successes are
-    // recorded by `handle_success_common`; failures/timeouts/cancellations are
-    // not rendered through it, so record them here. Use the shared MCP name
-    // parser so canonical `mcp::provider::tool` names are covered (the legacy
-    // `mcp_`-only prefix missed them).
+    // recorded by `handle_success_common`; failures/timeouts are not rendered
+    // through it, so record them here. Use the shared MCP name parser so
+    // canonical `mcp::provider::tool` names are covered (the legacy
+    // `mcp_`-only prefix missed them), and label the panel with the same bare
+    // tool name the success path uses.
     if !matches!(pipeline_outcome.status, ToolExecutionStatus::Success { .. })
-        && crate::agent::runloop::unified::tool_summary_helpers::mcp_tool_display_name(tool_name).is_some()
+        && let Some(display_name) =
+            crate::agent::runloop::unified::tool_summary_helpers::mcp_tool_display_name(tool_name)
     {
-        record_mcp_tool_event(t_ctx, tool_name, &pipeline_outcome.status);
+        record_mcp_tool_event(t_ctx, display_name, &pipeline_outcome.status);
     }
 
     if pipeline_outcome.stop_after_tool {
