@@ -969,12 +969,15 @@ gap_warning_threshold_secs = 120
 
         let prompt_cache_guide = fs::read_to_string(workspace_root.join("docs/tools/PROMPT_CACHING_GUIDE.md"))
             .expect("prompt caching guide");
+        // The guide is markdownlint-wrapped, so sentences may be reflowed across
+        // lines; match against whitespace-normalized text instead of raw lines.
+        let normalized_guide = vtcode_commons::formatting::collapse_whitespace(&prompt_cache_guide);
         assert!(
-            prompt_cache_guide
+            normalized_guide
                 .contains("VT Code enables `prompt_cache.cache_friendly_prompt_shaping = true` by default.")
         );
         assert!(
-            prompt_cache_guide
+            normalized_guide
                 .contains("Default: `None` (opt-in) - VT Code does not set prompt_cache_retention by default;")
         );
 

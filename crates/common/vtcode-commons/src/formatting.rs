@@ -47,6 +47,24 @@ pub fn format_size(size: u64) -> String {
     }
 }
 
+/// Format a duration in seconds as a compact human-readable unit.
+///
+/// Returns `"42s"`, `"5m"`, `"3h"`, or `"2d"`. Callers add their own suffix
+/// (`" ago"`, `"expires in ..."`) so the same core serves past and future
+/// durations. Do not fork this ladder per crate.
+#[must_use]
+pub fn humanize_duration_compact(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else {
+        format!("{}d", seconds / 86400)
+    }
+}
+
 /// Indent a block of text with the given prefix
 pub fn indent_block(text: &str, indent: &str) -> String {
     if indent.is_empty() || text.is_empty() {
@@ -860,6 +878,21 @@ pub fn compact_reasoning_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn humanize_duration_compact_ladder() {
+        assert_eq!(humanize_duration_compact(0), "0s");
+        assert_eq!(humanize_duration_compact(42), "42s");
+        assert_eq!(humanize_duration_compact(59), "59s");
+        assert_eq!(humanize_duration_compact(60), "1m");
+        assert_eq!(humanize_duration_compact(300), "5m");
+        assert_eq!(humanize_duration_compact(3599), "59m");
+        assert_eq!(humanize_duration_compact(3600), "1h");
+        assert_eq!(humanize_duration_compact(3 * 3600), "3h");
+        assert_eq!(humanize_duration_compact(86399), "23h");
+        assert_eq!(humanize_duration_compact(86400), "1d");
+        assert_eq!(humanize_duration_compact(2 * 86400), "2d");
+    }
 
     #[test]
     fn format_float_display_collapses_f32_widening() {
