@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 #[test]
 fn asymmetric_replacement_has_correct_line_numbers() {
