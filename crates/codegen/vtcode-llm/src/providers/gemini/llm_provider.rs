@@ -1,6 +1,6 @@
 use super::helpers::InteractionStreamState;
 use super::*;
-use crate::providers::shared::{StreamAssemblyError, extract_data_payload, find_sse_boundary_bytes};
+use crate::providers::shared::{StreamAssemblyError, extract_data_payload, next_sse_event};
 
 fn normalize_stream_event(event: LLMStreamEvent, interaction_reasoning: bool) -> Vec<NormalizedStreamEvent> {
     match event {
@@ -218,10 +218,12 @@ impl LLMProvider for GeminiProvider {
 
                         decoder.push_bytes(&chunk, &mut buf);
 
-                        while let Some((split_idx, delimiter_len)) = find_sse_boundary_bytes(&buf, offset) {
-                            let event = std::str::from_utf8(&buf[offset..split_idx])
-                                .map_err(|e| StreamAssemblyError::InvalidPayload(format!("non-utf-8 stream data: {e}")).into_llm_error("Gemini"))?;
-                            offset = split_idx + delimiter_len;
+                        while let Some(event) = next_sse_event(&buf, &mut offset)
+                            .map_err(|e| {
+                                StreamAssemblyError::InvalidPayload(format!("non-utf-8 stream data: {e}"))
+                                    .into_llm_error("Gemini")
+                            })?
+                        {
 
                             let Some(data_payload) = extract_data_payload(event) else {
                                 continue;

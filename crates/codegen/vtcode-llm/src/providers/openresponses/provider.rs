@@ -695,9 +695,9 @@ impl OpenResponsesProvider {
                 let chunk = chunk_result.map_err(|e| format_network_error("OpenResponses", &e))?;
                 decoder.push_bytes(&chunk, &mut buf);
 
-                while let Some((split_idx, delimiter_len)) = crate::providers::shared::find_sse_boundary_bytes(&buf, offset) {
-                    let event = std::str::from_utf8(&buf[offset..split_idx]).expect("valid utf-8 stream data");
-                    offset = split_idx + delimiter_len;
+                while let Some(event) =
+                    crate::providers::shared::next_sse_event(&buf, &mut offset).expect("valid utf-8 stream data")
+                {
 
                     if let Some(data_payload) = crate::providers::shared::extract_data_payload(event) {
                         let trimmed = data_payload.trim();
@@ -721,12 +721,9 @@ impl OpenResponsesProvider {
                     }
                 }
 
-                // Drain the consumed prefix so `buf` stays bounded to the
-                // unprocessed tail rather than growing for the entire stream.
-                if offset > 0 {
-                    buf.drain(..offset);
-                    offset = 0;
-                }
+                // Keep `buf` bounded to the unprocessed tail rather than
+                // growing for the entire stream.
+                crate::providers::shared::drain_consumed_sse(&mut buf, &mut offset);
             }
 
             yield LLMStreamEvent::Completed { response: Box::new(aggregator.finalize()) };
@@ -913,9 +910,9 @@ impl LLMProvider for OpenResponsesProvider {
                 let chunk = chunk_result.map_err(|e| format_network_error("OpenResponses", &e))?;
                 decoder.push_bytes(&chunk, &mut buf);
 
-                while let Some((split_idx, delimiter_len)) = crate::providers::shared::find_sse_boundary_bytes(&buf, offset) {
-                    let event = std::str::from_utf8(&buf[offset..split_idx]).expect("valid utf-8 stream data");
-                    offset = split_idx + delimiter_len;
+                while let Some(event) =
+                    crate::providers::shared::next_sse_event(&buf, &mut offset).expect("valid utf-8 stream data")
+                {
 
                     if let Some(data_payload) = crate::providers::shared::extract_data_payload(event) {
                         let trimmed = data_payload.trim();
@@ -981,12 +978,9 @@ impl LLMProvider for OpenResponsesProvider {
                     }
                 }
 
-                // Drain the consumed prefix so `buf` stays bounded to the
-                // unprocessed tail rather than growing for the entire stream.
-                if offset > 0 {
-                    buf.drain(..offset);
-                    offset = 0;
-                }
+                // Keep `buf` bounded to the unprocessed tail rather than
+                // growing for the entire stream.
+                crate::providers::shared::drain_consumed_sse(&mut buf, &mut offset);
             }
 
             yield LLMStreamEvent::Completed { response: Box::new(aggregator.finalize()) };

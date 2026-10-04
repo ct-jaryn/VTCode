@@ -350,9 +350,9 @@ fn create_chat_event_stream(
 
             buf.extend_from_slice(&chunk);
 
-            while let Some((split_idx, delimiter_len)) = crate::providers::shared::find_sse_boundary_bytes(&buf, offset) {
-                let event = std::str::from_utf8(&buf[offset..split_idx]).expect("valid utf-8 stream data");
-                offset = split_idx + delimiter_len;
+            while let Some(event) =
+                crate::providers::shared::next_sse_event(&buf, &mut offset).expect("valid utf-8 stream data")
+            {
 
                 if let Some(data_payload) = extract_data_payload(event) {
                     let trimmed_payload = data_payload.trim();
@@ -425,12 +425,9 @@ fn create_chat_event_stream(
                 }
             }
 
-            // Drain the consumed prefix so `buf` stays bounded to the
-            // unprocessed tail rather than growing for the entire stream.
-            if offset > 0 {
-                buf.drain(..offset);
-                offset = 0;
-            }
+            // Keep `buf` bounded to the unprocessed tail rather than growing
+            // for the entire stream.
+            crate::providers::shared::drain_consumed_sse(&mut buf, &mut offset);
         }
 
         let response = aggregator.finalize();
@@ -535,9 +532,9 @@ pub(crate) fn create_responses_stream(
 
             buf.extend_from_slice(&chunk);
 
-            while let Some((split_idx, delimiter_len)) = crate::providers::shared::find_sse_boundary_bytes(&buf, offset) {
-                let event = std::str::from_utf8(&buf[offset..split_idx]).expect("valid utf-8 stream data");
-                offset = split_idx + delimiter_len;
+            while let Some(event) =
+                crate::providers::shared::next_sse_event(&buf, &mut offset).expect("valid utf-8 stream data")
+            {
                 #[cfg(debug_assertions)]
                 {
                     streamed_events_counter = streamed_events_counter.saturating_add(1);
@@ -715,12 +712,9 @@ pub(crate) fn create_responses_stream(
                 }
             }
 
-            // Drain the consumed prefix so `buf` stays bounded to the
-            // unprocessed tail rather than growing for the entire stream.
-            if offset > 0 {
-                buf.drain(..offset);
-                offset = 0;
-            }
+            // Keep `buf` bounded to the unprocessed tail rather than growing
+            // for the entire stream.
+            crate::providers::shared::drain_consumed_sse(&mut buf, &mut offset);
 
             if done {
                 break;

@@ -87,9 +87,8 @@ pub fn create_stream(
 
             decoder.push_bytes(&chunk, &mut buf);
 
-            while let Some((split_idx, delimiter_len)) = shared::find_sse_boundary_bytes(&buf, offset) {
-                let event = std::str::from_utf8(&buf[offset..split_idx]).expect("valid utf-8 stream data");
-                offset = split_idx + delimiter_len;
+            while let Some(event) = shared::next_sse_event(&buf, &mut offset).expect("valid utf-8 stream data") {
+
 
                 if let Some(data_payload) = shared::extract_data_payload(event) {
                     let trimmed_payload = data_payload.trim();
@@ -383,10 +382,7 @@ pub fn create_stream(
 
             // Drain the consumed prefix so `buf` stays bounded to the
             // unprocessed tail rather than growing for the entire stream.
-            if offset > 0 {
-                buf.drain(..offset);
-                offset = 0;
-            }
+            shared::drain_consumed_sse(&mut buf, &mut offset);
         }
 
         for (index, reasoning_block) in reasoning_blocks {

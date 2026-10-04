@@ -13,8 +13,8 @@ use crate::providers::error_handling::{format_network_error, format_parse_error}
 use crate::providers::gemini::sanitize_function_parameters;
 use crate::providers::openai_compat::{OpenAiCompatCore, OpenAiCompatSpec};
 use crate::providers::shared::{
-    Utf8StreamDecoder, extract_data_payload, find_sse_boundary_bytes, function_output_value_from_message_content,
-    generate_tool_call_id, parse_cache_write_tokens_from_usage, parse_cached_prompt_tokens_from_usage,
+    Utf8StreamDecoder, extract_data_payload, function_output_value_from_message_content, generate_tool_call_id,
+    next_sse_event, parse_cache_write_tokens_from_usage, parse_cached_prompt_tokens_from_usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -717,10 +717,9 @@ impl MergeGatewayProvider {
                 let chunk = chunk_result.map_err(|e| format_network_error("Merge Gateway", &e))?;
                 decoder.push_bytes(&chunk, &mut buffer);
 
-                while let Some((split_idx, delimiter_len)) = find_sse_boundary_bytes(&buffer, offset) {
-                    let raw_event = std::str::from_utf8(&buffer[offset..split_idx])
-                        .map_err(|error| format_parse_error("Merge Gateway", &error))?;
-                    offset = split_idx + delimiter_len;
+                while let Some(raw_event) = next_sse_event(&buffer, &mut offset)
+                    .map_err(|error| format_parse_error("Merge Gateway", &error))?
+                {
 
                     let payload_text = match extract_data_payload(raw_event) {
                         Some(payload) => payload.into_owned(),

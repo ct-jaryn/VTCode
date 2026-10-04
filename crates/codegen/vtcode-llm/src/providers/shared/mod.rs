@@ -6,6 +6,7 @@ pub use crate::providers::ReasoningBuffer;
 use crate::providers::common::{extract_reasoning_text_from_serialized_details, map_finish_reason_common};
 mod responses_adapter;
 mod responses_stream;
+mod sse;
 mod tag_sanitizer;
 use crate::providers::split_reasoning_from_text;
 pub(crate) use responses_stream::{
@@ -13,6 +14,7 @@ pub(crate) use responses_stream::{
 };
 pub(crate) use responses_stream::{ResponsesStreamEventPolicy, response_stream_event_policy};
 use serde_json::{Map, Value};
+pub(crate) use sse::{drain_consumed_sse, next_sse_event};
 use std::borrow::Cow;
 pub use tag_sanitizer::TagStreamSanitizer;
 
