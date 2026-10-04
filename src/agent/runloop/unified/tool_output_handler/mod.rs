@@ -71,10 +71,18 @@ async fn handle_success_common(
 ) -> Result<()> {
     ctx.session_stats.record_tool(name);
 
+    // Record the MCP panel event for every MCP spelling (canonical
+    // `mcp::provider::tool`, `mcp__provider__tool`, and legacy `mcp_tool`).
+    // The inline transcript output is still rendered by the shared path below:
+    // canonical names previously fell through to `render_tool_output_common`
+    // (the legacy `mcp_` prefix never matched them), which draws provider
+    // output such as context7 snippets or sequential-reasoning summaries.
     if let Some(tool_name) = crate::agent::runloop::unified::tool_summary_helpers::mcp_tool_display_name(name) {
         ctx.renderer.flush_compact_command_group();
         record_mcp_outcome_event(ctx.mcp_panel_state, tool_name, args_val, payload.command_success);
-    } else if is_task_tracker_tool(name) && ctx.renderer.supports_inline_ui() {
+    }
+
+    if is_task_tracker_tool(name) && ctx.renderer.supports_inline_ui() {
         ctx.renderer.flush_compact_command_group();
         // Display-mode split: compact transcript shows header plus the current
         // task; expanded appends the truncated tree. The docked panel body

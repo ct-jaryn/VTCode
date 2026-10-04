@@ -1028,6 +1028,74 @@ async fn test_renderer_records_mcp_event_for_mcp_tool() {
     assert!(mcp.event_count() > 0);
 }
 
+/// Canonical MCP registration names (`mcp::provider::tool`) must record a panel
+/// event on the success path. The legacy `mcp_` prefix never matched them, so a
+/// parser regression here silently drops every MCP success from the panel.
+#[tokio::test]
+async fn test_renderer_records_mcp_event_for_canonical_mcp_name() {
+    let mut renderer = AnsiRenderer::stdout();
+    let mut stats = SessionStats::default();
+    let mut mcp = McpPanelState::new(32, true);
+
+    let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+        output: serde_json::json!({"exit_code":0}),
+        stdout: Some("ok".to_string()),
+        modified_files: vec![],
+        command_success: true,
+    });
+
+    let handle = dummy_handle();
+    let mut output_ctx = OutcomeContext {
+        workspace_root: None,
+        session_stats: &mut stats,
+        renderer: &mut renderer,
+        handle: &handle,
+        mcp_panel_state: &mut mcp,
+        vt_config: None::<&VTCodeConfig>,
+    };
+    process_outcome_common(&mut output_ctx, "mcp::time::get_current_time", &serde_json::json!({}), &outcome)
+        .await
+        .expect("render should succeed");
+
+    assert!(mcp.event_count() > 0, "canonical mcp:: names must reach the MCP panel");
+}
+
+/// Recording the MCP panel event must not divert canonical `mcp::` names away
+/// from the shared inline render path. The pre-fix parser routed them into the
+/// panel-only branch, silently dropping their visible transcript output.
+#[tokio::test]
+async fn canonical_mcp_name_still_renders_inline_output() {
+    let (sender, mut receiver) = unbounded_channel();
+    let handle = InlineHandle::new_for_tests(sender);
+    let mut renderer = AnsiRenderer::with_inline_ui(handle.clone(), Default::default());
+    let mut stats = SessionStats::default();
+    let mut mcp = McpPanelState::new(32, true);
+
+    let outcome = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+        output: serde_json::json!({"exit_code": 0, "output": "visible mcp output"}),
+        stdout: Some("visible mcp output".to_string()),
+        modified_files: vec![],
+        command_success: true,
+    });
+
+    let mut output_ctx = OutcomeContext {
+        workspace_root: None,
+        session_stats: &mut stats,
+        renderer: &mut renderer,
+        handle: &handle,
+        mcp_panel_state: &mut mcp,
+        vt_config: None::<&VTCodeConfig>,
+    };
+    process_outcome_common(&mut output_ctx, "mcp::time::get_current_time", &serde_json::json!({}), &outcome)
+        .await
+        .expect("render should succeed");
+
+    // Panel event recorded AND inline output emitted: neither surface is lost.
+    assert!(mcp.event_count() > 0, "canonical mcp:: names must reach the MCP panel");
+    let commands = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+    assert!(!commands.is_empty(), "canonical mcp:: names must still emit inline transcript output");
+}
+
 #[tokio::test]
 async fn spooled_exec_output_keeps_transcript_at_reference_only() {
     let mut renderer = AnsiRenderer::stdout();
