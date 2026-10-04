@@ -182,12 +182,40 @@ This is directly analogous to how C++ compilers move exception-handling code to 
 
 ### VT Code current state
 
-| Annotation  | Count | Assessment                                               |
-| ----------- | ----- | -------------------------------------------------------- |
-| `#[inline]` | ~150  | Good coverage on hot small functions                     |
-| `#[cold]`   | ~75   | Well-covered; most error-diagnostic paths are annotated. |
+| Annotation         | Count | Assessment                                                                       |
+| ------------------ | ----- | -------------------------------------------------------------------------------- |
+| `#[inline]`        | ~150  | Good coverage on hot small functions                                             |
+| `#[cold]`          | ~75   | Well-covered; most error-diagnostic paths are annotated.                         |
+| `#[inline(never)]` | few   | Manual `Debug` impls on fan-out error types; see Derived trait impls below.      |
 
 **Action**: When adding new error-only functions, annotate them `#[cold]` rather than `#[inline]`.
+
+### Derived trait impls are `#[inline]`
+
+`#[derive(Debug)]` (and `Clone`, `Default`, …) expands to an impl whose generated methods
+carry `#[inline]`. This is implied by the [reference](https://doc.rust-lang.org/reference/attributes/derive.html)
+but is not a guaranteed contract. For trivial types it is exactly what we want: the impl
+inlines away and costs nothing.
+
+It becomes a size hazard for **large or deeply nested types**, most commonly the error enums
+VT Code formats on failure paths. A derived `Debug::fmt` for a wrapper error calls its child's
+`Debug::fmt`, and because both are `#[inline]`, rustc can inline the whole tree into every
+`format!("{:?}", err)` / `tracing::warn!(error = ?err)` call site. rustc does not appear to
+bound the size or number of these inlinings, so the cost is paid **per call site**, not per
+type — a nested hierarchy can dominate a binary's code size (`uv` reclaimed ~160 KB this way).
+
+When a type's `Debug` is large or formatted on a fan-out path:
+
+- Annotate its `Debug::fmt` with `#[inline(never)]` — either by hand-writing the `impl`
+  (as [`LLMError`/`LLMErrorMetadata`](../../crates/common/vtcode-commons/src/llm.rs) already
+  do) or with the `DebugNoInline` derive from `vtcode-macros`.
+- Leave small, hot, leaf `Debug` impls derived. `#[inline(never)]` on a tiny struct whose
+  `Debug` is called in a tight loop can make things slower.
+
+VT Code's release profile (`opt-level = "z"`, fat LTO, `strip`, `panic = "abort"`) already
+garbage-collects `Debug` impls that are never referenced, so only impls reached by live `{:?}`
+sites contribute. Measure before converting — see the derived-trait recipe in
+`docs/analysis/BLOATY_ANALYSIS.md`.
 
 ---
 
@@ -532,6 +560,8 @@ When reviewing or writing a hot path in vtcode:
 - [ ] Does the function take `&Vec<T>` or `&String` (should be `&[T]` or `&str`)?
 - [ ] Is the error path marked `#[cold]`?
 - [ ] Is the small hot function marked `#[inline]`?
+- [ ] Is this a large/nested type whose `Debug` is formatted on a hot or fan-out path? Consider
+      `#[inline(never)]` (see [Derived trait impls are `#[inline]`](#derived-trait-impls-are-inline)).
 - [ ] Does the code use indexed `for i in 0..n` when an iterator would eliminate bounds checks?
 - [ ] If a hot loop branches on per-element data, is the predicate unpredictable (~50% selectivity, no pattern)? If so,
       consider [branchless](#branchless-programming-removing-unpredictable-branches) — but run the sorted-vs-shuffled
@@ -564,6 +594,9 @@ When reviewing or writing a hot path in vtcode:
 - [Replacing a Rust Enum with a 64-bit Word](https://pointersgonewild.com/2026-08-25-replacing-a-rust-enum-with-a-64-bit-word/)
   — 2026 (source of the Enum Footprint section: discriminant/alignment padding, boxing sparse payloads, and the measured
   17% speedup / 37% peak-RSS reduction from shrinking a bulk-stored value type).
+- [TIL: Rust's derive often implies inline](https://yossarian.net/til/post/rust-s-derive-often-implies-inline/) —
+  yossarian.net (source of the Derived trait impls subsection: derive emits `#[inline]`; nested error `Debug` impls
+  inline transitively; `uv` reclaimed ~160 KB with an `#[inline(never)]` Debug derive).
 - VT Code internal: `docs/development/performance.md`
 - VT Code internal: `docs/development/performance-hasher-policy.md`
 - VT Code internal: `docs/development/async-performance-audit.md`

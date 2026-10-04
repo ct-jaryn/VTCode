@@ -732,6 +732,10 @@ pub struct LLMErrorMetadata {
 }
 
 impl fmt::Debug for LLMErrorMetadata {
+    // Derived `Debug` implies `#[inline]`; this metadata is nested inside every
+    // `LLMError` and formatted on failure paths, so keep it outlined rather than
+    // letting it inline into each `?err` call site.
+    #[inline(never)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("LLMErrorMetadata")
@@ -824,6 +828,9 @@ pub enum LLMError {
 }
 
 impl fmt::Debug for LLMError {
+    // See `LLMErrorMetadata::fmt`: keep the nested error `Debug` outlined so it
+    // does not inline into every `{:?}` / `?err` call site.
+    #[inline(never)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Authentication { message, metadata } => formatter

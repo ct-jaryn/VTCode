@@ -19,6 +19,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use vtcode_macros::DebugNoInline;
 pub use vtcode_utility_tool_specs::{
     AdditionalProperties, FreeformTool, FreeformToolFormat, JsonSchema, ResponsesApiTool,
 };
@@ -291,7 +292,10 @@ pub enum FileChange {
 }
 
 /// Error type for tool execution (from Codex)
-#[derive(Debug, thiserror::Error)]
+///
+/// `Debug` via [`DebugNoInline`]: the `Internal(anyhow::Error)` variant carries an
+/// arbitrary source chain formatted on tool-failure paths.
+#[derive(DebugNoInline, thiserror::Error)]
 pub enum ToolCallError {
     /// Error that should be sent back to the model
     #[error("Tool error: {0}")]

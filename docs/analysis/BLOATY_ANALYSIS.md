@@ -171,6 +171,23 @@ bloaty -d symbols -n 50 ./target/release-fast/vtcode
 bloaty -d sections --csv ./target/release-fast/vtcode > sections.csv
 ```
 
+### Derived-trait (`Debug`) bloat filter
+
+`#[derive(Debug)]` emits `#[inline]` on the generated `fmt` (see
+`docs/development/rust-performance-principles.md`, "Derived trait impls are `#[inline]`"). In a nested error hierarchy
+this can inline the whole tree into every `{:?}` / `?err` call site and inflate `__text`. After building with
+`--profile bloaty`, attribute code to formatting machinery and compare `__text` before/after adding `#[inline(never)]`
+or the `vtcode-macros::DebugNoInline` derive:
+
+```bash
+bloaty -d inlines target/bloaty/vtcode | rg -i 'fmt|Debug|debug_'
+bloaty -d symbols -n 50 target/bloaty/vtcode | rg -i 'fmt|debug'
+bloaty -d sections target/bloaty/vtcode | rg '__text'
+```
+
+When `bloaty` is unavailable, `cargo bloat` is a crate-level fallback:
+`cargo bloat --profile bloaty -n 40 --filter 'fmt|debug'`.
+
 ---
 
 ## Conclusion
