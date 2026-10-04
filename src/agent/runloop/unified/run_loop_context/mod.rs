@@ -39,14 +39,6 @@ pub(crate) enum TurnPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TurnExecutionPhase {
-    Preparing,
-    Requesting,
-    ExecutingTools,
-    Finalizing,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryPhase {
     Inactive,
     Pending,
@@ -126,22 +118,11 @@ const TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES: usize = 128 * 1024;
 /// tool-heavy turn must not multiply them without bound.
 const AUX_MODEL_CALL_BUDGET: u32 = 3;
 
-impl From<TurnPhase> for TurnExecutionPhase {
-    fn from(value: TurnPhase) -> Self {
-        match value {
-            TurnPhase::Preparing => Self::Preparing,
-            TurnPhase::Requesting => Self::Requesting,
-            TurnPhase::ExecutingTools => Self::ExecutingTools,
-            TurnPhase::Finalizing => Self::Finalizing,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnExecutionSnapshot {
     pub run_id: String,
     pub turn_id: String,
-    pub phase: TurnExecutionPhase,
+    pub phase: TurnPhase,
     pub max_tool_calls: usize,
     pub max_tool_wall_clock_secs: u64,
     pub max_tool_retries: u32,

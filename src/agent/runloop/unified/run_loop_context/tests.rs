@@ -6,7 +6,7 @@ use super::{
     CrossTurnTracker, DiagnosisMemoEntry, DiagnosisMemoKey, HarnessTurnState, RecoveryMode,
     SESSION_LIMIT_AUTO_GRANT_INCREMENT, TOOL_BUDGET_WARNING_THRESHOLD, TOOL_PREVIEW_METADATA_PARSE_LIMIT_BYTES,
     ToolBudgetExhaustion, ToolBudgetExhaustionNotice, ToolBudgetWarning, ToolWallClockExhaustion,
-    ToolWallClockExhaustionNotice, TurnExecutionPhase, TurnId, TurnPhase, TurnRunId, full_auto_loop_grants_enabled,
+    ToolWallClockExhaustionNotice, TurnId, TurnPhase, TurnRunId, full_auto_loop_grants_enabled,
 };
 use vtcode_config::constants::output_limits::{TURN_PREVIEW_BUDGET_BYTES, TURN_PREVIEW_BUDGET_BYTES_PLANNING};
 use vtcode_core::config::loader::VTCodeConfig;
@@ -757,7 +757,7 @@ fn harness_state_builds_execution_snapshot() {
     let snapshot = state.execution_snapshot();
     assert_eq!(snapshot.run_id, "run-9");
     assert_eq!(snapshot.turn_id, "turn-3");
-    assert_eq!(snapshot.phase, TurnExecutionPhase::ExecutingTools);
+    assert_eq!(snapshot.phase, TurnPhase::ExecutingTools);
     assert_eq!(snapshot.max_tool_calls, 6);
     assert_eq!(snapshot.max_tool_wall_clock_secs, 120);
     assert_eq!(snapshot.max_tool_retries, 2);
