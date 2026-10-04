@@ -1,29 +1,10 @@
-const { test, after } = require("node:test");
+const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const ts = require("typescript");
+const compileModules = require("./helpers/compileModules.cjs");
 
-// Exercise the actual compiled view modules against a small VS Code API fixture.
-// Keep the fixture local to this temporary module tree; never patch global require.
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "vtcode-vscode-views-"));
-after(() => fs.rmSync(root, { recursive: true, force: true }));
-const vscodeDir = path.join(root, "node_modules", "vscode");
-fs.mkdirSync(vscodeDir, { recursive: true });
-fs.copyFileSync(path.join(__dirname, "fixtures", "vscode.cjs"), path.join(vscodeDir, "index.js"));
-const sourceDir = path.join(__dirname, "..", "src");
-for (const name of ["quickActions", "workspaceInsights"]) {
-    const source = fs.readFileSync(path.join(sourceDir, "views", `${name}.ts`), "utf8");
-    const compiled = ts.transpileModule(source, {
-        fileName: `${name}.ts`,
-        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-    });
-    fs.writeFileSync(path.join(root, `${name}.cjs`), compiled.outputText);
-}
-const { createQuickActions, QuickActionTreeDataProvider } = require(path.join(root, "quickActions.cjs"));
-const { createWorkspaceInsights, WorkspaceInsightsTreeDataProvider } = require(path.join(root, "workspaceInsights.cjs"));
-const vscode = require(path.join(vscodeDir, "index.js"));
+const { load, vscode } = compileModules(["views/quickActions", "views/workspaceInsights"]);
+const { createQuickActions, QuickActionTreeDataProvider } = load("views/quickActions");
+const { createWorkspaceInsights, WorkspaceInsightsTreeDataProvider } = load("views/workspaceInsights");
 
 function summary(overrides = {}) {
     return {

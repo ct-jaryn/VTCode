@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "src/services/processExecution.ts",
+    "src/commands/configurationCommands.ts",
+    "src/utils/vtcodeRunner.ts"
+  ]
+}

@@ -314,3 +314,38 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   `git diff --check` passed.
 - Next increment: terminal/config services within step 4. Existing typecheck
   diagnostics and rendered app/extension checks remain explicit validation gaps.
+
+### Step 4c: shared CLI process execution and configuration commands
+
+- Reduced `extensions/vscode-extension/src/extension.ts` from 3,037 to 2,618
+  lines and `utils/vtcodeRunner.ts` from 194 to 125 lines. Both CLI runners now
+  use `services/processExecution.ts` for spawning, streaming, progress,
+  cancellation, and completion. Their existing trust checks and caller-specific
+  config/context/environment preparation remain in their respective wrappers.
+- Removed duplicate executable-path and logging helpers from the entry point;
+  its config-argument adapter delegates to the existing URI-based helper.
+  Kept different workspace-root and environment-selection contracts separate.
+- Moved the four HITL/tool-policy/MCP configuration registrations into
+  `commands/configurationCommands.ts`. The entry point retains subscription
+  ownership and supplies live summary, trust, output, error, and guide services.
+  Summary lookup still occurs after awaiting the config picker; command IDs,
+  registration order, trust gates, feedback, and TOML mutation APIs are preserved.
+- Structural comparison verified 70 retained/delegated function bodies, all four
+  moved callbacks, both original process implementations, caller preflight, and
+  remaining activation wiring. Removed one unused catch binding identified by
+  lint; its error-handling behavior is unchanged. No new production dependencies.
+- Added 11 service tests and reused one compilation/fixture helper with the five
+  existing view tests. The combined run passed all 16 tests without skips.
+  Coverage includes literal argv, a real Node child process with shell
+  metacharacters and explicit environment values, streaming, cancellation,
+  spawn errors, live progress environment, trust rejection, picker-time config
+  changes, stale summary reload, failed updates, provider state, and disposal.
+- Added real `test:services` and `typecheck:services` scripts and a focused config.
+  Service typecheck/lint, production bundle, production dependency audit,
+  `./scripts/check-dev.sh --quiet`, and scoped diff checks passed. The direct
+  entry-point typecheck retains exactly the same eight baseline diagnostics.
+- Updated module guidance and development instructions. Tests mock VS Code and
+  configuration APIs; actual CLI execution, filesystem edits, full activation,
+  and rendered/interactive terminal checks remain unverified.
+- Next increment: interactive terminal ownership/lifecycle extraction within
+  step 4, then the transport/UI infrastructure reuse phase.

@@ -505,6 +505,8 @@
     "test": "echo \"Skipping tests - using precompiled files\"",
     "test:views": "node --test test/views.test.cjs",
     "typecheck:views": "tsc --project tsconfig.views.json",
+    "test:services": "node --test test/services.test.cjs",
+    "typecheck:services": "tsc --project tsconfig.services.json",
     "package": "vsce package",
     "release": "./release.sh",
     "release:patch": "./release.sh patch",

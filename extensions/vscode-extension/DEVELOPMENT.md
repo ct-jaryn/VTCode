@@ -89,20 +89,23 @@ npm run watch
 The default `compile`, `typecheck`, `lint`, and `test` scripts currently print
 skip messages for the precompiled distribution. They do not validate source.
 The legacy tests also mix Jest, Vitest, and extension-host APIs; the full project
-typecheck reports existing errors. For the extracted tree views, run these real
-checks:
+typecheck reports existing errors. For the extracted views and process/config
+services, run these real checks:
 
 ```bash
 npm run typecheck:views
 npm run test:views
+npm run typecheck:services
+npm run test:services
 ```
 
 ### Linting Code
 
-To lint the extracted view modules with the existing ESLint configuration:
+To lint the extracted modules with the existing ESLint configuration:
 
 ```bash
 ESLINT_USE_FLAT_CONFIG=false ./node_modules/.bin/eslint src/views/*.ts
+ESLINT_USE_FLAT_CONFIG=false ./node_modules/.bin/eslint src/services/*.ts src/commands/configurationCommands.ts src/utils/vtcodeRunner.ts
 ```
 
 ## Extension Structure
@@ -115,9 +118,15 @@ extensions/vscode-extension/
     views/
        quickActions.ts       # Quick-action descriptions and tree provider
        workspaceInsights.ts  # Workspace-status descriptions and tree provider
+    commands/configurationCommands.ts  # HITL/MCP/policy command registration
+    services/processExecution.ts       # Shared CLI process execution
+    utils/vtcodeRunner.ts               # Modular-command preflight and helpers
  test/
-    views.test.cjs     # Node tests with an isolated VS Code fixture
+    views.test.cjs     # View tests with an isolated VS Code fixture
+    services.test.cjs  # Process/config tests with mocked spawning and config APIs
+    helpers/compileModules.cjs  # Shared module compilation and fixture isolation
  tsconfig.views.json   # Focused view typecheck
+ tsconfig.services.json # Focused process/config typecheck
  tsconfig.json         # TypeScript configuration
  .vscode/
     launch.json       # Debug launch configurations
@@ -130,6 +139,12 @@ extensions/vscode-extension/
 The Node view tests verify command gating, configuration branches, refreshes,
 and item metadata. They do not exercise rendered views or terminal lifecycles.
 Use an Extension Development Host to verify those interactions after extraction.
+
+The service tests cover literal argument forwarding, stream callbacks, progress,
+cancellation, command trust checks, configuration picker races, and error handling.
+They mock configuration APIs and most child processes; one test launches Node to
+verify literal arguments and an explicitly supplied environment. They do not verify
+VT Code CLI execution, filesystem configuration writes, or full extension activation.
 
 When using the "Run Extension" launch configuration:
 
