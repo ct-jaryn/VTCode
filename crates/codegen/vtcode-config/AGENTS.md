@@ -6,7 +6,7 @@
 
 ## Modules
 
-`loader/` ConfigManager + ConfigBuilder + layers | `constants/` models, env vars, URLs, tools, and shared tool limits | `core/` AgentConfig + all nested config structs | `models/` ModelId + Provider enums | `types/` ReasoningEffortLevel and related enums | `schema/` JSON Schema export (feature-gated) | `defaults/` ConfigDefaultsProvider | `auth/` auth config re-exports | `api_keys.rs` facade + `api_keys/credential_resolution.rs` source precedence | `mcp/` MCP config | `webmcp.rs` opt-in browser and remote MCP config | `acp/` ACP config | `hooks/` lifecycle hooks | `subagents/` subagent discovery | `network_allowlist.rs` | `core/provider_override.rs`
+`loader/` ConfigManager + ConfigBuilder + layers | `constants/` models, env vars, URLs, tools, and shared tool limits | `core/` AgentConfig + all nested config structs | `models/` ModelId + Provider enums | `types/` ReasoningEffortLevel and related enums | `schema/` JSON Schema export (feature-gated) | `defaults/` ConfigDefaultsProvider | `auth/` auth config re-exports | `api_keys.rs` facade + `api_keys/credential_resolution.rs` source precedence | `mcp/` MCP config | `webmcp.rs` opt-in browser and remote MCP config | `acp/` ACP config | `hooks/` lifecycle hooks | `subagents/` subagent discovery (`builtin.rs` specs, `discovery.rs` loading, `parse.rs` frontmatter/TOML, `permissions.rs` tool normalization) | `network_allowlist.rs` | `core/provider_override.rs`
 
 ## Rules
 
