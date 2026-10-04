@@ -630,6 +630,25 @@ pub(super) fn summarize_list(items: &[String], max_items: usize, max_len: usize)
     }
 }
 
+/// Extract the bare tool name from an MCP-qualified tool name.
+///
+/// Accepts the `mcp__server__tool`, `mcp::provider::tool`, and `mcp_tool`
+/// spellings; returns `None` for non-MCP names. This is the canonical MCP
+/// name parser — do not fork the prefix/segment handling per call site, so
+/// every TUI surface labels the same tool identically.
+pub(crate) fn mcp_tool_display_name(tool_name: &str) -> Option<&str> {
+    if tool_name.starts_with("mcp__") {
+        return Some(tool_name.split("__").last().unwrap_or(tool_name));
+    }
+    if tool_name.starts_with("mcp::") {
+        return Some(tool_name.split("::").last().unwrap_or(tool_name));
+    }
+    if let Some(rest) = tool_name.strip_prefix("mcp_") {
+        return Some(rest);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,5 +1067,14 @@ mod tests {
             assert_eq!(summary, "Search code for core agent loop");
             assert!(used.contains(key), "used should record the matched key, got {used:?}");
         }
+    }
+
+    #[test]
+    fn mcp_tool_display_name_handles_all_spellings() {
+        assert_eq!(mcp_tool_display_name("mcp__server__tool"), Some("tool"));
+        assert_eq!(mcp_tool_display_name("mcp__tool"), Some("tool"));
+        assert_eq!(mcp_tool_display_name("mcp::provider::tool"), Some("tool"));
+        assert_eq!(mcp_tool_display_name("mcp_fetch"), Some("fetch"));
+        assert_eq!(mcp_tool_display_name("fetch"), None);
     }
 }

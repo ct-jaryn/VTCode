@@ -72,10 +72,8 @@ async fn handle_success_common(
 ) -> Result<()> {
     ctx.session_stats.record_tool(name);
 
-    if let Some(tool_name) = name.strip_prefix("mcp_") {
+    if let Some(tool_name) = crate::agent::runloop::unified::tool_summary_helpers::mcp_tool_display_name(name) {
         ctx.renderer.flush_compact_command_group();
-        let tool_name = tool_name.trim_start_matches('_');
-        let tool_name = tool_name.split("__").last().unwrap_or(tool_name);
         record_mcp_outcome_event(ctx.mcp_panel_state, tool_name, args_val, payload.command_success);
     } else if is_task_tracker_tool(name) && ctx.renderer.supports_inline_ui() {
         ctx.renderer.flush_compact_command_group();

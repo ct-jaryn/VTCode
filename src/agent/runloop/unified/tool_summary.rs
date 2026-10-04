@@ -22,8 +22,8 @@ use crate::agent::runloop::unified::tool_summary_helpers::{
     RAN_COMMAND_CONTINUATION_WIDTH, RAN_COMMAND_FIRST_WIDTH, collect_param_details, command_line_for_args,
     describe_code_search, describe_fetch_action, describe_grep_file, describe_list_files, describe_path_action,
     describe_shell_command, display_command_text, exec_session_param_detail, highlight_texts_for_summary,
-    is_exec_session_call, relativize_command_paths, relativize_to_workspace, should_render_command_line,
-    truncate_path_middle,
+    is_exec_session_call, mcp_tool_display_name, relativize_command_paths, relativize_to_workspace,
+    should_render_command_line, truncate_path_middle,
 };
 
 /// Ambient context required to render tool-call summaries.
@@ -709,17 +709,9 @@ pub(crate) fn describe_tool_action(
     // `fetch` is the built-in web-fetch tool and must not be labeled as MCP.
     let is_mcp_tool = tool_name.starts_with("mcp::") || tool_name.starts_with("mcp_");
 
-    // For the actual matching, we need to use the tool name without the "mcp_" prefix
-    let actual_tool_name = if tool_name.starts_with("mcp__") {
-        tool_name.split("__").last().unwrap_or(tool_name)
-    } else if let Some(stripped) = tool_name.strip_prefix("mcp_") {
-        stripped
-    } else if tool_name.starts_with("mcp::") {
-        // For tools in mcp::provider::name format, extract just the tool name
-        tool_name.split("::").last().unwrap_or(tool_name)
-    } else {
-        tool_name
-    };
+    // For the actual matching, use the canonical MCP name parser so every
+    // surface extracts the bare tool name identically.
+    let actual_tool_name = mcp_tool_display_name(tool_name).unwrap_or(tool_name);
 
     let with_mcp = |desc: String, used: HashSet<String>| -> (String, HashSet<String>) {
         (format!("{}{}", mcp_label(is_mcp_tool), desc), used)
