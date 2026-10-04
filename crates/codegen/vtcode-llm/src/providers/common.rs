@@ -693,18 +693,6 @@ pub(crate) fn override_base_url(
     default_base_url.to_string()
 }
 
-/// Get or create HTTP client with custom timeouts
-pub fn get_http_client_for_timeouts(
-    connect_timeout: std::time::Duration,
-    read_timeout: std::time::Duration,
-) -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(connect_timeout)
-        .timeout(read_timeout)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
 /// Remove generation-only controls from a payload before exact prompt-token counting.
 /// Token-count endpoints generally require only prompt-side fields.
 pub fn strip_generation_controls_for_token_count(payload: &mut Value) {
