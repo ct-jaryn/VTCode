@@ -23,6 +23,22 @@ fn test_styles_construct() {
     assert_eq!(reasoning, MessageStyle::Reasoning.style());
 }
 
+/// `is_compact_display` is the single compact-vs-expanded predicate: it must
+/// agree with the raw mode comparison and normalize `Unknown` to expanded.
+#[test]
+fn is_compact_display_matches_normalized_mode() {
+    let mut renderer = AnsiRenderer::stdout();
+    for (mode, expected) in [
+        (ToolDisplayMode::Compact, true),
+        (ToolDisplayMode::Expanded, false),
+        (ToolDisplayMode::Unknown, false),
+    ] {
+        renderer.set_tool_display_mode(mode);
+        assert_eq!(renderer.is_compact_display(), expected, "mode {mode:?}");
+        assert_eq!(renderer.is_compact_display(), renderer.tool_display_mode() == ToolDisplayMode::Compact);
+    }
+}
+
 #[test]
 fn test_renderer_buffer() {
     let mut r = AnsiRenderer::stdout();
