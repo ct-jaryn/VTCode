@@ -10,9 +10,12 @@ mod sse;
 mod tag_sanitizer;
 use crate::providers::split_reasoning_from_text;
 pub(crate) use responses_stream::{
+    RESPONSES_COMPLETION_TOKEN_KEYS, RESPONSES_PROMPT_TOKEN_KEYS, ResponsesStreamEventPolicy,
+    response_stream_event_policy,
+};
+pub(crate) use responses_stream::{
     ResponsesNormalizedStreamOptions, ResponsesNormalizedStreamProcessor, create_responses_normalized_stream,
 };
-pub(crate) use responses_stream::{ResponsesStreamEventPolicy, response_stream_event_policy};
 use serde_json::{Map, Value};
 pub(crate) use sse::{drain_consumed_sse, next_sse_event};
 use std::borrow::Cow;
@@ -99,6 +102,20 @@ fn strip_prefix_hash_suffix(id: &str) -> &str {
         return head;
     }
     id
+}
+
+/// Read a u32 usage count from the first present key.
+///
+/// Usage blocks mix OpenAI (`prompt_tokens`) and Responses/Anthropic
+/// (`input_tokens`) spellings, so callers pass the alias chain; a missing or
+/// non-numeric count reads as 0. This is the canonical alias lookup — do not
+/// fork the chain per provider.
+pub(crate) fn usage_u32_from_keys(usage: &Value, keys: &[&str]) -> u32 {
+    keys.iter()
+        .find_map(|key| usage.get(*key))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0)
 }
 
 pub(crate) fn parse_cached_prompt_tokens_from_usage(

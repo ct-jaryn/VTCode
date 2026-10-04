@@ -13,8 +13,9 @@ use crate::providers::error_handling::{format_network_error, format_parse_error}
 use crate::providers::gemini::sanitize_function_parameters;
 use crate::providers::openai_compat::{OpenAiCompatCore, OpenAiCompatSpec};
 use crate::providers::shared::{
-    Utf8StreamDecoder, extract_data_payload, function_output_value_from_message_content, generate_tool_call_id,
-    next_sse_event, parse_cache_write_tokens_from_usage, parse_cached_prompt_tokens_from_usage,
+    RESPONSES_COMPLETION_TOKEN_KEYS, RESPONSES_PROMPT_TOKEN_KEYS, Utf8StreamDecoder, extract_data_payload,
+    function_output_value_from_message_content, generate_tool_call_id, next_sse_event,
+    parse_cache_write_tokens_from_usage, parse_cached_prompt_tokens_from_usage, usage_u32_from_keys,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -1245,18 +1246,8 @@ impl MergeGatewayProvider {
 
     fn parse_native_usage(value: Option<&Value>) -> Option<Usage> {
         let usage = value?;
-        let prompt_tokens = usage
-            .get("input_tokens")
-            .or_else(|| usage.get("prompt_tokens"))
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0);
-        let completion_tokens = usage
-            .get("output_tokens")
-            .or_else(|| usage.get("completion_tokens"))
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0);
+        let prompt_tokens = usage_u32_from_keys(usage, RESPONSES_PROMPT_TOKEN_KEYS);
+        let completion_tokens = usage_u32_from_keys(usage, RESPONSES_COMPLETION_TOKEN_KEYS);
         let total_tokens = usage
             .get("total_tokens")
             .and_then(Value::as_u64)
