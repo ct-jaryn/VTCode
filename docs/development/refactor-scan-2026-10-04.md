@@ -171,7 +171,7 @@ into live callers; do not retain unused parallel implementations.
 
 Ran tracked-file inventory, line counting, clone-candidate comparison, targeted
 source reads, module-export/dependency inspection, and Git status checks.
-No builds or tests were run: this change contains analysis artifacts only.
+No builds or tests were run for the initial scan; implementation checks appear below.
 The recommendations above are maintainability proposals, not verified bugs.
 
 ## Implementation progress
@@ -196,3 +196,30 @@ The recommendations above are maintainability proposals, not verified bugs.
   passed. Scoped `git diff --check` passed; no full workspace test run.
 - Next step: provider helper decomposition, using verbatim moves and existing
   re-exports before any additional semantic deduplication.
+
+### Step 2: provider helper decomposition
+
+- Reduced `providers/common.rs` from 1,766 lines to a 65-line facade over
+  private chat, HTTP, request, reasoning, prompt-cache, streaming, and token-count
+  modules. Existing caller imports and public visibility remain stable.
+  Its existing tests now live in `common/tests.rs`.
+- Reduced `providers/shared/mod.rs` from 1,832 lines to a 39-line facade.
+  Stream assembly, tool-output/compacted-history conversion, prompt lineage,
+  cache-token usage, and UTF-8 decoding now have dedicated modules.
+  SSE payload extraction and boundary detection joined the existing SSE module.
+- Moved private-helper tests alongside their implementations. Retained existing
+  Responses adapters and sanitizer modules. No new dependencies or runtime
+  behavior changes; semantic deduplication remains separate from extraction.
+- Structural comparison with `ast-grep` verified all 181 function bodies
+  (including tests), six structs, four enums, one trait, eight constants, and
+  one macro across the moved surfaces. Comparison permits module-local visibility,
+  indentation changes, and the required HTTP error-handler path qualification;
+  string literals remain protected from whitespace normalization.
+- `cargo nextest run --locked -p vtcode-llm`: 1,147 passed, zero skipped.
+- `./scripts/check-dev.sh --quiet` passed formatting, warnings-denied Clippy,
+  compilation, and shell lint. Scoped `git diff --check` and moved-file whitespace
+  checks passed. Verified all 15 original public declarations retain facade exports.
+- Final `cargo check --locked -p vtcode-llm` passed after the extraction stabilized.
+- Updated the LLM crate's module map and facade/visibility guidance.
+- Next step: planning artifact decomposition, preserving validation and repair
+  feedback through the existing `validate_plan_content` facade.
