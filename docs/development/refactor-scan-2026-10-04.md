@@ -279,3 +279,38 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Added app-local module guidance after auditing the new ownership boundaries.
 - Next increment: VS Code views and terminal/config services within step 4;
   rendered WebMCP checks remain an explicit validation gap.
+
+### Step 4b: VS Code quick-action and workspace-status views
+
+- Reduced `extensions/vscode-extension/src/extension.ts` from 3,534 to 3,037
+  lines. Quick-action descriptions and their tree adapter now live in
+  `views/quickActions.ts`; workspace-status descriptions and their adapter live in
+  `views/workspaceInsights.ts`. Activation, command wiring, trust, configuration
+  updates, and terminal ownership remain in the entry point.
+- Passed the existing executable-path getter and status-tooltip builder as narrow
+  services to workspace insights. Restricted-workspace rendering still avoids
+  reading executable configuration. Tree providers keep reading current state
+  through the existing callbacks. No new dependencies or runtime behavior changes.
+- TypeScript syntax-tree comparison verified all 75 original function bodies,
+  five classes, and 15 interfaces across the entry point and extracted modules;
+  only service injection and its activation call were adapted.
+- Added five Node tests covering restricted/trusted command lists, CLI availability,
+  HITL/full-auto/provider branches, parse feedback, shared tooltip arguments,
+  live state, refresh notifications, and tree-item metadata. They compile the real
+  view modules with TypeScript and load an isolated VS Code API fixture.
+- Added real `test:views` and `typecheck:views` scripts plus a focused TS config.
+  The existing compile/typecheck/lint/test scripts only print skip messages.
+  Updated the development guide and added app-local ownership/verification guidance.
+- `npm run test:views`: five passed, zero skipped. `npm run typecheck:views`,
+  direct view lint through the existing ESLint config, and
+  `npm run bundle -- --production` passed. Rebuilt the local esbuild dependency
+  after detecting an installed-binary platform mismatch; manifests/dependency
+  versions and lockfile remain unchanged apart from the new verification scripts.
+- `npm audit --omit=dev --audit-level=high` found zero production dependency
+  vulnerabilities. The entry-point typecheck retains the same eight diagnostics
+  as the baseline; full-project typechecking also fails on legacy tests. No full
+  extension test pass or rendered Extension Development Host validation is claimed.
+- `./scripts/check-dev.sh --quiet`, scoped Markdown lint, and staged
+  `git diff --check` passed.
+- Next increment: terminal/config services within step 4. Existing typecheck
+  diagnostics and rendered app/extension checks remain explicit validation gaps.

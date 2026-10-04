@@ -27,7 +27,7 @@ npm install
 To compile the TypeScript code and bundle the extension:
 
 ```bash
-npm run compile
+npm run bundle -- --production
 ```
 
 This will:
@@ -59,7 +59,7 @@ This will:
 1. Build the extension:
 
    ```bash
-   npm run compile
+   npm run bundle -- --production
    ```
 
 2. Package the extension:
@@ -86,18 +86,23 @@ npm run watch
 
 ### Running Tests
 
-To run extension tests:
+The default `compile`, `typecheck`, `lint`, and `test` scripts currently print
+skip messages for the precompiled distribution. They do not validate source.
+The legacy tests also mix Jest, Vitest, and extension-host APIs; the full project
+typecheck reports existing errors. For the extracted tree views, run these real
+checks:
 
 ```bash
-npm test
+npm run typecheck:views
+npm run test:views
 ```
 
 ### Linting Code
 
-To lint your TypeScript code:
+To lint the extracted view modules with the existing ESLint configuration:
 
 ```bash
-npm run lint
+ESLINT_USE_FLAT_CONFIG=false ./node_modules/.bin/eslint src/views/*.ts
 ```
 
 ## Extension Structure
@@ -106,7 +111,13 @@ npm run lint
 extensions/vscode-extension/
  package.json          # Extension manifest and configuration
  src/
-    extension.ts      # Main extension entry point
+    extension.ts      # Activation, trust, commands, terminal/config coordination
+    views/
+       quickActions.ts       # Quick-action descriptions and tree provider
+       workspaceInsights.ts  # Workspace-status descriptions and tree provider
+ test/
+    views.test.cjs     # Node tests with an isolated VS Code fixture
+ tsconfig.views.json   # Focused view typecheck
  tsconfig.json         # TypeScript configuration
  .vscode/
     launch.json       # Debug launch configurations
@@ -115,6 +126,10 @@ extensions/vscode-extension/
 ```
 
 ## Debugging the Extension
+
+The Node view tests verify command gating, configuration branches, refreshes,
+and item metadata. They do not exercise rendered views or terminal lifecycles.
+Use an Extension Development Host to verify those interactions after extraction.
 
 When using the "Run Extension" launch configuration:
 
