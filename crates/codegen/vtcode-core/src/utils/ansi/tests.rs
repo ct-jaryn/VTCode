@@ -1,6 +1,13 @@
+use super::links::current_file_opener;
+use super::sink::INLINE_JSON_COLLAPSE_LINES;
 use super::*;
+use crate::ui::tui::{InlineHandle, InlineMessageKind, InlineSegment, InlineTextStyle};
+use anstyle::{AnsiColor, Color as AnsiColorEnum, Effects, RgbColor};
 use anyhow::Context as _;
+use anyhow::Result;
 use std::sync::{LazyLock, Mutex};
+use unicode_width::UnicodeWidthStr;
+use url::Url;
 
 static FILE_OPENER_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
