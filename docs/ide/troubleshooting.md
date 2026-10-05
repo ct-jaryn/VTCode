@@ -95,7 +95,7 @@ This guide covers common issues and solutions when using VT Code with your IDE.
 If you're still experiencing issues:
 
 1. Check the [main documentation](../README.md)
-2. Review the [Cursor and Windsurf Setup Guide](./cursor-windsurf-setup.md) for editor-specific instructions
+2. Review the [CLI install guide](./downloads.md) and confirm `vtcode --version` works
 3. Join our [community Discord](https://discord.gg/vtcode)
 4. Open an issue on our [GitHub repository](https://github.com/vinhnx/vtcode/issues)
 5. Provide detailed information about your setup, the issue you're experiencing, and any error messages

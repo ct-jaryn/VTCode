@@ -13,6 +13,8 @@ use vtcode_core::tools::dominant_workspace_language;
 const WORKSPACE_IDE_CONTEXT_JSON_FILE: &str = ".vtcode/ide-context.json";
 const WORKSPACE_IDE_CONTEXT_MARKDOWN_FILE: &str = ".vtcode/ide-context.md";
 const VSCODE_COMPATIBLE_STORAGE_DIRS: &[&str] = &["Code", "Code - Insiders", "Cursor", "Windsurf", "VSCodium", "Kiro"];
+// Legacy: only the (removed) vtcode-companion marketplace builds write snapshots here. Kept so existing
+// installs keep working; no in-repo writer remains.
 const VSCODE_COMPATIBLE_EXTENSION_ID: &str = "nguyenxuanvinh.vtcode-companion";
 const VSCODE_COMPATIBLE_JSON_FILE: &str = "vtcode-ide-context.json";
 const VSCODE_COMPATIBLE_MARKDOWN_FILE: &str = "vtcode-ide-context.md";

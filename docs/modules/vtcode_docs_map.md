@@ -374,10 +374,6 @@ below based on the topic area.
 
 ### Editor Integrations
 
-- **File**: `docs/ide/cursor-windsurf-setup.md`
-  - **Content**: Cursor and Windsurf Setup Guide
-  - **User Questions**: "What can you tell me about Cursor and Windsurf Setup Guide?"
-
 - **File**: `docs/ide/editor-context-bridge.md`
   - **Content**: Editor Context Bridge
   - **Topics**: Contract, Canonical payload, Field notes, Integration checklist
