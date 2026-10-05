@@ -1,15 +1,15 @@
+mod observed;
 mod presentation;
 mod streaming;
 mod terminal;
 
-use presentation::CopilotPtyStream;
+use observed::ObservedToolCallState;
 use terminal::LocalTerminalSession;
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anstyle::Color;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -30,7 +30,6 @@ use vtcode_core::llm::provider::ToolDefinition;
 use vtcode_core::tools::registry::ToolRegistry;
 use vtcode_core::types::CompactStr;
 use vtcode_core::utils::ansi::AnsiRenderer;
-use vtcode_core::utils::style_helpers::ColorPalette;
 use vtcode_ui::tui::app::{InlineHandle, InlineSession};
 
 use super::request_builder::COLLAPSED_TOOL_OUTPUT_NOTICE;
@@ -42,7 +41,6 @@ use crate::agent::runloop::unified::inline_events::harness::{
     tool_started_event, tool_updated_event,
 };
 use crate::agent::runloop::unified::planning_workflow_state::PlanningWorkflowSessionState;
-use crate::agent::runloop::unified::progress::ProgressReporter;
 use crate::agent::runloop::unified::run_loop_context::{
     HarnessTurnState, RunLoopContext, SESSION_LIMIT_GRANT_DIRECTIVE, full_auto_loop_grants_enabled,
 };
@@ -826,17 +824,17 @@ impl<'a> CopilotRuntimeHost<'a> {
                 .observed_tool_calls
                 .entry(tool_call_id.clone())
                 .or_insert_with(|| ObservedToolCallState::new(update.tool_name.clone()));
-            process_observed_tool_state(state, &update, tail_limit, self.handle, self.tool_registry)
+            state.apply(&update, tail_limit, self.handle, self.tool_registry.pty_config())
         };
 
         if tool_update.started {
-            let tool_name = self.observed_tool_calls[&tool_call_id].tool_name.clone();
+            let tool_name = self.observed_tool_calls[&tool_call_id].tool_name().to_string();
             self.record_out_of_band_tool_use(&tool_name);
             self.emit_tool_started_event(&tool_call_id, &tool_name, update.arguments.as_ref().unwrap_or(&Value::Null));
         }
 
-        if let Some(output) = tool_update.output_delta {
-            let tool_name = self.observed_tool_calls[&tool_call_id].tool_name.clone();
+        if let Some(output) = tool_update.output_snapshot {
+            let tool_name = self.observed_tool_calls[&tool_call_id].tool_name().to_string();
             self.emit_tool_output_event(&tool_call_id, &tool_name, &output);
         }
 
@@ -852,7 +850,7 @@ impl<'a> CopilotRuntimeHost<'a> {
             }
             self.emit_tool_finished_event(
                 &tool_call_id,
-                &state.tool_name,
+                state.tool_name(),
                 update.arguments.as_ref().unwrap_or(&Value::Null),
                 status,
                 update.output,
@@ -972,114 +970,11 @@ impl Drop for CopilotRuntimeHost<'_> {
     }
 }
 
-struct ObservedToolCallState {
-    tool_name: String,
-    started: bool,
-    finished: bool,
-    last_output: Option<String>,
-    pty_stream: Option<CopilotPtyStream>,
-}
-
-impl ObservedToolCallState {
-    fn new(tool_name: String) -> Self {
-        Self {
-            tool_name,
-            started: false,
-            finished: false,
-            last_output: None,
-            pty_stream: None,
-        }
-    }
-}
-
-struct ObservedToolUpdate {
-    started: bool,
-    output_delta: Option<String>,
-    finished: bool,
-}
-
-fn process_observed_tool_state(
-    state: &mut ObservedToolCallState,
-    update: &CopilotObservedToolCall,
-    tail_limit: usize,
-    handle: &InlineHandle,
-    tool_registry: &ToolRegistry,
-) -> ObservedToolUpdate {
-    if state.tool_name == "copilot_tool" && update.tool_name != "copilot_tool" {
-        state.tool_name = update.tool_name.clone();
-    }
-
-    let started = if !state.started {
-        state.started = true;
-        true
-    } else {
-        false
-    };
-
-    if started
-        && state.pty_stream.is_none()
-        && let Some(cmd) = observed_tool_command_display(update)
-    {
-        state.pty_stream = Some(CopilotPtyStream::start(
-            handle,
-            ProgressReporter::new(),
-            tail_limit,
-            cmd,
-            tool_registry.pty_config().clone(),
-        ));
-    }
-
-    let output_delta = if let Some(output) = update.output.as_deref().filter(|t| !t.trim().is_empty())
-        && state.last_output.as_deref() != Some(output)
-    {
-        if let Some(delta) = observed_tool_output_delta(state.last_output.as_deref(), output)
-            && !delta.is_empty()
-            && let Some(stream) = state.pty_stream.as_ref()
-        {
-            stream.push_output(delta);
-        }
-        state.last_output = Some(output.to_string());
-        Some(output.to_string())
-    } else {
-        None
-    };
-
-    let finished = !state.finished
-        && matches!(update.status, CopilotObservedToolCallStatus::Completed | CopilotObservedToolCallStatus::Failed);
-    if finished {
-        state.finished = true;
-        let _ = state
-            .pty_stream
-            .take()
-            .map(|s| s.finish(copilot_observed_status_color(update.status)));
-    }
-
-    ObservedToolUpdate { started, output_delta, finished }
-}
-
 pub(super) fn prompt_session_to_stream(
     model: String,
     prompt_session: PromptSession,
 ) -> (uni::LLMStream, tokio::sync::mpsc::UnboundedReceiver<CopilotRuntimeRequest>) {
     streaming::prompt_session_to_stream(model, prompt_session)
-}
-
-fn extract_command_from_args(arguments: Option<&Value>) -> Option<String> {
-    let arguments = arguments?;
-    // Display-only extraction shared with tool summaries. The previous
-    // per-key loop returned `None` via `?` when the `command` key was absent,
-    // never reaching `cmd`/`raw_command`; the canonical helper scans every
-    // key and also covers the legacy `bash_command` key.
-    vtcode_core::tools::command_args::extract_command_text_with_key(arguments).map(|(text, _)| text)
-}
-
-fn copilot_observed_status_color(status: CopilotObservedToolCallStatus) -> Color {
-    let palette = ColorPalette::default();
-    match status {
-        CopilotObservedToolCallStatus::Completed => palette.success,
-        CopilotObservedToolCallStatus::Failed => palette.error,
-        CopilotObservedToolCallStatus::Pending | CopilotObservedToolCallStatus::InProgress => palette.warning,
-    }
 }
 
 fn emit_terminal_output_event(
@@ -1114,48 +1009,6 @@ fn emit_terminal_finished_event(
         status.clone(),
     ));
     let _ = emitter.emit(tool_output_completed_event(item_id, raw_id, status, None, None, output));
-}
-
-fn observed_tool_command_display(update: &CopilotObservedToolCall) -> Option<String> {
-    extract_command_from_args(update.arguments.as_ref()).or_else(|| {
-        update
-            .tool_name
-            .strip_prefix("Run ")
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToString::to_string)
-    })
-}
-
-fn observed_tool_output_delta<'a>(previous: Option<&str>, current: &'a str) -> Option<&'a str> {
-    if current.is_empty() {
-        return None;
-    }
-
-    match previous {
-        None => Some(current),
-        Some(prev) if prev == current => None,
-        Some(prev) if current.starts_with(prev) => Some(&current[prev.len()..]),
-        Some(prev) => {
-            let prefix_len = calculate_common_prefix_len(prev, current);
-            if prefix_len == 0 || prefix_len >= current.len() {
-                Some(current)
-            } else {
-                Some(&current[prefix_len..])
-            }
-        }
-    }
-}
-
-fn calculate_common_prefix_len(left: &str, right: &str) -> usize {
-    let mut bytes = 0;
-    for (left_char, right_char) in left.chars().zip(right.chars()) {
-        if left_char != right_char {
-            break;
-        }
-        bytes += left_char.len_utf8();
-    }
-    bytes
 }
 
 fn filter_copilot_tools(

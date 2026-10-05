@@ -7,7 +7,7 @@ live under `agent/runloop/unified/turn/turn_processing/llm_request/`.
 | --- | --- | --- |
 | `copilot_runtime.rs`: `CopilotRuntimeHost` | Borrowed registry, UI/session state, permission caches, safety validator, hooks, harness budgets, and runtime request dispatch | The request renderer borrows the host; host drop aborts its remaining local terminal sessions |
 | `copilot_runtime/terminal.rs`: local terminal sessions | Private terminal state and tasks, output/exit snapshots, observed-tool association, and the host's terminal create/output/release/kill/wait methods | Explicit release or host drop aborts remaining work; completion publishes terminal exit state |
-| Host observed tool calls | Started/finished flags and previous output | Observed status updates control output deltas and choose final presentation color |
+| `copilot_runtime/observed.rs` | Private started/finished flags, previous output, command display, and Unicode output deltas | Updates return full output snapshots and one-time start/finish signals; the host emits harness events and accounts for failures |
 | `copilot_runtime/presentation.rs` | Shared inline spinner, prepared progress reporter, PTY runtime, and output callback | Finish stops the spinner, drops the callback, completes progress, and schedules runtime shutdown with the caller's final color |
 | `copilot_runtime/streaming.rs` | Prompt text/reasoning accumulation, finish-reason conversion, queued-update draining, and prompt cancellation guard | Polling installs the guard; dropping an active stream cancels the prompt; successful completion disarms it before emitting `Completed` |
 | `llm_request/mod.rs` | Starts the prompt session, retains the runtime request receiver, and runs the shared streaming renderer | Startup interruption/first-progress timeout and renderer success/error remain request-owned |
@@ -39,6 +39,13 @@ The caller also maps status to color; an unknown local exit remains a warning.
 Finishing still schedules completion and shutdown in a background task. Shutdown
 drains accepted output before applying the final color; dropping an unfinished
 presentation aborts its spinner/runtime without marking progress complete.
+
+The observed adapter borrows only PTY configuration from the registry. Its state
+fields remain private, with a name accessor and one update method. Harness output
+events use full snapshots; the inline PTY callback receives only the computed
+delta. Placeholder names can be enriched, repeated output is suppressed, and
+terminal observed statuses finish presentation once. Local terminal association
+continues through the terminal module before remote observed-state processing.
 
 Permission handling, exposed-tool allowlists, tool budgets, hook rewrites,
 sandbox-aware registry execution, verification guards, and harness-event emission

@@ -2,7 +2,7 @@
 <!-- markdownlint-disable MD013 -->
 # vtcode (binary)
 
-[Root AGENTS.md](../AGENTS.md) | CLI entrypoint, session bootstrap, and agent runloop wiring. Detailed runloop recovery and allocator notes live in the [vtcode binary gotchas guide](../docs/development/vtcode-binary-gotchas.md); [Copilot runtime ownership](../docs/development/copilot-runtime-ownership.md) maps host state and private streaming/terminal/presentation modules; callers own progress initialization and status mapping, shared presentation owns spinner/output/shutdown, and terminal state and registry harness launch/release ownership stay intact.
+[Root AGENTS.md](../AGENTS.md) | CLI entrypoint, session bootstrap, and agent runloop wiring. Detailed runloop recovery and allocator notes live in the [vtcode binary gotchas guide](../docs/development/vtcode-binary-gotchas.md); [Copilot runtime ownership](../docs/development/copilot-runtime-ownership.md) maps private streaming/terminal/observed/presentation modules; observed state returns full snapshots for host events and deltas for PTY output, callers own progress/status mapping, and registry harness launch/release ownership stays intact.
 
 ## Modules (active bridge: `agent/runloop/unified/webmcp.rs`)
 

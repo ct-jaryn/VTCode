@@ -726,3 +726,28 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Updated the binary module guidance and runtime ownership guide.
 - Next increment: inspect the remaining observed-call adapter boundary and
   session orchestration ownership before choosing the next extraction.
+
+### Step 7d: private Copilot observed-call state
+
+- Moved observed-call transitions, display extraction, UTF-8 output deltas, and
+  status colors into private `copilot_runtime/observed.rs`. State fields stay
+  private; the host uses a name accessor and update method that borrows PTY
+  configuration rather than the complete registry. The host is now 1,282 lines,
+  down from 1,429; the observed adapter has 159 production lines.
+- Named the returned cumulative output `output_snapshot` to distinguish harness
+  event payloads from the incremental delta sent to shared PTY presentation.
+  Local terminal association, host event order, failure accounting, permissions,
+  budgets, and request dispatch remain with their existing owners.
+- Transition and command/status/UTF-8 helper tokens match the original after
+  receiver/config/result-field adapters and rustfmt trailing-comma normalization.
+- Four new tests passed: Unicode append/rewrite/shrink boundaries, canonical
+  command aliases and display fallbacks, placeholder-name enrichment, blank and
+  repeated output suppression, full snapshots versus one-time PTY deltas, and
+  one-shot success/failure presentation. Public host entrypoint tests remain.
+- All 103 selected binary runtime/inline-events tests passed; 3,434 unrelated
+  tests were excluded. Final fast gate, scoped Markdown lint, and diff checks
+  passed. Live Copilot provider behavior and other platforms remain untested.
+- Copilot decomposition closes at this boundary. Remaining host work shares
+  permissions, budgets, hooks, tool execution, and event ownership; no new host
+  or broad execution context is warranted. Next: reuse the existing session
+  bootstrap module for thread/archive preparation in the orchestration loop.
