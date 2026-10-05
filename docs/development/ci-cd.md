@@ -67,6 +67,9 @@ compat asset sort before `vtcode-<v>-<target>.tar.gz` so the broken legacy updat
 gzip archive it cannot extract. The release fails if any required target archive (including Windows by default) is
 missing. Set `RELEASE_REQUIRE_WINDOWS=false` only for an emergency macOS/Linux rescue when Windows CI is flaky.
 
+Release-note formatting and fixture checks are documented in the
+[changelog ownership guide](release-changelog-ownership.md).
+
 #### macOS signing and Gatekeeper
 
 When Developer ID signing and notarization credentials are configured, both macOS release executables are signed with a

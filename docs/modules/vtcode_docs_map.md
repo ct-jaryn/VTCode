@@ -239,6 +239,10 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Process Hardening?", "How does Architecture work?", "How does
     Security Measures work?"
 
+- **File**: `docs/development/release-changelog-ownership.md`
+  - **Content**: Release changelog ownership
+  - **User Questions**: "What can you tell me about Release changelog ownership?"
+
 - **File**: `docs/development/responses-websocket-streaming.md`
   - **Content**: Responses WebSocket streaming
   - **Topics**: Lifecycle and cancellation, Continuation, Fallback and service tiers, Local verification

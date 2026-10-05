@@ -812,3 +812,36 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Next: phase 8, extract release changelog formatting and share only helpers
   whose canonical and legacy contracts match. Keep publication entrypoints out
   of fixture checks.
+
+### Step 8a: release changelog formatting and shared classification
+
+- Extracted canonical author mapping/tags, category formatting, grouped notes,
+  and contributors into sourceable `scripts/release-changelog.sh` (296 lines).
+  The release entrypoint is now 1,359 lines. Shared conventional type parsing
+  and subject exclusion live in `release-changelog-common.sh` (24 lines), used
+  by both the canonical formatter and existing legacy release library.
+- Preserve distinct canonical/legacy titles, username mapping, category layout,
+  and CI-marker cleanup rather than normalizing incompatible contracts. File
+  updates, versioning, packaging, tags, publishing, and Homebrew remain in their
+  existing owners. No new dependency was added.
+- A real Git fixture exposed a final-record bug: `--pretty=format` omits the
+  last newline, so canonical commit, contributor, and author-mapping readers
+  skipped the oldest record. Fixed all three readers to accept partial final
+  records; a single-commit range now produces notes and its contributor/tag.
+- Moved function bodies match the originals after exclusion delegation and
+  these three EOF fixes. The remaining entrypoint is byte-identical after
+  source wiring. Existing release scripts have no new ShellCheck diagnostics;
+  their one/eight prior diagnostics remain outside this increment.
+- All 26 owned Git-fixture checks passed: exact category/history order and
+  output, aliases, contributor deduplication, bot exclusions, subject filtering,
+  empty ranges, final-record author mapping, distinct legacy contracts, live
+  legacy classifier wiring, and safe entrypoint help. HEAD/worktree/tags remain
+  unchanged by formatting, and publication commands are instrumented to fail.
+- Bash syntax, strict ShellCheck for the new modules/test, formatting, scoped
+  Markdown lint, diff checks, and the existing asset/signing fixture suites
+  passed. Full release dry-run orchestration and
+  publication were not run. Rust verification was completed in step 7f; this
+  script/docs increment does not require another Rust rebuild.
+- Added the [changelog ownership guide](release-changelog-ownership.md) and
+  linked it from the CI/release guide. Next: share the identical file-insertion
+  helper with fixture checks before closing the release decomposition boundary.

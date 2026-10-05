@@ -5,6 +5,9 @@
 
 [ -z "${SCRIPT_DIR:-}" ] && SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
+# Shared classification; legacy formatting remains below.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/release-changelog-common.sh"
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -110,16 +113,6 @@ add_username_tags() {
 	echo "$result"
 }
 
-parse_commit_type() {
-	local message="$1"
-	local type=$(echo "$message" | sed -E 's/^([a-z]+)(\([^)]+\))?:.*/\1/')
-	if [[ "$type" == "$message" ]]; then
-		echo "other"
-	else
-		echo "$type"
-	fi
-}
-
 get_type_prefix() {
 	local type="$1"
 	case "$type" in
@@ -193,10 +186,7 @@ generate_structured_changelog() {
 			local hash message
 			hash=$(echo "$line" | awk '{print $1}')
 			message=$(echo "$line" | cut -d' ' -f2-)
-			# Skip release noise + owner-only TODO churn (docs/project/TODO.md).
-			local lower_msg
-			lower_msg=$(echo "$message" | tr '[:upper:]' '[:lower:]')
-			if [[ "$lower_msg" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog|update.*todo|docs\(todo\)|docs\(project\).*todo|^update project$) ]]; then
+			if release_commit_is_excluded "$message"; then
 				continue
 			fi
 			local type
