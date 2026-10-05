@@ -573,3 +573,29 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Updated core module guidance and the pipeline ownership guide.
 - Next increment: map handler execution and settlement ownership before choosing
   another extraction; keep PTY permits, snapshot lifetime, and history together.
+
+### Step 6e: registered-handler dispatch
+
+- Mapped execution ownership and extracted registered-handler dispatch into
+  private `execution_handlers.rs`. The facade is now 1,458 lines, down from
+  1,494 after step 6d; the new production module is 63 lines.
+- The helper owns deprecation warnings, function-handler dispatch with optional
+  memory-pool retrieval, and trait-object cache selection/insertion. It executes
+  inside the original outer timeout and PTY permit lifetime. It grants no
+  admission and does not normalize output or record history.
+- MCP and noninteractive command routing, settlement mode, middleware, fresh-read
+  nonce, snapshots, timeout/breaker handling, output processing, and history stay
+  in the facade. Public APIs and dependencies are unchanged.
+- Moved handler tokens match after cache-reference and canonical-name ownership
+  adaptations; retained facade tokens match after the call-site/import changes.
+- Added six regressions with distinct cached/registered instances, both
+  optimization/pool settings, canonical cache keys, raw error chains, public
+  alias payload/history, and cancellation followed by cached retry. Cancellation
+  verifies handler drop, PTY permit release, and absence of a completed history
+  record before retry. It uses instance-owned signals and counters.
+- All 505 selected registry tests passed; 3,577 unrelated tests were excluded.
+  Final fast gate, scoped Markdown lint, and diff checks passed. The cancellation
+  fixture verifies permit accounting without launching a host PTY subprocess.
+- Updated core module guidance and the execution-pipeline ownership guide.
+- Next increment: review success-result processing and history invalidation for
+  shared, focused boundaries before moving any broader settlement state.

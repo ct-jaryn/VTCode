@@ -16,6 +16,7 @@ mod dual_output;
 mod error;
 mod execution_attempts;
 mod execution_facade;
+mod execution_handlers;
 mod execution_history;
 mod execution_kernel;
 mod execution_request;

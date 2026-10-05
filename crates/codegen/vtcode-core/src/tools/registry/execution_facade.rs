@@ -25,7 +25,7 @@ use super::normalize_tool_output;
 use super::reentrancy::ToolReentrancyGuard;
 use super::{
     ExecSettlementMode, ExecutionPolicySnapshot, ToolErrorType, ToolExecutionError, ToolExecutionOutcome,
-    ToolExecutionRecord, ToolExecutionRequest, ToolHandler, ToolRegistry,
+    ToolExecutionRecord, ToolExecutionRequest, ToolRegistry,
 };
 use vtcode_config::constants::execution::{LOOP_THROTTLE_MAX_MS, LOOP_THROTTLE_REGISTRY_BASE_MS};
 
@@ -1131,44 +1131,8 @@ impl ToolRegistry {
             } else if exec_settlement_mode.settle_noninteractive() && tool_name == tools::WRITE_STDIN {
                 self.execute_write_stdin(args, exec_settlement_mode).await
             } else if let Some(registration) = self.inventory.registration_for(&tool_name) {
-                // Log deprecation warning if tool is deprecated
-                if registration.is_deprecated() {
-                    if let Some(msg) = registration.deprecation_message() {
-                        warn!("Tool '{}' is deprecated: {}", tool_name, msg);
-                    } else {
-                        warn!("Tool '{}' is deprecated and may be removed in a future version", tool_name);
-                    }
-                }
-
-                let handler = registration.handler();
-                match handler {
-                    ToolHandler::RegistryFn(executor) => {
-                        // PERFORMANCE OPTIMIZATION: Use memory pool for tool execution if enabled
-                        if self.optimization_config.memory_pool.enabled {
-                            let _execution_guard = self.memory_pool.get_value();
-                            let _string_guard = self.memory_pool.get_string();
-                            let _vec_guard = self.memory_pool.get_vec();
-                            executor(self, args).await
-                        } else {
-                            executor(self, args).await
-                        }
-                    }
-                    ToolHandler::TraitObject(tool) => {
-                        // PERFORMANCE OPTIMIZATION: Use cached tool if available and optimizations enabled
-                        if self.optimization_config.tool_registry.use_optimized_registry {
-                            if let Some(cached_tool) = cached_tool.as_ref() {
-                                // Use cached tool instance to avoid registry lookup overhead
-                                cached_tool.execute(args).await
-                            } else {
-                                // Cache the tool for future use
-                                self.hot_tool_cache.write().put(tool_name.clone(), tool.clone());
-                                tool.execute(args).await
-                            }
-                        } else {
-                            tool.execute(args).await
-                        }
-                    }
-                }
+                self.execute_registered_handler(&tool_name, &registration, args, cached_tool.as_ref())
+                    .await
             } else {
                 // This should theoretically never happen since we checked tool_exists above
                 // Generate helpful error message with available tools

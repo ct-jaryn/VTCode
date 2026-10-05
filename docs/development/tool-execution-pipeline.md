@@ -4,8 +4,9 @@ The registry keeps one execution path. These private modules divide ownership:
 
 | Module | Responsibility |
 | --- | --- |
-| `execution_facade.rs` | Public entrypoints, route orchestration, preflight, execution policy, handler execution, settlement, and history |
+| `execution_facade.rs` | Public entrypoints, route orchestration, preflight, execution policy, MCP/command dispatch, settlement, and history |
 | `execution_attempts.rs` | Structured-request safety admission, error interpretation, retry scheduling, attempt counts, and outcome metadata |
+| `execution_handlers.rs` | Registered-handler deprecation warnings, function dispatch, memory-pool retrieval, and trait-object cache selection |
 | `execution_kernel.rs` | Shared argument normalization, dispatch authority, and preflight validation |
 | `execution_stages.rs` | Canonical/display names, execution argument preparation, base route metadata, and awaited MCP discovery |
 | `reentrancy.rs` | Task/thread recursion frames and drop cleanup |
@@ -39,6 +40,14 @@ unknown routes carry lookup errors back to the facade. Canonical MCP routes skip
 discovery. Unknown-tool diagnostics, error/history recording, circuit-breaker
 history, and PTY acquisition remain in the facade. Route metadata alone does not
 establish remote availability or approval.
+
+Registered-handler dispatch runs inside the facade's existing execution future,
+after middleware and the fresh-read nonce. Its private helper executes the
+selected registration or canonical cached trait object without recording history
+or processing output. Function handlers retain memory-pool retrieval when enabled.
+MCP and noninteractive command dispatch, outer timeouts, PTY permit lifetime,
+snapshot context, output processing, middleware callbacks, and result recording
+remain facade-owned.
 
 The [reentrancy guide](tool-reentrancy.md) describes task isolation and cleanup.
 Keep extraction call sites in their original order; new modules must not bypass
