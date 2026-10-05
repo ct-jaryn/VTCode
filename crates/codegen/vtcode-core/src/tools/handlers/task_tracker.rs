@@ -618,6 +618,15 @@ pub(crate) fn task_tracker_parameter_schema_for_workflow(planning_active: bool) 
     }
 }
 
+/// Model-facing correction for `task_tracker` schema failures.
+///
+/// The schema uses conditional (`if`/`then`/`not`) rules, so a bare
+/// "required fields" hint is not enough: `create` forbids `index`/`index_path`,
+/// `update` needs exactly one shape, and `add`/`list` have their own shapes.
+/// Without this, a `create` bundled with update fields fails with a generic
+/// root error and the model retries blindly.
+pub const TASK_TRACKER_ARGUMENT_CORRECTION: &str = "Invalid task_tracker args. Use action='create' with only title/items (+ optional notes); action='update' with index|index_path + status OR items for bulk sync; action='add' with description; action='list' alone. Remove index/index_path from create/list/add and retry once.";
+
 impl TaskTrackerTool {
     pub fn new(workspace_root: PathBuf, planning_workflow_state: PlanningWorkflowState) -> Self {
         Self {

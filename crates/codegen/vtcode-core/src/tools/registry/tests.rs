@@ -1420,6 +1420,39 @@ async fn preflight_task_tracker_schema_tracks_planning_state() -> Result<()> {
 }
 
 #[tokio::test]
+async fn preflight_task_tracker_create_rejects_update_fields_actionably() -> Result<()> {
+    // Regression for session-vtcode-20261005T085022Z: a `create` bundled with
+    // `index`/`index_path`/`status` previously failed with a bare
+    // `field '(root)' failed validation: {...}` dump. It must name the
+    // forbidden fields and point at the action-aware correction.
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+
+    let error = registry
+        .preflight_validate_call(
+            tools::TASK_TRACKER,
+            &json!({
+                "action": "create",
+                "title": "README improvement plan",
+                "items": ["Review README structure"],
+                "index_path": "1",
+                "index": 1,
+                "status": "completed",
+                "description": ""
+            }),
+        )
+        .expect_err("create must reject index/index_path");
+    let error_text = error.to_string();
+    assert!(error_text.contains("Invalid arguments for tool 'task_tracker'"), "{error_text}");
+    assert!(error_text.contains("must not include"), "{error_text}");
+    assert!(error_text.contains("index"), "{error_text}");
+    assert!(!error_text.contains("failed validation: {\"action\""), "{error_text}");
+    assert!(error_text.contains("action='create' with only title/items"), "{error_text}");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn preflight_rejects_removed_exec_code_alias() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
