@@ -86,6 +86,11 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Anthropic Thinking in VT Code?", "How does Compact Runtime Matrix
     work?", "How does Turning up-front thinking off work?"
 
+- **File**: `docs/development/stdio-line-framing.md`
+  - **Content**: Bounded subprocess line framing
+  - **Topics**: Verification
+  - **User Questions**: "What can you tell me about Bounded subprocess line framing?", "How does Verification work?"
+
 - **File**: `docs/development/CPP_CORE_GUIDELINES_ADOPTION.md`
   - **Content**: C++ Core Guidelines Adoption
   - **Topics**: Scope, Mandatory C++ Rules, Review and Enforcement

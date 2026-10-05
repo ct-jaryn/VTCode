@@ -396,6 +396,10 @@ response demultiplexing, and deterministic teardown guarantees.
 | `TimeoutDetector` | `crates/codegen/vtcode-core/src/core/timeout_detector.rs`                                             | Global detector with `mpsc::UnboundedSender<String>` cleanup channel; background task processes end-operation requests from dropped `TimeoutHandle`s.                   |
 | `ProcessHandle`   | `crates/codegen/vtcode-bash-runner/src/pipe.rs`                                                       | Handle wraps channels for stdin, output broadcast, and exit status; separate writer, reader, and wait tasks.                                                            |
 
+ACP and Copilot share the bounded byte reader in `vtcode-commons::line_framing`,
+with explicit LF accounting per adapter. See [stdio line framing](../development/stdio-line-framing.md)
+for delimiter, EOF, error, and cancellation contracts.
+
 **When to use the actor pattern vs. simpler alternatives:**
 
 | Scenario                                         | Recommended approach          |

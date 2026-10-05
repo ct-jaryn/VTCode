@@ -395,3 +395,28 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Native VS Code terminal behavior, Windows quoting, and full activation require
   host checks and are not claimed tested. No production dependencies added.
 - Next increment: step 5 transport framing and UI protocol reuse.
+
+### Step 5a: shared bounded subprocess line framing
+
+- Added `vtcode-commons::line_framing` as the single bounded byte-framing
+  implementation. ACP and Copilot retain their local adapters and error shapes;
+  ACP explicitly excludes LF from the cap, while Copilot includes it. CR remains
+  content. Copilot server-client headers also use the shared reader through the
+  existing Copilot adapter. No production dependencies or crate boundaries changed.
+- Retained drain-to-LF/EOF behavior, zero-cap and empty-line handling, final partial
+  lines, byte-oriented truncation, and caller-buffer reuse. Pending-call guards,
+  write-queue backpressure, routing, JSON-RPC IDs, and child teardown are untouched.
+- Added four commons tests and two adapter regressions. An independent full-input
+  oracle checks both policies across five inputs, nine caps, and nine chunk sizes;
+  explicit cases cover exact caps, CRLF, oversized final lines, and partial-read
+  errors. All 43 focused framing/transport/Copilot-client tests passed with the
+  Copilot feature enabled, including timeout, EOF, and prompt cancellation cases.
+- Warnings-denied locked checks for all three affected crates, the repository
+  fast gate, formatting, scoped Markdown lint, and staged diff checks passed.
+  Updated affected module guidance and documented the delimiter/error/cancellation
+  contracts in `docs/development/stdio-line-framing.md` and the async guide.
+- The reader is not cancellation-safe; its public contract requires callers to
+  terminate on read failure rather than assuming a fresh frame boundary. Existing
+  transport reader ownership is preserved. Live external ACP/Copilot subprocesses
+  were not exercised; verification used unit and in-memory transport fixtures.
+- Next increment: independently map and extract shared UI protocol payloads.

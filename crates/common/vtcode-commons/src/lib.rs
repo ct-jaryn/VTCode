@@ -43,6 +43,7 @@ pub mod image;
 pub mod interjection;
 pub mod interner;
 pub mod json_extract;
+pub mod line_framing;
 pub mod llm;
 pub mod lr_map;
 pub mod memory;
