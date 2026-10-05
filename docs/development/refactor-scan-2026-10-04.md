@@ -1018,3 +1018,32 @@ that instruction; no further coupled-block extraction is justified by this audit
   buffered frames do not establish rendered host acceptance, mouse selection,
   live resize, or browser integration. Those checks remain open. VS Code
   Computer Use remains skipped at the owner's request.
+
+### Follow-up: registered command context and real extension checks
+
+- Fixed a missing runtime context field: activation now supplies its output
+  channel to `CommandRegistry`, and each registered invocation forwards it to
+  admission and execution. This restores modular command logging and IDE-context
+  warning output. No-argument callers retain a registry-owned fallback channel;
+  supplied channels remain activation-owned. Editor/selection/terminal state is
+  still read for each invocation, and workspace-trust gates remain intact.
+- Shared tool/participant contribution lookup through a small validated manifest
+  helper instead of two untyped blocks. Invalid root/group/entry shapes do not
+  enable integrations; valid literal identifiers preserve the existing decisions.
+  Marked four intentionally unused parameters while retaining their signatures.
+  The unused backend context slot now carries `unknown`, and disposal avoids
+  returning VS Code's untyped result from a callback.
+- The shipped entrypoint import graph now typechecks with the repository's strict
+  compiler options: seven prior diagnostics are resolved. Default
+  `npm run typecheck` and `npm test` now run the explicit entrypoint graph check and all
+  isolated Node fixtures. Full-project legacy tests and unshipped modules remain
+  outside that passed typecheck; the full project reports 570 diagnostics, 58 in
+  non-test files outside the shipped graph. No full-source pass is claimed.
+- All 42 Node tests passed without skips, including six new manifest/registry
+  regressions. Registry regressions failed before the correction. Both focused
+  typechecks, changed-module lint, production bundle, and production dependency
+  audit passed (zero vulnerabilities). Entrypoint lint improves from 21 to seven
+  existing errors, with no new diagnostic in a source-level baseline comparison.
+- The owner deprioritized further VS Code extension optimization. Close this
+  already-started correction and return to Rust-side improvements. Computer Use
+  for VS Code remains skipped; native/browser rendered acceptance stays open.

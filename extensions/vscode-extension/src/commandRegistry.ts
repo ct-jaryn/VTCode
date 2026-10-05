@@ -15,6 +15,13 @@ import { CommandContext, ICommand } from "./types/command";
 export class CommandRegistry {
     private commands = new Map<string, ICommand>();
     private disposables: vscode.Disposable[] = [];
+    private readonly output: vscode.OutputChannel;
+    private readonly ownsOutput: boolean;
+
+    constructor(output?: vscode.OutputChannel) {
+        this.output = output ?? vscode.window.createOutputChannel("VT Code");
+        this.ownsOutput = output === undefined;
+    }
 
     /**
      * Register a command with the registry
@@ -81,7 +88,9 @@ export class CommandRegistry {
      */
     public clear(): void {
         this.commands.clear();
-        this.disposables.forEach((d) => d.dispose());
+        for (const disposable of this.disposables) {
+            disposable.dispose();
+        }
         this.disposables = [];
     }
 
@@ -94,6 +103,7 @@ export class CommandRegistry {
             activeTextEditor: vscode.window.activeTextEditor,
             selection: vscode.window.activeTextEditor?.selection,
             terminal: vscode.window.activeTerminal,
+            output: this.output,
         };
     }
 
@@ -102,5 +112,8 @@ export class CommandRegistry {
      */
     public dispose(): void {
         this.clear();
+        if (this.ownsOutput) {
+            this.output.dispose();
+        }
     }
 }

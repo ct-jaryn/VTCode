@@ -2,6 +2,7 @@ import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import * as vscode from "vscode";
 import { InteractiveTerminal } from "./services/interactiveTerminal";
 import { requestWorkspaceTrust } from "./services/workspaceTrust";
+import { hasManifestContribution } from "./utils/manifestContributions";
 import { CommandRegistry } from "./commandRegistry";
 import { executeVtcodeProcess, type VtcodeProcessOptions } from "./services/processExecution";
 import { registerConfigurationCommands } from "./commands/configurationCommands";
@@ -119,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(outputChannel);
 
     // Initialize command registry with modular commands
-    const commandRegistry = new CommandRegistry();
+    const commandRegistry = new CommandRegistry(outputChannel);
 
     // Register all modular commands
     commandRegistry.registerAll([
@@ -1232,21 +1233,15 @@ function buildTaskTrackerPrompt(definition: VtcodeTaskDefinition): string {
 
 function registerVtcodeAiIntegrations(context: vscode.ExtensionContext): void {
     context.subscriptions.push(mcpDefinitionsChanged);
-    const contributedLanguageModelTools = Array.isArray(
-        context.extension.packageJSON?.contributes?.languageModelTools
-    )
-        ? context.extension.packageJSON.contributes.languageModelTools
-        : [];
-    const hasTaskTrackerToolContribution = contributedLanguageModelTools.some(
-        (tool) => tool?.name === VT_CODE_TASK_TRACKER_TOOL
+    const hasTaskTrackerToolContribution = hasManifestContribution(
+        context.extension.packageJSON,
+        "languageModelTools",
+        VT_CODE_TASK_TRACKER_TOOL
     );
-    const contributedChatParticipants = Array.isArray(
-        context.extension.packageJSON?.contributes?.chatParticipants
-    )
-        ? context.extension.packageJSON.contributes.chatParticipants
-        : [];
-    const hasChatParticipantContribution = contributedChatParticipants.some(
-        (participant) => participant?.id === VT_CODE_CHAT_PARTICIPANT_ID
+    const hasChatParticipantContribution = hasManifestContribution(
+        context.extension.packageJSON,
+        "chatParticipants",
+        VT_CODE_CHAT_PARTICIPANT_ID
     );
 
     if (

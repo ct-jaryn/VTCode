@@ -86,13 +86,16 @@ npm run watch
 
 ### Running Tests
 
-The default `compile`, `typecheck`, `lint`, and `test` scripts currently print
-skip messages for the precompiled distribution. They do not validate source.
-The legacy tests also mix Jest, Vitest, and extension-host APIs; the full project
-typecheck reports existing errors. For the extracted views and process/config/terminal/trust
-services, run these real checks:
+`npm run typecheck` checks the shipped `src/extension.ts` import graph using
+`tsconfig.extension.json`; `npm test` runs all isolated Node tests in `test/`.
+The `compile` and `lint` scripts still print skip messages for the precompiled
+distribution. The full `tsconfig.json` also includes legacy tests that mix Jest,
+Vitest, and extension-host APIs, plus modules outside the shipped graph; that
+broader check retains errors. Run the real source and focused module checks:
 
 ```bash
+npm run typecheck
+npm test
 npm run typecheck:views
 npm run test:views
 npm run typecheck:services
@@ -123,14 +126,18 @@ extensions/vscode-extension/
     services/interactiveTerminal.ts    # Native CLI terminal lifecycle
     services/workspaceTrust.ts         # Stable manual trust flow and host-state checks
     utils/vtcodeRunner.ts               # Modular-command preflight and helpers
+    utils/manifestContributions.ts      # Validated tool/participant manifest lookup
  test/
     views.test.cjs     # View tests with an isolated VS Code fixture
     services.test.cjs  # Process/config tests with mocked spawning and config APIs
     terminal.test.cjs  # Terminal lifecycle tests with mocked VS Code API
     trust.test.cjs     # Proposed-API rejection, manual trust, and command admission
+    registry.test.cjs  # Shared output channel and fresh command context
+    manifest.test.cjs  # Literal contribution matching and malformed shapes
     helpers/compileModules.cjs  # Shared module compilation and fixture isolation
  tsconfig.views.json   # Focused view typecheck
  tsconfig.services.json # Focused process/config/terminal/trust typecheck
+ tsconfig.extension.json # Shipped entrypoint and its imported modules
  tsconfig.json         # TypeScript configuration
  .vscode/
     launch.json       # Debug launch configurations
@@ -159,6 +166,16 @@ workspaces, while ordinary execution commands retain their existing trust gate.
 Activation still owns its one-time prompt key, and failures retain their original
 error for the caller's command/activation handling. `npm run test:services`
 includes the trust regressions; no Computer Use is required for these tests.
+
+Activation supplies its output channel to `CommandRegistry`, so modular commands
+and IDE-context warnings use the same channel. The registry never disposes a
+supplied channel. No-argument callers receive one registry-owned fallback channel,
+released on disposal; clearing command registrations leaves that channel alive.
+Each invocation reads current editor, selection, terminal, and workspace state.
+AI integration registration uses one manifest lookup that accepts only an array
+of object entries and matches literal tool names or participant IDs. Malformed
+manifest shapes do not enable an integration; the existing runtime API and
+workspace-trust checks still determine availability and execution.
 
 ## Debugging the Extension
 

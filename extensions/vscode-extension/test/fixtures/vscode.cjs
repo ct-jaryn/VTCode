@@ -21,7 +21,7 @@ class EventEmitter {
 class CancellationError extends Error {}
 const testState = {
     handlers: new Map(), messages: [], picks: [], beforeProgress: undefined,
-    channel: { show() {}, append() {}, appendLine() {} },
+    channel: { show() {}, append() {}, appendLine() {}, dispose() {} },
 };
 module.exports = {
     TreeItem, ThemeIcon, MarkdownString, EventEmitter,

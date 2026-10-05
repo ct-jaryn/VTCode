@@ -11,7 +11,8 @@ export class RefreshCommand extends BaseCommand {
         "Refresh VT Code quick actions and CLI availability";
     public readonly icon = "refresh";
 
-    async execute(context: CommandContext): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Retain the BaseCommand signature.
+    async execute(_context: CommandContext): Promise<void> {
         // Refresh quick actions provider if available
         // This would be integrated with the main extension's providers
 

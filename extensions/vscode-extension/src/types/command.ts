@@ -13,7 +13,7 @@ export interface CommandContext {
     /** Active terminal, if any */
     terminal?: vscode.Terminal;
     /** VT Code backend instance */
-    backend?: any;
+    backend?: unknown;
     /** Output channel for logging */
     output: vscode.OutputChannel;
 }
@@ -67,7 +67,8 @@ export abstract class BaseCommand implements ICommand {
         return firstWorkspace?.uri.fsPath;
     }
 
-    protected ensureWorkspaceTrusted(context: CommandContext): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Retain the command helper signature.
+    protected ensureWorkspaceTrusted(_context: CommandContext): boolean {
         if (!vscode.workspace.isTrusted) {
             void vscode.window.showWarningMessage(
                 "VT Code requires a trusted workspace to execute this command."
@@ -77,7 +78,8 @@ export abstract class BaseCommand implements ICommand {
         return true;
     }
 
-    protected ensureCliAvailable(context: CommandContext): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Retain the command helper signature.
+    protected ensureCliAvailable(_context: CommandContext): boolean {
         // This will be implemented with proper CLI detection
         return true;
     }

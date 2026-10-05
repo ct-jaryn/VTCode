@@ -11,7 +11,8 @@ export class OpenConfigCommand extends BaseCommand {
     public readonly description = "Open the vtcode.toml configuration file";
     public readonly icon = "gear";
 
-    async execute(context: CommandContext): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Retain the BaseCommand signature.
+    async execute(_context: CommandContext): Promise<void> {
         try {
             const configUri = await pickVtcodeConfigUri();
             if (!configUri) {
