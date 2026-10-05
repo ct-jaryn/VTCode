@@ -4372,15 +4372,7 @@
         "id": "xiaomimimo/mimo-v2.6-pro",
         "name": "MiMo V2.6 Pro (Merge Gateway)",
         "description": "Xiaomi MiMo V2.6 Pro flagship reasoning model served through Merge Gateway's native Responses API.",
-        "reasoning": true,
-        "reasoning_efforts": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
+        "reasoning": false,
         "tool_call": true,
         "modalities": {
           "input": [
@@ -4405,15 +4397,7 @@
         "id": "xiaomimimo/mimo-v2.6-flash",
         "name": "MiMo V2.6 Flash (Merge Gateway)",
         "description": "Xiaomi MiMo V2.6 Flash efficient reasoning model served through Merge Gateway's native Responses API.",
-        "reasoning": true,
-        "reasoning_efforts": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
+        "reasoning": false,
         "tool_call": true,
         "modalities": {
           "input": [

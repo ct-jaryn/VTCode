@@ -77,8 +77,8 @@ vtcode --provider merge-gateway --model anthropic/claude-opus-5
 | `openai/gpt-6-sol` | 1.05M | Yes | OpenAI route |
 | `openai/gpt-6.1-sol` | 1.05M | Yes | OpenAI route |
 | `openai/gpt-6-luna` | 1.05M | Yes | OpenAI route |
-| `xiaomimimo/mimo-v2.6-pro` | 1M | Yes | Xiaomi MiMo route, flagship reasoning |
-| `xiaomimimo/mimo-v2.6-flash` | 1M | Yes | Xiaomi MiMo route, efficient reasoning |
+| `xiaomimimo/mimo-v2.6-pro` | 1M | Yes | Xiaomi MiMo route; reasoning controls omitted (gateway has no vendor serving reasoning jointly with tools) |
+| `xiaomimimo/mimo-v2.6-flash` | 1M | Yes | Xiaomi MiMo route; reasoning controls omitted (gateway has no vendor serving reasoning jointly with tools) |
 
 These are the models shown in VT Code's picker. Merge model IDs are not a
 closed local allowlist: any valid explicit `provider/model` route can be used
@@ -143,7 +143,7 @@ applies the configured reasoning effort using the route's advertised control:
 routes advertising a provider-native `reasoning_effort` (OpenAI, xAI, Moonshot,
 Meta, Z.AI prefixes) receive a `reasoning_effort` string, while routes advertising a
 Gateway-managed thinking budget (Anthropic, Gemini, DeepSeek, Qwen, MiniMax,
-Thinking Machines, Xiaomi MiMo prefixes) receive a top-level `thinking` block with a
+Thinking Machines prefixes) receive a top-level `thinking` block with a
 `budget_tokens` value derived from the effort level and clamped below
 `max_tokens`. Unclassified routes such as `default_routing` and unknown explicit
 route IDs never receive reasoning controls. Merge routing metadata and billed
@@ -169,7 +169,15 @@ through its existing response contract.
   tool vendor at all the request fails closed — use `default_routing` or
   another model until the route gains tool vendors. A proven no-tool-vendor
   verdict is cached per session so later turns fail fast without burning
-  calls; tool-free requests always bypass the cache.
+  calls; tool-free requests always bypass the cache. A rejection naming
+  `reasoning` alongside `tools` blames that combination rather than tools
+  alone, so it is never cached as a no-tool-vendor verdict.
+- `capability_unavailable` naming `reasoning` (e.g. `(['reasoning', 'tools'])`
+  on `xiaomimimo/mimo-v2.6-*`): no vendor serves reasoning jointly with tools
+  for the route. VT Code omits reasoning controls for such routes
+  (`xiaomimimo/` is unclassified); explicitly configuring an effort for them
+  blocks the turn up front ("Choose a supported reasoning effort...") instead
+  of sending a doomed request.
 - `service_tier` `422`/`400`: Merge only accepts `standard`/`flex`/`priority`,
   and serves `flex` solely on routes priced for it (GPT-5.4/5.5/5.6 and Gemini
   flash routes); `priority` is priced nowhere and always fails closed. VT Code

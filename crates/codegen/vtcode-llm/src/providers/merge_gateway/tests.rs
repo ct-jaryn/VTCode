@@ -153,6 +153,108 @@ fn capability_unavailable_detection_matches_gateway_body() {
     assert!(!is_capability_unavailable(StatusCode::BAD_REQUEST, ""));
 }
 
+#[test]
+fn reasoning_capability_rejection_attribution_matches_gateway_body() {
+    let reasoning_body = r#"{"error":{"type":"invalid_request_error","message":"Model 'xiaomimimo/mimo-v2.6-flash' has no vendor that supports the requested capabilities (['reasoning', 'tools']).","source":"gateway","code":"capability_unavailable","param":"model"}}"#;
+    assert!(is_reasoning_capability_rejection(reasoning_body));
+    let tools_body = r#"{"error":{"type":"invalid_request_error","message":"Model 'openai/gpt-6.1-sol' has no vendor that supports the requested capabilities (['streaming_tools', 'tools']).","source":"gateway","code":"capability_unavailable","param":"model"}}"#;
+    assert!(!is_reasoning_capability_rejection(tools_body));
+    assert!(!is_reasoning_capability_rejection(r#"{"error":{"code":"invalid_parameter"}}"#));
+    assert!(!is_reasoning_capability_rejection(""));
+}
+
+#[test]
+fn native_payload_omits_reasoning_for_xiaomimimo_routes() {
+    // The gateway has no vendor serving reasoning jointly with tools for
+    // `xiaomimimo/` routes: forwarding `thinking` turns every agentic request
+    // into a `capability_unavailable` rejection, so the routes stay
+    // unclassified and reasoning controls are omitted.
+    let provider = test_provider("http://127.0.0.1:1");
+    for model in [
+        models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO,
+        models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH,
+    ] {
+        assert!(!provider.supports_reasoning(model), "{model} must not advertise reasoning");
+        assert!(!provider.supports_reasoning_effort(model), "{model} must not advertise reasoning effort");
+        let payload = provider
+            .build_native_payload(
+                &LLMRequest {
+                    messages: vec![Message::user("hello".to_string())].into(),
+                    model: model.to_string(),
+                    reasoning_effort: Some(vtcode_config::types::ReasoningEffortLevel::High),
+                    max_tokens: Some(4096),
+                    ..Default::default()
+                },
+                false,
+            )
+            .expect("payload builds");
+        assert!(payload.get("reasoning_effort").is_none(), "{model} must not forward reasoning_effort");
+        assert!(payload.get("thinking").is_none(), "{model} must not forward thinking");
+    }
+}
+
+#[tokio::test]
+async fn reasoning_capability_rejection_does_not_poison_tool_vendor_cache() {
+    use std::sync::Mutex;
+
+    // A rejection naming `reasoning` (e.g. `(['reasoning', 'tools'])`)
+    // blames the combination, not tools alone: later turns must re-probe the
+    // network instead of failing fast on a cached no-tool-vendor verdict.
+    let server = MockServer::start().await;
+    let provider = test_provider(&server.uri());
+    let seen_thinking = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_mock = Arc::clone(&seen_thinking);
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(move |req: &wiremock::Request| {
+            let payload: Value = serde_json::from_slice(&req.body).expect("valid json body");
+            seen_for_mock.lock().expect("mutex not poisoned").push(payload.get("thinking").is_some());
+            ResponseTemplate::new(400).set_body_json(json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Model 'deepseek/deepseek-v4.1-flash' has no vendor that supports the requested capabilities (['reasoning', 'tools']).",
+                    "source": "gateway",
+                    "code": "capability_unavailable",
+                    "param": "model"
+                }
+            }))
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let tool_request = || LLMRequest {
+        messages: vec![Message::user("hello".to_string())].into(),
+        model: models::merge_gateway::DEEPSEEK_FLASH.to_string(),
+        tools: Some(Arc::new(vec![ToolDefinition::function(
+            "get_weather".to_string(),
+            "Get weather".to_string(),
+            json!({"type": "object", "properties": {}}),
+        )])),
+        reasoning_effort: Some(vtcode_config::types::ReasoningEffortLevel::Medium),
+        ..Default::default()
+    };
+    let first = provider
+        .generate(tool_request())
+        .await
+        .expect_err("reasoning+tools rejection must fail");
+    assert!(first.to_string().contains("capability"), "got: {first}");
+    assert!(!first.to_string().contains("cached"), "first failure must not claim a cached verdict, got: {first}");
+
+    let second = provider
+        .generate(tool_request())
+        .await
+        .expect_err("second turn must re-probe, not fail fast");
+    assert!(
+        !second.to_string().contains("cached"),
+        "reasoning-caused rejection must not poison the tool-vendor cache, got: {second}"
+    );
+
+    // Both turns sent the thinking block that triggered the joint rejection.
+    assert_eq!(seen_thinking.lock().expect("mutex not poisoned").as_slice(), &[true, true]);
+}
+
 #[tokio::test]
 async fn native_stream_retries_without_streaming_on_capability_unavailable() {
     use std::sync::Mutex;

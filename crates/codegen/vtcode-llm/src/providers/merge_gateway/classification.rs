@@ -54,6 +54,25 @@ pub(crate) fn is_capability_unavailable(status: StatusCode, body: &str) -> bool 
     lower.contains("capability_unavailable") || lower.contains("has no vendor that supports")
 }
 
+/// Whether a `capability_unavailable` rejection names `reasoning` in the
+/// requested capability set (e.g. `requested capabilities (['reasoning',
+/// 'tools'])`). Such a rejection blames the reasoning+tools combination, not
+/// tools alone, so it must not poison the no-tool-vendor verdict cache.
+pub(crate) fn is_reasoning_capability_rejection(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    let Some(capabilities) = lower.find("capabilit").and_then(|start| {
+        let rest = &lower[start..];
+        let open = rest.find('[')?;
+        let close = rest[open..].find(']')?;
+        Some(&rest[open..open + close])
+    }) else {
+        return false;
+    };
+    capabilities
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == "reasoning")
+}
+
 /// Detects Merge Gateway tier-pricing rejections: the value is valid but the
 /// route is not priced for it ("model does not support service tier 'flex'";
 /// `priority` is priced nowhere and always fails). Fails closed with 400;
@@ -103,6 +122,11 @@ pub(crate) enum MergeReasoningControl {
 
 /// Classifies a Merge Gateway route by its reasoning control surface. Unknown
 /// routes stay conservative: reasoning is never forwarded for them.
+///
+/// `xiaomimimo/` routes are intentionally unclassified: the gateway currently
+/// has no vendor serving reasoning jointly with tools for them, so forwarding
+/// a `thinking` block turns every agentic request into a
+/// `capability_unavailable` rejection.
 pub(crate) fn merge_reasoning_control_for_model(model: &str) -> Option<MergeReasoningControl> {
     let model = model.trim();
     if model.starts_with("openai/")
@@ -118,12 +142,22 @@ pub(crate) fn merge_reasoning_control_for_model(model: &str) -> Option<MergeReas
         || model.starts_with("qwen/")
         || model.starts_with("minimax/")
         || model.starts_with("thinkingmachines/")
-        || model.starts_with("xiaomimimo/")
     {
         Some(MergeReasoningControl::ThinkingBudget)
     } else {
         None
     }
+}
+
+/// Whether a configured reasoning effort actually puts reasoning controls on
+/// the wire. `None` sends nothing and `Unknown` (an unrecognized config
+/// value) is never forwarded, so neither can cause a reasoning-attributed
+/// gateway rejection.
+pub(crate) fn is_active_reasoning_effort(effort: vtcode_config::types::ReasoningEffortLevel) -> bool {
+    !matches!(
+        effort,
+        vtcode_config::types::ReasoningEffortLevel::None | vtcode_config::types::ReasoningEffortLevel::Unknown
+    )
 }
 
 /// Maps a reasoning effort level to a Gateway thinking budget in tokens,

@@ -14,7 +14,7 @@
 | Authentication    | **\*\***                                                                                                                                                                              |
 | Tool calls        | Supported                                                                                                                                                                             |
 | Streaming usage   | Supported via native Responses SSE                                                                                                                                                    |
-| Reasoning effort  | Forwarded per route: `reasoning_effort` (OpenAI/xAI/Moonshot/Meta/ZAI) or `thinking.budget_tokens` (Anthropic/Gemini/DeepSeek/Qwen/MiniMax/Thinking Machines/Xiaomi MiMo); unknown routes omitted |
+| Reasoning effort  | Forwarded per route: `reasoning_effort` (OpenAI/xAI/Moonshot/Meta/ZAI) or `thinking.budget_tokens` (Anthropic/Gemini/DeepSeek/Qwen/MiniMax/Thinking Machines); unknown routes omitted |
 
 Curated routes:
 

@@ -307,10 +307,7 @@ impl MergeGatewayProvider {
         }
 
         if let Some(effort) = request.reasoning_effort
-            && !matches!(
-                effort,
-                vtcode_config::types::ReasoningEffortLevel::None | vtcode_config::types::ReasoningEffortLevel::Unknown
-            )
+            && is_active_reasoning_effort(effort)
             && let Some(control) = merge_reasoning_control_for_model(&request.model)
         {
             match control {
@@ -374,8 +371,13 @@ impl MergeGatewayProvider {
             // tools at all: remember the verdict so later turns fail fast.
             // Streaming-capability misses never reach this point (the stream
             // path downgrades first), and tool-free requests bypass the cache.
+            // A rejection naming `reasoning` blames the reasoning+tools
+            // combination rather than tools alone, so it must not poison the
+            // verdict: a tools-only retry may still route.
+            let sent_reasoning = request.reasoning_effort.is_some_and(is_active_reasoning_effort);
             if is_capability_unavailable(status, &body)
                 && native_request_sends_tools(&request, self.tool_vendor_known_missing(&request.model))
+                && !(sent_reasoning && is_reasoning_capability_rejection(&body))
             {
                 self.mark_tool_vendor_missing(&request.model);
             }

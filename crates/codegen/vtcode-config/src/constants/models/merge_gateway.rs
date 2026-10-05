@@ -89,6 +89,11 @@ pub const REASONING_EFFORT_ROUTES: &[&str] = &[
 ];
 
 /// Routes that advertise Gateway-controlled `thinking.budget_tokens` controls.
+///
+/// `xiaomimimo/` routes are intentionally absent: Merge Gateway currently has
+/// no vendor serving reasoning jointly with tools for them (a `thinking`
+/// payload turns every agentic request into a `capability_unavailable`
+/// rejection), so they stay conservative until the route gains one.
 pub const THINKING_BUDGET_ROUTES: &[&str] = &[
     ANTHROPIC_CLAUDE_OPUS_5,
     ANTHROPIC_CLAUDE_OPUS_5_5,
@@ -101,8 +106,6 @@ pub const THINKING_BUDGET_ROUTES: &[&str] = &[
     DEEPSEEK_FLASH,
     MINIMAX_H3,
     THINKINGMACHINES_INKLING,
-    XIAOMIMIMO_MIMO_V2_6_PRO,
-    XIAOMIMIMO_MIMO_V2_6_FLASH,
 ];
 
 /// Curated Merge Gateway routes that support reasoning. Reasoning is controlled
@@ -132,8 +135,6 @@ pub const REASONING_MODELS: &[&str] = &[
     OPENAI_GPT_6_SOL,
     OPENAI_GPT_6_1_SOL,
     OPENAI_GPT_6_LUNA,
-    XIAOMIMIMO_MIMO_V2_6_PRO,
-    XIAOMIMIMO_MIMO_V2_6_FLASH,
 ];
 
 /// Returns true when the route exposes a provider-native `reasoning_effort`
@@ -158,7 +159,6 @@ pub fn route_uses_thinking_budget(model: &str) -> bool {
         || model.starts_with("deepseek/")
         || model.starts_with("minimax/")
         || model.starts_with("thinkingmachines/")
-        || model.starts_with("xiaomimimo/")
 }
 
 /// Returns true when the route supports configurable reasoning through Merge
