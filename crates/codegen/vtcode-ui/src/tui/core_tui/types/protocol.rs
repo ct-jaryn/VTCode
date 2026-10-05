@@ -1,3 +1,4 @@
+use crate::tui::core_tui::types::{define_inline_message_commands, impl_inline_message_methods};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use super::ContentPart;
 use super::overlay::{ListOverlayRequest, ModalOverlayRequest, OverlayEvent, OverlayRequest};
 use super::selection::{InlineListItem, InlineListSearchConfig, InlineListSelection, SecurePromptConfig};
-use super::style::{InlineHeaderContext, InlineLinkRange, InlineSegment, InlineTextStyle, InlineTheme};
+use super::style::{InlineHeaderContext, InlineTextStyle, InlineTheme};
 use crate::tui::core_tui::session::config::AppearanceConfig;
 use crate::tui::options::FullscreenInteractionSettings;
 
@@ -100,109 +101,92 @@ impl PartialEq<&String> for SubmittedInput {
     }
 }
 
-pub enum InlineCommand {
-    AppendLine {
-        kind: InlineMessageKind,
-        segments: Vec<InlineSegment>,
-    },
-    AppendPastedMessage {
-        kind: InlineMessageKind,
-        text: String,
-        line_count: usize,
-    },
-    Inline {
-        kind: InlineMessageKind,
-        segment: InlineSegment,
-    },
-    ReplaceLast {
-        count: usize,
-        kind: InlineMessageKind,
-        lines: Vec<Vec<InlineSegment>>,
-        link_ranges: Option<Vec<Vec<InlineLinkRange>>>,
-    },
-    SetPrompt {
-        prefix: String,
-        style: InlineTextStyle,
-    },
-    SetPlaceholder {
-        hint: Option<String>,
-        style: Option<InlineTextStyle>,
-    },
-    SetMessageLabels {
-        agent: Option<String>,
-        user: Option<String>,
-    },
-    SetHeaderContext {
-        context: Box<InlineHeaderContext>,
-    },
-    SetInputStatus {
-        left: Option<String>,
-        right: Option<String>,
-    },
-    SetActivityState(ActivityState),
-    SetTerminalTitleItems {
-        items: Option<Vec<String>>,
-    },
-    SetTerminalTitleThreadLabel {
-        label: Option<String>,
-    },
-    SetTerminalTitleGitBranch {
-        branch: Option<String>,
-    },
-    SetTheme {
-        theme: InlineTheme,
-    },
-    SetColorSchemeAuto {
-        enabled: bool,
-    },
-    SetAppearance {
-        appearance: AppearanceConfig,
-    },
-    SetFullscreenInteraction {
-        interaction: FullscreenInteractionSettings,
-    },
-    SetVimModeEnabled(bool),
-    SetQueuedInputs {
-        entries: Vec<String>,
-    },
-    SetSubprocessEntries {
-        entries: Vec<String>,
-    },
-    SetSubagentPreview {
-        text: Option<String>,
-    },
-    SetPrimaryAgent {
-        name: Option<String>,
-        color: Option<String>,
-    },
-    SetCursorVisible(bool),
-    SetInputEnabled(bool),
-    SetImageInputEnabled(bool),
-    SetInput(String),
-    RestoreInputDraft(SubmittedInput),
-    ApplySuggestedPrompt(String),
-    SetInlinePromptSuggestion {
-        suggestion: String,
-        llm_generated: bool,
-    },
-    ClearInlinePromptSuggestion,
-    ClearInput,
-    ForceRedraw,
-    ShowOverlay {
-        request: Box<OverlayRequest>,
-    },
-    CloseOverlay,
-    // App-only palette/history commands are defined in the app protocol layer.
-    ClearScreen,
-    SuspendEventLoop,
-    ResumeEventLoop,
-    ClearInputQueue,
-    StopEventStream,
-    StartEventStream,
-    SetSkipConfirmations(bool),
-    Shutdown,
-    /// Update reasoning stage in header context
-    SetReasoningStage(Option<String>),
+define_inline_message_commands! {
+    pub enum InlineCommand {
+        SetPrompt {
+            prefix: String,
+            style: InlineTextStyle,
+        },
+        SetPlaceholder {
+            hint: Option<String>,
+            style: Option<InlineTextStyle>,
+        },
+        SetMessageLabels {
+            agent: Option<String>,
+            user: Option<String>,
+        },
+        SetHeaderContext {
+            context: Box<InlineHeaderContext>,
+        },
+        SetInputStatus {
+            left: Option<String>,
+            right: Option<String>,
+        },
+        SetActivityState(ActivityState),
+        SetTerminalTitleItems {
+            items: Option<Vec<String>>,
+        },
+        SetTerminalTitleThreadLabel {
+            label: Option<String>,
+        },
+        SetTerminalTitleGitBranch {
+            branch: Option<String>,
+        },
+        SetTheme {
+            theme: InlineTheme,
+        },
+        SetColorSchemeAuto {
+            enabled: bool,
+        },
+        SetAppearance {
+            appearance: AppearanceConfig,
+        },
+        SetFullscreenInteraction {
+            interaction: FullscreenInteractionSettings,
+        },
+        SetVimModeEnabled(bool),
+        SetQueuedInputs {
+            entries: Vec<String>,
+        },
+        SetSubprocessEntries {
+            entries: Vec<String>,
+        },
+        SetSubagentPreview {
+            text: Option<String>,
+        },
+        SetPrimaryAgent {
+            name: Option<String>,
+            color: Option<String>,
+        },
+        SetCursorVisible(bool),
+        SetInputEnabled(bool),
+        SetImageInputEnabled(bool),
+        SetInput(String),
+        RestoreInputDraft(SubmittedInput),
+        ApplySuggestedPrompt(String),
+        SetInlinePromptSuggestion {
+            suggestion: String,
+            llm_generated: bool,
+        },
+        ClearInlinePromptSuggestion,
+        ClearInput,
+        ForceRedraw,
+        ShowOverlay {
+            request: Box<OverlayRequest>,
+        },
+        CloseOverlay,
+        // App-only palette/history commands are defined in the app protocol layer.
+        ClearScreen,
+        SuspendEventLoop,
+        ResumeEventLoop,
+        ClearInputQueue,
+        StopEventStream,
+        StartEventStream,
+        SetSkipConfirmations(bool),
+        Shutdown,
+        /// Update reasoning stage in header context
+        SetReasoningStage(Option<String>),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -267,31 +251,7 @@ impl InlineHandle {
         let _ = self.sender.send(command);
     }
 
-    pub fn append_line(&self, kind: InlineMessageKind, segments: Vec<InlineSegment>) {
-        self.send_command(InlineCommand::AppendLine { kind, segments });
-    }
-
-    pub fn append_pasted_message(&self, kind: InlineMessageKind, text: String, line_count: usize) {
-        self.send_command(InlineCommand::AppendPastedMessage { kind, text, line_count });
-    }
-
-    pub fn inline(&self, kind: InlineMessageKind, segment: InlineSegment) {
-        self.send_command(InlineCommand::Inline { kind, segment });
-    }
-
-    pub fn replace_last(&self, count: usize, kind: InlineMessageKind, lines: Vec<Vec<InlineSegment>>) {
-        self.send_command(InlineCommand::ReplaceLast { count, kind, lines, link_ranges: None });
-    }
-
-    pub fn replace_last_with_links(
-        &self,
-        count: usize,
-        kind: InlineMessageKind,
-        lines: Vec<Vec<InlineSegment>>,
-        link_ranges: Vec<Vec<InlineLinkRange>>,
-    ) {
-        self.send_command(InlineCommand::ReplaceLast { count, kind, lines, link_ranges: Some(link_ranges) });
-    }
+    impl_inline_message_methods!(InlineCommand);
 
     pub fn suspend_event_loop(&self) {
         self.send_command(InlineCommand::SuspendEventLoop);

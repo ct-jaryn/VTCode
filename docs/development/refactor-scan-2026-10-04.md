@@ -420,3 +420,31 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   transport reader ownership is preserved. Live external ACP/Copilot subprocesses
   were not exercised; verification used unit and in-memory transport fixtures.
 - Next increment: independently map and extract shared UI protocol payloads.
+
+### Step 5b: shared UI text-command payloads and send methods
+
+- Mapped the core and app protocols. Styled segments, link ranges, message kinds,
+  and submitted input already have shared owners; app captures, palettes, and
+  transient/deferred input remain app-owned. A full handle merge is unnecessary.
+- Centralized the four identical text-command variant definitions and five send
+  methods in private `types/message_commands.rs` macros. This preserves public
+  facade imports, existing struct-variant construction/match syntax, field types,
+  variant order, method signatures, and each handle's local send/state ownership.
+  Named tuple payloads would require migrating many existing match sites without
+  changing behavior, so this increment shares the definitions directly instead.
+- Added independent payload checks for both public handles, including ordered
+  styled segments, supplied pasted-line metadata, asymmetric replacement counts,
+  empty rows, link byte ranges/targets, and `None` versus `Some(empty)` links.
+  All ten focused protocol tests passed, followed by all 1,479 UI tests with no
+  skips. Existing transient/deferred input and evidence-navigation tests pass.
+- Reconstructed both protocol sources from the shared definitions and compared
+  normalized Rust tokens against HEAD, preserving literals/comments and ignoring
+  whitespace and optional trailing argument commas. Retained logic and expanded
+  variant order match; only unused imports and macro wiring change outside the
+  extraction. No production dependencies or runtime state added.
+- Repository fast gate, scoped Markdown lint, formatting, and staged diff checks
+  passed. Updated UI module guidance and added the shared message-protocol guide.
+  Live terminal visual interaction was not exercised.
+- Preserved the unrelated Merge Gateway changes present before this increment.
+- Next increment: assess remaining common control commands before the execution
+  facade phase; keep app-only state and event ownership explicit.

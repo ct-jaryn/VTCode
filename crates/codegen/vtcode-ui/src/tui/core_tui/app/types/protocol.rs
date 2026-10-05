@@ -1,3 +1,4 @@
+use crate::tui::core_tui::types::{define_inline_message_commands, impl_inline_message_methods};
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex,
@@ -21,9 +22,8 @@ use super::overlay::{
 use crate::tui::core_tui::session::config::AppearanceConfig;
 pub use crate::tui::core_tui::types::SubmittedInput;
 use crate::tui::core_tui::types::{
-    ActivityState, ExecSessionAction, InlineHeaderContext, InlineLinkRange, InlineListItem, InlineListSearchConfig,
-    InlineListSelection, InlineMessageKind, InlineSegment, InlineTextStyle, InlineTheme, LocalAgentEntry,
-    SecurePromptConfig,
+    ActivityState, ExecSessionAction, InlineHeaderContext, InlineListItem, InlineListSearchConfig, InlineListSelection,
+    InlineMessageKind, InlineSegment, InlineTextStyle, InlineTheme, LocalAgentEntry, SecurePromptConfig,
 };
 use crate::tui::options::FullscreenInteractionSettings;
 
@@ -66,166 +66,149 @@ pub struct ArchivedPromptEntry {
     pub session_label: String,
 }
 
-pub enum InlineCommand {
-    AppendLine {
-        kind: InlineMessageKind,
-        segments: Vec<InlineSegment>,
-    },
-    AppendPastedMessage {
-        kind: InlineMessageKind,
-        text: String,
-        line_count: usize,
-    },
-    Inline {
-        kind: InlineMessageKind,
-        segment: InlineSegment,
-    },
-    ReplaceLast {
-        count: usize,
-        kind: InlineMessageKind,
-        lines: Vec<Vec<InlineSegment>>,
-        link_ranges: Option<Vec<Vec<InlineLinkRange>>>,
-    },
-    /// Retain one complete tool-call capture for the session-local viewer.
-    RecordToolOutput {
-        id: ToolOutputId,
-        lines: Vec<String>,
-    },
-    /// Append a summary line and associate it with a previously recorded
-    /// capture. This is a UI-only identity edge, not a transcript event.
-    AppendToolOutputLine {
-        id: ToolOutputId,
-        kind: InlineMessageKind,
-        segments: Vec<InlineSegment>,
-    },
-    /// Append a compact successful-command activity row.
-    ///
-    /// UI-only identity edge derived from the canonical `ThreadEvent` tool
-    /// outcome, not a new source of truth: grouping must stay consistent with
-    /// `vtcode_commons::ui_protocol::tool_summary` boundaries.
-    AppendCompactActivity(CompactActivityMetadata),
-    /// Store a completed-edit review payload for explicit expand activation.
-    RecordDiffReview(vtcode_commons::ui_protocol::DiffReviewAnchor),
-    /// Focus an existing capture in Transcript Review without submitting input.
-    FocusTranscriptReview {
-        id: ToolOutputId,
-    },
-    /// Replace the current compact successful-command activity row with an
-    /// updated contiguous group.
-    ///
-    /// UI-only identity edge; see [`InlineCommand::AppendCompactActivity`].
-    /// Only contiguous successful command activity may group; transient PTY
-    /// rows stay separate.
-    ReplaceCompactActivity(CompactActivityMetadata),
-    /// Replace the live PTY preview block with a compact activity row after
-    /// the command has completed. Complete output is retained separately.
-    ///
-    /// UI-only identity edge; see [`InlineCommand::AppendCompactActivity`].
-    CollapsePtyBlock(CompactActivityMetadata),
-    SetPrompt {
-        prefix: String,
-        style: InlineTextStyle,
-    },
-    SetPlaceholder {
-        hint: Option<String>,
-        style: Option<InlineTextStyle>,
-    },
-    SetMessageLabels {
-        agent: Option<String>,
-        user: Option<String>,
-    },
-    SetHeaderContext {
-        context: Box<InlineHeaderContext>,
-    },
-    SetInputStatus {
-        left: Option<String>,
-        right: Option<String>,
-    },
-    SetActivityState(ActivityState),
-    SetTerminalTitleItems {
-        items: Option<Vec<String>>,
-    },
-    SetTerminalTitleThreadLabel {
-        label: Option<String>,
-    },
-    SetTerminalTitleGitBranch {
-        branch: Option<String>,
-    },
-    SetTheme {
-        theme: InlineTheme,
-    },
-    SetColorSchemeAuto {
-        enabled: bool,
-    },
-    SetAppearance {
-        appearance: AppearanceConfig,
-    },
-    SetFullscreenInteraction {
-        interaction: FullscreenInteractionSettings,
-    },
-    /// Replace the live action bindings after a valid configuration reload.
-    SetKeyBindings {
-        bindings: HashMap<String, Vec<String>>,
-    },
-    SetVimModeEnabled(bool),
-    SetQueuedInputs {
-        entries: Vec<String>,
-    },
-    SetSubprocessEntries {
-        entries: Vec<String>,
-    },
-    SetSubagentPreview {
-        text: Option<String>,
-    },
-    SetLocalAgents {
-        entries: Vec<LocalAgentEntry>,
-    },
-    /// Inject archived prompts from previous sessions into the history picker.
-    SetArchivedHistory {
-        entries: Vec<ArchivedPromptEntry>,
-    },
-    SetPrimaryAgent {
-        name: Option<String>,
-        color: Option<String>,
-    },
-    SetCursorVisible(bool),
-    SetInputEnabled(bool),
-    SetImageInputEnabled(bool),
-    SetInput(String),
-    RestoreInputDraft(SubmittedInput),
-    ApplySuggestedPrompt(String),
-    SetInlinePromptSuggestion {
-        suggestion: String,
-        llm_generated: bool,
-    },
-    ClearInlinePromptSuggestion,
-    ClearInput,
-    ForceRedraw,
-    ShowTransient {
-        request: Box<TransientRequest>,
-    },
-    /// Deliver the full recursive workspace file list (discovered in the
-    /// background) so the file palette's Search mode can match against it.
-    UpdateFilePaletteSearch {
-        files: Vec<String>,
-    },
-    /// Replace the slash-command palette after background prompt-template
-    /// discovery. Lets first paint spawn with built-ins only; templates merge
-    /// in without blocking `spawn_session_with_options`.
-    SetSlashCommands {
-        commands: Vec<SlashCommandItem>,
-    },
-    CloseTransient,
-    ClearScreen,
-    SuspendEventLoop,
-    ResumeEventLoop,
-    ClearInputQueue,
-    StopEventStream,
-    StartEventStream,
-    SetSkipConfirmations(bool),
-    Shutdown,
-    /// Update reasoning stage in header context
-    SetReasoningStage(Option<String>),
+define_inline_message_commands! {
+    pub enum InlineCommand {
+        /// Retain one complete tool-call capture for the session-local viewer.
+        RecordToolOutput {
+            id: ToolOutputId,
+            lines: Vec<String>,
+        },
+        /// Append a summary line and associate it with a previously recorded
+        /// capture. This is a UI-only identity edge, not a transcript event.
+        AppendToolOutputLine {
+            id: ToolOutputId,
+            kind: InlineMessageKind,
+            segments: Vec<InlineSegment>,
+        },
+        /// Append a compact successful-command activity row.
+        ///
+        /// UI-only identity edge derived from the canonical `ThreadEvent` tool
+        /// outcome, not a new source of truth: grouping must stay consistent with
+        /// `vtcode_commons::ui_protocol::tool_summary` boundaries.
+        AppendCompactActivity(CompactActivityMetadata),
+        /// Store a completed-edit review payload for explicit expand activation.
+        RecordDiffReview(vtcode_commons::ui_protocol::DiffReviewAnchor),
+        /// Focus an existing capture in Transcript Review without submitting input.
+        FocusTranscriptReview {
+            id: ToolOutputId,
+        },
+        /// Replace the current compact successful-command activity row with an
+        /// updated contiguous group.
+        ///
+        /// UI-only identity edge; see [`InlineCommand::AppendCompactActivity`].
+        /// Only contiguous successful command activity may group; transient PTY
+        /// rows stay separate.
+        ReplaceCompactActivity(CompactActivityMetadata),
+        /// Replace the live PTY preview block with a compact activity row after
+        /// the command has completed. Complete output is retained separately.
+        ///
+        /// UI-only identity edge; see [`InlineCommand::AppendCompactActivity`].
+        CollapsePtyBlock(CompactActivityMetadata),
+        SetPrompt {
+            prefix: String,
+            style: InlineTextStyle,
+        },
+        SetPlaceholder {
+            hint: Option<String>,
+            style: Option<InlineTextStyle>,
+        },
+        SetMessageLabels {
+            agent: Option<String>,
+            user: Option<String>,
+        },
+        SetHeaderContext {
+            context: Box<InlineHeaderContext>,
+        },
+        SetInputStatus {
+            left: Option<String>,
+            right: Option<String>,
+        },
+        SetActivityState(ActivityState),
+        SetTerminalTitleItems {
+            items: Option<Vec<String>>,
+        },
+        SetTerminalTitleThreadLabel {
+            label: Option<String>,
+        },
+        SetTerminalTitleGitBranch {
+            branch: Option<String>,
+        },
+        SetTheme {
+            theme: InlineTheme,
+        },
+        SetColorSchemeAuto {
+            enabled: bool,
+        },
+        SetAppearance {
+            appearance: AppearanceConfig,
+        },
+        SetFullscreenInteraction {
+            interaction: FullscreenInteractionSettings,
+        },
+        /// Replace the live action bindings after a valid configuration reload.
+        SetKeyBindings {
+            bindings: HashMap<String, Vec<String>>,
+        },
+        SetVimModeEnabled(bool),
+        SetQueuedInputs {
+            entries: Vec<String>,
+        },
+        SetSubprocessEntries {
+            entries: Vec<String>,
+        },
+        SetSubagentPreview {
+            text: Option<String>,
+        },
+        SetLocalAgents {
+            entries: Vec<LocalAgentEntry>,
+        },
+        /// Inject archived prompts from previous sessions into the history picker.
+        SetArchivedHistory {
+            entries: Vec<ArchivedPromptEntry>,
+        },
+        SetPrimaryAgent {
+            name: Option<String>,
+            color: Option<String>,
+        },
+        SetCursorVisible(bool),
+        SetInputEnabled(bool),
+        SetImageInputEnabled(bool),
+        SetInput(String),
+        RestoreInputDraft(SubmittedInput),
+        ApplySuggestedPrompt(String),
+        SetInlinePromptSuggestion {
+            suggestion: String,
+            llm_generated: bool,
+        },
+        ClearInlinePromptSuggestion,
+        ClearInput,
+        ForceRedraw,
+        ShowTransient {
+            request: Box<TransientRequest>,
+        },
+        /// Deliver the full recursive workspace file list (discovered in the
+        /// background) so the file palette's Search mode can match against it.
+        UpdateFilePaletteSearch {
+            files: Vec<String>,
+        },
+        /// Replace the slash-command palette after background prompt-template
+        /// discovery. Lets first paint spawn with built-ins only; templates merge
+        /// in without blocking `spawn_session_with_options`.
+        SetSlashCommands {
+            commands: Vec<SlashCommandItem>,
+        },
+        CloseTransient,
+        ClearScreen,
+        SuspendEventLoop,
+        ResumeEventLoop,
+        ClearInputQueue,
+        StopEventStream,
+        StartEventStream,
+        SetSkipConfirmations(bool),
+        Shutdown,
+        /// Update reasoning stage in header context
+        SetReasoningStage(Option<String>),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -402,31 +385,7 @@ impl InlineHandle {
         let _ = self.sender.send(command);
     }
 
-    pub fn append_line(&self, kind: InlineMessageKind, segments: Vec<InlineSegment>) {
-        self.send_command(InlineCommand::AppendLine { kind, segments });
-    }
-
-    pub fn append_pasted_message(&self, kind: InlineMessageKind, text: String, line_count: usize) {
-        self.send_command(InlineCommand::AppendPastedMessage { kind, text, line_count });
-    }
-
-    pub fn inline(&self, kind: InlineMessageKind, segment: InlineSegment) {
-        self.send_command(InlineCommand::Inline { kind, segment });
-    }
-
-    pub fn replace_last(&self, count: usize, kind: InlineMessageKind, lines: Vec<Vec<InlineSegment>>) {
-        self.send_command(InlineCommand::ReplaceLast { count, kind, lines, link_ranges: None });
-    }
-
-    pub fn replace_last_with_links(
-        &self,
-        count: usize,
-        kind: InlineMessageKind,
-        lines: Vec<Vec<InlineSegment>>,
-        link_ranges: Vec<Vec<InlineLinkRange>>,
-    ) {
-        self.send_command(InlineCommand::ReplaceLast { count, kind, lines, link_ranges: Some(link_ranges) });
-    }
+    impl_inline_message_methods!(InlineCommand);
 
     pub fn record_tool_output(&self, lines: Vec<String>) -> ToolOutputId {
         let id = self.next_tool_output_id.fetch_add(1, Ordering::Relaxed);

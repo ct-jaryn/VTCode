@@ -268,6 +268,11 @@ below based on the topic area.
   - **Topics**: Audit packs
   - **User Questions**: "What can you tell me about Session Event Persistence?", "How does Audit packs work?"
 
+- **File**: `docs/development/ui-message-protocol.md`
+  - **Content**: Shared inline message commands
+  - **Topics**: Verification
+  - **User Questions**: "What can you tell me about Shared inline message commands?", "How does Verification work?"
+
 - **File**: `docs/development/tui-design-system.md`
   - **Content**: TUI design system
   - **Topics**: Modules, Row contract, Interaction contract, Accessibility, When adding a modal

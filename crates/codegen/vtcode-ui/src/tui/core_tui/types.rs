@@ -1,9 +1,12 @@
 mod content;
 mod local_agents;
+mod message_commands;
 mod overlay;
 mod protocol;
 mod selection;
 mod style;
+
+pub(crate) use message_commands::{define_inline_message_commands, impl_inline_message_methods};
 
 pub use content::ContentPart;
 pub use local_agents::{ExecSessionAction, LocalAgentEntry, LocalAgentKind};
