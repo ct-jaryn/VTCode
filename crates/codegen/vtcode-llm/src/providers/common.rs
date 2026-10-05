@@ -6,8 +6,6 @@ mod prompt_cache;
 mod reasoning;
 mod request;
 mod streaming;
-#[cfg(test)]
-mod tests;
 mod token_count;
 
 pub(crate) use chat::{
@@ -63,3 +61,6 @@ macro_rules! impl_llm_client {
 }
 
 pub(crate) use impl_llm_client;
+
+#[cfg(test)]
+mod tests;

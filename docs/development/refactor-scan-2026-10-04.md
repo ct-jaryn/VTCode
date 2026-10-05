@@ -874,3 +874,81 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Next: audit the completed eight-phase plan against the current checkout and
   identify any remaining implementation or verification requirements before
   claiming the overall refactor objective is complete.
+
+## Eight-phase implementation audit (2026-10-05)
+
+All eight phases have implemented, committed increments. The audit confirms
+that their extracted owners are called through the existing facades or app
+entrypoints. The original CSV remains a dated scan baseline. Current line counts
+below include module declarations and tests; they measure navigation changes,
+not removed behavior or reduced runtime cost.
+
+| Phase | Current ownership and live wiring | Implementation boundary |
+| ----- | --------------------------------- | ----------------------- |
+| 1 | Both OpenCode adapters call `opencode_shared::validate_normalized_request`; UI constants re-export config defaults. | Shared behavior has one existing owner; provider allowlists and UI-only values stay local. |
+| 2 | `providers/common.rs` (1,766 → 66 lines) and `shared/mod.rs` (1,832 → 39) declare private helpers and retain their facade exports. | HTTP, wire mapping, reasoning, cache, replay, stream assembly, SSE, and UTF-8 helpers have cohesive owners. |
+| 3 | `planning_workflow/artifacts.rs` (2,071 → 26) declares parser/tracker/validation modules and re-exports the original entrypoints. | `validate_plan_content` still owns acceptance and repair feedback through its existing facade. |
+| 4 | WebMCP `main.ts` (1,846 → 1,533) constructs both controllers; VS Code `extension.ts` (3,534 → 2,556) registers extracted views/config commands and constructs the native terminal service. | Activation, live backend replacement, trust, proposal authority, and disposal stay with their original owners. |
+| 5 | ACP and Copilot adapters call commons `read_bounded_line` with their respective LF policies; both UI handles invoke the shared message/control macros. | Transport lifecycle, adapter errors, local channel state, and app-only side effects stay local. |
+| 6 | `execution_facade.rs` (1,984 → 1,382) invokes reentrancy, request attempts, argument preparation, route discovery, handler dispatch, output preparation, and read invalidation. | Coupled admission/settlement ordering stays in one facade; no second execution path. |
+| 7 | `copilot_runtime.rs` (2,139 → 1,282) uses private stream/terminal/presentation/observed owners; orchestration (2,664 → 2,587) calls thread preparation and shared reload polling. | Permission/event accounting and the remaining history, steering, persistence, and ordered shutdown stay with one host/loop. |
+| 8 | `release.sh` (1,675 → 1,329) sources canonical changelog helpers; both release owners source shared classification/insertion. | Distinct legacy formatting and publication/version/package/signing side effects retain their existing owners. |
+
+### Audit correction and current validation
+
+- Moved the external test declarations in the provider common and planning
+  artifact facades after all production items, applying the root test-layout
+  rule to earlier extractions. Their sources match HEAD after removing only
+  those declarations; test files, public APIs, visibility, and behavior are unchanged.
+- Checked 14 external test declarations in the affected provider, planning,
+  execution, Copilot, and orchestration areas: all end their owning module.
+  Root guidance remains 149 lines; audited crate/app guidance stays below 30.
+  All 69 local links across the nine affected instruction files resolve.
+  Existing guidance covers this correction; no additional module rule is needed.
+- Current locked nextest selection for provider common, planning workflow, and
+  planning tracker passed 144 tests; 5,145 unrelated tests were excluded.
+  Earlier per-increment broader crate/lifecycle evidence remains recorded above.
+- Final `./scripts/check-dev.sh --quiet` passed formatting, warnings-denied
+  Clippy, compilation, and shell lint. Scoped Markdown lint and diff checks passed.
+- Re-ran WebMCP typecheck, all 66 tests, and production build; all passed.
+  Vite retains its existing bundle-size warning. Re-ran both VS Code focused
+  typechecks, all 28 view/service/terminal tests, and production bundle; all passed.
+  These commands compile real modules but use mock VS Code APIs.
+- Re-ran all 31 changelog checks, release-asset fixtures, and all 24 macOS
+  signing fixtures; all passed with publication/signing operations stubbed.
+
+### Remaining acceptance checks
+
+Implementation closure and overall acceptance are separate. The following
+originally planned host checks retain explicit verification limits:
+
+- **WebMCP rendered behavior:** settings/evidence dialogs, keyboard focus,
+  draft review, connection/reconnection, and terminal-authoritative approval.
+  The current Browser Use runtime has no `agent` binding and Computer Use
+  reports no browser providers. No rendered browser result is claimed.
+- **VS Code host behavior:** activation and rendered view refresh, native
+  terminal launch/reuse/close/shutdown, trusted/untrusted transitions, and
+  literal argv through the actual host. Mock fixtures and a real Node child
+  establish service contracts, not VS Code terminal integration or Windows quoting.
+  An isolated macOS VS Code 1.140.0 development host activated the production
+  bundle in an owned temporary workspace. Its output log reported that the
+  extension's workspace-trust request accesses the unavailable `workspaceTrust`
+  API proposal. This is a confirmed follow-up finding, not a rendered pass.
+  Native automation selected the existing editor instance rather than this host;
+  the owner then requested skipping VS Code Computer Use. Further rendered VS
+  Code checks are deferred at the owner's request; keep this limit explicit.
+- **TUI host behavior:** live wide/narrow terminal interactions for the shared
+  protocol consumers. The recorded UI/PTY/inline-event suites cover automated
+  regressions; they do not establish visual acceptance in a real session.
+
+The existing eight entry-point typecheck and 21 lint diagnostics in the VS Code
+extension, standalone core-only Clippy findings, live provider/subprocess races,
+and release target-matrix/publication checks retain their documented boundaries.
+No full workspace test pass or full release execution is claimed. Further
+extraction of the retained coupled runtime/release blocks requires new evidence
+of an independent responsibility rather than a file-length target.
+
+Next: fix the confirmed workspace-trust proposal access in source with focused
+service regressions, without VS Code Computer Use. Browser/TUI rendered checks
+remain open when an appropriate isolated test surface becomes available.
+The eight-phase implementation plan is delivered; overall acceptance remains open.

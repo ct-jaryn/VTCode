@@ -3,8 +3,6 @@
 //! Parsing, validation, and tracker conversion remain side-effect-free.
 //! Tool wiring and I/O live in the surrounding planning-workflow module.
 
-#[cfg(test)]
-mod agentic_testing_tests;
 mod sections;
 mod steps;
 mod tracker;
@@ -23,3 +21,6 @@ pub use validation::{
 
 pub(super) const PLAN_TRACKER_START: &str = "<!-- vtcode:plan-tracker:start -->";
 pub(super) const PLAN_TRACKER_END: &str = "<!-- vtcode:plan-tracker:end -->";
+
+#[cfg(test)]
+mod agentic_testing_tests;
