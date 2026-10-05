@@ -282,7 +282,7 @@ below based on the topic area.
 
 - **File**: `docs/development/ui-message-protocol.md`
   - **Content**: Shared inline message and control commands
-  - **Topics**: Common control forwarding, Verification
+  - **Topics**: Common control forwarding, Verification, Interactive protocol fixture
   - **User Questions**: "What can you tell me about Shared inline message and control commands?", "How does Common
     control forwarding work?", "How does Verification work?"
 

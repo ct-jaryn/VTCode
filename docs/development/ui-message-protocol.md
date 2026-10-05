@@ -72,3 +72,32 @@ texts, replacement counts, pasted-line metadata, styles, and link rows. Existing
 app protocol tests cover transient input, deferred queue overflow, wake-ups,
 and evidence navigation. The broader UI suite covers render/layout and interaction
 regressions. These automated tests do not replace a live terminal visual check.
+
+## Interactive protocol fixture
+
+Run either public protocol in an isolated terminal, without provider credentials
+or command execution:
+
+```bash
+cargo run --locked -p vtcode-ui --example inline_protocol_smoke -- app
+cargo run --locked -p vtcode-ui --example inline_protocol_smoke -- core
+```
+
+The fixture starts on the alternate screen with 24 distinct Unicode rows and a
+link. Submit `stream`, `paste`, `replace`, or `overlay` to exercise streamed
+segments, literal multiline content, ordered replacement rows, and modal input.
+Press Esc to dismiss the modal; submit `quit` to shut down and restore the terminal.
+Link activation records its event in the transcript without opening a browser.
+Resize to wide and narrow dimensions and check wrapping, scrolling, text selection,
+link activation, input restoration, and terminal teardown on both protocols.
+
+Stopping the event stream also pauses the event loop. Resume the loop before
+starting its stream again; `start_event_stream` alone does not clear the pause.
+The fixture follows the existing external-editor lifecycle sequence.
+
+Modal painting must check `has_active_overlay()` before clearing its rectangle.
+Without an overlay, clear stale modal hit areas while preserving the base frame.
+Full core-frame regressions cover transcript, input, and status at 120×40 and
+44×18, including restoration after Escape. PTY output and buffered render tests
+establish these contracts; rendered host acceptance still requires a live visual
+walkthrough.

@@ -988,3 +988,33 @@ The eight-phase implementation plan is delivered; overall acceptance remains ope
 Next: remaining acceptance is browser/TUI rendered validation when an isolated
 surface is available. Keep VS Code Computer Use deferred unless the owner changes
 that instruction; no further coupled-block extraction is justified by this audit.
+
+### Follow-up: core modal painting and isolated protocol fixture
+
+- Added `vtcode-ui/examples/inline_protocol_smoke.rs`, exercising both public
+  handles and event enums without providers or command execution. The shared
+  fixture uses distinct Unicode rows, streaming, literal multiline paste,
+  ordered replacement, links, and modal dismissal. Stop/resume/start follows
+  the existing external-editor lifecycle contract.
+- The fixture exposed a blank core frame at both 120×40 and 44×18: the shared
+  modal renderer cleared the viewport before checking for an active overlay.
+  Guard painting with the authoritative overlay state and clear only stale hit
+  areas when absent. Both new full-session regressions failed before the fix
+  and passed afterward, including transcript/input/status restoration after Esc.
+- Moved the existing 15 modal-renderer tests into a private child module and
+  added the two frame regressions. Production source shrank from 746 to 582
+  lines without widening visibility, changing APIs, or adding dependencies.
+  Recorded the unique rendering invariant in crate guidance and documented the
+  fixture in the message-protocol guide.
+- The complete UI suite passed: 1,490 tests, none skipped. All 17 focused
+  modal-renderer tests passed, with 1,473 excluded by that filter. Example build
+  and warnings-denied Clippy passed. Post-fix core PTYs at 120×40 and 44×18,
+  plus app at 44×18, processed fixture commands and restored transcript output
+  after Esc; all exited zero with terminal teardown sequences. The fast gate,
+  locked UI check with `RUSTFLAGS='-D warnings'`, and scoped Markdown/diff checks
+  passed. The fast gate did not run tests; the separate UI suite did.
+- Native Computer Use refused Ghostty access for safety reasons; Browser Use
+  has no agent runtime and Computer Use has no browser provider. PTY bytes and
+  buffered frames do not establish rendered host acceptance, mouse selection,
+  live resize, or browser integration. Those checks remain open. VS Code
+  Computer Use remains skipped at the owner's request.
