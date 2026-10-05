@@ -84,3 +84,7 @@ scan for large and monolith files and module and plan deduplication and refactor
 ===
 
 prioritized refactor plan (docs/development/refactor-scan-2026-10-04.md) and full Rust file inventory (docs/development/refactor-scan-2026-10-04.csv).
+
+===
+
+remove vscode extension
