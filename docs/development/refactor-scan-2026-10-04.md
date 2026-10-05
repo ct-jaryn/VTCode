@@ -471,3 +471,24 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   visual interaction was not exercised.
 - Next increment: step 6 execution-facade reentrancy extraction, preserving
   admission/safety order and structured error contracts.
+
+### Step 6a: execution reentrancy ownership
+
+- Moved recursion tracking and frame cleanup into private registry
+  `reentrancy.rs`, reducing `execution_facade.rs` from 1,984 to 1,835 lines.
+  Kept the guard's execution call site, prevalidated parallel-safe allowance,
+  admission/safety ordering, error payloads, and execution history unchanged.
+- Compared the extracted guard and retained facade against HEAD after
+  normalizing extraction-only imports, private visibility, standard Result
+  qualification, and formatting. Implementation and retained execution logic
+  match. No public API or dependency changes.
+- Added eight guard tests covering ordered cycle traces, the 64-frame boundary
+  for parallel siblings and distinct tools, out-of-order drops, thread unwind,
+  isolation between tasks on one thread, moved task guards, and cancellation.
+  All 94 selected guard and registry tests passed, including both existing
+  public recursive-tool regressions; 3,965 unrelated tests were excluded.
+- Updated core module guidance and added the tool-reentrancy development guide.
+- Repository fast gate (formatting, warnings-denied Clippy, compilation, shell
+  lint) and scoped Markdown lint passed. Tests ran separately through nextest.
+- Next increment: extract contiguous execution stages while retaining one
+  authoritative admission and settlement path.

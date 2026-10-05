@@ -47,6 +47,7 @@ mod policy_facade;
 mod progress_facade;
 mod pty;
 mod pty_facade;
+mod reentrancy;
 mod registration;
 mod registration_facade;
 mod resiliency;

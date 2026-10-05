@@ -305,6 +305,10 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Tool Summary Display?", "How does Exec-session calls (`write_stdin`
     and the session readers) work?", "How does Model-visible tool output budget work?"
 
+- **File**: `docs/development/tool-reentrancy.md`
+  - **Content**: Tool reentrancy guard
+  - **User Questions**: "What can you tell me about Tool reentrancy guard?"
+
 - **File**: `docs/development/async-performance-audit.md`
   - **Content**: VT Code Async Performance Audit
   - **Topics**: Audit Rubric, Findings (Prioritized), Implemented Batch (Runtime-Critical), Validation, Next Batch
