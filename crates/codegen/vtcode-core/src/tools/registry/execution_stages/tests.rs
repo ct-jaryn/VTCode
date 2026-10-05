@@ -233,3 +233,112 @@ async fn raw_patch_preparation_normalizes_without_executing() -> Result<()> {
     assert!(registry.execution_history.get_recent_records(10).is_empty());
     Ok(())
 }
+
+fn disconnected_client() -> std::sync::Arc<crate::mcp::McpClient> {
+    std::sync::Arc::new(crate::mcp::McpClient::new(vtcode_config::mcp::McpClientConfig {
+        enabled: true,
+        providers: vec![vtcode_config::mcp::McpProviderConfig {
+            name: "offline_docs".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }))
+}
+
+#[tokio::test]
+async fn discovery_without_client_or_remote_match_preserves_standard_and_unknown_routes() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    register_echo(&registry, json!({"type": "object"})).await?;
+    for has_client in [false, true] {
+        if has_client {
+            *registry.mcp_client.write() =
+                Some(std::sync::Arc::new(crate::mcp::McpClient::new(vtcode_config::mcp::McpClientConfig {
+                    enabled: false,
+                    ..Default::default()
+                })));
+        }
+        let standard = registry.resolve_execution_route(ECHO_ALIAS, ECHO_NAME).await;
+        assert!(standard.route.tool_exists);
+        assert!(!standard.route.is_mcp);
+        assert!(!standard.route.needs_pty);
+        assert!(standard.route.mcp_provider.is_none());
+        assert!(standard.route.mcp_tool_name.is_none());
+        assert!(standard.mcp_lookup_error.is_none());
+        let unknown = registry.resolve_execution_route("missing_stage", "missing_stage").await;
+        assert!(!unknown.route.tool_exists);
+        assert!(!unknown.route.is_mcp);
+        assert!(unknown.mcp_lookup_error.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovery_failure_retains_standard_route_and_public_execution() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    register_echo(&registry, json!({"type": "object"})).await?;
+    *registry.mcp_client.write() = Some(disconnected_client());
+    let discovered = registry.resolve_execution_route(ECHO_ALIAS, ECHO_NAME).await;
+    assert!(discovered.route.tool_exists);
+    assert!(!discovered.route.is_mcp);
+    assert!(!discovered.route.needs_pty);
+    assert!(
+        discovered
+            .mcp_lookup_error
+            .unwrap()
+            .to_string()
+            .contains("No MCP providers are currently connected")
+    );
+    let args = json!({"marker": "standard survives remote failure"});
+    let result = registry.execute_tool_ref(ECHO_ALIAS, &args).await?;
+    assert_eq!(result["received"], args);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_discovery_failure_preserves_error_payload_and_history() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    *registry.mcp_client.write() = Some(disconnected_client());
+    registry
+        .set_tool_policy("missing_stage", crate::tool_policy::ToolPolicy::Allow)
+        .await?;
+    let discovered = registry.resolve_execution_route("missing_stage", "missing_stage").await;
+    assert!(!discovered.route.tool_exists);
+    let original_error = discovered.mcp_lookup_error.unwrap().to_string();
+    let args = json!({"marker": "unresolved remote"});
+    let result = registry.execute_tool_ref("missing_stage", &args).await?;
+    assert_eq!(result["error"]["error_type"], "ExecutionError");
+    assert_eq!(result["error"]["original_error"], original_error);
+    assert!(
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to resolve MCP tool 'missing_stage'")
+    );
+    let history = registry.execution_history.get_recent_records(10);
+    assert_eq!(history.len(), 1);
+    assert!(!history[0].success);
+    assert_eq!(history[0].args, args);
+    assert!(history[0].result.as_ref().unwrap_err().contains(&original_error));
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_mcp_route_skips_disconnected_discovery() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    *registry.mcp_client.write() = Some(disconnected_client());
+    let discovered = registry
+        .resolve_execution_route("mcp_docs_lookup", "mcp::docs::lookup::nested")
+        .await;
+    assert!(discovered.route.tool_exists);
+    assert!(discovered.route.is_mcp);
+    assert!(discovered.route.needs_pty);
+    assert_eq!(discovered.route.mcp_provider.as_deref(), Some("docs"));
+    assert_eq!(discovered.route.mcp_tool_name.as_deref(), Some("lookup::nested"));
+    assert!(discovered.mcp_lookup_error.is_none());
+    Ok(())
+}

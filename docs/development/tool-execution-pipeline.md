@@ -4,10 +4,10 @@ The registry keeps one execution path. These private modules divide ownership:
 
 | Module | Responsibility |
 | --- | --- |
-| `execution_facade.rs` | Public entrypoints, routing, preflight, execution policy, handler execution, settlement, and history |
+| `execution_facade.rs` | Public entrypoints, route orchestration, preflight, execution policy, handler execution, settlement, and history |
 | `execution_attempts.rs` | Structured-request safety admission, error interpretation, retry scheduling, attempt counts, and outcome metadata |
 | `execution_kernel.rs` | Shared argument normalization, dispatch authority, and preflight validation |
-| `execution_stages.rs` | Canonical/display names, execution argument preparation, and base route metadata |
+| `execution_stages.rs` | Canonical/display names, execution argument preparation, base route metadata, and awaited MCP discovery |
 | `reentrancy.rs` | Task/thread recursion frames and drop cleanup |
 
 `execute_public_tool_request` delegates directly to the request-attempt lifecycle.
@@ -33,9 +33,12 @@ does not grant execution admission.
 
 Name resolution runs before the canonical hot-cache lookup. Base route resolution
 stays after policy constraints; it supplies registered-tool and canonical MCP
-metadata. Awaited legacy MCP discovery, unknown-tool diagnostics, circuit-breaker
-history, and PTY acquisition remain in the facade. Base route metadata alone does
-not establish remote availability or approval.
+metadata, followed by awaited legacy MCP discovery in the same stage module.
+Discovery retains standard routes when remote lookup returns false or fails;
+unknown routes carry lookup errors back to the facade. Canonical MCP routes skip
+discovery. Unknown-tool diagnostics, error/history recording, circuit-breaker
+history, and PTY acquisition remain in the facade. Route metadata alone does not
+establish remote availability or approval.
 
 The [reentrancy guide](tool-reentrancy.md) describes task isolation and cleanup.
 Keep extraction call sites in their original order; new modules must not bypass

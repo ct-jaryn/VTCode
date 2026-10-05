@@ -550,3 +550,26 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   checks passed. Tests ran separately through locked nextest.
 - Next increment: review the remaining awaited MCP discovery and route-error
   adaptation as a coherent stage, retaining its policy and history boundaries.
+
+### Step 6d: awaited MCP route discovery
+
+- Moved awaited MCP lookup into the existing execution stages module, with a
+  private typed result carrying route metadata and the original lookup error.
+  The facade is now 1,494 lines, down from 1,529 after step 6c.
+- Discovery remains after policy constraints and before unknown-tool handling,
+  circuit-breaker checks, and PTY acquisition. Canonical MCP routes skip remote
+  discovery. Negative or failed discovery preserves registered standard tools.
+  Alias normalization, lookup logging, and provider lookup retain their order.
+- Error payloads, history, timeout metadata, policy admission, and execution
+  remain facade-owned. Public APIs and dependencies are unchanged.
+- Compared moved discovery tokens after identifier adaptation and retained
+  facade tokens after the call-site/import changes; both match the originals.
+- Added four regressions covering missing/disabled clients, disconnected lookup
+  failures, standard public execution after remote failure, unknown-tool error
+  payload/history, and canonical MCP bypass. Live connected-provider discovery
+  is not exercised by these new tests.
+- All 499 selected registry tests passed; 3,577 unrelated tests were excluded.
+  The final repository fast gate, scoped Markdown lint, and diff checks passed.
+- Updated core module guidance and the pipeline ownership guide.
+- Next increment: map handler execution and settlement ownership before choosing
+  another extraction; keep PTY permits, snapshot lifetime, and history together.

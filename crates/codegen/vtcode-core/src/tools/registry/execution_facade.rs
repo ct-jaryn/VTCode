@@ -11,10 +11,8 @@ use vtcode_commons::ErrorCategory;
 use crate::config::constants::tools;
 use crate::core::agent::harness_kernel::PreparedToolCall;
 use crate::core::memory_pool::SizeRecommendation;
-use crate::mcp::McpToolExecutor;
 use crate::tool_policy::ToolExecutionDecision;
 use crate::tools::error_messages::agent_execution;
-use crate::tools::mcp::legacy_mcp_tool_name;
 use crate::tools::request_response::{ToolCallRequest, ToolCallResponse};
 use crate::tools::tool_intent;
 use crate::tools::unified_error::UnifiedErrorKind;
@@ -912,50 +910,17 @@ impl ToolRegistry {
             }
         };
 
-        let super::execution_stages::ToolRoute {
-            mut needs_pty,
-            mut tool_exists,
-            is_mcp: mut is_mcp_tool,
-            mut mcp_provider,
-            mut mcp_tool_name,
-        } = self.resolve_tool_route(&tool_name);
-        let mut mcp_lookup_error: Option<anyhow::Error> = None;
-
-        let mcp_client_opt = self.mcp_client.read().clone();
-        if !is_mcp_tool && let Some(mcp_client) = mcp_client_opt {
-            let mut resolved_mcp_name = legacy_mcp_tool_name(name)
-                .map(str::to_string)
-                .unwrap_or_else(|| tool_name_owned.clone());
-
-            if let Some(alias_target) = self.resolve_mcp_tool_alias(&resolved_mcp_name).await
-                && alias_target != resolved_mcp_name
-            {
-                trace!(
-                    requested = %resolved_mcp_name,
-                    resolved = %alias_target,
-                    "Resolved MCP tool alias"
-                );
-                resolved_mcp_name = alias_target;
-            }
-
-            match mcp_client.has_mcp_tool(&resolved_mcp_name).await {
-                Ok(true) => {
-                    needs_pty = true;
-                    tool_exists = true;
-                    is_mcp_tool = true;
-                    mcp_provider = self.find_mcp_provider(&resolved_mcp_name).await;
-                    mcp_tool_name = Some(resolved_mcp_name);
-                }
-                Ok(false) => {
-                    // Don't modify tool_exists here - keep the result from standard tool check.
-                    // Setting tool_exists = false would incorrectly override a valid standard tool.
-                }
-                Err(err) => {
-                    warn!("Error checking MCP tool '{}': {}", resolved_mcp_name, err);
-                    mcp_lookup_error = Some(err);
-                }
-            }
-        }
+        let super::execution_stages::ExecutionRoute {
+            route:
+                super::execution_stages::ToolRoute {
+                    needs_pty,
+                    tool_exists,
+                    is_mcp: is_mcp_tool,
+                    mcp_provider,
+                    mcp_tool_name,
+                },
+            mcp_lookup_error,
+        } = self.resolve_execution_route(name, &tool_name).await;
 
         // If tool doesn't exist in either registry, return an error
         if !tool_exists {
