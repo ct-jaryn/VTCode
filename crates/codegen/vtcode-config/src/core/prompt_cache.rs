@@ -951,12 +951,12 @@ gap_warning_threshold_secs = 120
     #[test]
     fn bundled_config_templates_match_prompt_cache_defaults() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let loader_source =
-            fs::read_to_string(manifest_dir.join("src/loader/config.rs")).expect("loader config source");
-        assert!(loader_source.contains("[prompt_cache]"));
-        assert!(loader_source.contains("enabled = true"));
-        assert!(loader_source.contains("cache_friendly_prompt_shaping = true"));
-        assert!(loader_source.contains("# prompt_cache_retention = \"24h\""));
+        let bootstrap_template =
+            fs::read_to_string(manifest_dir.join("data/default_config.toml")).expect("bootstrap config template");
+        let config: crate::VTCodeConfig = toml::from_str(&bootstrap_template).expect("parse bootstrap template");
+        assert!(config.prompt_cache.enabled);
+        assert!(config.prompt_cache.cache_friendly_prompt_shaping);
+        assert!(bootstrap_template.contains("# prompt_cache_retention = \"24h\""));
 
         let workspace_root = find_workspace_root();
         let example_config =

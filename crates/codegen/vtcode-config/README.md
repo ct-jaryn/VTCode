@@ -39,6 +39,15 @@ default) to scaffold configuration directories with project-specific defaults.
 | `ConfigLayerStack` | Ordered stack of config layers with merge semantics |
 | `ConfigWatcher` / `SimpleConfigWatcher` | File-system watchers for live reload |
 
+The configuration root's serde definitions, defaults, and validation stay in
+`src/loader/config.rs`. The existing `src/loader/bootstrap.rs` owns scaffold paths,
+file writes, and the `VTCodeConfig::bootstrap_project`,
+`bootstrap_project_with_options`, and `create_sample_config` methods behind the
+`bootstrap` feature. Their sample TOML is embedded from `data/default_config.toml`
+at compile time and ships with the crate; no runtime template file is required.
+Keep the template's output bytes stable during structural moves, and verify public
+entrypoints, force/preserve behavior, canonical home paths, and underlying I/O errors.
+
 ## Usage
 
 ```rust

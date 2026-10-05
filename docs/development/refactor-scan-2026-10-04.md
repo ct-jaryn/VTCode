@@ -1047,3 +1047,34 @@ that instruction; no further coupled-block extraction is justified by this audit
 - The owner deprioritized further VS Code extension optimization. Close this
   already-started correction and return to Rust-side improvements. Computer Use
   for VS Code remains skipped; native/browser rendered acceptance stays open.
+
+### Follow-up: configuration model and bootstrap ownership
+
+- Returned to Rust maintainability after the owner deprioritized VS Code work.
+  The config root mixed serde/schema definitions and validation with scaffold
+  writes and a 648-line static sample. Moved the bootstrap methods into the
+  existing feature-gated `loader/bootstrap.rs` owner and embedded the sample from
+  `data/default_config.toml`. The root shrank from 1,382 to 467 lines; bootstrap
+  is 239 lines, with its tests in a private 188-line child module.
+- Kept all three public bootstrap/sample entrypoints, defaults-provider path
+  selection, write order, force/preserve rules, permissions, and I/O error context.
+  Config definitions, defaults, validation, and provider helpers match their
+  prior source after removing only the extracted code/imports and formatting.
+  Template bytes match the prior literal exactly: 19,307 bytes, SHA256
+  `374b3dc289d297925be4940ecf95f0c8b31b18330482e81568c0e2c8c512f8f3`.
+  Cargo's package listing includes the asset. No dependency or public API was added.
+- Preserved four existing bootstrap tests and added three regressions for all
+  seven scaffold files on both sides of the force boundary, public sample
+  generation and write-error context, and canonical home versus workspace fallback
+  with a custom filename. The Unix path test verifies the private 0700 directory.
+- The first broad run exposed a prompt-cache guard that searched the old Rust
+  source for template text. Updated that guard to read the actual asset and
+  assert parsed cache settings, retaining the documented retention comment check.
+  Module guidance records this test-scope lesson and the new ownership map.
+- All 482 config tests passed without skips. The focused bootstrap/template
+  selection passed eight tests with 474 excluded. The core-facing config-loader
+  integration passed its one test, with 36 unrelated binaries excluded. Locked
+  config checks with warnings denied passed for all features and without default
+  features. This verifies the feature-gated API and the existing public consumer;
+  the fast development gate and scoped Markdown/diff checks also passed.
+  No full-workspace test or native host acceptance result is claimed.
