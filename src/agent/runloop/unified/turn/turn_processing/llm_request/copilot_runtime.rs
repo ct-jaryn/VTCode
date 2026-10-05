@@ -1,3 +1,5 @@
+mod streaming;
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -5,7 +7,6 @@ use std::time::Duration;
 
 use anstyle::Color;
 use anyhow::{Context, Result, anyhow};
-use async_stream::stream;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -17,13 +18,13 @@ use vtcode_core::copilot::{
     CopilotAcpCompatibilityState, CopilotObservedToolCall, CopilotObservedToolCallStatus, CopilotPermissionDecision,
     CopilotPermissionRequest, CopilotRuntimeRequest, CopilotTerminalCreateRequest, CopilotTerminalCreateResponse,
     CopilotTerminalExitStatus, CopilotTerminalOutputResponse, CopilotToolCallFailure, CopilotToolCallRequest,
-    CopilotToolCallResponse, CopilotToolCallSuccess, PromptSession, PromptSessionCancelHandle, PromptUpdate,
+    CopilotToolCallResponse, CopilotToolCallSuccess, PromptSession,
 };
 use vtcode_core::core::trajectory::TrajectoryLogger;
 use vtcode_core::exec::events::ToolCallStatus;
 use vtcode_core::exec_policy::AskForApproval;
-use vtcode_core::llm::provider::{self as uni, LLMStreamEvent, LLMStreamEvent::Completed};
-use vtcode_core::llm::provider::{LLMResponse, ToolDefinition};
+use vtcode_core::llm::provider as uni;
+use vtcode_core::llm::provider::ToolDefinition;
 use vtcode_core::tools::registry::{ToolProgressCallback, ToolRegistry};
 use vtcode_core::types::CompactStr;
 use vtcode_core::utils::ansi::AnsiRenderer;
@@ -1365,106 +1366,7 @@ pub(super) fn prompt_session_to_stream(
     model: String,
     prompt_session: PromptSession,
 ) -> (uni::LLMStream, tokio::sync::mpsc::UnboundedReceiver<CopilotRuntimeRequest>) {
-    struct PromptCancellationGuard {
-        cancel_handle: Option<PromptSessionCancelHandle>,
-    }
-
-    impl PromptCancellationGuard {
-        fn new(cancel_handle: PromptSessionCancelHandle) -> Self {
-            Self { cancel_handle: Some(cancel_handle) }
-        }
-
-        fn disarm(&mut self) {
-            self.cancel_handle = None;
-        }
-    }
-
-    impl Drop for PromptCancellationGuard {
-        fn drop(&mut self) {
-            if let Some(cancel_handle) = self.cancel_handle.take() {
-                cancel_handle.cancel();
-            }
-        }
-    }
-
-    let (mut updates, runtime_requests, completion, cancel_handle) = prompt_session.into_parts();
-
-    let stream = stream! {
-        let mut cancellation_guard = PromptCancellationGuard::new(cancel_handle);
-        let completion = completion;
-        tokio::pin!(completion);
-
-        let mut content = String::new();
-        let mut reasoning = String::new();
-        // Once the updates channel closes (all tokens delivered), disable that arm so
-        // the select no longer spins on None and immediately picks `completion`.
-        let mut updates_done = false;
-
-        loop {
-            tokio::select! {
-                update = updates.recv(), if !updates_done => {
-                    match update {
-                        Some(PromptUpdate::Text(delta)) => {
-                            content.push_str(&delta);
-                            yield Ok(LLMStreamEvent::Token { delta });
-                        }
-                        Some(PromptUpdate::Thought(delta)) => {
-                            let delta = normalize_copilot_reasoning_delta(&reasoning, delta);
-                            reasoning.push_str(&delta);
-                            yield Ok(LLMStreamEvent::Reasoning { delta });
-                        }
-                        None => {
-                            // All tokens delivered; completion will be ready on next tick.
-                            updates_done = true;
-                        }
-                    }
-                }
-                result = &mut completion => {
-                    let completion = match result {
-                        Ok(completion) => completion,
-                        Err(err) => {
-                            yield Err(map_runtime_error(anyhow!("copilot acp prompt task join failed: {err}")));
-                            break;
-                        }
-                    };
-                    let completion = match completion {
-                        Ok(completion) => completion,
-                        Err(err) => {
-                            yield Err(map_runtime_error(err));
-                            break;
-                        }
-                    };
-                    while let Ok(update) = updates.try_recv() {
-                        match update {
-                            PromptUpdate::Text(delta) => {
-                                content.push_str(&delta);
-                                yield Ok(LLMStreamEvent::Token { delta });
-                            }
-                            PromptUpdate::Thought(delta) => {
-                                let delta = normalize_copilot_reasoning_delta(&reasoning, delta);
-                                reasoning.push_str(&delta);
-                                yield Ok(LLMStreamEvent::Reasoning { delta });
-                            }
-                        }
-                    }
-
-                    let mut response = LLMResponse::new(model, content);
-                    response.finish_reason =
-                        map_copilot_finish_reason(&completion.stop_reason);
-                    if !reasoning.is_empty() {
-                        response.reasoning = Some(reasoning);
-                    }
-                    cancellation_guard.disarm();
-                    yield Ok(Completed {
-                        response: Box::new(response),
-                    });
-                    break;
-                }
-            }
-        }
-    };
-
-    (Box::pin(stream), runtime_requests)
+    streaming::prompt_session_to_stream(model, prompt_session)
 }
 
 async fn run_local_terminal_session(task: LocalTerminalTaskContext) {
@@ -1769,53 +1671,6 @@ fn lock_local_terminal_state(
     state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn normalize_copilot_reasoning_delta(existing: &str, delta: String) -> String {
-    let delta = collapse_reasoning_single_newlines(delta);
-    if existing.is_empty()
-        || existing.chars().last().is_some_and(char::is_whitespace)
-        || delta.chars().next().is_some_and(char::is_whitespace)
-        || delta.chars().next().is_some_and(is_reasoning_closing_punctuation)
-    {
-        delta
-    } else {
-        format!(" {delta}")
-    }
-}
-
-fn collapse_reasoning_single_newlines(delta: String) -> String {
-    let chars: Vec<char> = delta.chars().collect();
-    let mut normalized = String::with_capacity(delta.len());
-
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if ch != '\n' {
-            normalized.push(ch);
-            continue;
-        }
-
-        let prev = index.checked_sub(1).and_then(|idx| chars.get(idx)).copied();
-        let next = chars.get(index + 1).copied();
-
-        if prev.is_some() && next.is_some() && prev != Some('\n') && next != Some('\n') {
-            if next.is_some_and(char::is_whitespace) || prev.is_some_and(char::is_whitespace) {
-                continue;
-            }
-            if next.is_some_and(is_reasoning_closing_punctuation) {
-                continue;
-            }
-            normalized.push(' ');
-            continue;
-        }
-
-        normalized.push('\n');
-    }
-
-    normalized
-}
-
-fn is_reasoning_closing_punctuation(ch: char) -> bool {
-    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
-}
-
 fn observed_tool_command_display(update: &CopilotObservedToolCall) -> Option<String> {
     extract_command_from_args(update.arguments.as_ref()).or_else(|| {
         update
@@ -1882,16 +1737,6 @@ struct PermissionPromptSummary {
     learning_label: String,
     tool_args: Option<Value>,
     reason: Option<String>,
-}
-
-fn map_copilot_finish_reason(stop_reason: &str) -> vtcode_core::llm::provider::FinishReason {
-    match stop_reason.trim() {
-        "end_turn" => vtcode_core::llm::provider::FinishReason::Stop,
-        "max_tokens" | "length" => vtcode_core::llm::provider::FinishReason::Length,
-        "refusal" => vtcode_core::llm::provider::FinishReason::Refusal,
-        "cancelled" => vtcode_core::llm::provider::FinishReason::Error("cancelled".to_string()),
-        other => vtcode_core::llm::provider::FinishReason::Error(other.to_string()),
-    }
 }
 
 fn scoped_cache_key(prefix: &str, scope: Value) -> String {

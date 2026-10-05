@@ -1,8 +1,7 @@
 use super::{
     CopilotRuntimeHost, append_session_limit_grant_guidance, auto_approve_builtin_permission, bounded_output_evidence,
     copilot_failure_response_with_diagnosis, copilot_tool_result_text, denied_tool_response, filter_copilot_tools,
-    harness_call_item_id, map_builtin_permission_prompt_decision, map_copilot_finish_reason,
-    normalize_copilot_reasoning_delta, summarize_permission_request,
+    harness_call_item_id, map_builtin_permission_prompt_decision, summarize_permission_request,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -15,7 +14,7 @@ use vtcode_core::copilot::{
 };
 use vtcode_core::core::decision_tracker::DecisionTracker;
 use vtcode_core::core::trajectory::TrajectoryLogger;
-use vtcode_core::llm::provider::{FinishReason, ToolDefinition};
+use vtcode_core::llm::provider::ToolDefinition;
 use vtcode_core::tools::registry::ToolRegistry;
 use vtcode_core::tools::{ApprovalRecorder, ToolResultCache};
 use vtcode_core::utils::ansi::AnsiRenderer;
@@ -146,15 +145,6 @@ fn custom_tool_permission_cache_key_scopes_arguments() {
     .expect("second summary");
 
     assert_ne!(first.cache_key, second.cache_key);
-}
-
-#[test]
-fn copilot_finish_reason_maps_protocol_values() {
-    assert_eq!(map_copilot_finish_reason("end_turn"), FinishReason::Stop);
-    assert_eq!(map_copilot_finish_reason("max_tokens"), FinishReason::Length);
-    assert_eq!(map_copilot_finish_reason("length"), FinishReason::Length);
-    assert_eq!(map_copilot_finish_reason("refusal"), FinishReason::Refusal);
-    assert_eq!(map_copilot_finish_reason("cancelled"), FinishReason::Error("cancelled".to_string()));
 }
 
 #[test]
@@ -293,29 +283,6 @@ fn shell_permissions_are_not_auto_approved() {
     });
 
     assert_eq!(approval, None);
-}
-
-#[test]
-fn copilot_reasoning_delta_normalizes_chunk_boundaries() {
-    assert_eq!(
-        normalize_copilot_reasoning_delta(
-            "The user wants me to run `cargo check` and report what I see.",
-            "Running cargo check".to_string()
-        ),
-        " Running cargo check"
-    );
-    assert_eq!(normalize_copilot_reasoning_delta("prefix\n", "next".to_string()), "next");
-}
-
-#[test]
-fn copilot_reasoning_delta_collapses_single_newlines_inside_chunk() {
-    assert_eq!(
-        normalize_copilot_reasoning_delta(
-            "Run",
-            " cargo fmt and report the\n results\n.\nRunning cargo fmt".to_string()
-        ),
-        " cargo fmt and report the results. Running cargo fmt"
-    );
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 <!-- markdownlint-disable MD013 -->
 # vtcode (binary)
 
-[Root AGENTS.md](../AGENTS.md) | CLI entrypoint, session bootstrap, and agent runloop wiring. Detailed runloop recovery and allocator notes live in the [vtcode binary gotchas guide](../docs/development/vtcode-binary-gotchas.md).
+[Root AGENTS.md](../AGENTS.md) | CLI entrypoint, session bootstrap, and agent runloop wiring. Detailed runloop recovery and allocator notes live in the [vtcode binary gotchas guide](../docs/development/vtcode-binary-gotchas.md); [Copilot runtime ownership](../docs/development/copilot-runtime-ownership.md) maps host state and the private prompt-stream adapter.
 
 ## Modules (active bridge: `agent/runloop/unified/webmcp.rs`)
 

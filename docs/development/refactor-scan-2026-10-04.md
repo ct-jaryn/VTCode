@@ -628,3 +628,43 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   exercise predicate/output storage behavior without launching shell commands.
 - Next increment: assess the remaining facade admission and settlement blocks
   against the scan plan; avoid moving tightly coupled state just to reduce lines.
+
+### Step 6 closure: retained admission and settlement ownership
+
+- Reviewed the remaining facade blocks after step 6f. Admission depends on the
+  same classified intent, prevalidation/dispatch authority, snapshots, recovery
+  state, policy constraints, and history closure. Settlement shares PTY lifetime,
+  middleware request state, timeout/breaker metadata, and history recording.
+- Keep these blocks together for now; splitting them would require moving a
+  broad execution context or distributing ordering-sensitive error recording.
+  Phase 6 is complete at this maintainable boundary, with the facade reduced
+  from 1,984 to 1,382 lines across its validated increments. This is a scoped
+  conclusion, not a claim that every future refactor opportunity is exhausted.
+
+### Step 7a: Copilot prompt-stream adapter
+
+- Mapped runtime host, permission/admission, observed-call presentation, local
+  terminal sessions, prompt streaming, and request-renderer lifecycle ownership
+  in the [Copilot runtime guide](copilot-runtime-ownership.md).
+- Extracted prompt-session conversion into private
+  `copilot_runtime/streaming.rs`, retaining a synchronous facade entrypoint and
+  unchanged return shape. Runtime host source is now 1,984 lines, down from
+  2,139; the new production adapter is 174 lines.
+- Prompt cancellation guard, channel-close handling, queued-update draining,
+  reasoning accumulation, and completion mapping moved verbatim. Permission,
+  budget, verification, tool/terminal execution, and harness-event ownership
+  remain in the host; runtime requests stay on their separate receiver.
+- Moved stream/helper tokens and retained host tokens match after module/import
+  and entrypoint delegation changes. No APIs or dependencies were added.
+- Relocated three existing conversion tests into the private child suite and
+  added three tests of Unicode/paragraph/punctuation boundaries, asymmetric
+  chunk accumulation, whitespace, and unknown finish reasons.
+- All 24 focused binary runtime tests passed. The broader locked selection
+  passed all 90 runtime, provider cancel-handle, and inline-events tests; 4,634
+  unrelated tests were excluded. Fast gate, scoped Markdown lint, and diff
+  checks passed. Direct prompt-stream cancellation/completion races and a live
+  Copilot provider remain outside this validation.
+- Corrected the root guideline to use test(inline_events): the former binary
+  filter matched no binary and aborted before running tests.
+- Next increment: map local terminal task/association/exit helpers before
+  extracting them; preserve host drop, release/kill/wait, and event ordering.

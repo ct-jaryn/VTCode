@@ -134,6 +134,10 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Context-Generic Programming (CGP) in VT Code?", "How does Overview
     work?", "How does Core Concepts work?"
 
+- **File**: `docs/development/copilot-runtime-ownership.md`
+  - **Content**: Copilot runtime ownership
+  - **User Questions**: "What can you tell me about Copilot runtime ownership?"
+
 - **File**: `docs/development/cross-compilation.md`
   - **Content**: Cross-Compilation Configuration for VT Code
   - **Topics**: Overview, Configuration Details, Usage, Platform-Specific Notes, Integration with Release Process
