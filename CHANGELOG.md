@@ -2,6 +2,51 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.172.2 - 2026-10-05
+
+### Highlights
+#### Bug Fixes
+
+- Offload artifact cleanup and reuse tracker selection (17cee4a2) 
+- Scope persistent shell approval to learned read-only families (4513b888) 
+- Launch interactive CLI without shell interpolation (9628d136) 
+- Omit reasoning on xiaomimimo routes lacking joint tool support (18ebc09c) 
+- Share stable workspace trust management (37c9484c) 
+- Preserve core frame without an active overlay (2e529cd9) 
+- Provide registered command output context (916e8d25) 
+#### Documentation
+
+- Overhaul hero, add at-a-glance table, tighten quick start (5ee555c7) 
+- Codify test module and file scope rules (db9071fe) 
+### Other Changes
+#### Refactors
+
+- Extract teardown tracker and execution history modules (a9d71e65) 
+- Extract shared wire helpers and deduplicate defaults (3f8fcb60) 
+- Split artifact parsing and validation (8cb963ed) 
+- Extract evidence and settings controllers (f761d725) 
+- Extract quick-action and workspace views (1d289732) 
+- Share CLI execution and extract config commands (43618ec3) 
+- Extract interactive terminal lifecycle (d4ccbba8) 
+- Share bounded subprocess line framing (63e11e2b) 
+- Share inline message command definitions (690fc9a9) 
+- Share stateless control command forwarding (9837fe12) 
+- Extract execution reentrancy guard (5fedd38c) 
+- Extract request attempt lifecycle (f557833f) 
+- Share execution preparation and base routing (c59a0a38) 
+- Extract awaited MCP route discovery (1388169f) 
+- Extract registered handler dispatch (1df35c9a) 
+- Extract execution output preparation (0703c6ab) 
+- Extract prompt stream conversion (341a40f7) 
+- Extract local terminal lifecycle (973a7993) 
+- Share inline PTY presentation (0a20cd89) 
+- Encapsulate observed call state (a92ff2f9) 
+- Share session thread bootstrap (0ed06541) 
+- Share session config reload polling (6159852c) 
+- Extract changelog helpers and retain final records (98995a46) 
+- Share insertion and handle headerless changelogs (c8bdb643) 
+- Audit extraction boundaries and align test layout (e02f439e) 
+- Isolate bootstrap and embed sample template (467d681f) 
 ## 0.172.1 - 2026-10-04
 
 ### Highlights
