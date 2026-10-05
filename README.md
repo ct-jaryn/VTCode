@@ -11,19 +11,11 @@
 **Plan, run, and review coding work from your terminal, with hosted or local models, sandboxed execution, and
 resumable sessions.**
 
-[![CI](https://github.com/vinhnx/VTCode/actions/workflows/ci.yml/badge.svg)](https://github.com/vinhnx/VTCode/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/vtcode.svg)](https://crates.io/crates/vtcode)
 [![GitHub release](https://img.shields.io/github/release/vinhnx/vtcode.svg)](https://github.com/vinhnx/vtcode/releases)
 [![Rust](https://img.shields.io/badge/rust-1.98.1%2B-000000?style=flat-square&logo=rust&logoColor=white)](https://github.com/vinhnx/VTCode)
 [![License](https://img.shields.io/badge/License-MIT_OR_Apache--2.0-30363D?style=flat-square)](#license)
-[![Agent Skills](https://img.shields.io/badge/Agent_Skills-BFB38F?style=flat-square)](https://agentskills.io/)
-[![Agent Client Protocol](https://img.shields.io/badge/Agent_Client_Protocol-383B73?style=flat-square&logo=zedindustries&logoColor=white)](./docs/guides/zed-acp.md)
-[![Model Context Protocol](https://img.shields.io/badge/Model_Context_Protocol-A63333?style=flat-square&logo=modelcontextprotocol&logoColor=white)](./docs/guides/mcp-integration.md)
-[![Agent Plugins](https://img.shields.io/badge/Agent_Plugins-5865F2?style=flat-square)](./docs/guides/agent-plugins.md)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vinhnx/VTCode)
-
-<!-- markdownlint-disable-next-line MD013 -->
-<a href="https://www.producthunt.com/products/vt-code?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vt-code" target="_blank" rel="noopener noreferrer"><img alt="VT Code - Open-source coding agent harness built for long-running work | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1248210&amp;theme=light&amp;t=1789739815450"></a>
 
 <!-- markdownlint-disable-next-line MD013 -->
 <img src="./resources/gif/vtcode.gif" alt="VT Code demo: plan, then review changes in the terminal" width="70%" />
@@ -34,33 +26,33 @@ resumable sessions.**
 <summary><strong>Contents</strong></summary>
 
 - [VT Code](#vt-code)
-  - [Overview](#overview)
-  - [Quick start](#quick-start)
-    - [1. Install](#1-install)
-    - [2. Configure your project](#2-configure-your-project)
-    - [3. Run your first task](#3-run-your-first-task)
-  - [Usage](#usage)
-    - [Interactive](#interactive)
-    - [Headless](#headless)
-    - [Scheduled tasks](#scheduled-tasks)
-    - [Sessions](#sessions)
-  - [Integrations](#integrations)
-    - [MCP, skills, and plugins](#mcp-skills-and-plugins)
-    - [Editors](#editors)
-    - [Cross-session memory](#cross-session-memory)
-  - [Documentation](#documentation)
-  - [Development](#development)
-  - [Contributing](#contributing)
-  - [Community](#community)
-    - [Security Advisors](#security-advisors)
-    - [Main Contributor](#main-contributor)
-    - [Core Contributors](#core-contributors)
-    - [Contributors](#contributors)
-    - [Contact](#contact)
-    - [Resources](#resources)
-    - [Share VT Code](#share-vt-code)
-    - [Sponsorship](#sponsorship)
-  - [License](#license)
+    - [Overview](#overview)
+    - [Quick start](#quick-start)
+        - [1. Install](#1-install)
+        - [2. Configure your project](#2-configure-your-project)
+        - [3. Run your first task](#3-run-your-first-task)
+    - [Usage](#usage)
+        - [Interactive](#interactive)
+        - [Headless](#headless)
+        - [Scheduled tasks](#scheduled-tasks)
+        - [Sessions](#sessions)
+    - [Integrations](#integrations)
+        - [MCP, skills, and plugins](#mcp-skills-and-plugins)
+        - [Editors](#editors)
+        - [Cross-session memory](#cross-session-memory)
+    - [Documentation](#documentation)
+    - [Development](#development)
+    - [Contributing](#contributing)
+    - [Community](#community)
+        - [Security Advisors](#security-advisors)
+        - [Main Contributor](#main-contributor)
+        - [Core Contributors](#core-contributors)
+        - [Contributors](#contributors)
+        - [Contact](#contact)
+        - [Resources](#resources)
+        - [Share VT Code](#share-vt-code)
+        - [Sponsorship](#sponsorship)
+    - [License](#license)
 
 </details>
 
@@ -381,6 +373,7 @@ VT Code is maintained in spare time; a [sponsorship](https://github.com/sponsors
 [![@KhaiRyth](https://avatars.githubusercontent.com/u/273723951?s=80)](https://github.com/KhaiRyth)
 
 <!-- markdownlint-disable-next-line MD013 -->
+
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-30363D?style=for-the-badge&logo=github-sponsors&logoColor=%23EA4AAA)](https://github.com/sponsors/vinhnx)
 [![Buy Me a Coffee](./resources/screenshots/qr_donate.png)](https://buymeacoffee.com/vinhnx)
 
