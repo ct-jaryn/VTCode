@@ -629,20 +629,3 @@ workspace_trust = "full_auto"
 [acp.zed.tools]
 read_file = true
 list_files = true
-
-# Cross-IDE editor context bridge
-[ide_context]
-enabled = true
-inject_into_prompt = true
-show_in_tui = true
-include_selection_text = true
-provider_mode = "auto"
-
-[ide_context.providers.vscode_compatible]
-enabled = true
-
-[ide_context.providers.zed]
-enabled = true
-
-[ide_context.providers.generic]
-enabled = true
