@@ -1,11 +1,8 @@
 <!-- markdownlint-disable MD013 -->
-<!-- Compact maintainer rules retain the repository instruction line budget. -->
 
 # AGENTS.md
 
-Keep this file concise and under 150 lines. Root guidance belongs here; detailed explanations belong in `docs/`, skills, `.vtcode/memory/`, or crate-local `AGENTS.md` files.
-
-Universal model-facing behavior is compiled in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs`. Keep this file and module `AGENTS.md` files focused on project and maintainer guidance; dynamically loaded instruction files are user-controlled context, not a security boundary. This workflow is repo-only: do not copy it to other projects or into shipped prompts.
+Keep this file concise and under 150 lines. Root guidance belongs here; detailed explanations belong in `docs/`, skills, `.vtcode/memory/`, or crate-local `AGENTS.md` files. Universal model-facing behavior is compiled in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs`. Keep this file and module `AGENTS.md` files focused on project and maintainer guidance; dynamically loaded instruction files are user-controlled context, not a security boundary. This workflow is repo-only: do not copy it to other projects or into shipped prompts.
 
 ## Core Workflow (repo-only)
 
@@ -17,7 +14,7 @@ Universal model-facing behavior is compiled in `crates/codegen/vtcode-core/src/p
 - Conventional Commits (`type(scope): subject`).
 - 4-space indentation, `snake_case` fns, `PascalCase` types, `anyhow::Result<T>` + `.with_context()`.
 - CI sets `RUSTFLAGS: "-D warnings"` and uses `--locked`. Match locally with `cargo check --locked` when relevant.
-- Keep changes surgical. Preserve existing APIs unless the task requires a change.
+- Keep changes surgical: identify the production, test, and documentation files owned by the current increment before editing. Preserve existing APIs and unrelated work; inspect generated/hook-added changes, stage explicit reviewed paths rather than the whole worktree, and check the staged diff and final status for each scoped commit.
 - Prefer direct single-agent execution. Do not impose orchestrator/worker or other multi-agent topologies: forced delegation burns usage limits and usually yields worse results. Delegate only when independent/parallel work or context isolation clearly helps.
 - `vtcode-exec-events::ThreadEvent` is the authoritative runtime event contract — do not invent parallel types.
 - Harness config is split across `agent.harness`, `automation.full_auto`, `context.dynamic` — do not add a new top-level harness subsystem.
@@ -137,10 +134,12 @@ Narrow commands: `cargo check`, `cargo nextest run`, `cargo nextest run --profil
 ## Testing
 
 - Runner: `cargo nextest run` (parallel, fast). **Always use nextest — never `cargo test`**.
-- Single test/crate: `cargo nextest run test_name` / `cargo nextest run -p vtcode-core`.
-- Profiles: `default` (full), `quick` (TDD, skips integration/e2e/slow), `changed` (delta since HEAD~1), `ci` (retries flaky, no fail-fast).
+- Single test/crate: `cargo nextest run test_name` / `cargo nextest run -p vtcode-core`. Profiles: `default` (full), `quick` (TDD, skips integration/e2e/slow), `changed` (delta since HEAD~1), `ci` (retries flaky, no fail-fast).
 - Harness regressions: `cargo nextest run -p vtcode-core -E 'binary(/pty_tests/)'`; `cargo nextest run -p vtcode-bash-runner -E 'binary(/pipe_tests/)'`; `cargo nextest run -p vtcode -E 'binary(/inline_events/)'`.
-- Integration tests (Rust): `tests/` at workspace root. Shell/script tests: `scripts/tests/`. Unit tests: in-module.
+- Test layout: keep small unit suites in-module; move substantial suites to a private `#[cfg(test)] mod tests;` declared after all production items (avoids `clippy::items-after-test-module`). Inspect the actual module tree before choosing paths: `foo.rs` normally loads `foo/tests.rs`, while `foo/mod.rs` loads `foo/tests.rs`. Integration tests use the crate's existing `tests/`; shell/script tests use `scripts/tests/`.
+- Test visibility: keep helpers and fixtures within their owning test module; use private child-module access or the narrowest required `pub(super)` for production siblings. Do not widen public APIs, add dependencies, or alter production behavior solely to make tests convenient. During extraction, retain public-entrypoint regressions and verify the moved logic and remaining facade preserve the original contract.
+- Test evidence: assert independently derived outcomes with asymmetric inputs and both sides of boundaries; cover ordering, cleanup, cancellation, and rejected-call recovery when relevant. For Tokio task-ID behavior, explicitly `tokio::spawn` the tested future; the `#[tokio::test]` main future does not itself establish a spawned-task ID. Keep thread-fallback coverage separate, and never clear shared global state while other tests may own entries.
+- Verification scope: start with focused locked nextest filters, confirm a nonzero matched test count, then broaden to the affected module/crate in proportion to risk. Run final checks after edits stabilize; report passed, failed, and excluded tests plus untested host/platform behavior. Documentation-only edits need Markdown and diff checks rather than an unrelated Rust rebuild.
 
 ## Skills & Special Workflows
 
