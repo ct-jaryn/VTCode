@@ -10,7 +10,8 @@ use crate::tools::handlers::task_tracking::{
     TASK_ITEMS_DESCRIPTION, TaskCounts, TaskItemInput, TaskStepMetadata, TaskTrackingStatus, TaskTreeNode,
     append_notes, append_notes_section, append_task_step_metadata, compact_task_tree_view, is_bulk_sync_update,
     metadata_from_input, normalize_optional_text, normalize_string_items, parse_marked_status_prefix,
-    parse_status_prefix, validate_action_index_fields, validate_task_item_inputs, validate_update_shape,
+    parse_status_prefix, task_files_property_schema, task_items_array_schema, task_status_property_schema,
+    task_verify_property_schema, validate_action_index_fields, validate_task_item_inputs, validate_update_shape,
 };
 use crate::tools::traits::Tool;
 use crate::utils::file_utils::{ensure_dir_exists, read_file_with_context, write_file_with_context};
@@ -502,40 +503,7 @@ pub(crate) fn planning_task_tracker_parameter_schema() -> Value {
                 "type": "string",
                 "description": "Title for tracker document (used with create)."
             },
-            "items": {
-                "type": "array",
-                "items": {
-                    "anyOf": [
-                        { "type": "string" },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "description": { "type": "string" },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed", "blocked"]
-                                },
-                                "files": {
-                                    "type": "array",
-                                    "items": { "type": "string" }
-                                },
-                                "outcome": { "type": "string" },
-                                "verify": {
-                                    "anyOf": [
-                                        { "type": "string" },
-                                        {
-                                            "type": "array",
-                                            "items": { "type": "string" }
-                                        }
-                                    ]
-                                }
-                            },
-                            "required": ["description"]
-                        }
-                    ]
-                },
-                "description": format!("{TASK_ITEMS_DESCRIPTION} Leading 2-space indentation in description indicates nesting.")
-            },
+            "items": task_items_array_schema(&format!("{TASK_ITEMS_DESCRIPTION} Leading 2-space indentation in description indicates nesting.")),
             "index_path": {
                 "type": "string",
                 "pattern": "^[1-9][0-9]*(\\.[1-9][0-9]*)*$",
@@ -546,34 +514,17 @@ pub(crate) fn planning_task_tracker_parameter_schema() -> Value {
                 "minimum": 1,
                 "description": "Action=update only: positive top-level item index compatibility fallback. Planning index 0 is invalid; use items for bulk updates."
             },
-            "status": {
-                "type": "string",
-                "enum": ["pending", "in_progress", "completed", "blocked"],
-                "description": "New status for update."
-            },
+            "status": task_status_property_schema("New status for update."),
             "description": {
                 "type": "string",
                 "description": "Task description for add. Optional prefix like '[x] ' or '[~] ' is supported."
             },
-            "files": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Optional file paths associated with a single add/update item."
-            },
+            "files": task_files_property_schema("Optional file paths associated with a single add/update item."),
             "outcome": {
                 "type": "string",
                 "description": "Optional expected outcome associated with a single add/update item."
             },
-            "verify": {
-                "anyOf": [
-                    { "type": "string" },
-                    {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    }
-                ],
-                "description": "Optional verification command or commands associated with a single add/update item."
-            },
+            "verify": task_verify_property_schema("Optional verification command or commands associated with a single add/update item."),
             "parent_index_path": {
                 "type": "string",
                 "description": "Optional parent path for add (example: '2'). If omitted, adds top-level task."
