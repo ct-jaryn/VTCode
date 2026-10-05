@@ -1,7 +1,87 @@
-//! Session bootstrap and exit helpers: primary-agent persistence, plan-selection
+//! Session thread/archive bootstrap and exit helpers: primary-agent persistence, plan-selection
 //! failure tails, thread-completion resolution, and archived-prompt loading.
 
+use super::super::archive::{create_session_archive, workspace_archive_label};
+use super::super::support::prepare_resume_bootstrap_without_archive;
 use super::*;
+use vtcode_core::core::threads::{ThreadBootstrap, prepare_archived_session};
+use vtcode_core::utils::session_archive::SessionArchiveMetadata;
+
+pub(super) struct SessionThreadBootstrap {
+    pub(super) thread_id: String,
+    pub(super) bootstrap: ThreadBootstrap,
+    pub(super) session_archive: Option<session_archive::SessionArchive>,
+}
+
+pub(super) async fn prepare_session_thread(
+    config: &CoreAgentConfig,
+    vt_cfg: Option<&VTCodeConfig>,
+    resume: Option<&ResumeSession>,
+    archive_metadata: SessionArchiveMetadata,
+    reserved_archive_id: Option<String>,
+    history_enabled: bool,
+) -> Result<SessionThreadBootstrap> {
+    let summarized_fork_provider = if resume.is_some_and(|resume| resume.summarize_fork()) {
+        Some(crate::agent::runloop::unified::session_setup::create_provider_client(config, vt_cfg)?)
+    } else {
+        None
+    };
+    let mut prepared = if let Some(resume) = resume {
+        if history_enabled {
+            let prepared = prepare_archived_session(
+                resume.listing().clone(),
+                config.workspace.clone(),
+                archive_metadata,
+                resume.intent().clone(),
+                if resume.is_fork() { reserved_archive_id } else { None },
+            )
+            .await?;
+            SessionThreadBootstrap {
+                thread_id: prepared.thread_id,
+                bootstrap: prepared.bootstrap,
+                session_archive: Some(prepared.archive),
+            }
+        } else {
+            let (bootstrap, thread_id) =
+                prepare_resume_bootstrap_without_archive(resume, archive_metadata, reserved_archive_id);
+            SessionThreadBootstrap { thread_id, bootstrap, session_archive: None }
+        }
+    } else {
+        let thread_id = if let Some(identifier) = reserved_archive_id {
+            identifier
+        } else if history_enabled {
+            session_archive::reserve_session_archive_identifier(&workspace_archive_label(&config.workspace), None)
+                .await?
+        } else {
+            session_archive::generate_session_archive_identifier(&workspace_archive_label(&config.workspace), None)
+        };
+        let bootstrap = ThreadBootstrap::new(Some(archive_metadata.clone()));
+        let session_archive = if history_enabled {
+            Some(create_session_archive(archive_metadata, Some(thread_id.clone())).await?)
+        } else {
+            None
+        };
+        SessionThreadBootstrap { thread_id, bootstrap, session_archive }
+    };
+
+    if let Some(resume) = resume
+        && let Some(provider) = summarized_fork_provider.as_deref()
+    {
+        prepared.bootstrap.messages = crate::agent::runloop::unified::turn::compaction::build_summarized_fork_history(
+            provider,
+            &config.model,
+            &resume.identifier(),
+            &prepared.thread_id,
+            &config.workspace,
+            vt_cfg,
+            resume.history(),
+            resume.budget_limit_continuation().is_some(),
+        )
+        .await?;
+    }
+
+    Ok(prepared)
+}
 
 /// Stable opening shared with `is_internal_harness_follow_up`, which keys the
 /// quiet path off this constant instead of a duplicated literal.
@@ -202,3 +282,6 @@ pub(super) async fn load_archived_prompts_for_history(handle: &vtcode_ui::tui::a
         handle.set_archived_history(entries);
     }
 }
+
+#[cfg(test)]
+mod tests;

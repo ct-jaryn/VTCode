@@ -23,7 +23,7 @@ use vtcode_core::utils::session_archive::SessionMessage;
 use vtcode_ui::tui::app::ArchivedPromptEntry;
 
 use super::super::{CancelGuard, TerminalCleanupGuard};
-use super::archive::{create_session_archive, refresh_runtime_debug_context_for_next_session, workspace_archive_label};
+use super::archive::refresh_runtime_debug_context_for_next_session;
 use super::blocked_handoff::write_blocked_handoff_after_checkpoint;
 use super::handoff::{
     append_approved_plan_execution_input, apply_primary_agent_tool_policy_overrides,
@@ -35,8 +35,8 @@ use super::support::{
     ExecutionSummaryStatus, RefusedTurnRollback, append_transient_turn_notes, approved_plan_execution_summary,
     build_unrelated_dirty_worktree_note, build_withdrawn_turn_changes_note, checkpoint_session_archive_start,
     checkpoint_unavailable_notice, force_reload_workspace_config_for_execution, format_workspace_relative_paths,
-    latest_assistant_result_text, prepare_resume_bootstrap_without_archive, prompt_startup_planning_workflow,
-    remove_transient_system_notes, take_pending_resumed_user_prompt,
+    latest_assistant_result_text, prompt_startup_planning_workflow, remove_transient_system_notes,
+    take_pending_resumed_user_prompt,
 };
 use super::turn_tail::{TurnPersistenceTail, complete_turn_persistence_tail};
 use crate::agent::runloop::ResumeSession;
@@ -118,7 +118,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             }
         });
         let active_thread_label = resume_ref.map_or("main", ResumeSession::thread_label);
-        let thread_manager = vtcode_core::core::threads::ThreadManager::new();
         let archive_metadata = vtcode_core::core::threads::build_thread_archive_metadata(
             &config.workspace,
             &config.model,
@@ -131,82 +130,18 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         );
         let reserved_archive_id = crate::main_helpers::runtime_archive_session_id();
         let history_enabled = session_archive::history_persistence_enabled();
-        let summarized_fork_provider = if resume_ref.is_some_and(|resume| resume.summarize_fork()) {
-            Some(crate::agent::runloop::unified::session_setup::create_provider_client(&config, vt_cfg.as_ref())?)
-        } else {
-            None
-        };
-        let (thread_handle, mut session_archive) = if let Some(resume) = resume_ref {
-            if history_enabled {
-                let mut prepared = vtcode_core::core::threads::prepare_archived_session(
-                    resume.listing().clone(),
-                    config.workspace.clone(),
-                    archive_metadata.clone(),
-                    resume.intent().clone(),
-                    if resume.is_fork() {
-                        reserved_archive_id.clone()
-                    } else {
-                        None
-                    },
-                )
-                .await?;
-                if let Some(provider) = summarized_fork_provider.as_deref() {
-                    prepared.bootstrap.messages =
-                        crate::agent::runloop::unified::turn::compaction::build_summarized_fork_history(
-                            provider,
-                            &config.model,
-                            &resume.identifier(),
-                            &prepared.thread_id,
-                            &config.workspace,
-                            vt_cfg.as_ref(),
-                            resume.history(),
-                            resume.budget_limit_continuation().is_some(),
-                        )
-                        .await?;
-                }
-                (
-                    thread_manager.start_thread_with_identifier(prepared.thread_id.clone(), prepared.bootstrap),
-                    Some(prepared.archive),
-                )
-            } else {
-                let (mut bootstrap, thread_id) = prepare_resume_bootstrap_without_archive(
-                    resume,
-                    archive_metadata.clone(),
-                    reserved_archive_id.clone(),
-                );
-                if let Some(provider) = summarized_fork_provider.as_deref() {
-                    bootstrap.messages =
-                        crate::agent::runloop::unified::turn::compaction::build_summarized_fork_history(
-                            provider,
-                            &config.model,
-                            &resume.identifier(),
-                            &thread_id,
-                            &config.workspace,
-                            vt_cfg.as_ref(),
-                            resume.history(),
-                            resume.budget_limit_continuation().is_some(),
-                        )
-                        .await?;
-                }
-                (thread_manager.start_thread_with_identifier(thread_id, bootstrap), None)
-            }
-        } else {
-            let thread_id = if let Some(identifier) = reserved_archive_id.clone() {
-                identifier
-            } else if history_enabled {
-                session_archive::reserve_session_archive_identifier(&workspace_archive_label(&config.workspace), None)
-                    .await?
-            } else {
-                session_archive::generate_session_archive_identifier(&workspace_archive_label(&config.workspace), None)
-            };
-            let bootstrap = vtcode_core::core::threads::ThreadBootstrap::new(Some(archive_metadata.clone()));
-            let archive = if history_enabled {
-                Some(create_session_archive(archive_metadata.clone(), Some(thread_id.clone())).await?)
-            } else {
-                None
-            };
-            (thread_manager.start_thread_with_identifier(thread_id, bootstrap), archive)
-        };
+        let session_bootstrap::SessionThreadBootstrap { thread_id, bootstrap, mut session_archive } =
+            session_bootstrap::prepare_session_thread(
+                &config,
+                vt_cfg.as_ref(),
+                resume_ref,
+                archive_metadata,
+                reserved_archive_id,
+                history_enabled,
+            )
+            .await?;
+        let thread_handle =
+            vtcode_core::core::threads::ThreadManager::new().start_thread_with_identifier(thread_id, bootstrap);
         crate::main_helpers::set_runtime_archive_session_id(Some(thread_handle.thread_id().to_string()));
         if let Some(archive) = session_archive.as_ref()
             && let Err(err) = checkpoint_session_archive_start(archive, &thread_handle).await

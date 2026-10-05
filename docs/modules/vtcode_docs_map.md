@@ -272,6 +272,10 @@ below based on the topic area.
   - **Topics**: Audit packs
   - **User Questions**: "What can you tell me about Session Event Persistence?", "How does Audit packs work?"
 
+- **File**: `docs/development/session-orchestration-ownership.md`
+  - **Content**: Session orchestration ownership
+  - **User Questions**: "What can you tell me about Session orchestration ownership?"
+
 - **File**: `docs/development/ui-message-protocol.md`
   - **Content**: Shared inline message and control commands
   - **Topics**: Common control forwarding, Verification

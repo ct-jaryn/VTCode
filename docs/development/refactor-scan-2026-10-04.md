@@ -751,3 +751,36 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   permissions, budgets, hooks, tool execution, and event ownership; no new host
   or broad execution context is warranted. Next: reuse the existing session
   bootstrap module for thread/archive preparation in the orchestration loop.
+
+### Step 7e: session thread/archive preparation
+
+- Moved fresh/resume/fork thread preparation into the existing private
+  `orchestration/session_bootstrap.rs`, returning a named identity/bootstrap/
+  optional-archive record. The loop retains metadata/history policy, thread
+  activation, runtime-ID publication, startup checkpointing, and UI/harness
+  lifecycle. Orchestration source is now 2,599 lines, down from 2,664; the
+  bootstrap helper contains 284 production lines.
+- Replaced two summarized-fork history calls with one common call after identity
+  and archive preparation. Preserve provider construction only for summarized
+  forks, source/target/history and budget-continuation arguments, archive policy,
+  reserved identity handling, and error propagation before thread activation.
+- Both original summary argument sets match the shared call. The orchestration
+  prefix/tail outside preparation and existing bootstrap helpers match original
+  tokens after the pure thread-manager construction relocation.
+- Four new bootstrap tests cover reserved/generated archive-less identity,
+  resume identity/history/cache lineage/continuation under both archive policies,
+  persisted startup checkpoint contents, archive-less full-copy fork metadata,
+  and provider errors before archive preparation. Fixtures use owned temporary
+  paths and explicit policy inputs; no global environment/state is changed.
+- The first compile exposed a mistaken test module path, and the first focused
+  run exposed a mistaken generated-ID prefix in the fixture. Corrected both from
+  the actual module wiring and workspace-label contract. All 201 selected
+  lifecycle, summarized-fork, archived-session, Copilot runtime, and inline-event
+  tests then passed; 7,430 unrelated tests were excluded. Final fast gate, scoped
+  Markdown lint, and diff checks passed.
+- Added the [session ownership guide](session-orchestration-ownership.md) and
+  updated binary module guidance. Successful compaction and archive-backed forks
+  are covered by their existing owner tests separately; live provider startup
+  and interactive new-session/resume behavior remain outside this validation.
+- Next increment: inspect turn/input coordination and ordered finalization for
+  useful existing-helper boundaries, then proceed to release changelog helpers.
