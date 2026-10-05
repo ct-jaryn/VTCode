@@ -8,7 +8,7 @@
 
 **An open-source terminal coding agent built in Rust.**
 
-**Plan, run, and review coding work from your terminal — with hosted or local models, sandboxed execution, and
+**Plan, run, and review coding work from your terminal, with hosted or local models, sandboxed execution, and
 resumable sessions.**
 
 [![CI](https://github.com/vinhnx/VTCode/actions/workflows/ci.yml/badge.svg)](https://github.com/vinhnx/VTCode/actions/workflows/ci.yml)
@@ -28,9 +28,6 @@ resumable sessions.**
 <!-- markdownlint-disable-next-line MD013 -->
 <img src="./resources/gif/vtcode.gif" alt="VT Code demo: plan, then review changes in the terminal" width="70%" />
 <br />
-
-<em>Plan, run, and review coding work from your terminal.</em>
-
 </div>
 
 <details>
@@ -47,8 +44,8 @@ resumable sessions.**
     - [Headless](#headless)
     - [Scheduled tasks](#scheduled-tasks)
     - [Sessions](#sessions)
-  - [Extend and integrate](#extend-and-integrate)
-    - [Extensions](#extensions)
+  - [Integrations](#integrations)
+    - [MCP, skills, and plugins](#mcp-skills-and-plugins)
     - [Editors](#editors)
     - [Cross-session memory](#cross-session-memory)
   - [Documentation](#documentation)
@@ -102,7 +99,7 @@ cargo install vtcode
 ```
 
 Verify the install with `vtcode --version`, then see the [installation guide](./docs/installation/README.md) for
-prerequisites, other methods, and the installer script you can review before running.
+prerequisites, other methods, and the installer script to review before running.
 
 > [!NOTE]
 > Windows artifacts are best-effort and may lag behind macOS/Linux.
@@ -117,8 +114,8 @@ vtcode init                # scaffolds config + AGENTS.md; review before committ
 vtcode secret add openai   # stores an OpenAI API key in your OS keyring
 ```
 
-Replace `openai` with your supported provider. Credentials can also come from environment variables or a workspace
-`.env`; `vtcode login` handles supported login flows. See [Getting started](./docs/user-guide/getting-started.md) and
+Replace `openai` with your provider. Credentials can also come from environment variables or a workspace `.env`;
+`vtcode login` handles supported login flows. See [Getting started](./docs/user-guide/getting-started.md) and
 [Provider guides](./docs/providers/PROVIDER_GUIDES.md).
 
 > [!NOTE]
@@ -137,7 +134,7 @@ Replace `openai` with your supported provider. Credentials can also come from en
 vtcode   # open the interactive TUI in your project
 ```
 
-Start with a focused request, such as “Explain how this project handles authentication,” then review the diff and test
+Start with a focused request, such as "Explain how this project handles authentication," then review the diff and test
 results before committing. For automation and session commands, see [Usage](#usage).
 
 ## Usage
@@ -165,12 +162,12 @@ vtcode exec "refactor main.rs"    # headless task with the full tool loop
 vtcode review                     # agent review of uncommitted changes
 ```
 
-`exec` requires autonomous execution enabled in `[automation.full_auto]` plus `full_auto` workspace trust: a terminal
-prompts for trust, while non-TTY runs fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. Full-auto's tool
-allow-list, explicit denies, and execution policy still apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust
-and output options and [full automation](./docs/guides/full-automation.md) for configuration.
+`exec` requires autonomous execution in `[automation.full_auto]` plus `full_auto` workspace trust. A terminal prompts
+for trust; non-TTY runs fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. Full-auto's tool allow-list, explicit
+denies, and execution policy still apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust and output options
+and [full automation](./docs/guides/full-automation.md) for configuration.
 
-For repeatable, environment-checked results, use the [eval framework](./docs/guides/eval.md) — a completion message
+For repeatable, environment-checked results, use the [eval framework](./docs/guides/eval.md); a completion message
 alone is not verification.
 
 ### Scheduled tasks
@@ -202,11 +199,11 @@ vtcode trajectory
 
 Use `vtcode continue --session-id <id>` to fork an earlier session.
 
-## Extend and integrate
+## Integrations
 
 Enable these only when you need them; none are required for the quick start.
 
-### Extensions
+### MCP, skills, and plugins
 
 [MCP servers](./docs/guides/mcp-integration.md), [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
 [Plugins](./docs/guides/agent-plugins.md).
@@ -221,13 +218,13 @@ with an authenticated browser editor:
 ```
 
 The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
-([mirror](https://vinhnx.github.io/VTCode/)) uses this workspace-scoped bridge. See the
-[WebMCP user guide](./docs/user-guide/webmcp.md) and [deployment reference](./docs/reference/webmcp.md).
+([mirror](https://vinhnx.github.io/VTCode/)) runs on this workspace-scoped bridge. See the
+[WebMCP guide](./docs/user-guide/webmcp.md) and [deployment reference](./docs/reference/webmcp.md).
 
 ### Cross-session memory
 
 [Memcode MCP](./docs/guides/memcode-mcp.md) carries context between tasks; see the
-[write-up](https://memcode.in/blogs/vt-code-memory-across-threads).
+[write-up](https://memcode.in/blogs/vt-code-memory-across-threads) for the design.
 
 ## Documentation
 
@@ -277,10 +274,10 @@ Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/r
 
 Contributions are welcome:
 
-- **Code** — pick or propose an issue; keep changes surgical and tested.
-- **Docs** — every user-facing feature lands with its documentation.
-- **Evals** — new suites and regression cases are high-leverage; see the [eval guide](./docs/guides/eval.md).
-- **Bug reports** — include `vtcode trajectory` output when possible.
+- **Code**: pick or propose an issue; keep changes surgical and tested.
+- **Docs**: every user-facing feature lands with its documentation.
+- **Evals**: new suites and regression cases are high-leverage; see the [eval guide](./docs/guides/eval.md).
+- **Bug reports**: include `vtcode trajectory` output when possible.
 
 Before a PR, see the [contribution guide](./docs/CONTRIBUTING.md): Conventional Commits (`type(scope): subject`),
 `./scripts/check-dev.sh` + `cargo nextest run`, and a focused diff.
