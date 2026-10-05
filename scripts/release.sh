@@ -107,36 +107,6 @@ Cost Optimization:
 USAGE
 }
 
-# Insert a generated changelog entry above the newest version so the file stays
-# newest-first. A fixed anchor (e.g. `head -n 4`) is wrong: once the first entry is
-# present that line is itself a `## version` heading, so the next insert lands between
-# the previous heading and its body, orphaning the body under the new version.
-insert_changelog_entry() {
-	local entry=$1
-	local tmp
-	tmp=$(mktemp)
-
-	local first_version_line
-	first_version_line=$(grep -n '^## ' CHANGELOG.md | head -n1 | cut -d: -f1 || true)
-
-	if [[ -n "$first_version_line" ]]; then
-		head -n "$((first_version_line - 1))" CHANGELOG.md >"$tmp"
-	else
-		cat CHANGELOG.md >"$tmp"
-	fi
-
-	# Blank separator before the new entry (avoid doubling an existing trailing blank).
-	if [[ -n "$(tail -n1 "$tmp")" ]]; then
-		printf '\n' >>"$tmp"
-	fi
-	printf '%s\n' "$entry" >>"$tmp"
-
-	if [[ -n "$first_version_line" ]]; then
-		tail -n "+$first_version_line" CHANGELOG.md >>"$tmp"
-	fi
-
-	mv "$tmp" CHANGELOG.md
-}
 
 # Changelog generation using git-cliff
 update_changelog_from_commits() {

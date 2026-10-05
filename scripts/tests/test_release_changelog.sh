@@ -154,6 +154,88 @@ if [[ "$legacy_notes" != *'### New Features'* || "$legacy_notes" != *"oldest fea
 fi
 checks=$((checks + 1))
 
+mkdir "$fixture_dir/changelogs"
+entry_one=$'## 2.0.0 - 2026-10-05\n\nSecond version: literal 100% and ${HOME} $(touch injection-marker).\n'
+entry_two=$'## 3.0.0 - 2026-10-06\n\nThird version: distinct text.\n'
+(
+	cd "$fixture_dir/changelogs"
+	: >CHANGELOG.md
+	insert_changelog_entry "$entry_one"
+)
+assert_equal "$(cat "$fixture_dir/changelogs/CHANGELOG.md")" "${entry_one%$'\n'}" "empty changelog insertion"
+printf '# Changelog\n\nIntro.\n' >"$fixture_dir/changelogs/CHANGELOG.md"
+(
+	cd "$fixture_dir/changelogs"
+	insert_changelog_entry "$entry_one"
+)
+expected=$(
+	cat <<EOF
+# Changelog
+
+Intro.
+
+$entry_one
+EOF
+)
+assert_equal "$(cat "$fixture_dir/changelogs/CHANGELOG.md")" "$expected" "header-only changelog insertion"
+cat >"$fixture_dir/changelogs/CHANGELOG.md" <<'EOF'
+# Changelog
+
+Intro.
+
+## 1.0.0 - 2026-10-04
+
+Original version body.
+
+### Details
+
+Nested heading and original content remain together.
+EOF
+(
+	cd "$fixture_dir/changelogs"
+	insert_changelog_entry "$entry_one"
+	insert_changelog_entry "$entry_two"
+)
+expected=$(
+	cat <<EOF
+# Changelog
+
+Intro.
+
+$entry_two
+$entry_one
+## 1.0.0 - 2026-10-04
+
+Original version body.
+
+### Details
+
+Nested heading and original content remain together.
+EOF
+)
+assert_equal "$(cat "$fixture_dir/changelogs/CHANGELOG.md")" "$expected" "repeated insertion preserves newest-first versions and original body"
+if [[ -e "$fixture_dir/changelogs/injection-marker" ]]; then
+	printf 'FAIL: inserted text was evaluated as shell code\n' >&2
+	exit 1
+fi
+checks=$((checks + 1))
+(
+	cd "$fixture_dir/changelogs"
+	# shellcheck disable=SC1091
+	source "$repo_scripts/release-lib.sh"
+	printf '## 1.0.0\n\nLegacy body.\n' >CHANGELOG.md
+	insert_changelog_entry "$entry_one"
+)
+expected=$(
+	cat <<EOF
+$entry_one
+## 1.0.0
+
+Legacy body.
+EOF
+)
+assert_equal "$(cat "$fixture_dir/changelogs/CHANGELOG.md")" "$expected" "legacy caller uses the shared insertion helper"
+
 # --help exits in argument parsing, before build/version/tag/upload operations.
 bash "$repo_scripts/release.sh" --help >"$fixture_dir/help.txt"
 if ! grep -q '^Usage: ./scripts/release.sh' "$fixture_dir/help.txt"; then

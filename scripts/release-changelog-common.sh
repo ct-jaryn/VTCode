@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared commit classification for canonical and legacy release-note adapters.
+# Shared changelog classification and insertion for canonical and legacy adapters.
 # Sourcing this file only defines functions.
 
 parse_commit_type() {
@@ -21,4 +21,36 @@ release_commit_is_excluded() {
 	local lower_msg
 	lower_msg=$(echo "$message" | tr '[:upper:]' '[:lower:]')
 	[[ "$lower_msg" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog|update.*todo|docs\(todo\)|docs\(project\).*todo|^update project$) ]]
+}
+
+# Insert a generated changelog entry above the newest version so the file stays
+# newest-first. A fixed anchor (e.g. `head -n 4`) is wrong: once the first entry is
+# present that line is itself a `## version` heading, so the next insert lands between
+# the previous heading and its body, orphaning the body under the new version.
+insert_changelog_entry() {
+	local entry=$1
+	local tmp
+	tmp=$(mktemp)
+
+	local first_version_line
+	first_version_line=$(grep -n '^## ' CHANGELOG.md | head -n1 | cut -d: -f1 || true)
+
+	if [[ -z "$first_version_line" ]]; then
+		cat CHANGELOG.md >"$tmp"
+	elif [[ "$first_version_line" -gt 1 ]]; then
+		head -n "$((first_version_line - 1))" CHANGELOG.md >"$tmp"
+	fi
+	# A version on line 1 has no prefix; macOS head rejects a zero line count.
+
+	# Blank separator before the new entry (avoid doubling an existing trailing blank).
+	if [[ -n "$(tail -n1 "$tmp")" ]]; then
+		printf '\n' >>"$tmp"
+	fi
+	printf '%s\n' "$entry" >>"$tmp"
+
+	if [[ -n "$first_version_line" ]]; then
+		tail -n "+$first_version_line" CHANGELOG.md >>"$tmp"
+	fi
+
+	mv "$tmp" CHANGELOG.md
 }

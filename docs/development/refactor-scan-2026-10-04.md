@@ -845,3 +845,32 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Added the [changelog ownership guide](release-changelog-ownership.md) and
   linked it from the CI/release guide. Next: share the identical file-insertion
   helper with fixture checks before closing the release decomposition boundary.
+
+### Step 8b: shared changelog artifact insertion
+
+- Removed the byte-identical `insert_changelog_entry` implementations from both
+  release owners. Their existing shared changelog module now owns classification
+  and insertion (56 lines), keeping the same function name and cwd/file contract.
+  The main release script is 1,329 lines; the legacy library is 747 lines.
+- An insertion fixture exposed macOS `head -n 0` failure for a headerless file
+  whose first version starts on line 1. Skip the empty prefix in that case;
+  retain header/no-version handling, literal `%s` entry writes, newest-first
+  version ordering, and existing content. No publication operation was added.
+- Both release owners match their previous source after only insertion removal.
+  The shared implementation matches its original body after the empty-prefix
+  fix. No dependency, wrapper, separate publishing runner, or API was added.
+- All 31 changelog checks passed, adding empty/header-only/headerless insertion,
+  repeated newest-first updates without splitting previous bodies, nested-heading
+  preservation, literal percent/shell-like content, and live legacy-caller wiring.
+  Bash syntax, strict new-module/test ShellCheck, formatting, scoped Markdown
+  lint, and diff checks passed. Publication and full release orchestration were
+  not exercised; this increment only updates owned temporary fixture artifacts.
+- Updated the ownership guide. Phase 8 closes at shared changelog formatting,
+  classification, and insertion. Keep version/git-cliff orchestration, packaging,
+  signing, upload, and Homebrew side effects with existing owners: those paths
+  require their release contracts and target matrix, not clone-window similarity,
+  to justify further sharing. Existing asset/signing helpers already own those
+  separable infrastructure contracts.
+- Next: audit the completed eight-phase plan against the current checkout and
+  identify any remaining implementation or verification requirements before
+  claiming the overall refactor objective is complete.
