@@ -762,7 +762,9 @@ pub(super) fn preflight_validate_resolved_call(
                 .unwrap_or_default();
             let patch_hint = if validation_tool_name == tool_names::APPLY_PATCH {
                 crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION
-            } else if validation_tool_name == tool_names::TASK_TRACKER {
+            } else if validation_tool_name == tool_names::TASK_TRACKER
+                && crate::tools::handlers::task_tracker::is_task_tracker_shape_error(&error_msg)
+            {
                 crate::tools::handlers::task_tracker::TASK_TRACKER_ARGUMENT_CORRECTION
             } else {
                 ""

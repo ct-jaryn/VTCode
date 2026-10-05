@@ -112,7 +112,7 @@ pub fn describe_jsonschema_error(err: &ValidationError<'_>) -> String {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            format!("missing required property '{name}'")
+            format!("field '{path_label}' missing required property '{name}' (schema {schema_path})")
         }
         ValidationErrorKind::AdditionalProperties { unexpected } => {
             format!("unexpected field(s) {unexpected:?} not allowed by the schema (did you use the right field name?)")
@@ -173,6 +173,9 @@ fn truncate_for_error(raw: &str, limit: usize) -> String {
 }
 
 fn forbidden_properties_from_not_schema(schema: &Value) -> Vec<String> {
+    // Only `required` (direct or inside anyOf/oneOf/allOf branches) forbids
+    // presence. A bare `properties` entry without `required` does not forbid
+    // the key, so it must not be reported as forbidden.
     let mut out = Vec::new();
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for entry in required {
@@ -192,13 +195,6 @@ fn forbidden_properties_from_not_schema(schema: &Value) -> Vec<String> {
             }
         }
     }
-    if let Some(props) = schema.get("properties").and_then(Value::as_object) {
-        for name in props.keys() {
-            if !out.contains(name) {
-                out.push(name.clone());
-            }
-        }
-    }
     out
 }
 
@@ -215,20 +211,34 @@ fn describe_combinator_error(
     keyword: &str,
     context: &[Vec<ValidationError<'static>>],
 ) -> String {
-    let mut inner: Vec<String> = Vec::new();
-    for branch in context.iter().take(3) {
+    // Label branches so the model can tell variants apart, and render inner
+    // errors through the same path-aware describer (one level only: nested
+    // combinators fall back to their Display to avoid exponential expansion).
+    let mut variants: Vec<String> = Vec::new();
+    for (idx, branch) in context.iter().take(3).enumerate() {
+        let mut parts: Vec<String> = Vec::new();
         for error in branch.iter().take(2) {
-            inner.push(truncate_for_error(&error.to_string(), 200));
+            let rendered = match error.kind() {
+                ValidationErrorKind::AnyOf { .. }
+                | ValidationErrorKind::OneOfNotValid { .. }
+                | ValidationErrorKind::OneOfMultipleValid { .. } => truncate_for_error(&error.to_string(), 300),
+                _ => truncate_for_error(&describe_jsonschema_error(error), 300),
+            };
+            parts.push(rendered);
         }
+        if parts.is_empty() {
+            continue;
+        }
+        variants.push(format!("variant {}: {}", idx + 1, parts.join(" + ")));
     }
-    if inner.is_empty() {
+    if variants.is_empty() {
         format!(
             "field '{path_label}' does not match any allowed shape (schema {schema_path} {keyword}); adjust the arguments to match one variant and retry"
         )
     } else {
         format!(
             "field '{path_label}' does not match any allowed shape (schema {schema_path} {keyword}): {}",
-            inner.join(" | ")
+            variants.join(" | ")
         )
     }
 }
@@ -350,5 +360,58 @@ mod tests {
         let msg = describe_jsonschema_error(&errors[0]);
         assert!(msg.contains("field '"), "msg was: {msg}");
         assert!(msg.contains("/properties/name"), "msg was: {msg}");
+    }
+
+    #[test]
+    fn required_error_includes_instance_and_schema_location() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"description": {"type": "string"}},
+                        "required": ["description"]
+                    }
+                }
+            },
+            "required": ["items"]
+        });
+        // Asymmetric: first element valid, second missing description.
+        let instance = json!({"items": [{"description": "ok"}, {"status": "completed"}]});
+        let validator = jsonschema::validator_for(&schema).expect("schema is valid");
+        let errors: Vec<_> = validator.iter_errors(&instance).collect();
+        assert!(!errors.is_empty(), "expected a nested required violation");
+        let combined = errors.iter().map(describe_jsonschema_error).collect::<Vec<_>>().join("; ");
+        assert!(combined.contains("missing required property 'description'"), "msg was: {combined}");
+        assert!(combined.contains("/items/1"), "msg was: {combined}");
+    }
+
+    #[test]
+    fn combinator_error_labels_variants() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"action": {"type": "string"}},
+            "required": ["action"],
+            "allOf": [
+                {
+                    "if": {"properties": {"action": {"const": "update"}}, "required": ["action"]},
+                    "then": {
+                        "anyOf": [
+                            {"required": ["index"]},
+                            {"required": ["index_path"]}
+                        ]
+                    }
+                }
+            ]
+        });
+        let instance = json!({"action": "update"});
+        let validator = jsonschema::validator_for(&schema).expect("schema is valid");
+        let errors: Vec<_> = validator.iter_errors(&instance).collect();
+        assert!(!errors.is_empty(), "expected an anyOf violation");
+        let combined = errors.iter().map(describe_jsonschema_error).collect::<Vec<_>>().join("; ");
+        assert!(combined.contains("does not match any allowed shape"), "msg was: {combined}");
+        assert!(combined.contains("variant 1"), "msg was: {combined}");
     }
 }

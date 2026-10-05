@@ -569,14 +569,37 @@ pub(crate) fn task_tracker_parameter_schema_for_workflow(planning_active: bool) 
     }
 }
 
-/// Model-facing correction for `task_tracker` schema failures.
+/// Model-facing correction for `task_tracker` shape failures.
 ///
 /// The schema uses conditional (`if`/`then`/`not`) rules, so a bare
 /// "required fields" hint is not enough: `create` forbids `index`/`index_path`,
 /// `update` needs exactly one shape, and `add`/`list` have their own shapes.
 /// Without this, a `create` bundled with update fields fails with a generic
 /// root error and the model retries blindly.
-pub const TASK_TRACKER_ARGUMENT_CORRECTION: &str = "Invalid task_tracker args. Use action='create' with only title/items (+ optional notes); action='update' with index|index_path + status OR items for bulk sync; action='add' with description; action='list' alone. Remove index/index_path from create/list/add and retry once.";
+///
+/// Note: the schema only *forbids* `index`/`index_path` on
+/// `create`/`list`/`add`; other single-item fields (`status`, `description`,
+/// `files`, `outcome`, `verify`) are ignored by those actions, not rejected.
+/// The wording below matches that enforced contract: it forbids only what the
+/// schema forbids and recommends (not requires) the minimal shapes.
+pub const TASK_TRACKER_ARGUMENT_CORRECTION: &str = "Invalid task_tracker shape. For create, index/index_path are forbidden (prefer title/items + optional notes); action='update' needs index|index_path + status OR items for bulk sync; action='add' needs description; action='list' takes no index fields. Fix the named field(s) and retry once.";
+
+/// Whether a `task_tracker` schema error is a shape error (conditional
+/// `if`/`then`/`not`, `anyOf`/`oneOf`, missing required, fallback) rather
+/// than a single-field value error (`enum`, `type`, `const`, ...). The shape
+/// correction above only helps the former; appending it to a bad-enum error
+/// would point the model at the wrong axis.
+pub(crate) fn is_task_tracker_shape_error(error_msg: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "must not include",
+        "does not match any allowed shape",
+        "matches more than one allowed shape",
+        "is forbidden by schema",
+        "missing required property",
+        "failed validation (schema",
+    ];
+    MARKERS.iter().any(|marker| error_msg.contains(marker))
+}
 
 impl TaskTrackerTool {
     pub fn new(workspace_root: PathBuf, planning_workflow_state: PlanningWorkflowState) -> Self {

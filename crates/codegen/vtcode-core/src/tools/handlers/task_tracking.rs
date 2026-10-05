@@ -1039,4 +1039,13 @@ mod tests {
         assert_eq!(task_files_property_schema("F.")["description"], "F.");
         assert_eq!(task_verify_property_schema("V.")["description"], "V.");
     }
+
+    #[test]
+    fn shared_status_values_match_runtime_parser() {
+        use std::str::FromStr;
+        for status in TASK_STATUS_VALUES {
+            assert!(TaskTrackingStatus::from_str(status).is_ok(), "schema status {status:?} must parse");
+        }
+        assert!(TaskTrackingStatus::from_str("done").is_err());
+    }
 }

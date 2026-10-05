@@ -1445,9 +1445,36 @@ async fn preflight_task_tracker_create_rejects_update_fields_actionably() -> Res
     let error_text = error.to_string();
     assert!(error_text.contains("Invalid arguments for tool 'task_tracker'"), "{error_text}");
     assert!(error_text.contains("must not include"), "{error_text}");
-    assert!(error_text.contains("index"), "{error_text}");
+    assert!(error_text.contains("\"index\""), "{error_text}");
+    assert!(error_text.contains("\"index_path\""), "{error_text}");
     assert!(!error_text.contains("failed validation: {\"action\""), "{error_text}");
-    assert!(error_text.contains("action='create' with only title/items"), "{error_text}");
+    assert!(error_text.contains("For create, index/index_path are forbidden"), "{error_text}");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn preflight_task_tracker_value_error_omits_shape_correction() -> Result<()> {
+    // A single-field value error (bad enum) must not carry the shape
+    // correction: telling the model to remove index fields would point at
+    // the wrong axis. The enum message alone must identify the field.
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+
+    let error = registry
+        .preflight_validate_call(
+            tools::TASK_TRACKER,
+            &json!({
+                "action": "update",
+                "index": 1,
+                "status": "done"
+            }),
+        )
+        .expect_err("bad status enum must fail");
+    let error_text = error.to_string();
+    assert!(error_text.contains("is not one of the allowed enum"), "{error_text}");
+    assert!(error_text.contains("/status"), "{error_text}");
+    assert!(!error_text.contains("For create, index/index_path are forbidden"), "{error_text}");
 
     Ok(())
 }
