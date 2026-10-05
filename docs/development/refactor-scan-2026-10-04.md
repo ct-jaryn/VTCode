@@ -698,3 +698,31 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Updated the binary module guidance and runtime ownership guide.
 - Next increment: inspect observed-call presentation ownership and remaining
   Copilot adapters before moving to session orchestration.
+
+### Step 7c: shared Copilot inline PTY presentation
+
+- Replaced the duplicate observed-call and local-terminal presentation wrappers
+  with private `copilot_runtime/presentation.rs`. Both live paths use the same
+  prepared reporter, spinner setup, output callback, and scheduled shutdown.
+  The host source is now 1,429 lines, down from 1,474; the terminal source is
+  518 lines, and the shared helper contains 63 production lines.
+- Observed calls retain their state, Unicode output deltas, event ordering, and
+  status mapping. Local terminals retain progress initialization, the elapsed
+  guard, monitor cadence, and warning presentation when no exit is observed.
+  Shared finish stops the spinner and drops the callback before scheduling
+  progress completion and PTY shutdown. No public API or dependency was added.
+- Shared setup/shutdown tokens match the original observed implementation after
+  member-name and final-color adapters. Host methods/drop, terminal handlers and
+  state, and terminal argument/output/exit helpers match their original tokens.
+  Reviewed monitor/setup wiring and caller-owned status mapping separately.
+- Three focused presentation tests passed. They verify ordered Unicode chunks
+  queued before finish, success/error/warning colors, prepared progress through
+  completion, bounded tails, empty output, deferred status restoration, and
+  handle release after both completion and dropping a started PTY worker.
+- All 99 selected binary runtime/inline-events tests passed; 3,434 unrelated
+  tests were excluded. Final fast gate, scoped Markdown lint, and diff checks
+  passed. The retained real-PTY host regression ran; live Copilot provider
+  behavior and other host platforms remain outside this validation.
+- Updated the binary module guidance and runtime ownership guide.
+- Next increment: inspect the remaining observed-call adapter boundary and
+  session orchestration ownership before choosing the next extraction.

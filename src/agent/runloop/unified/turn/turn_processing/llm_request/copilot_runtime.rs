@@ -1,6 +1,8 @@
+mod presentation;
 mod streaming;
 mod terminal;
 
+use presentation::CopilotPtyStream;
 use terminal::LocalTerminalSession;
 
 use std::collections::{BTreeSet, HashMap};
@@ -15,7 +17,6 @@ use tokio::sync::RwLock;
 use vtcode_config::auth::CopilotAuthConfig;
 use vtcode_config::core::permissions::AgentPermissionsConfig;
 use vtcode_core::acp::{PermissionGrant, ToolPermissionCache};
-use vtcode_core::config::PtyConfig;
 use vtcode_core::copilot::{
     CopilotAcpCompatibilityState, CopilotObservedToolCall, CopilotObservedToolCallStatus, CopilotPermissionDecision,
     CopilotPermissionRequest, CopilotRuntimeRequest, CopilotToolCallFailure, CopilotToolCallRequest,
@@ -26,7 +27,7 @@ use vtcode_core::exec::events::ToolCallStatus;
 use vtcode_core::exec_policy::AskForApproval;
 use vtcode_core::llm::provider as uni;
 use vtcode_core::llm::provider::ToolDefinition;
-use vtcode_core::tools::registry::{ToolProgressCallback, ToolRegistry};
+use vtcode_core::tools::registry::ToolRegistry;
 use vtcode_core::types::CompactStr;
 use vtcode_core::utils::ansi::AnsiRenderer;
 use vtcode_core::utils::style_helpers::ColorPalette;
@@ -50,7 +51,7 @@ use crate::agent::runloop::unified::state::SessionStats;
 use crate::agent::runloop::unified::tool_call_safety::{ToolCallSafetyValidator, invocation_id_from_call_id};
 use crate::agent::runloop::unified::tool_output_handler::handle_pipeline_output;
 use crate::agent::runloop::unified::tool_pipeline::{
-    PtyStreamRuntime, ToolExecutionStatus, run_tool_call_with_args,
+    ToolExecutionStatus, run_tool_call_with_args,
     validation::{SafetyValidationFailure, validate_tool_call_with_limit_prompt},
 };
 use crate::agent::runloop::unified::tool_routing::{
@@ -65,7 +66,6 @@ use crate::agent::runloop::unified::turn::tool_outcomes::{
     ToolFailureDiagnosis, bounded_diagnostic_field, bounded_error_evidence, bounded_output_evidence,
     deterministic_error_diagnosis, deterministic_output_diagnosis, escape_untrusted_evidence, render_diagnosis,
 };
-use crate::agent::runloop::unified::ui_interaction::PlaceholderSpinner;
 use crate::agent::runloop::unified::ui_interaction_stream::CopilotRuntimeRequestHandler;
 
 pub(super) struct CopilotRuntimeHost<'a> {
@@ -977,7 +977,7 @@ struct ObservedToolCallState {
     started: bool,
     finished: bool,
     last_output: Option<String>,
-    pty_stream: Option<ObservedToolPtyStream>,
+    pty_stream: Option<CopilotPtyStream>,
 }
 
 impl ObservedToolCallState {
@@ -1020,8 +1020,13 @@ fn process_observed_tool_state(
         && state.pty_stream.is_none()
         && let Some(cmd) = observed_tool_command_display(update)
     {
-        state.pty_stream =
-            Some(ObservedToolPtyStream::start(handle, tail_limit, cmd, tool_registry.pty_config().clone()));
+        state.pty_stream = Some(CopilotPtyStream::start(
+            handle,
+            ProgressReporter::new(),
+            tail_limit,
+            cmd,
+            tool_registry.pty_config().clone(),
+        ));
     }
 
     let output_delta = if let Some(output) = update.output.as_deref().filter(|t| !t.trim().is_empty())
@@ -1043,63 +1048,13 @@ fn process_observed_tool_state(
         && matches!(update.status, CopilotObservedToolCallStatus::Completed | CopilotObservedToolCallStatus::Failed);
     if finished {
         state.finished = true;
-        let _ = state.pty_stream.take().map(|s| s.finish(update.status));
+        let _ = state
+            .pty_stream
+            .take()
+            .map(|s| s.finish(copilot_observed_status_color(update.status)));
     }
 
     ObservedToolUpdate { started, output_delta, finished }
-}
-
-struct ObservedToolPtyStream {
-    _progress_reporter: ProgressReporter,
-    _spinner: PlaceholderSpinner,
-    _runtime: PtyStreamRuntime,
-    callback: ToolProgressCallback,
-}
-
-impl ObservedToolPtyStream {
-    fn start(handle: &InlineHandle, tail_limit: usize, command_display: String, pty_config: PtyConfig) -> Self {
-        let progress_reporter = ProgressReporter::new();
-        let spinner = PlaceholderSpinner::with_progress(
-            handle,
-            None,
-            None,
-            format!("Running command: {command_display}"),
-            Some(&progress_reporter),
-        );
-        spinner.set_defer_restore(true);
-        let (runtime, callback) = PtyStreamRuntime::start(
-            handle.clone(),
-            progress_reporter.clone(),
-            tail_limit,
-            Some(command_display),
-            pty_config,
-            None,
-            true,
-        );
-
-        Self {
-            _progress_reporter: progress_reporter,
-            _spinner: spinner,
-            _runtime: runtime,
-            callback,
-        }
-    }
-
-    fn push_output(&self, chunk: &str) {
-        (self.callback)("exec_command", chunk);
-    }
-
-    fn finish(self, status: CopilotObservedToolCallStatus) {
-        self._spinner.finish();
-        let progress_reporter = self._progress_reporter.clone();
-        let runtime = self._runtime;
-        drop(self.callback);
-
-        tokio::spawn(async move {
-            progress_reporter.complete().await;
-            runtime.shutdown(copilot_observed_status_color(status)).await;
-        });
-    }
 }
 
 pub(super) fn prompt_session_to_stream(

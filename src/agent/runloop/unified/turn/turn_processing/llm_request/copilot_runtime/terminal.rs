@@ -13,16 +13,15 @@ use vtcode_core::copilot::{
     CopilotTerminalOutputResponse,
 };
 use vtcode_core::exec::events::ToolCallStatus;
-use vtcode_core::tools::registry::{ToolProgressCallback, ToolRegistry};
+use vtcode_core::tools::registry::ToolRegistry;
 use vtcode_core::utils::style_helpers::ColorPalette;
 use vtcode_ui::tui::app::InlineHandle;
 
 use crate::agent::runloop::tool_output::resolve_stdout_tail_limit;
 use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
 use crate::agent::runloop::unified::progress::{ProgressReporter, ProgressUpdateGuard, spawn_elapsed_time_updater};
-use crate::agent::runloop::unified::tool_pipeline::PtyStreamRuntime;
-use crate::agent::runloop::unified::ui_interaction::PlaceholderSpinner;
 
+use super::presentation::CopilotPtyStream;
 use super::{CopilotRuntimeHost, emit_terminal_finished_event, emit_terminal_output_event};
 
 impl CopilotRuntimeHost<'_> {
@@ -309,7 +308,7 @@ async fn run_local_terminal_session(task: LocalTerminalTaskContext) {
     let mut final_status = None;
 
     if let Some(output) = initial_output.as_deref() {
-        pty_stream.progress_callback("exec_command", output);
+        pty_stream.push_output(output);
     }
 
     loop {
@@ -319,7 +318,7 @@ async fn run_local_terminal_session(task: LocalTerminalTaskContext) {
 
         match tool_registry.read_harness_exec_session_output(&exec_session_id, true).await {
             Ok(Some(chunk)) if !chunk.is_empty() => {
-                pty_stream.progress_callback("exec_command", &chunk);
+                pty_stream.push_output(&chunk);
                 if let Some(TerminalOutputUpdate { tool_call_id, tool_name, output }) =
                     update_local_terminal_output(&state, &chunk)
                 {
@@ -377,40 +376,15 @@ async fn run_local_terminal_session(task: LocalTerminalTaskContext) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    pty_stream.finalize(final_status).await;
-}
-
-struct TerminalStream {
-    _progress_reporter: ProgressReporter,
-    _spinner: PlaceholderSpinner,
-    _runtime: PtyStreamRuntime,
-    callback: ToolProgressCallback,
-}
-
-impl TerminalStream {
-    fn progress_callback(&self, tool: &str, output: &str) {
-        (self.callback)(tool, output);
-    }
-
-    async fn finalize(self, status: Option<ToolCallStatus>) {
-        self._spinner.finish();
-        let progress_reporter = self._progress_reporter.clone();
-        let runtime = self._runtime;
-        drop(self.callback);
-
-        tokio::spawn(async move {
-            progress_reporter.complete().await;
-            // An incomplete local terminal session is not a success. Keep the
-            // header yellow when cancellation or a monitor error prevents an
-            // exit code from being observed.
-            let status = status.unwrap_or(ToolCallStatus::InProgress);
-            runtime.shutdown(tool_call_status_color(&status)).await;
-        });
-    }
+    // An incomplete local terminal session is not a success. Keep the
+    // header yellow when cancellation or a monitor error prevents an
+    // exit code from being observed.
+    let status = final_status.unwrap_or(ToolCallStatus::InProgress);
+    pty_stream.finish(tool_call_status_color(&status));
 }
 
 struct TerminalStreamSetup {
-    stream: TerminalStream,
+    stream: CopilotPtyStream,
     elapsed_guard: ProgressUpdateGuard,
 }
 
@@ -433,32 +407,8 @@ async fn setup_terminal_stream(
         500,
     ));
 
-    let spinner = PlaceholderSpinner::with_progress(
-        handle,
-        None,
-        None,
-        format!("Running command: {command_display}"),
-        Some(&progress_reporter),
-    );
-    spinner.set_defer_restore(true);
-
-    let (runtime, callback) = PtyStreamRuntime::start(
-        handle.clone(),
-        progress_reporter.clone(),
-        tail_limit,
-        Some(command_display.to_string()),
-        pty_config,
-        None,
-        true,
-    );
-
     TerminalStreamSetup {
-        stream: TerminalStream {
-            _progress_reporter: progress_reporter,
-            _spinner: spinner,
-            _runtime: runtime,
-            callback,
-        },
+        stream: CopilotPtyStream::start(handle, progress_reporter, tail_limit, command_display.to_string(), pty_config),
         elapsed_guard,
     }
 }

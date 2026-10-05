@@ -1,13 +1,14 @@
 # Copilot runtime ownership
 
-The binary keeps one Copilot runtime host and one prompt-stream adapter. Both
+The binary keeps one Copilot runtime host and private runtime adapters. These
 live under `agent/runloop/unified/turn/turn_processing/llm_request/`.
 
 | Owner | State and responsibility | Lifecycle boundary |
 | --- | --- | --- |
 | `copilot_runtime.rs`: `CopilotRuntimeHost` | Borrowed registry, UI/session state, permission caches, safety validator, hooks, harness budgets, and runtime request dispatch | The request renderer borrows the host; host drop aborts its remaining local terminal sessions |
 | `copilot_runtime/terminal.rs`: local terminal sessions | Private terminal state and tasks, output/exit snapshots, observed-tool association, and the host's terminal create/output/release/kill/wait methods | Explicit release or host drop aborts remaining work; completion publishes terminal exit state |
-| Host observed tool calls | Started/finished flags, previous output, and inline PTY presentation | Observed status updates control output deltas and final presentation |
+| Host observed tool calls | Started/finished flags and previous output | Observed status updates control output deltas and choose final presentation color |
+| `copilot_runtime/presentation.rs` | Shared inline spinner, prepared progress reporter, PTY runtime, and output callback | Finish stops the spinner, drops the callback, completes progress, and schedules runtime shutdown with the caller's final color |
 | `copilot_runtime/streaming.rs` | Prompt text/reasoning accumulation, finish-reason conversion, queued-update draining, and prompt cancellation guard | Polling installs the guard; dropping an active stream cancels the prompt; successful completion disarms it before emitting `Completed` |
 | `llm_request/mod.rs` | Starts the prompt session, retains the runtime request receiver, and runs the shared streaming renderer | Startup interruption/first-progress timeout and renderer success/error remain request-owned |
 
@@ -30,6 +31,14 @@ Terminal handlers still execute through registry harness APIs. Release removes
 the session, aborts its monitor, and closes its registry exec session; kill requests
 termination; host drop retains its existing monitor-abort loop. This refactor does
 not add an independent host or shutdown coordinator.
+
+Observed calls and local terminals use the same private presentation helper.
+The caller prepares progress: observed calls start with a fresh reporter, while
+local terminals retain total/progress initialization and their elapsed-time guard.
+The caller also maps status to color; an unknown local exit remains a warning.
+Finishing still schedules completion and shutdown in a background task. Shutdown
+drains accepted output before applying the final color; dropping an unfinished
+presentation aborts its spinner/runtime without marking progress complete.
 
 Permission handling, exposed-tool allowlists, tool budgets, hook rewrites,
 sandbox-aware registry execution, verification guards, and harness-event emission
