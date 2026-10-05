@@ -6,7 +6,7 @@
 
 - `extension.ts` owns activation, workspace trust, CLI availability, config updates, and disposal.
 - `commands/configurationCommands.ts` registers HITL/MCP/policy callbacks using live summary and trust services.
-- `services/interactiveTerminal.ts` owns terminal reuse, delayed launch, close listeners, and cancellation.
+- `services/interactiveTerminal.ts` owns native CLI terminal reuse, pending context flush, close listeners, and disposal.
 - `services/processExecution.ts` owns shared spawning, streaming, progress, cancellation, and completion;
   callers retain admission checks and supply their own config/context/environment preparation.
 - `utils/vtcodeRunner.ts` owns modular-command preflight and shared executable/config-argument/logging helpers.

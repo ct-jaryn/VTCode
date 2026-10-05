@@ -136,15 +136,15 @@ extensions/vscode-extension/
  dist/                 # Compiled output directory
 ```
 
-The interactive terminal service retains the 800 ms delay for profile environment
-activation and reads configuration after flushing IDE context. Closing the terminal
-or disposing the service cancels pending launches; after an asynchronous flush it
-checks session identity and workspace trust again. Flush failures use the command
-error handler. Terminal tests cover reuse, close/reopen races, shutdown, trust
-revocation, and rejected flushes with a fake clock. Actual profile activation and
-shell behavior require an Extension Development Host. Existing shell command
-formatting is preserved; these lifecycle tests do not establish shell injection
-safety across terminal profiles.
+The interactive terminal service flushes IDE context before creating a terminal
+with the configured executable as `TerminalOptions.shellPath` and an argument
+array as `shellArgs`. See the [VS Code terminal API](https://code.visualstudio.com/api/references/vscode-api#TerminalOptions).
+It never sends a generated command string to a shell. Configuration and environment
+callbacks are read after the flush. Concurrent requests share one pending launch;
+shutdown or trust revocation prevents pending creation, and failures permit retry.
+Terminal tests cover these states, literal metacharacters, and a real Node process
+receiving the forwarded arguments. Full Extension Development Host and Windows
+terminal process behavior remain unverified.
 
 ## Debugging the Extension
 
@@ -178,21 +178,21 @@ The extension contributes the following commands:
 
 Access these commands via the Command Palette (Ctrl+Shift+P or Cmd+Shift+P).
 
-## Troubleshooting Terminal Activation
+## Terminal Environment
 
-If you're seeing activation commands like `source /path/to/venv/bin/activate` when launching the VT Code agent terminal,
-this might be due to VSCode's terminal profile settings automatically activating Python environments. The extension
-simply sends the `vtcode chat` command to the terminal; if you're seeing environment activation, it's likely due to your
-VSCode configuration.
+The agent terminal runs the VT Code executable directly with `chat` and the current
+configuration arguments. Shell aliases, shell startup scripts, and Python virtual
+environment activation commands are not evaluated before VT Code starts. The old
+800 ms activation delay has been removed. The terminal inherits the VS Code window
+environment and configured terminal environment settings, plus the extension's IDE
+context environment values.
 
-To resolve this:
-
-1. Check your VSCode settings for any Python virtual environment auto-activation settings:
-   - Look for "python.terminal.activateEnvironment" in your settings
-   - Check your terminal profile settings in VSCode preferences
-
-2. The extension itself does not activate Python environments - it launches a terminal with the appropriate working
-   directory and sends the `vtcode chat` command.
+Set `vtcode.commandPath` to the installed executable name or path, rather than a
+shell command containing flags or activation commands. If VT Code needs variables
+from an activated environment, start VS Code from that environment or configure
+`terminal.integrated.env.<platform>`. The process remains interactive in the
+integrated terminal; exiting VT Code ends that process rather than returning to a
+shell prompt.
 
 ## CLI Installation Requirements
 

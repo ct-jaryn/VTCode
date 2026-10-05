@@ -9,42 +9,35 @@ interface TerminalServices {
 }
 
 interface TerminalSession {
-    terminal: vscode.Terminal;
+    terminal?: vscode.Terminal;
     closeListener?: vscode.Disposable;
-    launchTimer?: ReturnType<typeof setTimeout>;
+    launch?: Promise<vscode.Terminal | undefined>;
 }
 
-/** Owns the integrated terminal and cancels delayed work when its session ends. */
+/** Owns one native CLI terminal, including an in-flight context flush. */
 export class InteractiveTerminal implements vscode.Disposable {
     private session: TerminalSession | undefined;
     private disposed = false;
 
     constructor(private readonly services: TerminalServices) {}
 
-    ensure(commandPath: string, cwd: string): { terminal: vscode.Terminal; created: boolean } {
+    async ensure(commandPath: string, cwd: string): Promise<
+        { terminal: vscode.Terminal; created: boolean } | undefined
+    > {
         if (this.disposed) {
-            throw new Error("The VT Code terminal service has been disposed.");
+            return undefined;
         }
-        if (this.session) {
-            return { terminal: this.session.terminal, created: false };
+        const created = !this.session;
+        const session = this.session ?? {};
+        if (created) {
+            this.session = session;
+            session.launch = this.launch(session, commandPath, cwd);
         }
-        const terminal = vscode.window.createTerminal({
-            name: "VT Code Agent", cwd, env: this.services.getEnvironment(),
-            iconPath: new vscode.ThemeIcon("comment-discussion"),
-        });
-        const session: TerminalSession = { terminal };
-        this.session = session;
-        session.closeListener = vscode.window.onDidCloseTerminal((closed) => {
-            if (closed === terminal) {
-                this.release(session);
-            }
-        });
-        // Allow terminal profiles to finish automatic environment activation.
-        session.launchTimer = setTimeout(() => {
-            session.launchTimer = undefined;
-            void this.launch(session, commandPath);
-        }, 800);
-        return { terminal, created: true };
+        const terminal = session.terminal ?? await session.launch;
+        if (!terminal || this.session !== session) {
+            return undefined;
+        }
+        return { terminal, created };
     }
 
     dispose(): void {
@@ -52,7 +45,7 @@ export class InteractiveTerminal implements vscode.Disposable {
         const session = this.session;
         if (session) {
             this.release(session);
-            session.terminal.dispose();
+            session.terminal?.dispose();
         }
     }
 
@@ -61,10 +54,6 @@ export class InteractiveTerminal implements vscode.Disposable {
             return;
         }
         this.session = undefined;
-        if (session.launchTimer !== undefined) {
-            clearTimeout(session.launchTimer);
-            session.launchTimer = undefined;
-        }
         session.closeListener?.dispose();
         session.closeListener = undefined;
     }
@@ -73,48 +62,41 @@ export class InteractiveTerminal implements vscode.Disposable {
         return this.session === session && this.services.isWorkspaceTrusted();
     }
 
-    private async launch(session: TerminalSession, commandPath: string): Promise<void> {
+    private async launch(
+        session: TerminalSession, commandPath: string, cwd: string
+    ): Promise<vscode.Terminal | undefined> {
         try {
             if (!this.canLaunch(session)) {
-                return;
+                this.release(session);
+                return undefined;
             }
             await this.services.flushIdeContext();
             if (!this.canLaunch(session)) {
-                return;
+                this.release(session);
+                return undefined;
             }
-            const quotedCommandPath = /\s/.test(commandPath)
-                ? `"${commandPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
-                : commandPath;
-            const configArgs = this.services.getConfigArguments();
-            const terminalArgs = ["chat", ...configArgs];
-            const argsText = formatArgsForShell(terminalArgs);
-            const commandText =
-                argsText.length > 0
-                    ? `${quotedCommandPath} ${argsText}`
-                    : quotedCommandPath;
-            session.terminal.sendText(commandText, true);
+            // Run the executable directly; no user-controlled value becomes shell text.
+            const terminal = vscode.window.createTerminal({
+                name: "VT Code Agent", cwd,
+                shellPath: commandPath,
+                shellArgs: ["chat", ...this.services.getConfigArguments()],
+                env: this.services.getEnvironment(),
+                iconPath: new vscode.ThemeIcon("comment-discussion"),
+            });
+            session.terminal = terminal;
+            session.closeListener = vscode.window.onDidCloseTerminal((closed) => {
+                if (closed === terminal) {
+                    this.release(session);
+                }
+            });
+            return terminal;
         } catch (error) {
             if (this.session === session) {
+                this.release(session);
+                session.terminal?.dispose();
                 this.services.onError(error);
             }
+            return undefined;
         }
     }
-}
-
-function formatArgsForShell(args: string[]): string {
-    return args
-        .map((arg) => {
-            const value = String(arg);
-            return quoteForShell(value);
-        })
-        .filter((value) => value.length > 0)
-        .join(" ");
-}
-
-function quoteForShell(value: string): string {
-    if (!/[\s"'\\$`]/.test(value)) {
-        return value;
-    }
-
-    return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }

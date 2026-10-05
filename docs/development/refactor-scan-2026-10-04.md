@@ -371,3 +371,27 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   eight and 21 baseline diagnostics respectively.
 - Next increment: assess shell-safe interactive launching, then step 5 transport
   framing and UI protocol reuse. No production dependencies added.
+
+### Step 4e: native interactive CLI launch
+
+- Removed shell command interpolation and the activation timer from the terminal
+  service. Executable and config paths containing shell operators are now forwarded
+  as `TerminalOptions.shellPath` and an argument array as `shellArgs`.
+- The command awaits IDE context flush before creation. Concurrent requests share
+  the pending session; trust revocation and shutdown cancel pending creation,
+  failures release the session for retry, and close/reopen ownership is preserved.
+- Documented the intentional environment change: the CLI is the terminal process,
+  so shell profiles, aliases, and virtual-environment activation commands are not
+  evaluated first. VS Code's inherited/configured terminal environment still applies;
+  exiting VT Code ends the terminal process instead of returning to a shell prompt.
+- All 28 combined Node tests pass, including 12 terminal cases. Adversarial cases
+  assert executable and argv values containing shell operators, substitutions,
+  quotes, newlines, Unicode, and empty arguments. A real Node process independently
+  verifies forwarded arguments. No shell-text fallback exists.
+- Service typecheck/lint, production dependency audit, production bundle,
+  repository fast gate, scoped Markdown lint, and staged diff checks passed.
+  Retained entry-point bodies and baseline typecheck/lint diagnostics were compared;
+  the existing eight typecheck and 21 lint diagnostics remain unchanged.
+- Native VS Code terminal behavior, Windows quoting, and full activation require
+  host checks and are not claimed tested. No production dependencies added.
+- Next increment: step 5 transport framing and UI protocol reuse.

@@ -369,7 +369,11 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             const commandPath = getConfiguredCommandPath();
-            const { terminal, created } = terminalService.ensure(commandPath, cwd);
+            const result = await terminalService.ensure(commandPath, cwd);
+            if (!result) {
+                return;
+            }
+            const { terminal, created } = result;
             terminal.show(true);
             if (created) {
                 const channel = getOutputChannel();
