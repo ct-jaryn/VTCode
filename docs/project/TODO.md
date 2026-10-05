@@ -1,46 +1,4 @@
-Plan to audit + optimize VT Code for throughput/latency/CPU/mem/I/O/allocs:
 
-1. Orient (read-only, cheap)
-
-- Cargo.toml workspace members, scripts/check-dev.sh vs check.sh, nextest profiles in .config/nextest.toml
-- .vtcode/memory/{gotchas,decisions,library,issues}.md for known perf traps
-- Hot-path inventory: src/agent/runloop/, vtcode-core loop/tools/prompts/streaming, vtcode-llm, vtcode-bash-runner, vtcode-indexer, vtcode-memory ThreadEvent log, vtcode-ui render, vtcode-mcp/a2a I/O
-
-2. Baseline before touching code
-
-- cargo check --locked, ./scripts/check-dev.sh timing as build baseline
-- cargo nextest run --profile quick baseline pass/fail + wall-time
-- Add micro-benchmarks only where missing: cargo bench / Criterion in benches/ + crate benches for clone-heavy / alloc-heavy fns
-- Profile: samply or cargo-flamegraph for CPU, tokio-console for blocking/contention, dhat/heaptrack or jemalloc stats for allocs, strace/dtrace/fs usage for I/O syscalls
-
-3. Audit checklist (KISS/DRY, behavior-preserving only)
-
-- Hot-path clones: String/Vec/HashMap clones, CompactString opportunities, Cow<'static,str> for static strings
-- Allocs: format! in loops/logs, regex recompiles, JSON Value churn, needless collect(), large ThreadEvent serialization
-- Blocking: std::fs / Command::output in async, Mutex<RwLock> held across .await, channel backpressure
-- I/O: repeated config/file reads, unbatched indexer walks, no buffering (BufReader/Writer), excessive fsync/logging
-- CPU: O(n²) scans, repeated sorting/hashing, UI full redraws, prompt template rebuilds
-
-4. Implement highest-impact first (Build mode only)
-
-- Order by measured flamegraph/alloc share, not guesswork
-- One small diff per fix, preserve APIs unless required
-- Examples: clone()->borrow/Arc, format!()->write!, cache compiled regex/schema, batch I/O, shrink lock scope, SmallVec/CompactStr, early-exit/fast-path
-
-5. Verify after each fix
-
-- Re-run same bench/profile command, diff numbers
-- ./scripts/check-dev.sh --test then --workspace --lints if touched widely, cargo nextest run -p <crate> narrow
-- cargo fmt, cargo clippy -- -D warnings, ast-grep scan if structural
-
-6. Report
-
-- Table: file:line, what was removed, metric before→after (% ns/op, RSS, syscalls, alloc count), behavior check
-  Questions to scope Build mode:
-
-1. Full workspace or focus crates (e.g. core/llm/runner/indexer/memory first)?
-2. Target machine/profile: dev check-dev vs release + Apple Silicon only?
-3. Acceptable tradeoffs: allow new deps (e.g. smallvec, ahash) or std-only fixes?
 
 ===
 
@@ -84,7 +42,3 @@ scan for large and monolith files and module and plan deduplication and refactor
 ===
 
 prioritized refactor plan (docs/development/refactor-scan-2026-10-04.md) and full Rust file inventory (docs/development/refactor-scan-2026-10-04.csv).
-
-===
-
-remove vscode extension
