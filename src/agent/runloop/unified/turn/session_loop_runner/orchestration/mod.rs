@@ -2462,19 +2462,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         // The config-reload check is polling bookkeeping that only matters for
         // a continuing session; keep it ahead of teardown so nothing sits
         // between the terminal restore and the exit summary.
-        if config_watcher.should_reload() {
-            if let Some(reloaded) = config_watcher.load_config() {
-                vt_cfg = Some(reloaded);
-                crate::agent::agents::apply_live_reload_overrides(vt_cfg.as_mut(), &config);
-                tracing::debug!("Configuration reloaded during idle period");
-            }
-            if let Some(error) = config_watcher.take_reload_error() {
-                renderer.line(
-                    MessageStyle::Warning,
-                    &format!("Configuration reload rejected; keeping the last valid configuration: {error}"),
-                )?;
-            }
-        }
+        session_bootstrap::poll_config_reload(
+            &mut config_watcher,
+            &mut vt_cfg,
+            &config,
+            &mut renderer,
+            "Configuration reloaded during idle period",
+        )?;
         // Shut down background work before the postamble so no late task can
         // write after the terminal is restored and the summary is printed.
         // Bounded: nested close_tree walks can stall on contended locks, and
@@ -2513,19 +2507,13 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             continue;
         }
         if matches!(session_end_reason, SessionEndReason::NewSession) {
-            if config_watcher.should_reload() {
-                if let Some(reloaded) = config_watcher.load_config() {
-                    vt_cfg = Some(reloaded);
-                    crate::agent::agents::apply_live_reload_overrides(vt_cfg.as_mut(), &config);
-                    tracing::debug!("Configuration reloaded due to file changes");
-                }
-                if let Some(error) = config_watcher.take_reload_error() {
-                    renderer.line(
-                        MessageStyle::Warning,
-                        &format!("Configuration reload rejected; keeping the last valid configuration: {error}"),
-                    )?;
-                }
-            }
+            session_bootstrap::poll_config_reload(
+                &mut config_watcher,
+                &mut vt_cfg,
+                &config,
+                &mut renderer,
+                "Configuration reloaded due to file changes",
+            )?;
 
             refresh_runtime_debug_context_for_next_session(config.workspace.as_path(), None).await?;
             resume_state = None;

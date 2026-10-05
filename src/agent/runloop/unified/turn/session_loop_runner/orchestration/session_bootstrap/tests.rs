@@ -183,3 +183,74 @@ async fn summarized_fork_provider_errors_precede_archive_preparation_for_both_po
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 }
+
+#[test]
+fn config_poll_without_changes_leaves_session_config_and_ui_untouched() {
+    let temp = TempDir::new().unwrap();
+    let config = config(temp.path());
+    let mut watcher = super::SimpleConfigWatcher::new(config.workspace.clone());
+    watcher.set_check_interval(0);
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let handle = vtcode_ui::tui::app::InlineHandle::new_for_tests(sender);
+    let mut renderer = vtcode_core::utils::ansi::AnsiRenderer::with_inline_ui(handle, Default::default());
+    let mut vt_cfg = None;
+    super::poll_config_reload(&mut watcher, &mut vt_cfg, &config, &mut renderer, "test reload").unwrap();
+    assert!(vt_cfg.is_none());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn config_poll_retains_rejected_config_and_recovers_with_cli_overrides() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(temp.path());
+    config.model_source = vtcode_core::config::types::ModelSelectionSource::CliOverride;
+    let mut previous = super::VTCodeConfig::default();
+    previous.agent.provider = config.provider.clone();
+    previous.agent.default_model = config.model.clone();
+    previous.ui.vim_mode = true;
+    let mut vt_cfg = Some(previous.clone());
+    let mut watcher = super::SimpleConfigWatcher::new(config.workspace.clone());
+    watcher.set_check_interval(0);
+    watcher.set_debounce_duration(0);
+    watcher.set_last_known_config(previous);
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let handle = vtcode_ui::tui::app::InlineHandle::new_for_tests(sender);
+    let mut renderer = vtcode_core::utils::ansi::AnsiRenderer::with_inline_ui(handle, Default::default());
+    super::poll_config_reload(&mut watcher, &mut vt_cfg, &config, &mut renderer, "test reload").unwrap();
+
+    let path = temp.path().join("vtcode.toml");
+    std::fs::write(&path, "agent.provider = [\n").unwrap();
+    super::poll_config_reload(&mut watcher, &mut vt_cfg, &config, &mut renderer, "test rejection").unwrap();
+    let retained = vt_cfg.as_ref().unwrap();
+    assert!(retained.ui.vim_mode);
+    assert_eq!(retained.agent.provider, config.provider);
+    assert_eq!(retained.agent.default_model, config.model);
+    let mut warnings = Vec::new();
+    while let Ok(command) = receiver.try_recv() {
+        if let vtcode_ui::tui::app::InlineCommand::AppendLine { segments, .. } = command {
+            warnings.push(segments.into_iter().map(|segment| segment.text).collect::<String>());
+        }
+    }
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|text| text.contains("Configuration reload rejected"))
+            .count(),
+        1
+    );
+    assert!(watcher.take_reload_error().is_none());
+
+    std::fs::write(&path, "[agent]\nprovider = 'openai'\ndefault_model = 'file-model'\n[ui]\nvim_mode = false\n")
+        .unwrap();
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2))
+        .unwrap();
+    super::poll_config_reload(&mut watcher, &mut vt_cfg, &config, &mut renderer, "test recovery").unwrap();
+    let reloaded = vt_cfg.as_ref().unwrap();
+    assert!(!reloaded.ui.vim_mode);
+    assert_eq!(reloaded.agent.provider, config.provider);
+    assert_eq!(reloaded.agent.default_model, config.model);
+    assert!(watcher.take_reload_error().is_none());
+    assert!(receiver.try_recv().is_err());
+}

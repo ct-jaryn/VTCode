@@ -83,6 +83,29 @@ pub(super) async fn prepare_session_thread(
     Ok(prepared)
 }
 
+pub(super) fn poll_config_reload(
+    config_watcher: &mut SimpleConfigWatcher,
+    vt_cfg: &mut Option<VTCodeConfig>,
+    config: &CoreAgentConfig,
+    renderer: &mut vtcode_core::utils::ansi::AnsiRenderer,
+    success_message: &'static str,
+) -> Result<()> {
+    if config_watcher.should_reload() {
+        if let Some(reloaded) = config_watcher.load_config() {
+            *vt_cfg = Some(reloaded);
+            crate::agent::agents::apply_live_reload_overrides(vt_cfg.as_mut(), config);
+            tracing::debug!("{success_message}");
+        }
+        if let Some(error) = config_watcher.take_reload_error() {
+            renderer.line(
+                MessageStyle::Warning,
+                &format!("Configuration reload rejected; keeping the last valid configuration: {error}"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Stable opening shared with `is_internal_harness_follow_up`, which keys the
 /// quiet path off this constant instead of a duplicated literal.
 pub(crate) const BACKGROUND_COMPLETION_CONTINUATION_PROMPT_PREFIX: &str =

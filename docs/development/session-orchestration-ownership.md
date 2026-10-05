@@ -26,6 +26,12 @@ errors still occur before archive preparation; compaction errors still propagate
 before thread activation. The loop retains runtime archive-ID publication,
 startup checkpointing, and canonical harness initialization/finalization.
 
+The existing bootstrap module also owns the config-reload polling helper used
+before finalization and at new-session handoff. Poll/debounce policy remains
+watcher-owned. Reloads preserve runtime provider/CLI model overrides, rejected
+reloads retain the last valid configuration and show one warning, and renderer
+errors propagate. The loop keeps both call sites and their ordering.
+
 The focused bootstrap tests cover fresh archive-less startup, in-place resume
 under both archive policies, archive-less full-copy forks, and provider failure
 ordering. Existing core archived-session and binary summarized-fork tests cover

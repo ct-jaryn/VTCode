@@ -784,3 +784,31 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   and interactive new-session/resume behavior remain outside this validation.
 - Next increment: inspect turn/input coordination and ordered finalization for
   useful existing-helper boundaries, then proceed to release changelog helpers.
+
+### Step 7f: shared reload polling and orchestration closure
+
+- Replaced the two identical config-reload blocks in session finalization and
+  new-session handoff with the existing bootstrap module's private polling
+  helper. Preserve watcher/debounce behavior, runtime provider and CLI model
+  overrides, rejected-config warnings, renderer errors, both call positions,
+  and their distinct diagnostic messages. Orchestration source is 2,587 lines;
+  the bootstrap source is 310 lines including its test declaration.
+- Reversing only the two helper calls reproduces the original orchestration
+  source exactly. No state machine, public API, dependency, or transition
+  policy was added. Tests use owned config files and distinct explicit mtimes.
+- Two new tests verify unchanged polls, rejected reload retaining prior UI
+  configuration with one warning, correction recovery, and CLI override
+  preservation. All six bootstrap tests passed; all 199 selected binary
+  lifecycle, summarized-fork, runtime, and inline-event tests passed, with 3,344
+  unrelated tests excluded. Final fast gate, Markdown lint, and diff checks
+  passed. Interactive session handoff and other hosts remain untested.
+- Reviewed the remaining input/turn coordination and session tail. They share
+  runtime/steering history, primary-agent handoffs, persistence outcomes,
+  recovery counters, and ordered shutdown. Existing interaction, turn-tail,
+  bootstrap, and teardown helpers already own separable phases. Retain the
+  remaining loop ownership rather than introducing a broad context bag or a
+  second runner. Phase 7 closes at this boundary; further splits need a concrete
+  independent responsibility and lifecycle evidence.
+- Next: phase 8, extract release changelog formatting and share only helpers
+  whose canonical and legacy contracts match. Keep publication entrypoints out
+  of fixture checks.

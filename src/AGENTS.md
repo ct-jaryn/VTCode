@@ -2,7 +2,7 @@
 <!-- markdownlint-disable MD013 -->
 # vtcode (binary)
 
-[Root AGENTS.md](../AGENTS.md) | CLI entrypoint, session bootstrap, and agent runloop wiring. Detailed notes: [binary gotchas](../docs/development/vtcode-binary-gotchas.md), [session orchestration ownership](../docs/development/session-orchestration-ownership.md), and [Copilot runtime ownership](../docs/development/copilot-runtime-ownership.md). Keep thread/archive preparation in the existing bootstrap helper and activation/checkpoint/event ownership in the loop; observed state returns full host snapshots and PTY deltas, while progress/status mapping stays caller-owned.
+[Root AGENTS.md](../AGENTS.md) | CLI entrypoint, session bootstrap, and agent runloop wiring. Detailed notes: [binary gotchas](../docs/development/vtcode-binary-gotchas.md), [session orchestration ownership](../docs/development/session-orchestration-ownership.md), and [Copilot runtime ownership](../docs/development/copilot-runtime-ownership.md). Keep thread/archive preparation and config-reload polling in the existing bootstrap helper and activation/checkpoint/event ownership in the loop; observed state returns full host snapshots and PTY deltas, while progress/status mapping stays caller-owned.
 
 ## Modules (active bridge: `agent/runloop/unified/webmcp.rs`)
 
