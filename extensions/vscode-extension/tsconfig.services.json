@@ -5,6 +5,7 @@
   },
   "include": [
     "src/services/processExecution.ts",
+    "src/services/interactiveTerminal.ts",
     "src/commands/configurationCommands.ts",
     "src/utils/vtcodeRunner.ts"
   ]

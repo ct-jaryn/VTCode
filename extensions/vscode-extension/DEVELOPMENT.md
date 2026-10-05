@@ -89,7 +89,7 @@ npm run watch
 The default `compile`, `typecheck`, `lint`, and `test` scripts currently print
 skip messages for the precompiled distribution. They do not validate source.
 The legacy tests also mix Jest, Vitest, and extension-host APIs; the full project
-typecheck reports existing errors. For the extracted views and process/config
+typecheck reports existing errors. For the extracted views and process/config/terminal
 services, run these real checks:
 
 ```bash
@@ -120,19 +120,31 @@ extensions/vscode-extension/
        workspaceInsights.ts  # Workspace-status descriptions and tree provider
     commands/configurationCommands.ts  # HITL/MCP/policy command registration
     services/processExecution.ts       # Shared CLI process execution
+    services/interactiveTerminal.ts    # Terminal sessions and delayed launch
     utils/vtcodeRunner.ts               # Modular-command preflight and helpers
  test/
     views.test.cjs     # View tests with an isolated VS Code fixture
     services.test.cjs  # Process/config tests with mocked spawning and config APIs
+    terminal.test.cjs  # Terminal lifecycle tests with a fake clock and VS Code API
     helpers/compileModules.cjs  # Shared module compilation and fixture isolation
  tsconfig.views.json   # Focused view typecheck
- tsconfig.services.json # Focused process/config typecheck
+ tsconfig.services.json # Focused process/config/terminal typecheck
  tsconfig.json         # TypeScript configuration
  .vscode/
     launch.json       # Debug launch configurations
  syntaxes/             # Language syntax definitions
  dist/                 # Compiled output directory
 ```
+
+The interactive terminal service retains the 800 ms delay for profile environment
+activation and reads configuration after flushing IDE context. Closing the terminal
+or disposing the service cancels pending launches; after an asynchronous flush it
+checks session identity and workspace trust again. Flush failures use the command
+error handler. Terminal tests cover reuse, close/reopen races, shutdown, trust
+revocation, and rejected flushes with a fake clock. Actual profile activation and
+shell behavior require an Extension Development Host. Existing shell command
+formatting is preserved; these lifecycle tests do not establish shell injection
+safety across terminal profiles.
 
 ## Debugging the Extension
 

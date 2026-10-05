@@ -1,5 +1,6 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import * as vscode from "vscode";
+import { InteractiveTerminal } from "./services/interactiveTerminal";
 import { CommandRegistry } from "./commandRegistry";
 import { executeVtcodeProcess, type VtcodeProcessOptions } from "./services/processExecution";
 import { registerConfigurationCommands } from "./commands/configurationCommands";
@@ -35,8 +36,7 @@ let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let quickActionsProviderInstance: QuickActionTreeDataProvider | undefined;
 let workspaceInsightsProvider: WorkspaceInsightsTreeDataProvider | undefined;
-let agentTerminal: vscode.Terminal | undefined;
-let terminalCloseListener: vscode.Disposable | undefined;
+let interactiveTerminal: InteractiveTerminal | undefined;
 let cliAvailable = false;
 let missingCliWarningShown = false;
 let cliAvailabilityCheck: Promise<void> | undefined;
@@ -343,6 +343,16 @@ export function activate(context: vscode.ExtensionContext) {
         getOutputChannel, handleCommandError, openToolsPolicyGuide, openMcpGuide,
     });
 
+    const terminalService = new InteractiveTerminal({
+        getEnvironment: getVtcodeEnvironment,
+        getConfigArguments,
+        flushIdeContext: async () => { await ideContextBridge?.flush(); },
+        isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+        onError: (error) => handleCommandError("launch the agent terminal", error),
+    });
+    interactiveTerminal = terminalService;
+    context.subscriptions.push(terminalService);
+
     const launchAgentTerminal = vscode.commands.registerCommand(
         "vtcode.launchAgentTerminal",
         async () => {
@@ -359,7 +369,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             const commandPath = getConfiguredCommandPath();
-            const { terminal, created } = ensureAgentTerminal(commandPath, cwd);
+            const { terminal, created } = terminalService.ensure(commandPath, cwd);
             terminal.show(true);
             if (created) {
                 const channel = getOutputChannel();
@@ -472,15 +482,8 @@ export function deactivate() {
         statusBarItem = undefined;
     }
 
-    if (agentTerminal) {
-        agentTerminal.dispose();
-        agentTerminal = undefined;
-    }
-
-    if (terminalCloseListener) {
-        terminalCloseListener.dispose();
-        terminalCloseListener = undefined;
-    }
+    interactiveTerminal?.dispose();
+    interactiveTerminal = undefined;
 
     quickActionsProviderInstance = undefined;
     cliAvailabilityCheck = undefined;
@@ -2441,24 +2444,6 @@ function createSpawnOptions(
     };
 }
 
-function formatArgsForShell(args: string[]): string {
-    return args
-        .map((arg) => {
-            const value = String(arg);
-            return quoteForShell(value);
-        })
-        .filter((value) => value.length > 0)
-        .join(" ");
-}
-
-function quoteForShell(value: string): string {
-    if (!/[\s"'\\$`]/.test(value)) {
-        return value;
-    }
-
-    return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
-}
-
 function getWorkspaceRoot(): string | undefined {
     const activeEditor = vscode.window.activeTextEditor;
     if (activeEditor) {
@@ -2525,57 +2510,6 @@ async function openMcpGuide(): Promise<void> {
             "https://github.com/vinhnx/vtcode/blob/main/docs/guides/mcp-integration.md"
         )
     );
-}
-
-function ensureAgentTerminal(
-    commandPath: string,
-    cwd: string
-): { terminal: vscode.Terminal; created: boolean } {
-    if (agentTerminal) {
-        return { terminal: agentTerminal, created: false };
-    }
-
-    const terminal = vscode.window.createTerminal({
-        name: "VT Code Agent",
-        cwd,
-        env: getVtcodeEnvironment(),
-        iconPath: new vscode.ThemeIcon("comment-discussion"),
-    });
-
-    // Instead of immediate execution, use a slight delay to allow any auto-activation to complete
-    setTimeout(() => {
-        void (async () => {
-            if (ideContextBridge) {
-                await ideContextBridge.flush();
-            }
-            const quotedCommandPath = /\s/.test(commandPath)
-                ? `"${commandPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
-                : commandPath;
-            const configArgs = getConfigArguments();
-            const terminalArgs = ["chat", ...configArgs];
-            const argsText = formatArgsForShell(terminalArgs);
-            const commandText =
-                argsText.length > 0
-                    ? `${quotedCommandPath} ${argsText}`
-                    : quotedCommandPath;
-            // Send the VT Code command after a brief delay to allow any environment activation to complete
-            terminal.sendText(commandText, true);
-        })();
-    }, 800); // 800ms delay to allow environment activation if it happens
-
-    agentTerminal = terminal;
-
-    if (!terminalCloseListener) {
-        terminalCloseListener = vscode.window.onDidCloseTerminal((closed) => {
-            if (closed === agentTerminal) {
-                agentTerminal = undefined;
-                terminalCloseListener?.dispose();
-                terminalCloseListener = undefined;
-            }
-        });
-    }
-
-    return { terminal, created: true };
 }
 
 function ensureStableApi(context: vscode.ExtensionContext) {

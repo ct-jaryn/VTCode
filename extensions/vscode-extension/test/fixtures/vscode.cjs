@@ -40,6 +40,8 @@ module.exports = {
         },
     },
     window: {
+        createTerminal() {},
+        onDidCloseTerminal() {},
         createOutputChannel: () => testState.channel,
         withProgress: async (_options, run) => { testState.beforeProgress?.(); return run(); },
         showWarningMessage: (text) => { testState.messages.push(text); },

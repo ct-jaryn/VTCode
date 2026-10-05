@@ -349,3 +349,25 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   and rendered/interactive terminal checks remain unverified.
 - Next increment: interactive terminal ownership/lifecycle extraction within
   step 4, then the transport/UI infrastructure reuse phase.
+
+### Step 4d: interactive terminal ownership and launch lifecycle
+
+- Reduced the entry point from 2,618 to 2,552 lines by extracting
+  `services/interactiveTerminal.ts`; the entry point supplies live
+  environment/config/context/trust/error callbacks and owns service disposal.
+  Retained terminal name, cwd, icon, reuse, delayed launch, and command formatting.
+- Fixed delayed work surviving a terminal close or extension shutdown. Session
+  identity prevents an in-flight context flush from sending into a closed terminal
+  or affecting its replacement. Trust is checked before and after the flush;
+  flush failures reach the command error handler instead of becoming unhandled
+  promise rejections. Disposal cancels the timer and closes the terminal once.
+- Added nine focused lifecycle tests. All 25 combined view/service/terminal tests
+  pass. Tests use mock terminal APIs and a fake clock; real host profiles and
+  shell interaction remain unverified. Existing shell formatting is preserved;
+  a separate shell-launch hardening increment needs profile-specific coverage.
+- Service typecheck, service lint, production bundle, repository fast gate,
+  Markdown lint, and scoped diff checks passed. AST comparison confirmed 68
+  retained or moved functions; the entry-point typecheck and lint retain their
+  eight and 21 baseline diagnostics respectively.
+- Next increment: assess shell-safe interactive launching, then step 5 transport
+  framing and UI protocol reuse. No production dependencies added.
