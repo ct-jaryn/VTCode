@@ -448,3 +448,26 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Preserved the unrelated Merge Gateway changes present before this increment.
 - Next increment: assess remaining common control commands before the execution
   facade phase; keep app-only state and event ownership explicit.
+
+### Step 5c: common UI control-method forwarding
+
+- Used AST function matches to compare core/app handle methods and extracted 36
+  identical methods into private `types/control_commands.rs`. Both handles invoke
+  the shared macro and retain their original channel/send implementation.
+- Kept control variant definitions in the local enums to preserve their existing
+  interleaving with app-only commands. Kept message-label setters local because
+  the app setter updates Unicode display-width state, styled-placeholder helpers
+  because visibility differs, and overlay/session methods because ownership differs.
+- Added nine tests across both public handles for lifecycle order, both toggle
+  values, asymmetric statuses/queues, draft attachments and batching metadata,
+  plus the app's label-width/reset side effects. All 19 focused protocol tests
+  passed, followed by all 1,488 UI tests with no skips.
+- Verified all 36 generated method bodies/signatures against both AST-captured
+  originals. Normalized retained protocol tokens and enum order match HEAD;
+  comparison preserves literals/comments and ignores whitespace and optional
+  trailing argument commas. No public API, runtime state, or dependency changes.
+- Repository fast gate, formatting, scoped Markdown lint, and staged diff checks
+  passed. Updated the shared-protocol guide and UI module guidance. Live terminal
+  visual interaction was not exercised.
+- Next increment: step 6 execution-facade reentrancy extraction, preserving
+  admission/safety order and structured error contracts.

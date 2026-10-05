@@ -1,4 +1,4 @@
-# Shared inline message commands
+# Shared inline message and control commands
 
 The core and app UI protocols expose distinct `InlineCommand`, `InlineHandle`,
 and `InlineSession` types. The app protocol additionally owns captured tool
@@ -30,6 +30,35 @@ recomputed, replacement row order and empty rows are retained, `None` links stay
 distinct from `Some(empty)`, and segment styles retain their existing `Arc`.
 App-only capture/review commands and transient/deferred input are not generated
 by these macros.
+
+## Common control forwarding
+
+`types/control_commands.rs` owns 36 identical control methods in the private
+`impl_inline_control_methods` macro. Both handles invoke it inside their existing
+implementation. Control variant definitions remain in their respective enums,
+so their original interleaving with app-only commands and variant order stay intact.
+
+| Group | Forwarding responsibilities |
+| --- | --- |
+| Lifecycle | Suspend/resume, clear queue, stop/start stream, clear screen, redraw, shutdown |
+| Prompt/status | Prompt, placeholder, boxed header, left/right status, activity, reasoning stage |
+| Terminal title | Items, thread label, Git branch |
+| Appearance | Theme, automatic color scheme, appearance config, fullscreen settings |
+| Input | Cursor/input/image/vim toggles, literal text, draft restoration, suggestions |
+| Agent/queue | Queued inputs, subprocess entries, subagent preview, primary agent identity/color |
+| Confirmation display | Existing skip-confirmations command forwarding |
+
+Methods were selected by comparing AST function bodies, not just names. State-aware
+methods remain local: app message labels update the cached Unicode display width,
+and overlay methods route through different core/app surfaces. Styled-placeholder
+helpers retain their distinct visibility (public in core, private in app); the
+shared public placeholder method still delegates to the local helper. Session
+setters and deferred/transient ownership remain separate from handle forwarding.
+
+The control tests check both public handles against explicit expectations for
+lifecycle order, both boolean values, asymmetric optional statuses and queues,
+and restored attachment/batching metadata. A separate app regression verifies
+that Unicode label width and its reset still update alongside the sent command.
 
 ## Verification
 

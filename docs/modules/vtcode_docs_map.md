@@ -269,9 +269,10 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Session Event Persistence?", "How does Audit packs work?"
 
 - **File**: `docs/development/ui-message-protocol.md`
-  - **Content**: Shared inline message commands
-  - **Topics**: Verification
-  - **User Questions**: "What can you tell me about Shared inline message commands?", "How does Verification work?"
+  - **Content**: Shared inline message and control commands
+  - **Topics**: Common control forwarding, Verification
+  - **User Questions**: "What can you tell me about Shared inline message and control commands?", "How does Common
+    control forwarding work?", "How does Verification work?"
 
 - **File**: `docs/development/tui-design-system.md`
   - **Content**: TUI design system

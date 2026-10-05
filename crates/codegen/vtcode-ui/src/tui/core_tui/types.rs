@@ -1,4 +1,5 @@
 mod content;
+mod control_commands;
 mod local_agents;
 mod message_commands;
 mod overlay;
@@ -6,6 +7,7 @@ mod protocol;
 mod selection;
 mod style;
 
+pub(crate) use control_commands::impl_inline_control_methods;
 pub(crate) use message_commands::{define_inline_message_commands, impl_inline_message_methods};
 
 pub use content::ContentPart;
