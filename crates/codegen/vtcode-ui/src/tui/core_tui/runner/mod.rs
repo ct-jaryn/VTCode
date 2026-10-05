@@ -37,6 +37,12 @@ pub trait TuiSessionDriver {
         callback: Option<&(dyn Fn(&Self::Event) + Send + Sync + 'static)>,
     );
     fn handle_tick(&mut self);
+    /// Whether the session needs active-rate ticks (animations or transient
+    /// expiries pending). The drive loop uses this to extend active-mode
+    /// ticking independently of recent user input, so truly idle sessions rest
+    /// instead of polling. Input, commands, and crossterm events always render
+    /// immediately regardless of this flag.
+    fn needs_animation_tick(&self) -> bool;
     fn render(&mut self, frame: &mut ratatui::Frame<'_>);
     fn take_redraw(&mut self) -> bool;
     fn use_steady_cursor(&self) -> bool;

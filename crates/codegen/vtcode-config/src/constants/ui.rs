@@ -177,12 +177,18 @@ pub fn agent_mode_hue(mode: &str) -> Option<&'static str> {
     AGENT_MODE_HUE.iter().find(|(m, _)| *m == mode).map(|(_, h)| *h)
 }
 
-// TUI tick rate constants for smooth scrolling
-/// Tick rate (Hz) when user is actively interacting with the TUI
+// TUI tick rates are event-driven with on-demand animation ticks.
+// Input, commands (new messages), and crossterm events render immediately
+// without waiting for a tick; ticks exist only for animations (spinner 80ms,
+// shimmer 33ms, drag 50ms) and transient expiry cleanup (scroll-steady 250ms,
+// copy notification 2s). Keep in sync with
+// `vtcode-ui::tui::config::constants::ui` (the live TUI values).
+/// Tick rate (Hz) while interacting or animating — 60Hz matches display vsync.
 pub const TUI_ACTIVE_TICK_RATE_HZ: f64 = 60.0;
-/// Tick rate (Hz) when TUI is idle to save CPU
+/// Upkeep rate (Hz) when idle with nothing pending — safety net only.
 pub const TUI_IDLE_TICK_RATE_HZ: f64 = 4.0;
-/// Duration (ms) to remain in active mode after last input
+/// Duration (ms) to remain at the active rate after last input or animation
+/// need. Animations extend active mode independently via `needs_animation_tick`.
 pub const TUI_ACTIVE_TIMEOUT_MS: u64 = 500;
 /// Shimmer frame interval in milliseconds
 pub const TUI_SHIMMER_FRAME_INTERVAL_MS: u64 = 33;

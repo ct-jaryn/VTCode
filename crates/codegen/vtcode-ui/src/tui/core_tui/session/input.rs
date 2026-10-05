@@ -1572,8 +1572,9 @@ fn is_spinner_frame(indicator: &str) -> bool {
 
 pub(crate) fn status_requires_shimmer(text: &str) -> bool {
     // Case-insensitive contains without allocating a lowercased String.
-    // This function is called up to 3× per TUI tick (10 Hz idle, 60 Hz active)
-    // from is_running_activity / has_status_spinner / is_shimmer_active, so
+    // This function is called up to 3× per TUI tick (4 Hz upkeep when idle,
+    // 60 Hz while interacting or animating) from is_running_activity /
+    // has_status_spinner / is_shimmer_active, so
     // avoiding the per-call String allocation matters.
     let trimmed = text.trim();
     let needles = [

@@ -183,13 +183,22 @@ pub const STATUS_LINE_MODE: &str = "auto";
 pub const STATUS_LINE_REFRESH_INTERVAL_MS: u64 = 1000;
 pub const STATUS_LINE_COMMAND_TIMEOUT_MS: u64 = 200;
 
-// TUI tick rate constants for smooth scrolling
-/// Tick rate (Hz) when user is actively interacting with the TUI
+// TUI tick rates are event-driven with on-demand animation ticks.
+// Input, commands (new messages), and crossterm events render immediately
+// without waiting for a tick (`render_if_dirty` runs in the same wakeup);
+// ticks exist only for animations (spinner 80ms, shimmer 33ms, drag 50ms)
+// and transient expiry cleanup (scroll-steady 250ms, copy notification 2s).
+/// Tick rate (Hz) while interacting or animating — 60Hz matches display vsync
+/// for smooth scrolling and keeps input-to-draw under a single frame.
 pub const TUI_ACTIVE_TICK_RATE_HZ: f64 = 60.0;
-/// Tick rate (Hz) when TUI is idle to save CPU
-pub const TUI_IDLE_TICK_RATE_HZ: f64 = 10.0;
-/// Duration (ms) to remain in active mode after last input
-pub const TUI_ACTIVE_TIMEOUT_MS: u64 = 2000;
+/// Upkeep rate (Hz) when idle with nothing pending — safety net only for
+/// missed expiries or races. A truly idle loop blocks on input/commands and
+/// wakes immediately on events or new messages instead of polling.
+pub const TUI_IDLE_TICK_RATE_HZ: f64 = 4.0;
+/// Duration (ms) to remain at the active rate after last input or animation
+/// need. Animations (`needs_animation_tick`) extend active mode independently,
+/// so this window only needs to cover scroll momentum and cursor-steady (250ms).
+pub const TUI_ACTIVE_TIMEOUT_MS: u64 = 500;
 /// Shimmer frame interval in milliseconds
 pub const TUI_SHIMMER_FRAME_INTERVAL_MS: u64 = 33;
 /// Shimmer sweep duration in milliseconds

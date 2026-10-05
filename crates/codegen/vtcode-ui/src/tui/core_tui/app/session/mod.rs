@@ -1369,6 +1369,14 @@ impl TuiSessionDriver for AppSession {
         self.core.handle_tick();
     }
 
+    fn needs_animation_tick(&self) -> bool {
+        // Core covers drag, spinner, shimmer, core background, and expiries;
+        // AppSession adds its own drawer-local background loading count, which
+        // feeds `has_status_spinner` but lives outside `core`.
+        self.core.needs_animation_tick()
+            || (self.core.appearance.should_animate_progress_status() && self.background_activity_active())
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) {
         AppSession::render(self, frame);
     }
