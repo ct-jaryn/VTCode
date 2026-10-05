@@ -57,6 +57,8 @@ The extension contributes the following commands:
 - `VT Code: Launch Agent Terminal` - Open an integrated terminal session running `vtcode chat`
 - `VT Code: Analyze Workspace` - Run `vtcode analyze` on your workspace
 - `VT Code: Open Configuration` - Edit your `vtcode.toml` configuration file
+- `VT Code: Trust Workspace` - Open VS Code trust management from a restricted workspace;
+  execution requires host-confirmed trust
 - `VT Code: Open Documentation` - Access VT Code documentation
 - `VT Code: Toggle Human-in-the-Loop` - Control human approval for sensitive operations
 - And more...

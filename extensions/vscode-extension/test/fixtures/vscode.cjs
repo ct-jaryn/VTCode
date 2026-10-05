@@ -34,6 +34,7 @@ module.exports = {
         getConfiguration: () => ({ get: (_key, fallback) => fallback }),
     },
     commands: {
+        executeCommand: async (name, ...args) => testState.handlers.get(name)?.(...args),
         registerCommand: (name, callback) => {
             testState.handlers.set(name, callback);
             return { dispose: () => testState.handlers.delete(name) };

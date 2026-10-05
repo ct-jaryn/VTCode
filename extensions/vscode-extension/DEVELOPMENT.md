@@ -89,7 +89,7 @@ npm run watch
 The default `compile`, `typecheck`, `lint`, and `test` scripts currently print
 skip messages for the precompiled distribution. They do not validate source.
 The legacy tests also mix Jest, Vitest, and extension-host APIs; the full project
-typecheck reports existing errors. For the extracted views and process/config/terminal
+typecheck reports existing errors. For the extracted views and process/config/terminal/trust
 services, run these real checks:
 
 ```bash
@@ -120,15 +120,17 @@ extensions/vscode-extension/
        workspaceInsights.ts  # Workspace-status descriptions and tree provider
     commands/configurationCommands.ts  # HITL/MCP/policy command registration
     services/processExecution.ts       # Shared CLI process execution
-    services/interactiveTerminal.ts    # Terminal sessions and delayed launch
+    services/interactiveTerminal.ts    # Native CLI terminal lifecycle
+    services/workspaceTrust.ts         # Stable manual trust flow and host-state checks
     utils/vtcodeRunner.ts               # Modular-command preflight and helpers
  test/
     views.test.cjs     # View tests with an isolated VS Code fixture
     services.test.cjs  # Process/config tests with mocked spawning and config APIs
-    terminal.test.cjs  # Terminal lifecycle tests with a fake clock and VS Code API
+    terminal.test.cjs  # Terminal lifecycle tests with mocked VS Code API
+    trust.test.cjs     # Proposed-API rejection, manual trust, and command admission
     helpers/compileModules.cjs  # Shared module compilation and fixture isolation
  tsconfig.views.json   # Focused view typecheck
- tsconfig.services.json # Focused process/config/terminal typecheck
+ tsconfig.services.json # Focused process/config/terminal/trust typecheck
  tsconfig.json         # TypeScript configuration
  .vscode/
     launch.json       # Debug launch configurations
@@ -145,6 +147,18 @@ shutdown or trust revocation prevents pending creation, and failures permit retr
 Terminal tests cover these states, literal metacharacters, and a real Node process
 receiving the forwarded arguments. Full Extension Development Host and Windows
 terminal process behavior remain unverified.
+
+Workspace trust uses the stable information/warning dialogs and
+`workbench.action.manageTrust`. The packaged extension does not enable the
+`workspaceTrust` API proposal, so reading `workspace.requestWorkspaceTrust`
+can throw before a request even starts. Keep that proposed API out of the flow.
+Only `workspace.isTrusted` establishes approval after awaiting management;
+opening the settings page, dismissing a prompt, or a command's return value does
+not grant trust. The dedicated trust command remains available in restricted
+workspaces, while ordinary execution commands retain their existing trust gate.
+Activation still owns its one-time prompt key, and failures retain their original
+error for the caller's command/activation handling. `npm run test:services`
+includes the trust regressions; no Computer Use is required for these tests.
 
 ## Debugging the Extension
 

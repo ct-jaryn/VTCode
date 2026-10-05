@@ -880,7 +880,7 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 All eight phases have implemented, committed increments. The audit confirms
 that their extracted owners are called through the existing facades or app
 entrypoints. The original CSV remains a dated scan baseline. Current line counts
-below include module declarations and tests; they measure navigation changes,
+at this audit snapshot include module declarations and tests; they measure navigation changes,
 not removed behavior or reduced runtime cost.
 
 | Phase | Current ownership and live wiring | Implementation boundary |
@@ -952,3 +952,39 @@ Next: fix the confirmed workspace-trust proposal access in source with focused
 service regressions, without VS Code Computer Use. Browser/TUI rendered checks
 remain open when an appropriate isolated test surface becomes available.
 The eight-phase implementation plan is delivered; overall acceptance remains open.
+
+### Follow-up: shared stable workspace-trust flow
+
+- Replaced both optional proposed-API request implementations and repeated
+  manual management logic with `services/workspaceTrust.ts` (23 lines).
+  Activation, command admission, and the modular trust command now use the
+  existing stable dialogs and `workbench.action.manageTrust`, then read
+  `workspace.isTrusted`. Settings navigation and command return values never
+  establish approval. Activation retains its one-time prompt state and logging;
+  UI/management failures propagate to existing caller error handling.
+- The registered trust command inherited `BaseCommand.canExecute`, which
+  rejects restricted workspaces before the trust flow runs. Override that gate
+  only for trust management; ordinary execution commands retain their gate.
+  Retain the command signatures with intentionally unused context parameters.
+  No execution authority, API proposal, dependency, or automatic trust grant was added.
+- The extension entrypoint is now 2,494 lines. The trust command is 40 lines;
+  its existing IDs, manual-management messages, and granted-state feedback stay
+  with the command. Added owner guidance and development/command documentation.
+- Eight new regressions pass with a proposed-API getter that throws if accessed:
+  already-trusted state, literal warning prompts, actual grant versus settings
+  navigation, dismissal, delayed host-state changes, original error identity,
+  registered trust admission versus blocked execution, and no false grant feedback.
+  All 36 view/service/terminal/trust tests passed without skips, alongside both
+  focused typechecks, changed-module lint, and the production bundle.
+- Direct entrypoint typecheck improved from eight existing diagnostics to seven;
+  no diagnostic was added. An isolated baseline source copy reproduces the same
+  21 entrypoint lint diagnostics as the final source. The full-project checks
+  remain outside this increment's passed checks. Scoped Markdown/diff checks
+  passed. Rust sources are unchanged since the audit's successful fast gate.
+- VS Code Computer Use remains skipped at the owner's request. The source-level
+  finding is fixed and covered by service/registered-command regressions; no
+  post-fix rendered host, terminal, or Windows result is claimed.
+
+Next: remaining acceptance is browser/TUI rendered validation when an isolated
+surface is available. Keep VS Code Computer Use deferred unless the owner changes
+that instruction; no further coupled-block extraction is justified by this audit.

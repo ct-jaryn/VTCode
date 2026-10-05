@@ -1,6 +1,7 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import * as vscode from "vscode";
 import { InteractiveTerminal } from "./services/interactiveTerminal";
+import { requestWorkspaceTrust } from "./services/workspaceTrust";
 import { CommandRegistry } from "./commandRegistry";
 import { executeVtcodeProcess, type VtcodeProcessOptions } from "./services/processExecution";
 import { registerConfigurationCommands } from "./commands/configurationCommands";
@@ -928,70 +929,17 @@ function initializeContextKeys(): void {
     }
 }
 
-type WorkspaceTrustApi = typeof vscode.workspace & {
-    requestWorkspaceTrust?: (opts?: {
-        message?: string;
-        modal?: boolean;
-        buttons?: ReadonlyArray<vscode.MessageItem>;
-    }) => Thenable<boolean | undefined>;
-};
-
-async function requestWorkspaceTrust(action: string): Promise<boolean> {
-    if (workspaceTrusted) {
-        return true;
-    }
-
-    const trustApi = vscode.workspace as WorkspaceTrustApi;
-    const requestFn = trustApi.requestWorkspaceTrust;
-    if (typeof requestFn === "function") {
-        try {
-            const granted = await requestFn({
-                message: `VT Code requires a trusted workspace to ${action}.`,
-                modal: true,
-            });
-            if (granted) {
-                updateWorkspaceTrustState(true);
-                return true;
-            }
-        } catch (error) {
-            const channel = getOutputChannel();
-            const details =
-                error instanceof Error ? error.message : String(error);
-            channel.appendLine(
-                `[warn] Workspace trust request failed: ${details}`
-            );
-        }
-    }
-
-    return false;
-}
-
 async function ensureWorkspaceTrustedForCommand(
     action: string
 ): Promise<boolean> {
-    if (workspaceTrusted) {
-        return true;
-    }
-
-    if (await requestWorkspaceTrust(action)) {
-        return true;
-    }
-
-    const selection = await vscode.window.showWarningMessage(
+    const trustedNow = await requestWorkspaceTrust(
         `VT Code requires a trusted workspace to ${action}.`,
-        "Manage Workspace Trust"
+        "warning"
     );
-
-    if (selection === "Manage Workspace Trust") {
-        await vscode.commands.executeCommand("workbench.action.manageTrust");
-        const trustedNow = vscode.workspace.isTrusted;
-        if (trustedNow) {
-            updateWorkspaceTrustState(trustedNow);
-            return true;
-        }
+    if (trustedNow !== workspaceTrusted) {
+        updateWorkspaceTrustState(trustedNow);
     }
-
-    return false;
+    return trustedNow;
 }
 
 async function promptForWorkspaceTrustOnActivation(
@@ -1012,21 +960,11 @@ async function promptForWorkspaceTrustOnActivation(
     await context.globalState.update(storageKey, true);
     try {
         const granted = await requestWorkspaceTrust(
-            "allow VT Code to process prompts with human-in-the-loop safeguards"
+            "VT Code requires workspace trust to process prompts. Open workspace trust settings?",
+            "information"
         );
-        if (!granted && !workspaceTrusted) {
-            const selection = await vscode.window.showInformationMessage(
-                "VT Code requires workspace trust to process prompts. Open workspace trust settings?",
-                "Manage Workspace Trust"
-            );
-            if (selection === "Manage Workspace Trust") {
-                await vscode.commands.executeCommand(
-                    "workbench.action.manageTrust"
-                );
-                if (vscode.workspace.isTrusted) {
-                    updateWorkspaceTrustState(true);
-                }
-            }
+        if (granted && !workspaceTrusted) {
+            updateWorkspaceTrustState(true);
         }
     } catch (error) {
         const channel = getOutputChannel();
