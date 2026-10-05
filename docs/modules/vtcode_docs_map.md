@@ -305,6 +305,10 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about Tool Summary Display?", "How does Exec-session calls (`write_stdin`
     and the session readers) work?", "How does Model-visible tool output budget work?"
 
+- **File**: `docs/development/tool-execution-pipeline.md`
+  - **Content**: Tool execution pipeline ownership
+  - **User Questions**: "What can you tell me about Tool execution pipeline ownership?"
+
 - **File**: `docs/development/tool-reentrancy.md`
   - **Content**: Tool reentrancy guard
   - **User Questions**: "What can you tell me about Tool reentrancy guard?"

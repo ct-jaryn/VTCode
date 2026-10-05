@@ -492,3 +492,33 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   lint) and scoped Markdown lint passed. Tests ran separately through nextest.
 - Next increment: extract contiguous execution stages while retaining one
   authoritative admission and settlement path.
+
+### Step 6b: structured-request attempt lifecycle
+
+- Moved request safety admission, denial decoration, retry scheduling, and
+  outcome construction into private registry `execution_attempts.rs`. The
+  execution facade is now 1,576 lines, down from 1,835 after step 6a.
+- Public request wrappers retain their signatures and snapshot construction.
+  The prepared wrapper still requires fresh safety admission. Harness dispatch
+  stays in the facade with sibling-only visibility; its routing authority,
+  prevalidation, settlement mode, snapshots, timeout annotations, and handler
+  history remain unchanged. No new execution path or dependency was introduced.
+- Captured all five moved functions with ast-grep and compared their token
+  streams against the originals, preserving literals and comments. Retained
+  facade logic also matches after extraction-only visibility/import/format
+  normalization.
+- Added seven tests for first-attempt output, transient recovery, exact retry
+  exhaustion, dispatch failure, denial category/retry hints, safety rejection
+  before handler execution, and approval-required shell requests even under
+  prevalidated flags. All 489 selected registry tests passed; 3,577 unrelated
+  tests were excluded. Existing timeout, policy, and reentrancy regressions pass.
+- Updated core module guidance and added the execution-pipeline ownership guide.
+- Repository fast gate, final locked warnings-denied Clippy for the standard
+  default members, final formatting, and scoped Markdown lint passed.
+  The seven focused tests passed again after changing denial fixtures to named
+  cases. Standalone core-only all-target/all-feature warnings-denied Clippy
+  reports 15 `large_futures` findings in `compaction/tests.rs`; the identical
+  command reproduces all 15 at baseline `db9071fe9` with matching local Cargo
+  settings. These pre-existing findings are outside this extraction's scope.
+- Next increment: assess the remaining execution preparation and routing stages
+  against existing kernel/stage helpers before extracting another coherent block.
