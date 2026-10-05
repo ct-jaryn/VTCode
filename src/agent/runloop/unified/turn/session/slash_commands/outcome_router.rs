@@ -22,7 +22,6 @@ pub(super) async fn route_outcome(
         | SlashCommandOutcome::StartModelSelection
         | SlashCommandOutcome::StartModePalette
         | SlashCommandOutcome::SelectPrimaryAgent { .. }
-        | SlashCommandOutcome::ToggleIdeContext
         | SlashCommandOutcome::ToggleVimMode { .. }
         | SlashCommandOutcome::InitializeWorkspace { .. }
         | SlashCommandOutcome::ShowSettings
@@ -100,7 +99,6 @@ async fn route_ui_and_settings_outcome(
         SlashCommandOutcome::SelectPrimaryAgent { name } => {
             handlers::handle_select_primary_agent_from_slash(ctx, &name).await
         }
-        SlashCommandOutcome::ToggleIdeContext => handlers::handle_toggle_ide_context(ctx).await,
         SlashCommandOutcome::ToggleVimMode { enable } => handlers::handle_toggle_vim_mode(ctx, enable).await,
         SlashCommandOutcome::InitializeWorkspace { force } => handlers::handle_initialize_workspace(ctx, force).await,
         SlashCommandOutcome::ShowSettings => handlers::handle_show_settings(ctx).await,

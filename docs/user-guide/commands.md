@@ -243,20 +243,6 @@ Configuration resets preserve lower-precedence values and secure credentials. In
 changes from watched layers; malformed edits retain the last valid snapshot and show a warning. See the
 [configuration guide](../config/config.md) for layer precedence and live-reload details.
 
-### `/ide` (editor context)
-
-Use the `/ide` slash command to toggle IDE context for the current session from within a VT Code chat session. An
-editor bridge can write `.vtcode/ide-context.json` and `.vtcode/ide-context.md` snapshots that `/ide`
-picks up to keep the Agent Loop timeline and workspace context in sync.
-
-Configure the behaviour under **Settings › Extensions › VT Code**:
-
-- `vtcode.terminal.autoRunChat` — Automatically run `vtcode chat` when the managed terminal opens.
-- `vtcode.terminal.allowMultipleInstances` — Opt-in to creating new terminal sessions instead of reusing the shared VT
-  Code terminal.
-- `vtcode.agentTimeline.refreshDebounceMs` — Control how quickly the Agent Loop timeline reacts to incoming terminal
-  output.
-
 ### Slash-command notes
 
 - Slash commands are skill-backed. Each command routes through a namespaced command skill such as `cmd-status` or

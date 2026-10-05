@@ -921,8 +921,6 @@ async fn test_configuration_awareness_stays_behavior_focused() {
     config.security.human_in_the_loop = true;
     config.chat.ask_questions.enabled = false;
     config.mcp.enabled = true;
-    config.ide_context.enabled = true;
-    config.ide_context.inject_into_prompt = true;
 
     let result = compose_system_instruction_text(&PathBuf::from("."), Some(&config), None).await;
 

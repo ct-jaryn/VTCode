@@ -310,7 +310,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         }
 
         let mut header_context = ui_setup.header_context;
-        let mut ide_context_bridge = ui_setup.ide_context_bridge;
         let ctrl_c_state = ui_setup.ctrl_c_state;
         let ctrl_c_notify = ui_setup.ctrl_c_notify;
         let input_activity_counter = ui_setup.input_activity_counter;
@@ -801,7 +800,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                             session: &mut session,
                             handle: &handle,
                             header_context: &mut header_context,
-                            ide_context_bridge: &mut ide_context_bridge,
                             ctrl_c_state: &ctrl_c_state,
                             ctrl_c_notify: &ctrl_c_notify,
                             input_activity_counter: &input_activity_counter,

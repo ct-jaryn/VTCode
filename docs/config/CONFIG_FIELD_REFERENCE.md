@@ -407,14 +407,6 @@ python3 scripts/generate_config_field_reference.py
 | `hooks.lifecycle.user_prompt_submit[].hooks[].timeout_seconds` | `integer \| null` | no | `null` | Optional execution timeout in seconds |
 | `hooks.lifecycle.user_prompt_submit[].hooks[].type` | `string` | no | `"command"` | Type of hook command (currently only 'command' is supported) |
 | `hooks.lifecycle.user_prompt_submit[].matcher` | `null \| string` | no | `null` | Optional regex matcher to filter when this group runs. Matched against context strings (e.g. tool name, project path). |
-| `ide_context.enabled` | `boolean` | no | `true` | - |
-| `ide_context.include_selection_text` | `boolean` | no | `true` | - |
-| `ide_context.inject_into_prompt` | `boolean` | no | `true` | Inject active editor context into request-time model input. |
-| `ide_context.provider_mode` | `string` | no | `"auto"` | - |
-| `ide_context.providers.generic.enabled` | `boolean` | no | `true` | - |
-| `ide_context.providers.vscode_compatible.enabled` | `boolean` | no | `true` | - |
-| `ide_context.providers.zed.enabled` | `boolean` | no | `true` | - |
-| `ide_context.show_in_tui` | `boolean` | no | `true` | - |
 | `mcp.allowlist.default.configuration` | `null \| object` | no | `null` | Configuration keys permitted for the provider grouped by category |
 | `mcp.allowlist.default.logging` | `array \| null` | no | `null` | Logging channels permitted for the provider |
 | `mcp.allowlist.default.logging[]` | `string` | no | `-` | - |

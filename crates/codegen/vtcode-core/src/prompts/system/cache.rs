@@ -133,6 +133,5 @@ pub(super) fn prompt_context_digest(prompt_context: Option<&PromptContext>) -> u
         preferences,
         context.capability_level.map(|level| format!("{level:?}")),
         context.current_directory.as_ref(),
-        context.editor_context.as_ref(),
     ))
 }

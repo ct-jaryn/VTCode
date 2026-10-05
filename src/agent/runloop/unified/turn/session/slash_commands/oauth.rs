@@ -637,7 +637,6 @@ mod tests {
 
     use crate::agent::runloop::model_picker::ModelPickerState;
     use crate::agent::runloop::unified::palettes::ActivePalette;
-    use crate::agent::runloop::unified::session_setup::IdeContextBridge;
     use crate::agent::runloop::unified::state::CtrlCSignal;
     use crate::agent::runloop::unified::turn::turn_processing::test_support::TestTurnProcessingBacking;
     use crate::agent::runloop::unified::workspace_links::LinkedDirectory;
@@ -651,7 +650,6 @@ mod tests {
         assert!(matches!(turn.ctrl_c_state.register_signal(), CtrlCSignal::Cancel));
 
         let header_context = Box::leak(Box::new(InlineHeaderContext::default()));
-        let ide_context_bridge = Box::leak(Box::new(None::<IdeContextBridge>));
         let model_picker_state = Box::leak(Box::new(None::<ModelPickerState>));
         let palette_state = Box::leak(Box::new(None::<ActivePalette>));
         let conversation_history = Box::leak(Box::new(Vec::<uni::Message>::new()));
@@ -682,7 +680,6 @@ mod tests {
             handle: turn.handle,
             session: turn.session,
             header_context,
-            ide_context_bridge,
             config: turn.config,
             vt_cfg,
             provider_client: turn.provider_client,

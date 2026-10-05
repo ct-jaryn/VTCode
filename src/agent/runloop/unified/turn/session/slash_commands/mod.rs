@@ -22,7 +22,6 @@ use crate::agent::runloop::unified::context_manager::ContextManager;
 use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
 use crate::agent::runloop::unified::palettes::ActivePalette;
 use crate::agent::runloop::unified::planning_workflow_state::PlanningWorkflowSessionState;
-use crate::agent::runloop::unified::session_setup::IdeContextBridge;
 use crate::agent::runloop::unified::state::{CtrlCState, SessionStats};
 use crate::agent::runloop::unified::status_line::InputStatusState;
 use crate::agent::runloop::unified::tool_catalog::ToolCatalogState;
@@ -53,7 +52,6 @@ pub(crate) struct SlashCommandContext<'a> {
     pub(crate) handle: &'a InlineHandle,
     pub(crate) session: &'a mut InlineSession,
     pub(crate) header_context: &'a mut InlineHeaderContext,
-    pub(crate) ide_context_bridge: &'a mut Option<IdeContextBridge>,
     pub(crate) config: &'a mut CoreAgentConfig,
     pub(crate) vt_cfg: &'a mut Option<VTCodeConfig>,
     pub(crate) provider_client: &'a mut Box<dyn uni::LLMProvider>,
@@ -94,7 +92,6 @@ impl<'a> SlashCommandContext<'a> {
             handle: self.handle,
             session: self.session,
             header_context: self.header_context,
-            ide_context_bridge: self.ide_context_bridge,
             config: self.config,
             vt_cfg: self.vt_cfg,
             provider_client: self.provider_client,

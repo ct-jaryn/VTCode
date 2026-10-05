@@ -14,7 +14,6 @@ use crate::core::{
 };
 use crate::debug::DebugConfig;
 use crate::hooks::HooksConfig;
-use crate::ide_context::IdeContextConfig;
 use crate::mcp::McpClientConfig;
 use crate::models::{MiMoAuthMethod, Provider};
 use crate::optimization::OptimizationConfig;
@@ -226,10 +225,6 @@ pub struct VTCodeConfig {
     #[serde(default)]
     pub acp: AgentClientProtocolConfig,
 
-    /// IDE context configuration
-    #[serde(default)]
-    pub ide_context: IdeContextConfig,
-
     /// Lifecycle hooks configuration
     #[serde(default)]
     pub hooks: HooksConfig,
@@ -313,7 +308,6 @@ impl Default for VTCodeConfig {
             mcp: McpClientConfig::default(),
             webmcp: WebmcpConfig::default(),
             acp: AgentClientProtocolConfig::default(),
-            ide_context: IdeContextConfig::default(),
             hooks: HooksConfig::default(),
             model: ModelConfig::default(),
             provider: ProviderConfig::default(),

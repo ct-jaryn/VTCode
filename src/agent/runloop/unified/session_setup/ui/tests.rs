@@ -131,7 +131,7 @@ fn structured_resume_lines_fallback_to_reasoning_details() {
 #[test]
 fn structured_resume_lines_omit_persisted_request_context() {
     let few_shot = format!("{}\n### patch-edit\nexample body", vtcode_core::prompts::FEW_SHOT_SECTION_HEADER);
-    let editor = format!("{}\n- Active file: src/parser.rs", vtcode_core::EDITOR_CONTEXT_PROMPT_HEADER);
+    let editor = "## Active Editor Context\n- Active file: src/parser.rs".to_string();
     let history = vec![
         uni::Message::system(editor),
         uni::Message::user("edit the parser".to_string()),

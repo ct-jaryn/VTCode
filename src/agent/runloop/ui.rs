@@ -351,7 +351,6 @@ pub(crate) async fn build_inline_header_context(
         search_tools,
         persistent_memory,
         pr_review: None,
-        editor_context: None,
         git: chain_entries.get(1).cloned().unwrap_or_default(),
         reasoning,
         workspace_trust: trust_value,

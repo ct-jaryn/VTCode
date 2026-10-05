@@ -1223,43 +1223,6 @@ validate_keys = true
 timeout = 30  # seconds
 ```
 
-## Editor context bridge
-
-### ide_context
-
-VT Code can ingest active-editor context from supported IDE families through a shared file bridge:
-
-```toml
-[ide_context]
-enabled = true
-inject_into_prompt = true
-show_in_tui = true
-include_selection_text = true
-provider_mode = "auto"
-
-[ide_context.providers.vscode_compatible]
-enabled = true
-
-[ide_context.providers.zed]
-enabled = true
-
-[ide_context.providers.generic]
-enabled = true
-```
-
-- `inject_into_prompt` injects a compact `Active Editor Context` block into model input, outside the static system
-  prompt. The block is attached to a user turn (just before the user message) only when the snapshot differs from the
-  one last sent, so earlier requests are never rewritten; changes made while the agent is mid-turn apply from the next
-  user turn.
-- `show_in_tui` mirrors the same active editor summary in the inline header.
-- `include_selection_text` only sends text when there is an explicit selection.
-- `provider_mode` can force one family: `auto`, `vscode_compatible`, `zed`, or `generic`.
-- `generic` is the stable bridge for JetBrains and other external adapters that write a canonical JSON snapshot and set
-  `VT_IDE_CONTEXT_FILE`.
-
-For the generic file contract and example payload, see
-[`docs/ide/editor-context-bridge.md`](../ide/editor-context-bridge.md).
-
 ## CLI Configuration
 
 ### CLI Commands for Configuration

@@ -476,7 +476,7 @@ pub(crate) fn resolve_settings_view_path(path: &str) -> String {
 /// Human-readable label for a settings path, used in change feedback messages.
 ///
 /// For generic boolean leaf names (`enabled`, `show`, ...) the parent section is
-/// used instead so feedback reads naturally (e.g. "Disabled IDE Context" rather
+/// used instead so feedback reads naturally (e.g. "Disabled Todo Planning Mode" rather
 /// than "Disabled Enabled").
 fn change_title(path: &str) -> String {
     let last_segment = path
@@ -1424,27 +1424,6 @@ mod tests {
     }
 
     #[test]
-    fn ide_context_view_includes_provider_section_navigation() {
-        let state = SettingsPaletteState {
-            workspace: PathBuf::from("."),
-            source_path: PathBuf::from("vtcode.toml"),
-            source_label: None,
-            draft: VTCodeConfig::default(),
-            view_path: Some("ide_context.providers".to_string()),
-            last_selection: None,
-            selection_by_view: BTreeMap::new(),
-            pending_edit_path: None,
-            status: None,
-        };
-        let draft = TomlValue::try_from(VTCodeConfig::default()).expect("default config should serialize");
-
-        let items = build_settings_items(&state, &draft).expect("settings items");
-        assert!(items.iter().any(|item| item.title == "VS Code Family"));
-        assert!(items.iter().any(|item| item.title == "Zed Family"));
-        assert!(items.iter().any(|item| item.title == "Generic Bridge"));
-    }
-
-    #[test]
     fn tools_view_routes_external_editor_to_configure_action() {
         let state = SettingsPaletteState {
             workspace: PathBuf::from("."),
@@ -1491,30 +1470,6 @@ mod tests {
             default_model.selection,
             Some(InlineListSelection::ConfigAction(ACTION_PICK_MAIN_MODEL.to_string()))
         );
-    }
-
-    #[test]
-    fn ide_context_toggle_action_persists_to_disk() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let source_path = temp.path().join("vtcode.toml");
-        let mut state = SettingsPaletteState {
-            workspace: temp.path().to_path_buf(),
-            source_path: source_path.clone(),
-            source_label: None,
-            draft: VTCodeConfig::default(),
-            view_path: Some("ide_context".to_string()),
-            last_selection: None,
-            selection_by_view: BTreeMap::new(),
-            pending_edit_path: None,
-            status: None,
-        };
-
-        apply_settings_action(&mut state, "settings:set:ide_context.enabled:toggle").expect("toggle ide context");
-
-        assert!(!state.draft.ide_context.enabled);
-        let persisted = std::fs::read_to_string(&source_path).expect("persisted config");
-        assert!(persisted.contains("[ide_context]"));
-        assert!(persisted.contains("enabled = false"));
     }
 
     #[test]
@@ -1645,19 +1600,19 @@ api_key_env = "TRUSTED_API_KEY"
             source_path: source_path.clone(),
             source_label: None,
             draft: VTCodeConfig::default(),
-            view_path: Some("ide_context".to_string()),
+            view_path: None,
             last_selection: None,
             selection_by_view: BTreeMap::new(),
             pending_edit_path: None,
             status: None,
         };
 
-        let outcome =
-            apply_settings_action(&mut state, "settings:set:ide_context.enabled:toggle").expect("toggle ide context");
+        let outcome = apply_settings_action(&mut state, "settings:set:agent.todo_planning_mode:toggle")
+            .expect("toggle planning mode");
 
-        assert_eq!(outcome.message.as_deref(), Some("Disabled Ide Context"));
+        assert_eq!(outcome.message.as_deref(), Some("Disabled Todo Planning Mode"));
         assert!(outcome.saved);
-        assert!(!state.draft.ide_context.enabled);
+        assert!(!state.draft.agent.todo_planning_mode);
     }
 
     #[test]

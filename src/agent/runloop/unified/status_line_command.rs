@@ -10,7 +10,6 @@ use vtcode_core::tools::dominant_workspace_language;
 use vtcode_core::utils::ansi_parser::strip_ansi;
 
 use crate::agent::runloop::git::GitStatusSummary;
-use crate::agent::runloop::unified::session_setup::preferred_display_language_for_workspace;
 
 #[allow(
     clippy::too_many_arguments,
@@ -139,7 +138,7 @@ impl StatusLineCommandPayload {
                 current_dir: workspace_path.clone(),
                 project_dir: workspace_path,
                 dominant_language: dominant_workspace_language(workspace),
-                active_language: preferred_display_language_for_workspace(workspace),
+                active_language: dominant_workspace_language(workspace),
             },
             model: StatusLineModel {
                 id: model_id.to_string(),
@@ -194,8 +193,6 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
-    use vtcode_commons::env_lock::{remove_var as remove_env_var, set_var as set_env_var};
-    use vtcode_core::ide_context::{IDE_CONTEXT_ENV_VAR, LEGACY_VSCODE_CONTEXT_ENV_VAR};
 
     #[test]
     #[serial]
@@ -204,88 +201,10 @@ mod tests {
         fs::create_dir_all(workspace.path().join("src")).expect("create src");
         fs::write(workspace.path().join("src/lib.rs"), "fn alpha() {}\n").expect("write rust");
 
-        remove_env_var(IDE_CONTEXT_ENV_VAR);
-        remove_env_var(LEGACY_VSCODE_CONTEXT_ENV_VAR);
-
         let payload = StatusLineCommandPayload::new(workspace.path(), "model", "Model", "low", None);
         let value = serde_json::to_value(payload).expect("serialize payload");
 
         assert_eq!(value["workspace"]["dominant_language"], Value::String("Rust".to_string()));
         assert_eq!(value["workspace"]["active_language"], Value::String("Rust".to_string()));
-
-        remove_env_var(IDE_CONTEXT_ENV_VAR);
-        remove_env_var(LEGACY_VSCODE_CONTEXT_ENV_VAR);
-    }
-
-    #[test]
-    #[serial]
-    fn payload_prefers_active_editor_language_from_snapshot() {
-        let workspace = TempDir::new().expect("workspace tempdir");
-        fs::create_dir_all(workspace.path().join("src")).expect("create src");
-        fs::write(workspace.path().join("src/lib.rs"), "fn alpha() {}\n").expect("write rust");
-        let snapshot_path = workspace.path().join("snapshot.json");
-        fs::write(
-            &snapshot_path,
-            format!(
-                r#"{{
-                    "version": 1,
-                    "provider_family": "generic",
-                    "workspace_root": "{}",
-                    "active_file": {{
-                        "path": "{}/script.py",
-                        "language_id": "python",
-                        "dirty": false,
-                        "truncated": false
-                    }}
-                }}"#,
-                workspace.path().display(),
-                workspace.path().display()
-            ),
-        )
-        .expect("write snapshot");
-
-        set_env_var(IDE_CONTEXT_ENV_VAR, &snapshot_path);
-
-        let payload = StatusLineCommandPayload::new(workspace.path(), "model", "Model", "low", None);
-        let value = serde_json::to_value(payload).expect("serialize payload");
-
-        assert_eq!(value["workspace"]["active_language"], Value::String("Python".to_string()));
-
-        remove_env_var(IDE_CONTEXT_ENV_VAR);
-    }
-
-    #[test]
-    #[serial]
-    fn payload_prefers_workspace_ide_context_snapshot_without_env() {
-        let workspace = TempDir::new().expect("workspace tempdir");
-        fs::create_dir_all(workspace.path().join("src")).expect("create src");
-        fs::create_dir_all(workspace.path().join(".vtcode")).expect("create .vtcode");
-        fs::write(workspace.path().join("src/lib.rs"), "fn alpha() {}\n").expect("write rust");
-        fs::write(
-            workspace.path().join(".vtcode/ide-context.json"),
-            format!(
-                r#"{{
-                    "version": 1,
-                    "provider_family": "vscode_compatible",
-                    "workspace_root": "{}",
-                    "active_file": {{
-                        "path": "{}/script.py",
-                        "language_id": "python",
-                        "dirty": false,
-                        "truncated": false
-                    }}
-                }}"#,
-                workspace.path().display(),
-                workspace.path().display()
-            ),
-        )
-        .expect("write snapshot");
-
-        remove_env_var(IDE_CONTEXT_ENV_VAR);
-
-        let payload = StatusLineCommandPayload::new(workspace.path(), "model", "Model", "low", None);
-        let value = serde_json::to_value(payload).expect("serialize payload");
-
-        assert_eq!(value["workspace"]["active_language"], Value::String("Python".to_string()));
     }
 }

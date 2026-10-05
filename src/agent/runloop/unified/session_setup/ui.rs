@@ -20,7 +20,6 @@ use super::types::{BackgroundTaskGuard, SessionState, SessionUISetup};
 use crate::agent::runloop::ResumeSession;
 use crate::agent::runloop::unified::context_manager;
 use crate::agent::runloop::unified::reasoning::{model_supports_reasoning, resolve_reasoning_visibility};
-use crate::agent::runloop::unified::session_setup::ide_context::IdeContextBridge;
 use crate::agent::runloop::unified::session_setup::spawn_editor_open_coordinator;
 use crate::agent::runloop::unified::turn::utils::{append_additional_context, render_hook_messages};
 use anyhow::Result;
@@ -45,7 +44,6 @@ use vtcode_core::utils::session_archive::SessionArchive;
 use vtcode_core::utils::transcript;
 use vtcode_ui::tui::app::{AgentPaletteItem, InlineHandle, SlashCommandItem};
 
-pub(crate) use self::header_context::apply_ide_context_snapshot;
 use self::header_context::{HeaderContextInit, initialize_header_context, maybe_render_system_prompt_budget_warning};
 pub(crate) use self::local_agents::refresh_local_agents;
 use self::resume_render::render_resume_state_if_present;
@@ -250,7 +248,6 @@ pub(crate) async fn initialize_session_ui(
     let highlight_config = vt_cfg.as_ref().map(|cfg| cfg.syntax_highlighting.clone()).unwrap_or_default();
 
     transcript::set_inline_handle(Arc::new(handle.clone()));
-    let mut ide_context_bridge = Some(IdeContextBridge::new(config.workspace.clone()));
     let mut renderer = AnsiRenderer::with_inline_ui(handle.clone(), highlight_config);
     let supports_reasoning = model_supports_reasoning(&*session_state.provider_client, &config.model);
     renderer.set_reasoning_visible(resolve_reasoning_visibility(vt_cfg, supports_reasoning));
@@ -409,8 +406,6 @@ pub(crate) async fn initialize_session_ui(
     let mut header_context = initialize_header_context(
         &mut renderer,
         &handle,
-        &mut context_manager,
-        &mut ide_context_bridge,
         HeaderContextInit {
             config,
             vt_cfg,
@@ -482,7 +477,6 @@ pub(crate) async fn initialize_session_ui(
         session,
         handle,
         header_context,
-        ide_context_bridge,
         ctrl_c_state,
         ctrl_c_notify,
         input_activity_counter,

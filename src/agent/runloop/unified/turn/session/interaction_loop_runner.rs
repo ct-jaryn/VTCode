@@ -32,10 +32,10 @@ use status_refresh::{StatusRefreshContext, StatusRefreshReason, StatusRefreshReq
 pub(crate) use support::handle_select_primary_agent;
 use support::{
     InlineLoopActionResolution, apply_live_theme_and_appearance, build_durable_scheduler_daemon,
-    build_user_message_content, extract_recent_follow_up_hint, fallback_args_preview,
-    refresh_ide_context_before_user_turn, replace_submitted_input_text, resolve_inline_loop_action, scheduler_enabled,
-    selected_model_supports_image_input, stalled_follow_up_recovery_prompt, stalled_verification_resume_directive,
-    submitted_images_are_unsupported, sync_mcp_approval_policy_for_context,
+    build_user_message_content, extract_recent_follow_up_hint, fallback_args_preview, replace_submitted_input_text,
+    resolve_inline_loop_action, scheduler_enabled, selected_model_supports_image_input,
+    stalled_follow_up_recovery_prompt, stalled_verification_resume_directive, submitted_images_are_unsupported,
+    sync_mcp_approval_policy_for_context,
 };
 use vtcode_config::loader::SimpleConfigWatcher;
 
@@ -652,7 +652,6 @@ pub(super) async fn run_interaction_loop_impl(
         let input = submitted_input.text.as_str();
 
         let refined_content = build_user_message_content(ctx, &submitted_input).await;
-        refresh_ide_context_before_user_turn(ctx);
 
         display_user_message(ctx.renderer, input)?;
 

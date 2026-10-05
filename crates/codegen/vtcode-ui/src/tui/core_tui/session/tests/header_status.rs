@@ -435,17 +435,6 @@ fn header_omits_auto_permission_badge() {
 }
 
 #[test]
-fn header_meta_line_excludes_editor_context() {
-    let mut session = fresh_session();
-    session.header_context.editor_context = Some("File: src/main.rs · Rust · Sel 120-148".to_string());
-
-    let line = session.header_meta_line();
-    let summary = line_text(&line);
-
-    assert!(!summary.contains("File: src/main.rs"));
-}
-
-#[test]
 fn header_title_line_shows_model_context_window() {
     let mut session = fresh_session();
     session.header_context.provider = format!("{}Anthropic", ui::HEADER_PROVIDER_PREFIX);

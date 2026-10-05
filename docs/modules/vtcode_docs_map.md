@@ -374,12 +374,6 @@ below based on the topic area.
 
 ### Editor Integrations
 
-- **File**: `docs/ide/editor-context-bridge.md`
-  - **Content**: Editor Context Bridge
-  - **Topics**: Contract, Canonical payload, Field notes, Integration checklist
-  - **User Questions**: "What can you tell me about Editor Context Bridge?", "How does Contract work?", "How does
-    Canonical payload work?"
-
 - **File**: `docs/ide/downloads.md`
   - **Content**: VT Code Downloads
   - **Topics**: What is VT Code?, Install the CLI, Support and Documentation

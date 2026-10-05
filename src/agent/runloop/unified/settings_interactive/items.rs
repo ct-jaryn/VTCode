@@ -96,8 +96,6 @@ static CURATED_GROUPS: &[CuratedSettingsGroup] = &[
             "mcp.enabled",
             "mcp.providers",
             "acp.enabled",
-            "ide_context.enabled",
-            "ide_context.show_in_tui",
         ],
     },
     CuratedSettingsGroup {

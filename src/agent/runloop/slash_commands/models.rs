@@ -131,7 +131,6 @@ pub(crate) enum SlashCommandOutcome {
     SelectPrimaryAgent {
         name: String,
     },
-    ToggleIdeContext,
     ToggleVimMode {
         enable: Option<bool>,
     },

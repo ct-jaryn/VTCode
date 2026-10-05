@@ -809,7 +809,7 @@ fn status_strip_uses_tone_and_sits_above_hint() {
         }],
         None,
     );
-    let status = InlineStatus::success("Enabled IDE context");
+    let status = InlineStatus::success("Enabled Todo Planning");
     let area = Rect::new(0, 0, 60, 6);
     let mut terminal = Terminal::new(TestBackend::new(60, 6)).expect("terminal");
     terminal
@@ -826,7 +826,7 @@ fn status_strip_uses_tone_and_sits_above_hint() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Enabled IDE context"), "status visible: {rendered}");
+    assert!(rendered.contains("Enabled Todo Planning"), "status visible: {rendered}");
     assert!(rendered.contains("•"), "status bullet: {rendered}");
 }
 

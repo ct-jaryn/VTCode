@@ -182,19 +182,6 @@ async fn subprocess_alias_matches_plural_command() {
 }
 
 #[tokio::test]
-async fn config_ide_returns_toggle_outcome() {
-    let workspace = std::env::current_dir().expect("workspace");
-    for command in ["config ide", "ide"] {
-        let mut renderer = renderer_for_tests();
-        let outcome = handle_slash_command(command, &mut renderer, &workspace)
-            .await
-            .unwrap_or_else(|error| panic!("{command} should parse: {error}"));
-
-        assert!(matches!(outcome, SlashCommandOutcome::ToggleIdeContext), "{command} must toggle IDE context");
-    }
-}
-
-#[tokio::test]
 async fn removed_effort_command_falls_through_to_prompt() {
     let workspace = std::env::current_dir().expect("workspace");
     let mut renderer = renderer_for_tests();
@@ -908,7 +895,6 @@ async fn slash_command_aliases_resolve_to_canonical_backends() {
         "models",
         "doctor",
         "permissions",
-        "ide",
         "tasks",
         "jobs",
         "log",
@@ -933,7 +919,6 @@ async fn config_consolidated_sections_match_hidden_aliases() {
 
     for (canonical, alias) in [
         ("config permissions", "permissions"),
-        ("config ide", "ide"),
         ("config tasks", "tasks"),
         ("config jobs", "jobs"),
         ("config log", "log"),
