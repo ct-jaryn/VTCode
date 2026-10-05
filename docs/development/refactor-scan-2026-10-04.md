@@ -522,3 +522,31 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   settings. These pre-existing findings are outside this extraction's scope.
 - Next increment: assess the remaining execution preparation and routing stages
   against existing kernel/stage helpers before extracting another coherent block.
+
+### Step 6c: shared execution preparation and base routing
+
+- Wired the facade to the existing canonical/display-name and base-route
+  helpers in `execution_stages.rs`, removing their duplicated implementations.
+  Added a private typed argument-preparation result for normalized handler
+  arguments, preview budget, and verification classification. The facade is
+  now 1,529 lines, down from 1,576 after step 6b.
+- Name resolution still precedes canonical hot-cache lookup. Normalization,
+  verification classification, and preview-budget resolution still precede
+  metadata stripping and facade preflight. Base route resolution stays after policy
+  constraints; awaited MCP discovery, errors, history, and PTY ownership remain
+  facade-owned. Metadata-aware handlers retain borrowed or owned normalized
+  payloads without an extra clone. Public APIs and dependencies are unchanged.
+- Compared all four existing public stage-method token streams against their
+  originals. Retained facade tokens match after excluding only the three stage
+  call sites and the parser import change; literals and comments were preserved.
+- Replaced two tests that only constructed result structs with eight tests of
+  registered aliases, standard/PTY/canonical MCP routing, canonical cache keys,
+  handler payloads, borrowed/owned normalization, planning/verifier budgets,
+  malformed metadata rejection, and normalization without execution. All eight
+  focused tests passed, then all 499 selected registry/output-limit tests passed;
+  3,573 unrelated tests were excluded.
+- Updated core module guidance and the execution-pipeline ownership guide.
+- Repository fast gate, formatting, scoped Markdown lint, and staged diff
+  checks passed. Tests ran separately through locked nextest.
+- Next increment: review the remaining awaited MCP discovery and route-error
+  adaptation as a coherent stage, retaining its policy and history boundaries.

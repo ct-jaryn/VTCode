@@ -14,7 +14,7 @@ use crate::core::memory_pool::SizeRecommendation;
 use crate::mcp::McpToolExecutor;
 use crate::tool_policy::ToolExecutionDecision;
 use crate::tools::error_messages::agent_execution;
-use crate::tools::mcp::{legacy_mcp_tool_name, parse_canonical_mcp_tool_name};
+use crate::tools::mcp::legacy_mcp_tool_name;
 use crate::tools::request_response::{ToolCallRequest, ToolCallResponse};
 use crate::tools::tool_intent;
 use crate::tools::unified_error::UnifiedErrorKind;
@@ -370,23 +370,10 @@ impl ToolRegistry {
             }
         }
 
-        // Look up the canonical tool name by trying to resolve the alias
-        // The inventory's registration_for() handles alias resolution
-        let (tool_name, tool_name_owned, display_name) =
-            if let Some(registration) = self.inventory.registration_for(name) {
-                let canonical = registration.name().to_string();
-                let display = if canonical == name {
-                    canonical.clone()
-                } else {
-                    format!("{name} (alias for {canonical})")
-                };
-                (canonical.clone(), canonical.clone(), display)
-            } else {
-                // If not found in registration, use the name as-is (for potential MCP tools or error handling)
-                let tool_name_owned = name.to_string();
-                let display_name = tool_name_owned.clone();
-                (tool_name_owned.clone(), tool_name_owned, display_name)
-            };
+        let resolved_name = self.resolve_tool_name_with_display(name);
+        let tool_name = resolved_name.canonical;
+        let tool_name_owned = tool_name.clone();
+        let display_name = resolved_name.display;
 
         // PERFORMANCE OPTIMIZATION: Check hot cache for tool lookup using the canonical name.
         // This must happen AFTER alias resolution so that aliased tools resolve to their
@@ -409,31 +396,10 @@ impl ToolRegistry {
             self.hot_tool_cache.write().put(tool_name.clone(), tool_arc.clone());
         }
 
-        let parameter_schema = self
-            .inventory
-            .registration_for(&tool_name)
-            .and_then(|registration| registration.parameter_schema().cloned());
-        let normalized_args = execution_kernel::normalize_tool_args(&tool_name, args, parameter_schema.as_ref())?;
-        // Plan-mode inspections default to a smaller per-result preview so a
-        // research fan-out fits the turn budget; explicit non-verification
-        // values are clamped to the plan max while verification commands keep
-        // the full default (same predicate as the
-        // fast-reuse exemption below).
-        let is_verification_command = matches!(
-            tool_intent::classify_shell_activity(&tool_name, normalized_args.as_ref()),
-            tool_intent::ShellActivity::Verification
-        );
-        let max_output_tokens = crate::tools::output_limits::resolve_max_output_tokens(
-            normalized_args.as_ref(),
-            self.is_planning_active(),
-            is_verification_command,
-        )?;
-        let handler_args = if crate::tools::output_limits::handler_accepts_output_metadata(parameter_schema.as_ref()) {
-            Cow::Borrowed(normalized_args.as_ref())
-        } else {
-            Cow::Owned(crate::tools::output_limits::args_without_output_metadata(normalized_args.as_ref()))
-        };
-        let args = handler_args.as_ref();
+        let execution_args = self.prepare_execution_args(&tool_name, args)?;
+        let is_verification_command = execution_args.is_verification_command;
+        let max_output_tokens = execution_args.max_output_tokens;
+        let args = execution_args.handler_args.as_ref();
         let requested_name = name.to_string();
 
         // Clone args once at the start for error recording paths (clone only here)
@@ -946,27 +912,14 @@ impl ToolRegistry {
             }
         };
 
-        // First, check if we need a PTY session by checking if the tool exists and needs PTY
-        let mut needs_pty = false;
-        let mut tool_exists = false;
-        let mut is_mcp_tool = false;
-        let mut mcp_provider: Option<String> = None;
-        let mut mcp_tool_name: Option<String> = None;
+        let super::execution_stages::ToolRoute {
+            mut needs_pty,
+            mut tool_exists,
+            is_mcp: mut is_mcp_tool,
+            mut mcp_provider,
+            mut mcp_tool_name,
+        } = self.resolve_tool_route(&tool_name);
         let mut mcp_lookup_error: Option<anyhow::Error> = None;
-
-        // Check if it's a standard tool first
-        if let Some(registration) = self.inventory.registration_for(&tool_name) {
-            needs_pty = registration.uses_pty();
-            tool_exists = true;
-        }
-        // If not a standard tool, check if it's an MCP tool
-        if let Some((provider, remote_tool)) = parse_canonical_mcp_tool_name(&tool_name) {
-            needs_pty = true;
-            tool_exists = true;
-            is_mcp_tool = true;
-            mcp_provider = Some(provider.to_string());
-            mcp_tool_name = Some(remote_tool.to_string());
-        }
 
         let mcp_client_opt = self.mcp_client.read().clone();
         if !is_mcp_tool && let Some(mcp_client) = mcp_client_opt {
