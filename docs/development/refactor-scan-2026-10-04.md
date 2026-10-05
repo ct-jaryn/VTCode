@@ -599,3 +599,32 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
 - Updated core module guidance and the execution-pipeline ownership guide.
 - Next increment: review success-result processing and history invalidation for
   shared, focused boundaries before moving any broader settlement state.
+
+### Step 6f: completed-output preparation and read invalidation
+
+- Extracted output preparation and mutation-target invalidation into private
+  `execution_results.rs`. The facade is now 1,382 lines, down from 1,458 after
+  step 6e; the new production module is 118 lines.
+- Output preparation retains the object/scalar/array spool-inspection guard,
+  existing output processor, normalization, code-search response shape, and
+  structured-error interpretation. A private typed result carries normalized
+  output and error evidence together without a broad execution context object.
+- Mutation invalidation still runs only for calls classified as mutating, after
+  output preparation and before history recording. Targeted mutations retain
+  unrelated read records; pathless command mutations clear file reads only.
+  Structured failures returned inside successful handler futures retain the
+  same invalidation and failure-history behavior.
+- Breakers, latency/adaptive timeout accounting, middleware, history recording,
+  and execution/PTY lifetime remain facade-owned. APIs and dependencies are
+  unchanged.
+- Original helper tokens, moved output/invalidation tokens, and retained facade
+  tokens match after argument ownership and call-site/import adaptations.
+- Six focused regressions passed, covering success and structured error shapes,
+  code-search errors, nested-spool prevention with a real-spool control,
+  source/destination invalidation, pathless-command versus unrelated mutation,
+  and public structured-failure history. Updated core guidance and pipeline docs.
+- All 511 selected registry tests passed; 3,577 unrelated tests were excluded.
+  Final fast gate, scoped Markdown lint, and diff checks passed. New spool tests
+  exercise predicate/output storage behavior without launching shell commands.
+- Next increment: assess the remaining facade admission and settlement blocks
+  against the scan plan; avoid moving tightly coupled state just to reduce lines.
