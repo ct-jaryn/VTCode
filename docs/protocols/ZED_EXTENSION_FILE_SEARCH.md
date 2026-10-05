@@ -1,5 +1,8 @@
 # Zed Extension File Search Integration
 
+> Historical note: the Zed extension (`extensions/zed-extension/`) has been removed as part of the CLI-only focus.
+> This document is kept as a record of the Phase 3a design.
+
 ## Overview
 
 Phase 3a integrates the optimized file search system into the VT Code Zed extension, exposing file enumeration and

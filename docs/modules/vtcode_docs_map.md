@@ -376,9 +376,7 @@ below based on the topic area.
 
 - **File**: `docs/ide/cursor-windsurf-setup.md`
   - **Content**: Cursor and Windsurf Setup Guide
-  - **Topics**: Overview, Configuration, Features Available, Troubleshooting, Support
-  - **User Questions**: "What can you tell me about Cursor and Windsurf Setup Guide?", "How does Overview work?", "How
-    does Configuration work?"
+  - **User Questions**: "What can you tell me about Cursor and Windsurf Setup Guide?"
 
 - **File**: `docs/ide/editor-context-bridge.md`
   - **Content**: Editor Context Bridge
@@ -388,9 +386,9 @@ below based on the topic area.
 
 - **File**: `docs/ide/downloads.md`
   - **Content**: VT Code Downloads
-  - **Topics**: Available for Your IDE, What is VT Code?, Support and Documentation
-  - **User Questions**: "What can you tell me about VT Code Downloads?", "How does Available for Your IDE work?", "How
-    does What is VT Code? work?"
+  - **Topics**: What is VT Code?, Install the CLI, Support and Documentation
+  - **User Questions**: "What can you tell me about VT Code Downloads?", "How does What is VT Code? work?", "How does
+    Install the CLI work?"
 
 - **File**: `docs/ide/troubleshooting.md`
   - **Content**: VT Code Troubleshooting Guide

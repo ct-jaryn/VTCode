@@ -44,7 +44,6 @@ EXCLUDE_FILES = [
 EXCLUDE_DIRS = [
     "docs/mcp/archive",
     "docs/async",
-    "docs/vscode-extension-improve-docs",
     "docs/bugs",
     "docs/experimental",
     "docs/research", # Some research is ok but some might be too much, I'll keep it for now but let's see

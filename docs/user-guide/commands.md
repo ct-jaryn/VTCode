@@ -243,10 +243,10 @@ Configuration resets preserve lower-precedence values and secure credentials. In
 changes from watched layers; malformed edits retain the last valid snapshot and show a warning. See the
 [configuration guide](../config/config.md) for layer precedence and live-reload details.
 
-### `/ide` (VS Code integration)
+### `/ide` (editor context)
 
-Use the `/ide` slash command to toggle IDE context for the current session from within a VT Code chat session. When the
-VS Code extension is installed, it writes `.vtcode/ide-context.json` and `.vtcode/ide-context.md` snapshots that `/ide`
+Use the `/ide` slash command to toggle IDE context for the current session from within a VT Code chat session. An
+editor bridge can write `.vtcode/ide-context.json` and `.vtcode/ide-context.md` snapshots that `/ide`
 picks up to keep the Agent Loop timeline and workspace context in sync.
 
 Configure the behaviour under **Settings › Extensions › VT Code**:

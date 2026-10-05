@@ -1260,20 +1260,20 @@ enabled = true
 For the generic file contract and example payload, see
 [`docs/ide/editor-context-bridge.md`](../ide/editor-context-bridge.md).
 
-## VS Code Integration
+## CLI Configuration
 
-### VS Code Commands for Configuration
+### CLI Commands for Configuration
 
-VT Code VS Code extension provides several commands to help manage configuration:
+Manage configuration from the terminal:
 
-- `VT Code: Open Configuration` - Opens the workspace `vtcode.toml` file if it exists
-- `VT Code: Toggle Human-in-the-Loop` - Quickly toggle the human_in_the_loop setting
-- `VT Code: Configure MCP Providers` - Helper command to manage MCP provider settings
-- `VT Code: Open Tools Policy Configuration` - Opens the tools policy section of the config
+- Open the workspace `vtcode.toml` file directly to edit settings
+- Toggle the `human_in_the_loop` setting in `vtcode.toml`
+- Manage MCP provider settings under the MCP configuration section
+- Edit the tools policy section of the config directly
 
 ### Command System Integration
 
-The VT Code extension uses a command system that can be configured through the settings:
+VT Code uses a command system that can be configured through the settings:
 
 ```toml
 # Configure which commands are available
@@ -1290,10 +1290,10 @@ command_timeout = 300
 
 ### Workspace Trust
 
-VT Code follows VS Code's workspace trust model. Some features are only available in trusted workspaces:
+Some features are only available in trusted workspaces:
 
 ```toml
-# This setting is respected by VS Code when determining workspace trust
+# Workspace trust gates CLI automation
 [security]
 trusted_workspace_mode = true
 ```
@@ -1306,9 +1306,8 @@ In untrusted workspaces, VT Code limits CLI automation capabilities to protect y
 
 VT Code validates the configuration file on load. You can check for configuration errors by:
 
-1. Looking at the VT Code output channel in VS Code
-2. Using the `VT Code: Open Configuration` command which will highlight any parsing errors
-3. Running `vtcode check-config` from the command line if you have the CLI installed
+1. Running `vtcode check-config` from the command line
+2. Opening the workspace `vtcode.toml` directly to inspect parsing errors
 
 Common configuration errors include:
 

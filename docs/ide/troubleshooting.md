@@ -83,14 +83,12 @@ This guide covers common issues and solutions when using VT Code with your IDE.
 
 ## VS Code-Compatible Editors
 
-**Issue**: Using VT Code with Cursor, Windsurf, or other VS Code-compatible editors.
+**Issue**: Using VT Code with Cursor, Windsurf, or other editors.
 
-**Solution**: VT Code works with any VS Code-compatible editor through the Open VSX registry:
+**Solution**: VT Code is CLI-only. Run it from your terminal alongside your editor:
 
 1. Ensure the VT Code CLI is installed separately on your system
-2. Install the extension from the Open VSX registry or via VSIX file
-3. The extension behavior should be identical to VS Code
-4. Configuration settings may be located in different places depending on the editor
+2. No extension or VSIX install is required
 
 ## Need More Help?
 

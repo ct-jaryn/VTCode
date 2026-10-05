@@ -180,7 +180,6 @@ default-members = [
     "crates/codegen/vtcode-ui",
 ]
 exclude = [
-    "extensions/zed-extension",
     "fuzz",
 ]
 
