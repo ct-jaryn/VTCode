@@ -6,7 +6,7 @@ live under `agent/runloop/unified/turn/turn_processing/llm_request/`.
 | Owner | State and responsibility | Lifecycle boundary |
 | --- | --- | --- |
 | `copilot_runtime.rs`: `CopilotRuntimeHost` | Borrowed registry, UI/session state, permission caches, safety validator, hooks, harness budgets, and runtime request dispatch | The request renderer borrows the host; host drop aborts its remaining local terminal sessions |
-| Host local terminal sessions | Terminal tasks, output/exit snapshots, observed-tool association, and terminal release/kill/wait operations | Explicit release or host drop aborts remaining work; completion publishes terminal exit state |
+| `copilot_runtime/terminal.rs`: local terminal sessions | Private terminal state and tasks, output/exit snapshots, observed-tool association, and the host's terminal create/output/release/kill/wait methods | Explicit release or host drop aborts remaining work; completion publishes terminal exit state |
 | Host observed tool calls | Started/finished flags, previous output, and inline PTY presentation | Observed status updates control output deltas and final presentation |
 | `copilot_runtime/streaming.rs` | Prompt text/reasoning accumulation, finish-reason conversion, queued-update draining, and prompt cancellation guard | Polling installs the guard; dropping an active stream cancels the prompt; successful completion disarms it before emitting `Completed` |
 | `llm_request/mod.rs` | Starts the prompt session, retains the runtime request receiver, and runs the shared streaming renderer | Startup interruption/first-progress timeout and renderer success/error remain request-owned |
@@ -22,8 +22,17 @@ Reasoning normalization retains paragraph breaks, Unicode characters, closing
 punctuation, and the spacing rules between chunks. Join/provider errors retain
 the shared runtime error mapping.
 
+The terminal module owns the existing per-session monitor context, polling,
+bounded UTF-8 suffixes, exit notification, and inline terminal stream lifetime.
+Its named output/completion/setup records replace private tuples. Session state
+and task fields remain private; the host sees session handles and binding results.
+Terminal handlers still execute through registry harness APIs. Release removes
+the session, aborts its monitor, and closes its registry exec session; kill requests
+termination; host drop retains its existing monitor-abort loop. This refactor does
+not add an independent host or shutdown coordinator.
+
 Permission handling, exposed-tool allowlists, tool budgets, hook rewrites,
-sandbox-aware execution, verification guards, terminal state, and harness events
+sandbox-aware registry execution, verification guards, and harness-event emission
 remain in the host. Splitting these areas requires tracing their shared state
 and lifecycle exits first; do not create another runtime host or execution path.
 

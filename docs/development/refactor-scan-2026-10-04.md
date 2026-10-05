@@ -668,3 +668,33 @@ Steps 1 and 2 were committed together at the owner's request as `3f8fcb607`
   filter matched no binary and aborted before running tests.
 - Next increment: map local terminal task/association/exit helpers before
   extracting them; preserve host drop, release/kill/wait, and event ordering.
+
+### Step 7b: Copilot local terminal lifecycle
+
+- Mapped terminal create/output/release/kill/wait, monitor polling, session state,
+  observed-call binding, inline stream lifetime, and host-drop paths. Extracted
+  them into private `copilot_runtime/terminal.rs`; the host is now 1,474 lines,
+  down from 1,984 after step 7a. The terminal module is 568 production lines.
+- The host retains the session map, request dispatcher, observed-call event
+  emission, permission/budget/verification gates, and its original drop loop.
+  Session state/task fields stay private. Only parent-used handles, binding
+  fields, and methods are sibling-visible; no public API/dependency was added.
+- Kept registry harness launch/output/close/termination paths, literal argv/env
+  mapping, polling cadence, output-byte limits, release notification/task abort,
+  and incomplete-terminal presentation. Promoted output, completion, and stream
+  setup tuples to named private records without changing their contents/order.
+- Compared all six moved sections against the mechanical extraction with private
+  visibility changes; retained host tokens match after module/import wiring and
+  import ordering. Reviewed the three named-record adapters separately.
+- Seven focused tests passed: UTF-8 cap boundaries including zero/unbounded,
+  late binding after exit, association enrichment without identity replacement,
+  accumulated output/completion ordering, one-time completion, preexisting and
+  pending wait notification, release/abort monitor drop, exit-code range checks,
+  and literal metacharacters in argv. Existing host real-PTY coverage is retained.
+- All 96 selected binary runtime/inline-events tests passed; 3,434 unrelated
+  tests were excluded. Final fast gate, scoped Markdown lint, and diff checks
+  passed. The existing real-PTY test ran on this host; live Copilot CLI/provider
+  behavior and other host platforms remain outside this validation.
+- Updated the binary module guidance and runtime ownership guide.
+- Next increment: inspect observed-call presentation ownership and remaining
+  Copilot adapters before moving to session orchestration.
