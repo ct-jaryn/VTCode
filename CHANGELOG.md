@@ -2,6 +2,29 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.172.3 - 2026-10-06
+
+### Highlights
+#### Bug Fixes
+
+- Actionable task_tracker preflight errors (4e00350c) 
+- Gate tracker correction to shape errors (b17ed606) 
+#### Documentation
+
+- Refine wording and restructure (93a16af6) 
+- Trim badges and tidy contents (14685602) 
+- Refresh TODO, README badges, and tool policy (f394aa9d) 
+#### Features
+
+- Remove /ide command and IDE context pipeline (061a0f72) 
+### Other Changes
+#### Performance
+
+- Event-driven clock tick with on-demand animation ticks (8d378ee6) 
+- Remove measured runtime overhead (4f7011b5) 
+#### Refactors
+
+- Share task-tracker schema fragments (4146279a) 
 ## 0.172.2 - 2026-10-05
 
 ### Highlights
