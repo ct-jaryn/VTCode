@@ -1,5 +1,3 @@
-
-
 ===
 
 Plan for the cheap targeted timing test:
@@ -42,3 +40,49 @@ scan for large and monolith files and module and plan deduplication and refactor
 ===
 
 prioritized refactor plan (docs/development/refactor-scan-2026-10-04.md) and full Rust file inventory (docs/development/refactor-scan-2026-10-04.csv).
+
+===
+
+Investigate and fix the agent-loop/tooling regression shown in this session:
+
+`/Users/vinhnguyenxuan/Developer/learn-by-doing/vtcode/.vtcode/sessions/session-vtcode-20261006T035519Z_302954-43619`
+
+Observed failure:
+
+> Reads of README.md exhausted the per-file cap (6) this turn, and a verifier was run behind a filtering pipe so it did not clear the verification gate; retries then tripped the blocked-call fuse. Tools are disabled for this pass.
+
+The agent appears to stop before completing the task after:
+
+- hitting the per-file read cap,
+- failing to satisfy the verification gate because the verifier ran through a pipe/filter,
+- retrying until the blocked-call fuse disables tools.
+
+Also investigate this `apply_patch` failure:
+
+> Tool 'apply_patch' failed: Execution failed: Patch context mismatch in 'README.md': use complete current lines and preserve internal…
+
+Tasks:
+
+1. Reconstruct the failing agent/tool-call sequence from the session and identify the exact root causes.
+2. Check recent commits for regressions affecting the agent loop, read limits, verification gate, blocked-call fuse, `apply_patch`, retry/recovery logic, and tool routing.
+3. Fix the underlying behavior rather than only handling this specific session.
+4. Ensure reaching a per-file cap cannot leave the agent stuck when it already has enough context to continue.
+5. Ensure valid verification commands still satisfy the verification gate when output is piped or filtered, where safe.
+6. Improve recovery from `apply_patch` context mismatch. Refresh stale file context or retry with current complete lines instead of repeatedly failing with the same patch.
+7. Prevent repeated recoverable failures from unnecessarily tripping the blocked-call fuse.
+8. Preserve existing safety limits and avoid weakening protections just to make this session pass.
+
+Keep the fix surgical, KISS, and DRY. Follow existing VT Code conventions.
+
+Verify with focused tests that reproduce:
+
+- per-file read-cap exhaustion,
+- verifier commands with pipes/filters,
+- stale `apply_patch` context,
+- repeated recoverable tool failures,
+- successful continuation of the agent loop after recovery.
+
+Also run the relevant existing checks and inspect recent commits/diffs to identify which change introduced the regression.
+
+Report:
+`problem | evidence/session event or file:line | regression commit if found | fix | verification`
