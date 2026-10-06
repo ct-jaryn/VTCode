@@ -45,6 +45,9 @@ resumable sessions.
   - [Contributing](#contributing)
   - [Security](#security)
   - [Community](#community)
+    - [Resources](#resources)
+    - [Share VT Code](#share-vt-code)
+    - [Sponsorship](#sponsorship)
   - [License](#license)
 
 </details>
@@ -52,7 +55,7 @@ resumable sessions.
 ## Overview
 
 Explore a codebase, plan changes, run tools, and review edits in the interactive TUI, or run `vtcode exec` headless.
-You pick the model and permissions; the runtime handles context management, tools, and execution policy.
+Pick your model and set your permissions; the runtime handles context management, tools, and execution policy.
 
 | At a glance      | What you get                                                                          |
 | ---------------- | ------------------------------------------------------------------------------------- |
@@ -201,7 +204,7 @@ Enable these only when you need them; none are required for the quick start.
 | [Agent Skills](./docs/skills/SKILLS_GUIDE.md) | Load reusable prompt packages on demand. |
 | [Plugins](./docs/guides/agent-plugins.md) | Extend the agent with plugin manifests. |
 | [ACP with Zed](./docs/guides/zed-acp.md) | Drive VT Code from the Zed editor. |
-| [WebMCP](./docs/user-guide/webmcp.md) | Pair the TUI with an authenticated browser editor via `/webmcp pair <origin>`; the hosted app ([site](https://vtcode.vinhnx.chatgpt.site/), [mirror](https://vinhnx.github.io/VTCode/)) runs on this bridge. See the [deployment reference](./docs/reference/webmcp.md). |
+| [WebMCP](./docs/user-guide/webmcp.md) | Pair the TUI with an authenticated browser editor via `/webmcp pair <origin>`; the hosted app ([site](https://vtcode.vinhnx.chatgpt.site/), [mirror](https://vinhnx.github.io/VTCode/)) connects through this bridge. See the [deployment reference](./docs/reference/webmcp.md). |
 | [Memcode MCP](./docs/guides/memcode-mcp.md) | Carry context between tasks; see the [design write-up](https://memcode.in/blogs/vt-code-memory-across-threads). |
 
 ## Documentation
@@ -231,8 +234,8 @@ graph LR
     CORE --> UI[vtcode-ui]
 ```
 
-Full 23-crate map: [Architecture guide](./docs/ARCHITECTURE.md). Requires Rust 1.98.1+ (edition 2024) and
-`cargo-nextest` for tests:
+The full 23-crate map lives in the [architecture guide](./docs/ARCHITECTURE.md). Building requires Rust 1.98.1+
+(edition 2024); tests need `cargo-nextest`:
 
 ```bash
 git clone https://github.com/vinhnx/VTCode.git
@@ -268,8 +271,8 @@ issue. Details: [security policy](./docs/SECURITY.md).
 
 ## Community
 
-Thanks to everyone who builds, tests, and improves VT Code. Reach the maintainer directly at
-`vinhnguyen2308 [at] gmail [dot] com` for partnerships and collaboration; bugs and feature requests belong in
+Thanks to everyone who builds, tests, and improves VT Code. For partnerships and collaboration, reach the maintainer
+at `vinhnguyen2308 [at] gmail [dot] com`; bugs and feature requests belong in
 [GitHub Issues](https://github.com/vinhnx/VTCode/issues).
 
 <details open>
@@ -330,13 +333,13 @@ Want to see your avatar here? Every bit counts: one-line fixes, bug reports, and
 [Share feedback](https://github.com/vinhnx/VTCode/discussions) ·
 [Star the repo](https://github.com/vinhnx/VTCode/stargazers) · [Contribute](./docs/CONTRIBUTING.md)
 
-### Resources
+#### Resources
 
 - [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in): harness design,
   evals, security, and lessons learned.
 - [Podcast](https://www.youtube.com/watch?v=XLoswcd5rH0) · [Video](https://www.youtube.com/watch?v=PvL_kPjgU6o)
 
-### Share VT Code
+#### Share VT Code
 
 If VT Code helped you ship something, telling other developers is the easiest way to support it:
 
@@ -348,7 +351,7 @@ If VT Code helped you ship something, telling other developers is the easiest wa
 ·
 [Share via SMS](sms:?&body=Check%20out%20VT%20Code%2C%20an%20open-source%20coding%20agent%20for%20your%20terminal%3A%20https%3A%2F%2Fgithub.com%2Fvinhnx%2Fvtcode)
 
-### Sponsorship
+#### Sponsorship
 
 VT Code is maintained in spare time; a [sponsorship](https://github.com/sponsors/vinhnx) keeps it independent.
 
