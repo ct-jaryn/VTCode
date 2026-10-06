@@ -2,6 +2,21 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.172.4 - 2026-10-06
+
+### Highlights
+#### Bug Fixes
+
+- Push initial header context for provider/model summary (ebc51e3f) 
+- Dedup drafting plan indicator on mid-turn entry (33fd9b35) 
+- Preserve bounded tool recovery and verifier status (6b4886dd) 
+#### Documentation
+
+- Restructure README for clearer reading flow (b8574782) 
+### Other Changes
+#### Performance
+
+- Skip plan scans for ordinary Markdown (293b72d8) 
 ## 0.172.3 - 2026-10-06
 
 ### Highlights
