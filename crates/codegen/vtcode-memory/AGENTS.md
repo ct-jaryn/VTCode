@@ -15,7 +15,7 @@
 - `session.lock` is flock-held for the lifetime of a session's event-log handles (`event_log::acquire_liveness_lock`, best-effort: degrade to unlocked, never fail the open). `retention::session_dir_is_live` treats a held lock as a live session and skips marking/eviction; a missing or acquirable lock file means reclaimable. Never add another session-file deletion path that skips this check.
 - `query::search_memory` uses BM25 (`k1=1.2`, `b=0.75`) with deterministic chunk-id ties and only the documented mild timestamp recency multiplier; invalidate the manifest LRU when atomic manifests change.
 - `pack.rs` audit packs: SHA-256 manifests of the whole session dir; `audit-pack.json` excludes itself from walks, entry paths are traversal-validated (`SessionStoreError::InvalidPack`), and verification reports post-pack additions as informational `unaccounted`, not failures.
-- Cap eviction invokes its summary hook before replacing `events.jsonl`; a failed summary keeps the canonical events intact.
+- Cap eviction invokes its summary hook before replacing `events.jsonl`; a failed summary keeps the canonical events intact. Explanation actions distinguish cancelled tool outcomes from errors; cancelled verification still requires a completed exit-zero result.
 
 ## Dependencies
 

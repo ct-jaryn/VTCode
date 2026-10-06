@@ -2,6 +2,25 @@
 
 use super::*;
 
+impl HarnessTurnState {
+    /// Keep the runtime-owned budget cause, without the model-only synthesis
+    /// instructions. Never infer a budget failure from conversation text.
+    pub(crate) fn budget_recovery_reason(&self) -> Option<&str> {
+        budget_exhaustion_cause(self.recovery_prompt_reason()?)
+    }
+}
+
+pub(crate) fn budget_exhaustion_cause(reason: &str) -> Option<&str> {
+    [
+        "Tool loop budget exhausted",
+        "Tool-call budget exhausted for this turn",
+        "Tool wall-clock budget exhausted for this turn",
+    ]
+    .iter()
+    .any(|prefix| reason.starts_with(prefix))
+    .then(|| reason.split_once(". ").map_or(reason, |(cause, _)| cause))
+}
+
 /// Minimal probe for the exhaustion marker. Decoding only the single control
 /// flag avoids materializing the full tool payload (`Value` IR) on every
 /// response when all we need is one bool.

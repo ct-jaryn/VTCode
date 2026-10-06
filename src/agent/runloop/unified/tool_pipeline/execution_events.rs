@@ -111,9 +111,11 @@ pub(crate) fn emit_tool_completion_for_status(
     args: &Value,
     tool_status: &ToolExecutionStatus,
 ) {
-    let (status, exit_code, output_payload) = match tool_status {
+    let no_matches = matches!(tool_status, ToolExecutionStatus::Success { output, .. }
+        if crate::agent::runloop::unified::turn::tool_outcomes::is_grep_style_no_match(tool_name, args, output));
+    let (status, exit_code, mut output_payload) = match tool_status {
         ToolExecutionStatus::Success { output, command_success, .. } => (
-            if *command_success {
+            if *command_success || no_matches {
                 ToolCallStatus::Completed
             } else {
                 ToolCallStatus::Failed
@@ -135,6 +137,10 @@ pub(crate) fn emit_tool_completion_for_status(
             },
         ),
     };
+    if no_matches {
+        output_payload.aggregated_output =
+            format!("No matching results (exit code 1).\n{}", output_payload.aggregated_output);
+    }
     emit_tool_completion_status(
         harness_emitter,
         tool_started_emitted,
@@ -170,6 +176,73 @@ pub(crate) fn emit_tool_completion_for_status(
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    #[test]
+    fn canonical_search_completion_preserves_exit_codes_and_rejects_ambiguous_no_matches() {
+        use vtcode_core::exec::events::{ThreadEvent, ThreadItemDetails, VersionedThreadEvent};
+        for (args, output, expected) in [
+            (json!({"cmd":"grep absent sample.txt"}), json!({"exit_code":1}), ToolCallStatus::Completed),
+            (json!({"cmd":"rg absent sample.txt"}), json!({"exit_code":1,"stdout":""}), ToolCallStatus::Completed),
+            (
+                json!({"cmd":"grep --invalid sample.txt"}),
+                json!({"exit_code":2,"stderr":"invalid option"}),
+                ToolCallStatus::Failed,
+            ),
+            (
+                json!({"cmd":"grep absent sample.txt"}),
+                json!({"exit_code":1,"stderr":"read failed"}),
+                ToolCallStatus::Failed,
+            ),
+            (
+                json!({"cmd":"grep absent sample.txt"}),
+                json!({"exit_code":1,"output_truncated":true}),
+                ToolCallStatus::Failed,
+            ),
+            (json!({"cmd":"grep absent sample.txt; false"}), json!({"exit_code":1}), ToolCallStatus::Failed),
+            (json!({"cmd":"cargo check --locked"}), json!({"exit_code":1}), ToolCallStatus::Failed),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("events.jsonl");
+            let emitter = HarnessEventEmitter::new(path.clone()).unwrap();
+            let status = ToolExecutionStatus::Success {
+                output: output.clone(),
+                stdout: None,
+                modified_files: vec![],
+                command_success: false,
+            };
+            emit_tool_completion_for_status(Some(&emitter), true, true, "item", "call", "exec_command", &args, &status);
+            assert!(status.is_failure_like(), "presentation must not rewrite execution or safety accounting");
+            let records = std::fs::read_to_string(path).unwrap();
+            let mut invocations = 0;
+            let mut outputs = 0;
+            for line in records.lines() {
+                let event = serde_json::from_str::<VersionedThreadEvent>(line).unwrap().into_event();
+                if let ThreadEvent::ItemCompleted(item) = event {
+                    match item.item.details {
+                        ThreadItemDetails::ToolInvocation(invocation) => {
+                            assert_eq!(invocation.status, expected);
+                            assert_eq!(invocation.arguments, Some(args.clone()));
+                            invocations += 1;
+                        }
+                        ThreadItemDetails::ToolOutput(payload) => {
+                            assert_eq!(payload.status, expected);
+                            assert_eq!(payload.exit_code.map(i64::from), output["exit_code"].as_i64());
+                            assert_eq!(
+                                payload.output.contains("No matching results"),
+                                expected == ToolCallStatus::Completed
+                            );
+                            if let Some(stderr) = output.get("stderr").and_then(Value::as_str) {
+                                assert!(payload.output.contains(stderr));
+                            }
+                            outputs += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            assert_eq!((invocations, outputs), (1, 1));
+        }
+    }
 
     #[tokio::test]
     async fn verifier_poll_completion_updates_the_launch_through_canonical_output() {

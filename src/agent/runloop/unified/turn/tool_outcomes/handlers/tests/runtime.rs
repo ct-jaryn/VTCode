@@ -49,7 +49,7 @@ async fn assert_parallel_read_lifecycle(cancelled: bool) {
         ParallelReadCase {
             call_id: "parallel_no_match",
             args: json!({"cmd":"grep 'absent-pattern' sample.txt", "workdir":workspace}),
-            status: "failed",
+            status: "completed",
             exit_code: Some(1),
         },
     ];
@@ -1517,6 +1517,133 @@ async fn intermittent_path_cap_rejections_allow_progress_but_consecutive_retries
             assert_eq!(std::fs::read_to_string(sample).unwrap(), "hello\n");
         }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn concentrated_search_coaching_keeps_distinct_queries_available() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    let content = ('A'..='G').map(|letter| format!("unique_fact_{letter}\n")).collect::<String>();
+    std::fs::write(workspace.join("README.md"), content).unwrap();
+    let args = json!({"query":"unique_fact_A","path":"README.md","result_types":["text"]});
+    cache_tool_permission(&mut backing, tool_names::CODE_SEARCH, &args, PermissionGrant::Permanent).await;
+    let mut tracker = LoopTracker::new();
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for (index, letter) in ('A'..='G').enumerate() {
+        let id = format!("focused_{letter}");
+        let mut args = args.clone();
+        args["query"] = json!(format!("unique_fact_{letter}"));
+        let call = PreparedAssistantToolCall::new(uni::ToolCall::function(
+            id.clone(),
+            tool_names::CODE_SEARCH.to_string(),
+            serde_json::to_string(&args).unwrap(),
+        ));
+        assert!(handle_tool_calls(&mut outcome_ctx, &[call]).await.unwrap().is_none());
+        let history = &outcome_ctx.ctx.working_history;
+        let output = history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(&id))
+            .unwrap()
+            .content
+            .as_text();
+        let payload: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(payload["returned"], 1, "expected a distinct line for {letter}: {output}");
+        let notices = history
+            .iter()
+            .filter(|message| message.content.as_text().contains("Several searches have concentrated"))
+            .count();
+        assert_eq!(notices, usize::from(index >= 5));
+        assert_eq!(outcome_ctx.repeated_tool_attempts.low_signal_tool_calls, 0);
+        assert!(!outcome_ctx.ctx.is_recovery_active());
+    }
+    assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn redundant_sed_coaching_keeps_edits_and_verification_available() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    std::fs::write(&backing.sample_file, "alpha\nbeta\ngamma\n").unwrap();
+    std::fs::create_dir(workspace.join("scripts")).unwrap();
+    std::fs::write(workspace.join("scripts/check_markdown.py"), "print('verified')\n").unwrap();
+    let first = json!({"cmd":"sed -n '1,3p' sample.txt", "workdir":workspace});
+    let repeated = json!({"cmd":"sed -n '2p' sample.txt", "workdir":workspace});
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-beta\n+delta\n*** End Patch\n"});
+    let verifier = json!({"cmd":"python3 scripts/check_markdown.py", "workdir":workspace});
+    for (name, args) in [
+        (tool_names::EXEC_COMMAND, &first),
+        (tool_names::EXEC_COMMAND, &repeated),
+        (tool_names::APPLY_PATCH, &patch),
+        (tool_names::EXEC_COMMAND, &verifier),
+    ] {
+        cache_tool_permission(&mut backing, name, args, PermissionGrant::Permanent).await;
+    }
+    let mut tracker = LoopTracker::new();
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for (id, args) in [("first_read", first), ("retained_read", repeated.clone())] {
+        let call = PreparedAssistantToolCall::new(uni::ToolCall::function(
+            id.to_string(),
+            tool_names::EXEC_COMMAND.to_string(),
+            serde_json::to_string(&args).unwrap(),
+        ));
+        assert!(handle_tool_calls(&mut outcome_ctx, &[call]).await.unwrap().is_none());
+    }
+    let history = &outcome_ctx.ctx.working_history;
+    let evidence_index = history
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("retained_read"))
+        .unwrap();
+    let notice_index = history
+        .iter()
+        .position(|m| m.content.as_text().contains("This inspection returned only text evidence"))
+        .unwrap();
+    assert!(evidence_index < notice_index);
+    assert_eq!(outcome_ctx.repeated_tool_attempts.low_signal_tool_calls, 1);
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 0);
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "useful_edit", tool_names::APPLY_PATCH, patch)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "changed_read", tool_names::EXEC_COMMAND, repeated)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read_to_string(workspace.join("sample.txt")).unwrap(), "alpha\ndelta\ngamma\n");
+    assert_eq!(outcome_ctx.repeated_tool_attempts.low_signal_tool_calls, 1, "the changed read is productive");
+    outcome_ctx.repeated_tool_attempts.mark_verification_pending();
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "verify_continuation", tool_names::EXEC_COMMAND, verifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    assert!(!outcome_ctx.ctx.is_recovery_active());
 }
 
 #[cfg(unix)]

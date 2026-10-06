@@ -170,12 +170,13 @@ fn repeated_file_read_family_key(canonical_tool_name: &str, args: &Value) -> Opt
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ExecReadTarget {
-    path: String,
+pub(crate) struct ExecReadTarget {
+    pub(crate) path: String,
+    pub(crate) start_line: usize,
     slice_suffix: String,
 }
 
-fn parse_simple_exec_read_target(args: &Value) -> Option<ExecReadTarget> {
+pub(crate) fn parse_simple_exec_read_target(args: &Value) -> Option<ExecReadTarget> {
     let parts = vtcode_core::tools::command_args::command_words(args).ok()??;
     if parts.iter().any(|part| matches!(part.as_str(), "&&" | "|" | ";")) {
         return None;
@@ -207,6 +208,7 @@ fn parse_simple_sed_read_target(parts: &[String]) -> Option<ExecReadTarget> {
     let limit = end.saturating_sub(start).saturating_add(1);
     Some(ExecReadTarget {
         path: path.to_string(),
+        start_line: start,
         slice_suffix: format!("::off={start}::lim={limit}"),
     })
 }

@@ -290,6 +290,14 @@ pub(crate) fn update_repetition_tracker(
     let is_coarse_duplicate =
         coarse_repeat.is_some_and(|count| count >= 3) && matches!(&outcome.status, ToolExecutionStatus::Success { .. });
     let mut low_signal_family = low_signal_family;
+    if let Some(evidence) = navigation_evidence(outcome, canonical_name, args) {
+        if loop_tracker.record_navigation_evidence(&evidence.signatures) {
+            low_signal_family = Some("navigation::retained_evidence".to_string());
+        }
+        if let Some(path) = evidence.focused_search_path {
+            loop_tracker.record_focused_search(path);
+        }
+    }
     if low_signal_family.is_none() && is_coarse_duplicate {
         low_signal_family = coarse_family.clone();
     }
@@ -337,6 +345,7 @@ pub(crate) fn update_repetition_tracker(
                 loop_tracker.record_navigation_signal(is_low_signal_navigation);
             }
             ShellActivity::Verification => {
+                loop_tracker.clear_navigation_evidence();
                 if let ToolExecutionStatus::Success { output, .. } = &outcome.status
                     && output.get("exit_code").and_then(serde_json::Value::as_i64).is_none()
                     && let Some(session_id) = output.get("session_id").and_then(serde_json::Value::as_str)
@@ -437,6 +446,9 @@ pub(crate) fn update_repetition_tracker(
             }
         }
     } else if is_plan_artifact_write(canonical_name, args) || is_docs_only_write(canonical_name, args) {
+        if is_docs_only_write(canonical_name, args) && mutation_was_applied(outcome) {
+            loop_tracker.clear_navigation_evidence();
+        }
         // Plan artifact writes in dedicated plan storage and docs-only prose
         // writes are allowed while pending and should not trigger
         // anti-blind-editing verification pressure.

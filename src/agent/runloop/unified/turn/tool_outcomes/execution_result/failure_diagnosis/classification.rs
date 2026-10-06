@@ -104,7 +104,9 @@ pub(crate) fn deterministic_output_diagnosis(tool_name: &str, args: &Value, outp
         "Review the returned error and retry with corrected arguments."
     };
 
-    ToolFailureDiagnosis::new(observed, likely_cause, next_action)
+    let mut diagnosis = ToolFailureDiagnosis::new(observed, likely_cause, next_action);
+    diagnosis.no_matches = grep_no_match;
+    diagnosis
 }
 
 pub(crate) fn deterministic_error_diagnosis(error: &ToolExecutionError, failure_kind: &str) -> ToolFailureDiagnosis {

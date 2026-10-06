@@ -17,6 +17,7 @@ use crate::agent::runloop::unified::turn::guards::handle_turn_balancer;
 use crate::agent::runloop::unified::turn::tool_outcomes::{ToolOutcomeContext, handle_tool_calls, helpers};
 use crate::agent::runloop::unified::turn::turn_loop::{
     MAX_ASSISTANT_TEXT_RESPONSES_PER_TURN, PENDING_VERIFICATION_BLOCK_REASON, RECOVERY_CONTRACT_VIOLATION_REASON,
+    budget_recovery_final_response,
 };
 
 /// Result of processing a single turn.
@@ -727,6 +728,9 @@ pub(crate) async fn handle_turn_processing_result<'a>(
                 } else {
                     fallback_message
                 };
+                let final_fallback =
+                    budget_recovery_final_response(params.ctx.is_planning_active(), params.ctx.harness_state)
+                        .unwrap_or(final_fallback);
                 params.ctx.harness_state.mark_final_response_fallback();
                 params.ctx.handle_assistant_response(
                     final_fallback.clone(),

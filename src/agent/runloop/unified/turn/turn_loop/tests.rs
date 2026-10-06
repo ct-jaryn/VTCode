@@ -660,6 +660,98 @@ async fn empty_model_response_after_recovery_is_visible_and_blocked() {
     assert!(!final_text.is_empty(), "recovery must not leave an empty final response");
 }
 
+#[tokio::test]
+async fn exhausted_budget_survives_empty_recovery_and_final_publication() {
+    use crate::agent::runloop::unified::run_loop_context::{ToolBudgetExhaustion, ToolWallClockExhaustion};
+
+    for (directive, cause) in [
+        ("Tool loop budget exhausted before a final response (60/60). Tools are disabled for one bounded synthesis pass.".to_string(), "Tool loop budget exhausted before a final response (60/60)"),
+        (ToolBudgetExhaustion { used: 32, max: 32, remaining: 0 }.synthesis_directive_message(), "Tool-call budget exhausted for this turn (32/32)"),
+        (ToolWallClockExhaustion { max_secs: 73 }.synthesis_directive_message(), "Tool wall-clock budget exhausted for this turn (73s)"),
+    ] {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        let harness_path = backing.enable_harness_emitter();
+        backing.activate_tool_free_recovery_for_test(&directive);
+        let mut history = vec![uni::Message::user("continue the pending change".to_string())];
+        let outcome = run_turn_loop(&mut history, backing.turn_loop_context()).await.unwrap();
+        let TurnLoopResult::Blocked { reason: Some(reason) } = outcome.result else { panic!("expected budget handoff") };
+        assert!(reason.starts_with(cause), "{reason}");
+        assert!(outcome.final_response_was_fallback);
+        let text = final_answer_text(&history);
+        assert!(text.contains(&cause.replacen("Tool", "tool", 1)), "{text}");
+        assert!(text.contains("retained conversation") && text.contains("verification"));
+        assert!(!text.contains("Re-state") && !text.contains("please retry"), "{text}");
+        assert_blocked_response_surfaces(&mut backing, &history, &harness_path, &cause.replacen("Tool", "tool", 1));
+        let harness = fs::read_to_string(harness_path).unwrap();
+        assert!(harness.contains(cause), "canonical event must retain budget cause: {harness}");
+    }
+}
+
+#[tokio::test]
+async fn planning_budget_survives_failed_synthesis_on_all_final_surfaces() {
+    let mut backing = TestTurnProcessingBacking::new(4).await;
+    backing.activate_planning_for_test();
+    let path = backing.enable_harness_emitter();
+    let cause = "Tool loop budget exhausted before a final response (7/7)";
+    backing.activate_tool_free_recovery_for_test(&format!("{cause}. Tools are disabled for synthesis."));
+    let mut history = vec![uni::Message::user("plan the pending change".to_string())];
+    let outcome = run_turn_loop(&mut history, backing.turn_loop_context()).await.unwrap();
+    let TurnLoopResult::Blocked { reason: Some(reason) } = outcome.result else {
+        panic!("expected resumable planning handoff");
+    };
+    assert!(reason.starts_with(cause), "{reason}");
+    assert!(reason.contains("planning remains active"));
+    assert!(outcome.final_response_was_fallback);
+    assert!(final_answer_text(&history).contains("Planning remains active"));
+    assert_blocked_response_surfaces(&mut backing, &history, &path, cause);
+}
+
+#[tokio::test]
+async fn budget_fallback_keeps_salvage_and_planning_state_without_duplicate_finals() {
+    for planning in [false, true] {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        if planning {
+            backing.activate_planning_for_test();
+        }
+        backing.activate_tool_free_recovery_for_test(
+            "Tool-call budget exhausted for this turn (32/32). Tools are disabled for the rest of this turn.",
+        );
+        let mut history = vec![
+            uni::Message::user("implement the pending step".to_string()),
+            uni::Message::assistant("Parser updated; validation remains pending.".to_string())
+                .with_phase(Some(uni::AssistantPhase::FinalAnswer)),
+        ];
+        let mut ctx = backing.turn_loop_context();
+        ctx.harness_state.mark_final_response_fallback();
+        assert!(ensure_completed_turn_response(&mut ctx, &mut history, 1).unwrap());
+        assert!(ensure_completed_turn_response(&mut ctx, &mut history, 1).unwrap());
+        assert_eq!(history.len(), 2);
+        let text = history[1].content.as_text();
+        assert_eq!(text.matches("tool-call budget exhausted").count(), 1);
+        assert!(text.contains("Parser updated; validation remains pending."));
+        assert_eq!(text.contains("planning remains active"), planning);
+        let reason = super::completed_recovery_fallback_reason(planning, ctx.harness_state);
+        assert!(reason.starts_with("Tool-call budget exhausted for this turn (32/32)."));
+        assert_eq!(reason.contains("planning remains active"), planning);
+    }
+}
+
+#[tokio::test]
+async fn genuine_synthesis_after_budget_recovery_is_not_rewritten() {
+    let mut backing = TestTurnProcessingBacking::new(4).await;
+    backing.activate_tool_free_recovery_for_test(
+        "Tool-call budget exhausted for this turn (32/32). Tools are disabled for the rest of this turn.",
+    );
+    let answer = "The requested analysis is complete; no edits were needed.";
+    let mut history =
+        vec![uni::Message::assistant(answer.to_string()).with_phase(Some(uni::AssistantPhase::FinalAnswer))];
+    let mut ctx = backing.turn_loop_context();
+    assert!(!ensure_completed_turn_response(&mut ctx, &mut history, 0).unwrap());
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content.as_text(), answer);
+    assert!(!ctx.harness_state.final_response_was_fallback());
+}
+
 #[test]
 fn blocked_turn_final_response_explains_pending_verification() {
     let response = blocked_turn_final_response(PENDING_VERIFICATION_BLOCK_REASON);
@@ -2634,6 +2726,7 @@ async fn finalize_turn_closes_streamed_items_that_never_reached_the_pipeline() {
                 assert_eq!(invocation.tool_name, "exec_command");
                 assert_eq!(invocation.tool_call_id.as_deref(), Some("call_dangling"));
                 assert_eq!(invocation.status, ToolCallStatus::Failed);
+                assert_eq!(invocation.outcome, Some(vtcode_core::exec::events::ToolOutcome::Cancelled));
                 invocation_closed = true;
             }
             ThreadItemDetails::ToolOutput(output) => {
@@ -2648,6 +2741,53 @@ async fn finalize_turn_closes_streamed_items_that_never_reached_the_pipeline() {
     }
     assert!(invocation_closed, "dangling invocation must be closed with Failed status");
     assert!(output_closed, "dangling invocation must get a terminal tool_output");
+}
+
+#[tokio::test]
+async fn completed_and_interrupted_turns_close_unexecuted_calls_without_error_outcomes() {
+    use crate::agent::runloop::unified::run_loop_context::StreamedToolCallItem;
+    for result in [
+        TurnLoopResult::Completed { plan_approved_execution_pending: false },
+        TurnLoopResult::Cancelled,
+    ] {
+        let mut backing = TestTurnProcessingBacking::new(4).await;
+        let path = backing.enable_harness_emitter();
+        let mut ctx = backing.turn_loop_context();
+        ctx.harness_state.remember_streamed_tool_call_items([(
+            "pending-call".into(),
+            StreamedToolCallItem {
+                item_id: "pending-item".into(),
+                tool_name: "exec_command".into(),
+            },
+        )]);
+        finalize_turn(&mut ctx, &[], &result, &HarnessUsage::default()).await;
+        assert!(ctx.harness_state.take_all_streamed_tool_call_item_ids().is_empty());
+        let records = fs::read_to_string(path).unwrap();
+        let events = records
+            .lines()
+            .map(|line| serde_json::from_str::<VersionedThreadEvent>(line).unwrap().into_event())
+            .collect::<Vec<_>>();
+        let mut invocation_count = 0;
+        let mut output_count = 0;
+        for event in events {
+            if let ThreadEvent::ItemCompleted(item) = event {
+                match item.item.details {
+                    ThreadItemDetails::ToolInvocation(invocation) => {
+                        assert_eq!(invocation.tool_call_id.as_deref(), Some("pending-call"));
+                        assert_eq!(invocation.outcome, Some(vtcode_core::exec::events::ToolOutcome::Cancelled));
+                        invocation_count += 1;
+                    }
+                    ThreadItemDetails::ToolOutput(output) => {
+                        assert_eq!(output.exit_code, None);
+                        assert!(output.output.contains("before it could execute"));
+                        output_count += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((invocation_count, output_count), (1, 1));
+    }
 }
 
 #[tokio::test]

@@ -100,6 +100,13 @@ pub(crate) struct LoopTracker {
     /// window. Non-semantic output controls (for example, a preview budget)
     /// must not make the same inspection look like a new request.
     pub(super) nav_signatures: FxHashSet<String>,
+    /// Bounded returned-text fingerprints across different queries and ranges.
+    navigation_evidence_signatures: FxHashSet<String>,
+    pub(super) redundant_navigation_notice_pending: bool,
+    redundant_navigation_notice_emitted: bool,
+    focused_search_counts: FxHashMap<vtcode_core::types::CompactStr, usize>,
+    focused_search_notice_pending: bool,
+    focused_search_notice_emitted: bool,
 }
 
 impl LoopTracker {
@@ -128,6 +135,12 @@ impl LoopTracker {
             planning_low_signal_synthesis_triggered: false,
             execution_total_low_signal_triggered: false,
             nav_signatures: FxHashSet::default(),
+            navigation_evidence_signatures: FxHashSet::default(),
+            redundant_navigation_notice_pending: false,
+            redundant_navigation_notice_emitted: false,
+            focused_search_counts: FxHashMap::default(),
+            focused_search_notice_pending: false,
+            focused_search_notice_emitted: false,
         }
     }
 
@@ -156,6 +169,58 @@ impl LoopTracker {
         entry.0 += 1;
         entry.1 = Instant::now();
         entry.0
+    }
+
+    /// A result is redundant only if every positioned row was already seen.
+    /// At capacity, unrecorded rows stay novel rather than causing false churn.
+    pub(super) fn record_navigation_evidence(&mut self, signatures: &[String]) -> bool {
+        const MAX_EVIDENCE_SIGNATURES: usize = 4096;
+        let redundant = !signatures.is_empty()
+            && signatures
+                .iter()
+                .all(|signature| self.navigation_evidence_signatures.contains(signature));
+        for signature in signatures {
+            if self.navigation_evidence_signatures.len() < MAX_EVIDENCE_SIGNATURES {
+                self.navigation_evidence_signatures.insert(signature.clone());
+            }
+        }
+        self.redundant_navigation_notice_pending |= redundant;
+        redundant
+    }
+
+    /// Concentrated research is coaching, not proof of redundancy or a cap.
+    pub(super) fn record_focused_search(&mut self, path: vtcode_core::types::CompactStr) {
+        if self.focused_search_counts.len() >= 64 && !self.focused_search_counts.contains_key(&path) {
+            return;
+        }
+        let count = self.focused_search_counts.entry(path).or_default();
+        *count = count.saturating_add(1);
+        self.focused_search_notice_pending |= *count >= 6;
+    }
+
+    pub(crate) fn take_focused_search_notice(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.focused_search_notice_pending);
+        if !pending || self.focused_search_notice_emitted {
+            return false;
+        }
+        self.focused_search_notice_emitted = true;
+        true
+    }
+
+    pub(crate) fn take_redundant_navigation_notice(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.redundant_navigation_notice_pending);
+        if !pending || self.redundant_navigation_notice_emitted {
+            return false;
+        }
+        self.redundant_navigation_notice_emitted = true;
+        true
+    }
+
+    pub(crate) fn clear_navigation_evidence(&mut self) {
+        self.navigation_evidence_signatures.clear();
+        self.redundant_navigation_notice_pending = false;
+        self.focused_search_counts.clear();
+        self.focused_search_notice_pending = false;
     }
 
     /// Get the maximum repetition count, optionally filtering by a predicate on the signature
@@ -322,6 +387,7 @@ impl LoopTracker {
     }
 
     pub(super) fn record_successful_mutation(&mut self) {
+        self.clear_navigation_evidence();
         // Consume the fix-up window first: repair edits must not grow the
         // blind-editing counter while the gate already requires re-verify.
         if self.verification_pending && self.fix_edits_remaining > 0 {

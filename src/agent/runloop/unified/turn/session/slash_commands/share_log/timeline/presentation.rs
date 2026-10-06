@@ -17,7 +17,7 @@ use serde_json::Value;
 use vtcode_core::core::threads::ThreadEventRecord;
 use vtcode_core::exec::events::{
     CommandExecutionStatus, HarnessEventKind, McpToolCallStatus, PatchApplyStatus, ThreadCompletionSubtype,
-    ThreadEvent, ThreadItem, ThreadItemDetails, ToolCallStatus, Usage,
+    ThreadEvent, ThreadItem, ThreadItemDetails, ToolCallStatus, ToolOutcome, Usage,
 };
 
 pub(super) fn timeline_rows_from_thread_events(records: &[ThreadEventRecord]) -> Vec<TimelineRow> {
@@ -434,7 +434,11 @@ pub(super) fn timeline_row_from_item(
             )
         }
         ThreadItemDetails::ToolInvocation(tool) => {
-            let status = tool_status_label(&tool.status);
+            let status = if tool.status == ToolCallStatus::Failed && tool.outcome == Some(ToolOutcome::Cancelled) {
+                "cancelled"
+            } else {
+                tool_status_label(&tool.status)
+            };
             let tool_name = super::super::canonical_tool_name(&tool.tool_name);
             let mut body = String::new();
             if let Some(arguments) = &tool.arguments {
@@ -460,7 +464,16 @@ pub(super) fn timeline_row_from_item(
             )
         }
         ThreadItemDetails::ToolOutput(tool_output) => {
-            let status = tool_status_label(&tool_output.status);
+            let status = if tool_output.status == ToolCallStatus::Failed
+                && tool_output.exit_code.is_none()
+                && tool_output.spool_path.is_none()
+                && tool_output.output
+                    == crate::agent::runloop::unified::turn::turn_loop::UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT
+            {
+                "not_executed"
+            } else {
+                tool_status_label(&tool_output.status)
+            };
             let mut body = String::new();
             if let Some(tool_call_id) = &tool_output.tool_call_id {
                 let _ = writeln!(&mut body, "Tool call id: {tool_call_id}");

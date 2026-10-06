@@ -44,6 +44,33 @@ normal mutation accounting still applies. Running calls retain diagnostic-only s
 terminal polling results queue the notice. Session cleanup or loss discards that identity without granting repair
 edits. Rejected, cancelled, and still-running calls do not produce this notice.
 
+Navigation compares complete, positioned text returned by `code_search` and simple `sed -n` ranges, including
+spool pages. Different queries or ranges that return only previously seen lines count toward the existing
+low-signal recovery guards. A new line, changed content, or a missing page remains productive; truncated,
+unpositioned, running, failed, and cancelled results cannot establish repeated evidence. Shell ranges require a
+terminal exit code of zero before their output is fingerprinted. The bounded fingerprint ledger
+is progress tracking, not a cache or a permission decision. Successful workspace edits or context compaction
+invalidate it.
+
+After six complete searches concentrate on one file, one coaching notice encourages the next concrete action.
+Distinct queries stay available and this notice does not count them as redundant. Proven repeated evidence gets
+its own once-per-turn notice after the tool response, allowing edits and verification before the unchanged
+recovery guards intervene. Neither notice grants verification credit or repair edits. Reuse context at a cap;
+do not copy the same file to another path to evade it.
+
+If tool-free synthesis fails after a call, loop, or wall-clock budget is exhausted, the final handoff and blocked
+outcome retain the exact budget cause and limit, including failed planning synthesis. Best-effort prose,
+planning state, and gathered evidence remain
+available for continuation. A successful model synthesis keeps its normal completion status; this diagnostic
+does not widen any budget, grant permissions, or clear verification.
+
+Proven standalone grep/rg no-match results appear as completed empty searches, retaining exit code 1 and
+their deterministic diagnosis. Invalid arguments, diagnostics, truncated output, and ambiguous shell sequences
+remain failures. This presentation does not change execution success, retry accounting, or verification credit.
+Streamed calls closed before dispatch retain terminal lifecycle records with a cancelled invocation outcome;
+timeline output labels them `not_executed`. Their closure records are distinct from executed failures, and
+cancelled verification remains unverified. Existing session archives remain unchanged.
+
 A per-file read cap rejects that path while other reads, edits, and verification remain available. Intermittent
 path-cap rejections do not consume the global blocked-call total; consecutive retries still trip the existing fuse.
 After a typed patch context mismatch, one bounded uncached read per canonical path per user turn can pass either

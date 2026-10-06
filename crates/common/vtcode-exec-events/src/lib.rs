@@ -1086,7 +1086,7 @@ pub enum ToolOutcome {
     HookDenied,
     /// Tool not found or arguments couldn't be parsed.
     InvalidTool,
-    /// Tool was running when the turn was cancelled.
+    /// Tool was cancelled during execution or closed before dispatch when its turn ended.
     Cancelled,
 }
 

@@ -23,15 +23,25 @@ use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
 
 const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 4;
 
-/// Surface queued verification directives after the tool response lands.
+/// Surface queued loop directives after the tool response lands.
 /// `update_repetition_tracker` queues them when a pending gate's verifier
 /// result was lost (verifier-level Failure/Timeout, or a dead exec session)
 /// or when a completed checker used an unverified shell form. The latter is
 /// one diagnostic per turn even when no verification gate is pending.
-fn flush_verification_notices(
-    ctx: &mut TurnProcessingContext<'_>,
-    loop_tracker: &mut super::super::helpers::LoopTracker,
-) {
+fn flush_loop_notices(ctx: &mut TurnProcessingContext<'_>, loop_tracker: &mut super::super::helpers::LoopTracker) {
+    if loop_tracker.take_focused_search_notice() {
+        ctx.push_system_message("Several searches have concentrated on one file this turn. Reuse the gathered context and take the next concrete edit, verification, or synthesis step when it is sufficient. Search again only for a specific missing fact. This is coaching, not a read cap; distinct queries and tools remain available under existing limits.");
+    }
+    if loop_tracker.take_redundant_navigation_notice() {
+        const DIRECTIVE: &str = "This inspection returned only text evidence already gathered this turn. Reuse it to edit, verify, or synthesize; read only missing or changed ranges. Do not copy a capped file to another path to evade the cap. Tools remain available under the existing limits; this notice grants no permissions, verification credit, or repair edits.";
+        ctx.renderer
+            .line(
+                vtcode_core::utils::ansi::MessageStyle::Info,
+                "Inspection repeated retained evidence; continue from the existing context.",
+            )
+            .unwrap_or(());
+        ctx.push_system_message(DIRECTIVE);
+    }
     if loop_tracker.take_verification_result_lost_notice() {
         ctx.renderer
             .line(vtcode_core::utils::ansi::MessageStyle::Warning, VERIFICATION_RESULT_LOST_WARNING)
@@ -318,7 +328,7 @@ async fn execute_parallel_group<'a, 'b>(
                     return Err(error);
                 }
             };
-        flush_verification_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
+        flush_loop_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
         if let Some(outcome) = handler_outcome {
             if let TurnHandlerOutcome::Break(
                 turn_result @ (crate::agent::runloop::unified::turn::context::TurnLoopResult::Exit
@@ -653,7 +663,7 @@ async fn execute_and_handle_tool_call_inner<'a>(
         tool_execution_start,
     )
     .await?;
-    flush_verification_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
+    flush_loop_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
 
     Ok(outcome)
 }

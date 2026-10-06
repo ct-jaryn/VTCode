@@ -25,7 +25,7 @@ use vtcode_core::core::agent::refusal;
 use vtcode_core::core::agent::runtime::RuntimeSteering;
 use vtcode_core::core::decision_tracker::DecisionTracker;
 use vtcode_core::core::trajectory::TrajectoryLogger;
-use vtcode_core::exec::events::{ToolCallStatus, Usage as HarnessUsage, tool_outcome_from_status};
+use vtcode_core::exec::events::{ToolCallStatus, ToolOutcome, Usage as HarnessUsage};
 use vtcode_core::hooks::LifecycleHookEngine;
 use vtcode_core::llm::provider as uni;
 use vtcode_core::tools::{ApprovalRecorder, ToolRegistry, ToolResultCache};
@@ -39,7 +39,9 @@ use crate::agent::runloop::unified::inline_events::harness::{
 };
 use crate::agent::runloop::unified::planning_workflow::maybe_handle_planning_exit_trigger;
 use crate::agent::runloop::unified::planning_workflow_state::PlanningWorkflowSessionState;
-use crate::agent::runloop::unified::run_loop_context::{HarnessTurnState, RunLoopContext, TurnPhase};
+use crate::agent::runloop::unified::run_loop_context::{
+    HarnessTurnState, RunLoopContext, TurnPhase, budget_exhaustion_cause,
+};
 use crate::agent::runloop::unified::tool_call_safety::ToolCallSafetyValidator;
 use crate::agent::runloop::unified::turn::context::TurnLoopResult;
 use crate::agent::runloop::unified::turn::turn_loop_helpers::{
@@ -130,7 +132,8 @@ pub(crate) const MAX_ASSISTANT_TEXT_RESPONSES_PER_TURN: u32 = 2;
 /// pipeline (rejected pre-flight, dropped from a batch, or interrupted when
 /// the turn ended). Teardown emits it so the session log carries a terminal
 /// `tool_output` instead of a dangling `item.started`.
-const UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT: &str = "Tool call ended when the turn finished before it could execute.";
+pub(crate) const UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT: &str =
+    "Tool call ended when the turn finished before it could execute.";
 pub(crate) const ASSISTANT_TEXT_RESPONSE_CAP_REASON: &str =
     "Turn blocked after repeated assistant responses reached the safety cap; the latest response was preserved.";
 pub(crate) const PENDING_VERIFICATION_BLOCK_REASON: &str =
@@ -262,6 +265,19 @@ pub(crate) fn completed_fallback_reason(planning_active: bool) -> &'static str {
         COMPLETED_TURN_FALLBACK_REASON
     }
 }
+
+fn completed_recovery_fallback_reason(planning_active: bool, state: &HarnessTurnState) -> String {
+    match state.budget_recovery_reason() {
+        Some(cause) => format!("{cause}. {}", completed_fallback_reason(planning_active)),
+        None => completed_fallback_reason(planning_active).to_string(),
+    }
+}
+
+pub(crate) fn budget_recovery_final_response(planning_active: bool, state: &HarnessTurnState) -> Option<String> {
+    state
+        .budget_recovery_reason()
+        .map(|_| format_blocked_turn_final_response(&completed_recovery_fallback_reason(planning_active, state)))
+}
 const COMPLETED_TURN_NO_RESPONSE_REASON: &str =
     "Turn ended without a harness-visible final assistant response, so successful completion could not be confirmed.";
 const PLAN_RECOVERY_EXHAUSTED_REASON: &str = "Approved-plan execution stopped after recovery was exhausted. The approved plan and task checklist were retained; retry from the pending step.";
@@ -365,6 +381,11 @@ pub(crate) fn format_blocked_turn_final_response(reason: &str) -> String {
         pending_verification_final_response()
     } else if reason.contains(POST_TOOL_CONTEXT_COMPACTION_FAILED_REASON) {
         CONTEXT_CAPACITY_FINAL_RESPONSE.to_string()
+    } else if budget_exhaustion_cause(reason).is_some() {
+        format!(
+            "The turn stopped: {}. Continue from the retained conversation and pending task state; reuse gathered evidence and report remaining work and verification explicitly.",
+            reason_clause(reason)
+        )
     } else if reason.contains("tool-call limit")
         || reason.contains("Recovery tool-call limit")
         || reason.contains("Blocked tool-call limit")
@@ -477,12 +498,14 @@ fn ensure_completed_turn_response(
     let mut response_was_fallback = ctx.harness_state.final_response_was_fallback();
     let final_text = latest_final_assistant_response(working_history, turn_history_start_len);
 
-    let final_text = if let Some(final_text) = final_text {
+    let mut final_text = if let Some(final_text) = final_text {
         final_text
     } else {
         response_was_fallback = true;
         let fallback = if ctx.is_planning_active() {
             PLANNING_COMPLETED_FALLBACK_RESPONSE.to_string()
+        } else if ctx.harness_state.budget_recovery_reason().is_some() {
+            format_blocked_turn_final_response(&completed_recovery_fallback_reason(false, ctx.harness_state))
         } else {
             COMPLETED_TURN_FALLBACK_RESPONSE.to_string()
         };
@@ -490,6 +513,44 @@ fn ensure_completed_turn_response(
             .push(uni::Message::assistant(fallback.clone()).with_phase(Some(uni::AssistantPhase::FinalAnswer)));
         fallback
     };
+
+    // Preserve best-effort prose and planning drafts, but publish the runtime
+    // cause with their fallback. Genuine model synthesis remains untouched.
+    if response_was_fallback
+        && let Some(cause) = ctx.harness_state.budget_recovery_reason()
+        && !final_text.contains(cause)
+        && !final_text.contains(&reason_clause(cause))
+    {
+        let notice = format_blocked_turn_final_response(&completed_recovery_fallback_reason(
+            ctx.is_planning_active(),
+            ctx.harness_state,
+        ));
+        let previous_text = final_text;
+        let retained_text = previous_text
+            .strip_prefix(RECOVERY_SYNTHESIS_FALLBACK_FINAL_ANSWER)
+            .or_else(|| previous_text.strip_prefix(COMPLETED_TURN_FALLBACK_RESPONSE))
+            .unwrap_or(&previous_text)
+            .trim();
+        final_text = if retained_text.is_empty() {
+            notice
+        } else {
+            format!("{notice}\n\n{retained_text}")
+        };
+        if let Some(message) = working_history
+            .get_mut(turn_history_start_len..)
+            .unwrap_or_default()
+            .iter_mut()
+            .rev()
+            .find(|message| {
+                message.role == uni::MessageRole::Assistant
+                    && message.tool_calls.is_none()
+                    && message.phase != Some(uni::AssistantPhase::Commentary)
+                    && message.content.as_text().trim() == previous_text
+            })
+        {
+            message.content = uni::MessageContent::Text(final_text.clone());
+        }
+    }
 
     let _ = publish_final_assistant_response(ctx, &final_text)?;
 
@@ -1045,6 +1106,11 @@ pub(crate) async fn run_turn_loop(
             ToolLoopLimitAction::Proceed => {}
             ToolLoopLimitAction::ContinueLoop => continue,
             ToolLoopLimitAction::BreakLoop => {
+                result = TurnLoopResult::Blocked {
+                    reason: Some(format!(
+                        "Tool loop budget exhausted ({step_count}/{current_max_tool_loops}); no additional synthesis pass is available. The current plan and task state were retained."
+                    )),
+                };
                 break;
             }
         }
@@ -1101,6 +1167,7 @@ pub(crate) async fn run_turn_loop(
             let recovery_elapsed = progress.finish();
             match recovery_result {
                 Ok(Some(outcome)) => {
+                    repeated_tool_attempts.clear_navigation_evidence();
                     let label = crate::agent::runloop::unified::turn::compaction::format_compacted_summary(
                         outcome.original_len,
                         outcome.compacted_len,
@@ -1191,6 +1258,7 @@ pub(crate) async fn run_turn_loop(
                 .unwrap_or_else(|| auto_start.elapsed());
             match auto_result {
                 Ok(Some(outcome)) => {
+                    repeated_tool_attempts.clear_navigation_evidence();
                     turn_history_start_len = outcome.compacted_len;
                     tracing::info!(
                         original_len = outcome.original_len,
@@ -1994,7 +2062,7 @@ pub(crate) async fn run_turn_loop(
     };
     if completed_turn_requires_final_response(&result, primary_agent_handoff) {
         if final_response_was_fallback {
-            let reason = completed_fallback_reason(ctx.is_planning_active());
+            let reason = completed_recovery_fallback_reason(ctx.is_planning_active(), ctx.harness_state);
             // Diagnostic for false-Blocked reports (e.g. simple requests ending
             // with COMPLETED_TURN_FALLBACK_REASON despite a visible answer):
             // records whether a final was present in this turn's slice and on
@@ -2228,7 +2296,7 @@ async fn finalize_turn(
                 None,
                 raw_id,
                 failed.clone(),
-                tool_outcome_from_status(&failed),
+                ToolOutcome::Cancelled,
             ));
             let _ = emitter.emit(tool_output_completed_event(
                 streamed.item_id,

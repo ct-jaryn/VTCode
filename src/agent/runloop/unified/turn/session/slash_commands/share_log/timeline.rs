@@ -244,6 +244,60 @@ mod tests {
     }
 
     #[test]
+    fn timeline_labels_unexecuted_closures_without_hiding_real_exits() {
+        use vtcode_core::exec::events::{ToolOutcome, ToolOutputItem};
+        for (exit_code, text, expected) in [
+            (
+                None,
+                crate::agent::runloop::unified::turn::turn_loop::UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT,
+                "not_executed",
+            ),
+            (
+                Some(2),
+                crate::agent::runloop::unified::turn::turn_loop::UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT,
+                "failed",
+            ),
+            (None, "Tool execution cancelled", "failed"),
+        ] {
+            let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                item: ThreadItem {
+                    id: "call:output".into(),
+                    context: None,
+                    details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
+                        call_id: "call".into(),
+                        tool_call_id: Some("raw-call".into()),
+                        output: text.into(),
+                        exit_code,
+                        spool_path: None,
+                        status: ToolCallStatus::Failed,
+                    })),
+                },
+            });
+            let rows = timeline_rows_from_thread_events(&[sample_event_record(1, event)]);
+            assert_eq!(rows[0].status.as_deref(), Some(expected));
+            assert!(rows[0].body.contains(text));
+            assert!(rows[0].detail_json.as_ref().unwrap().contains("\"failed\""));
+        }
+        for (outcome, expected) in [(ToolOutcome::Cancelled, "cancelled"), (ToolOutcome::Error, "failed")] {
+            let event = ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                item: ThreadItem {
+                    id: "call".into(),
+                    context: None,
+                    details: ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
+                        tool_name: "exec_command".into(),
+                        arguments: None,
+                        tool_call_id: Some("raw-call".into()),
+                        status: ToolCallStatus::Failed,
+                        outcome: Some(outcome),
+                    })),
+                },
+            });
+            let rows = timeline_rows_from_thread_events(&[sample_event_record(1, event)]);
+            assert_eq!(rows[0].status.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
     fn timeline_export_prefers_thread_events() {
         let records = vec![
             sample_event_record(

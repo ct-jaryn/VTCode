@@ -37,6 +37,9 @@ pub(crate) async fn push_tool_response_with_diagnosis(
 
 fn concise_diagnosis_line(tool_name: &str, diagnosis: &ToolFailureDiagnosis) -> String {
     let display_tool_name = bounded_field(tool_name);
+    if diagnosis.no_matches {
+        return format!("Tool '{display_tool_name}': no matching results (exit code 1).");
+    }
     let observed_headline = diagnosis
         .observed
         .lines()
@@ -94,6 +97,28 @@ mod tests {
         assert!(!line.contains("Next action"), "no verbose fields leak: {line}");
         assert!(!line.contains('\n'), "TUI stays single-line: {line}");
         assert!(!line.contains("Diagnosis:"), "old verbose header gone: {line}");
+    }
+
+    #[test]
+    fn concise_search_diagnosis_distinguishes_no_matches_from_errors() {
+        use serde_json::json;
+        let args = json!({"cmd":"grep absent sample.txt"});
+        let empty = super::super::deterministic_output_diagnosis("exec_command", &args, &json!({"exit_code":1}));
+        assert_eq!(
+            concise_diagnosis_line("exec_command", &empty),
+            "Tool 'exec_command': no matching results (exit code 1)."
+        );
+        for output in [
+            json!({"exit_code":2}),
+            json!({"exit_code":1,"stderr":"invalid argument"}),
+            json!({"exit_code":1,"output_truncated":true}),
+        ] {
+            let failed = super::super::deterministic_output_diagnosis("exec_command", &args, &output);
+            assert!(concise_diagnosis_line("exec_command", &failed).contains(" failed: "));
+        }
+        let model_text = ToolFailureDiagnosis::new("no matches", "no matches", "try another query");
+        assert!(concise_diagnosis_line("exec_command", &model_text).contains(" failed: "));
+        assert!(empty.render_text("exec_command").contains("exit code 1"));
     }
 
     #[test]

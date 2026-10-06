@@ -364,6 +364,73 @@ pub(super) fn is_low_signal_outcome(
     }
 }
 
+/// Fingerprint only complete, positioned text evidence. This is a progress
+/// signal, never a cache, admission decision, or verification verdict.
+pub(super) struct NavigationEvidence {
+    pub(super) signatures: Vec<String>,
+    pub(super) focused_search_path: Option<vtcode_core::types::CompactStr>,
+}
+
+pub(super) fn navigation_evidence(
+    outcome: &ToolPipelineOutcome,
+    canonical_name: &str,
+    args: &serde_json::Value,
+) -> Option<NavigationEvidence> {
+    use vtcode_core::config::constants::tools;
+    let ToolExecutionStatus::Success { output, command_success: true, .. } = &outcome.status else {
+        return None;
+    };
+    if ["truncated", "output_truncated"]
+        .iter()
+        .any(|key| output.get(key).and_then(serde_json::Value::as_bool) == Some(true))
+        || output_has_error_signal(output)
+    {
+        return None;
+    }
+    let rows = if canonical_name == tools::CODE_SEARCH {
+        output
+            .get("results")?
+            .as_array()?
+            .iter()
+            .map(|row| {
+                if row.get("result_type")?.as_str()? != "text" {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "path": row.get("path")?.as_str()?,
+                    "line": row.get("line")?.as_u64()?,
+                    "text": row.get("snippet")?.as_str()?,
+                }))
+            })
+            .collect::<Option<Vec<_>>>()?
+    } else if matches!(canonical_name, tools::EXEC_COMMAND | tools::UNIFIED_EXEC)
+        && classify_shell_activity(canonical_name, args) == ShellActivity::Inspection
+    {
+        // A live session returns only a chunk, whose line origin is unknown.
+        // Only a completed successful range can establish positioned evidence.
+        if output.get("exit_code").and_then(serde_json::Value::as_i64) != Some(0) {
+            return None;
+        }
+        let target =
+            crate::agent::runloop::unified::turn::tool_outcomes::handlers::parse_simple_exec_read_target(args)?;
+        output.get("output")?.as_str()?.lines().enumerate().map(|(offset, text)| {
+            serde_json::json!({"path":target.path, "cwd":vtcode_core::tools::command_args::working_dir_text(args), "line":target.start_line.saturating_add(offset), "text":text})
+        }).collect()
+    } else {
+        return None;
+    };
+    let first_path = rows.first()?.get("path")?.as_str()?;
+    let focused_search_path = (canonical_name == tools::CODE_SEARCH
+        && rows
+            .iter()
+            .all(|row| row.get("path").and_then(serde_json::Value::as_str) == Some(first_path)))
+    .then(|| first_path.into());
+    Some(NavigationEvidence {
+        signatures: rows.iter().map(|row| signature_key_for("navigation_evidence", row)).collect(),
+        focused_search_path,
+    })
+}
+
 /// Coarse inspection family for duplicate-listing detection. Unlike the exact
 /// `low_signal_family_key` (full normalized command), this groups overlapping
 /// scans such as three `find` invocations over the same tree with different

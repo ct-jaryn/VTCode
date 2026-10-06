@@ -405,6 +405,8 @@ impl Reducer {
                         || output.is_some_and(|o| !o.completed);
                     fact.status = if pending {
                         "pending"
+                    } else if t.outcome == Some(ToolOutcome::Cancelled) {
+                        "cancelled"
                     } else if !successful {
                         "failed or denied"
                     } else {

@@ -79,6 +79,7 @@ pub(crate) struct ToolFailureDiagnosis {
     pub observed: String,
     pub likely_cause: String,
     pub next_action: String,
+    no_matches: bool,
 }
 
 impl ToolFailureDiagnosis {
@@ -87,6 +88,7 @@ impl ToolFailureDiagnosis {
             observed: evidence::bounded_field(observed.as_ref()),
             likely_cause: evidence::bounded_field(likely_cause.as_ref()),
             next_action: evidence::bounded_field(next_action.as_ref()),
+            no_matches: false,
         }
     }
 

@@ -15,6 +15,69 @@ fn turn(log: &SessionEventLog, task: &str, goal: &str, origin: InputOrigin) {
     log.append(&ThreadEvent::TurnStarted(event)).unwrap();
 }
 
+#[test]
+fn cancelled_calls_are_distinct_from_errors_and_do_not_verify() {
+    let temp = tempfile::tempdir().unwrap();
+    let log = crate::open(temp.path(), "session", 10000).unwrap();
+    turn(&log, "a", "Inspect results", InputOrigin::User);
+    for (id, outcome, status, activity, exit_code) in [
+        ("closure", ToolOutcome::Cancelled, ToolCallStatus::Failed, None, None),
+        ("error", ToolOutcome::Error, ToolCallStatus::Failed, None, Some(2)),
+        (
+            "empty-search",
+            ToolOutcome::Success,
+            ToolCallStatus::Completed,
+            Some(CommandActivity::Inspection),
+            Some(1),
+        ),
+        (
+            "cancelled-check",
+            ToolOutcome::Cancelled,
+            ToolCallStatus::Failed,
+            Some(CommandActivity::Verification),
+            None,
+        ),
+    ] {
+        item(
+            &log,
+            "a",
+            id,
+            activity,
+            ThreadItemDetails::ToolInvocation(Box::new(ToolInvocationItem {
+                tool_name: "exec_command".into(),
+                arguments: None,
+                tool_call_id: None,
+                status: status.clone(),
+                outcome: Some(outcome),
+            })),
+        );
+        item(
+            &log,
+            "a",
+            &format!("{id}:output"),
+            activity,
+            ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
+                call_id: id.into(),
+                tool_call_id: None,
+                output: "retained evidence".into(),
+                exit_code,
+                spool_path: None,
+                status,
+            })),
+        );
+    }
+    let model = query_explanation(&log, ExplanationScope::Task).unwrap();
+    assert_eq!(model.actions.len(), 4);
+    assert_eq!(
+        model.actions.iter().map(|action| action.status.as_str()).collect::<Vec<_>>(),
+        vec!["cancelled", "failed or denied", "completed", "failed or denied"]
+    );
+    assert_eq!(model.failures.len(), 2);
+    assert_eq!(model.verification.len(), 1);
+    assert_eq!(model.verification[0].fact.status, "failed or denied");
+    assert!(!model.verification[0].fresh);
+}
+
 fn item(log: &SessionEventLog, task: &str, id: &str, activity: Option<CommandActivity>, details: ThreadItemDetails) {
     log.append(&ThreadEvent::ItemCompleted(ItemCompletedEvent {
         item: ThreadItem {
