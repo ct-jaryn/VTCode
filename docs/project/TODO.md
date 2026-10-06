@@ -1,41 +1,5 @@
 ===
 
-## Transcript Review lag: action plan (2026-10-06)
-
-- [x] Run a temporary deterministic Tool timing probe at 80×24 in Rich mode, with one warm-up and three
-      measured repetitions. Verify exact capture/row counts, prefix-cache retention, and incremental/full search
-      equality.
-- [x] Record debug medians: 64×200 open 9.910 ms, append refresh 0.045 ms; 1×20,000 open 14.702 ms,
-      committed-search append refresh 0.013 ms; incremental search 0.005 ms versus full search 1.980 ms.
-- [x] Separate attribution passes: source collection 0.003–0.004 ms; block builds 9.699/14.782 ms and wrapping
-      only 2.691/4.381 ms for 64×200/1×20,000. Wrapping accounts for roughly 27–30% of block-build time.
-- [x] Compare identical 12,800-line payloads: one block opens in 9.342 ms versus 9.910 ms for 64 blocks. No
-      dominant block-count overhead demonstrated.
-- [x] Validate the probe and review suite: 32 tests passed (31 existing tests plus the probe), 1,466 unrelated
-      tests skipped. `./scripts/check-dev.sh` passed with ShellCheck warnings in unchanged scripts. Remove the
-      temporary probe; commit nothing.
-- [ ] Reproduce the original lag with its actual transcript and capture layout. Record the triggering action,
-      review dimensions/mode, capture and Core message counts, payload sizes, and whether search or streaming
-      append is active. Keep the lag report open until that reproduction succeeds without lag.
-- [ ] If lag reproduces, isolate open, source collection, block construction, Core reflow, wrapping, search,
-      and repeated refresh costs using fresh equivalent states. Add a corresponding Core comparison before
-      attributing the lag to Core reflow; Tool-only fixtures cannot establish that bottleneck.
-- [ ] Repeat affected cases in release when debug results are near the threshold or noisy. Measure release
-      directly; do not apply a fixed debug multiplier.
-- [ ] Only if the 20,000-line Tool case consistently exceeds 500 ms in debug and wrapping dominates, implement
-      lazy wrapping for `ReviewSourceKind::Tool` behind `CachedToolOutputBlock` in a separate increment, retaining
-      the Core path.
-- [ ] If block-count or repeated-refresh overhead is demonstrated instead, optimize the measured
-      source/refresh/reflow stage. Throttle follow behavior only if repeated refresh work is the demonstrated
-      bottleneck.
-- [ ] After any optimization, rerun the timing probe and scroll, search, evidence-link, copy/export, and
-      resize regressions. Preserve public APIs and avoid new production dependencies.
-
-Current decision: reject the freeze hypothesis for the measured Tool fixtures and make no structural change.
-The original lag reproduction and Core-path attribution remain unverified.
-
-===
-
 Planning-contract restatement — guidelines.rs:456-458 vs system.rs:55/64/34 state the same three planning rules; they co-render in planning mode. Highest token win, but plan_blocks.rs parses <proposed_plan> output shaped by that text — riskiest item, worth its own change.
 tool-specs inline literals — crates/common/vtcode-utility-tool-specs/src/lib.rs:226, 261 hardcode 1/50000/10000 next to the consts at :55-59; outside the prompts focus.
 generate_temporal_context (temporal.rs:26) is production-dead (only generate_temporal_date_context is used); deleting it is defensible but touches doctests.
@@ -152,59 +116,16 @@ Remove only the temporary probe afterward. Check the scoped diff and final workt
 
 ===
 
-## Agent-loop convergence: action plan (2026-10-06)
+check /new command doesn't trigger new session properly and lagging a very long delay ~10s and very slow. also when the program exit, there is a noticeable delay before it fully terminates.
 
-Session: `session-vtcode-20261006T101231Z_122150-96359` under `.vtcode/sessions/`.
-Local audit: `.vtcode/reviews/session-20261006T101231Z-audit.md`.
+===
 
-- [x] Reconstruct the four turns and corroborate archive events with model-facing checkpoints and trajectory
-      metrics. Turn 2 made 39 README searches before exhausting 60 loop steps; turn 3 repeated overlapping
-      file/spool reads before exhausting 32 execution calls. The task completed in turn 4.
-- [x] Classify the 19 error events: seven grep no-match exits, seven read-cap rejections, one planning denial,
-      two execution-budget rejections, and two undispatched streamed-call closures. No blocked-call fuse,
-      patch-context mismatch, or masked-verifier failure occurred in this session.
-- [x] Independently verify README lint, diff whitespace, literal dash absence, heading depth, and link
-      preservation. Preserve the existing README changes.
-- [x] **P2, first increment: reuse evidence and converge before exhausting budgets.** Inspect
-      `tool_outcomes/handlers/guards/read_guard.rs`, `tool_outcomes/helpers/history_dedup.rs`, and
-      `tool_outcomes/helpers/loop_tracker.rs` under `src/agent/runloop/unified/turn/`. Reuse existing read/search
-      identities and navigation guards to detect redundant inspection across varying commands. Preserve
-      legitimate distinct queries, missing non-overlapping spool pages, and fresh context after file mutation.
-      At a cap, direct the agent toward editing, verification, or synthesis using retained evidence; never
-      automatically copy the capped file to another path to evade the cap.
-- [x] Add focused regressions for repeated successful searches on one unchanged file, overlapping spool reads,
-      cap rejection followed by a useful edit/verifier, changed-file invalidation, and legitimate new evidence.
-      Use a session-shaped fixture that reaches productive continuation before the unchanged hard limits.
-- [x] **P2, second increment: preserve the exact budget reason in handoffs.** Inspect `turn_loop.rs` and
-      `turn_loop_helpers.rs`. Reuse existing budget metrics and completion paths so the fallback names the
-      exhausted budget, reports used/max, and retains completed work and remaining tracker steps. Replace
-      generic retry advice with an accurate resumable handoff. Test both loop-step and execution-call exhaustion,
-      including failure of the final synthesis pass; retain a non-empty final response.
-- [x] **P3, third increment: distinguish expected diagnostics from execution failures.** Inspect outcome
-      diagnosis, streamed-call teardown, and archive/UI rendering. Show proven grep no-match results as empty
-      searches and undispatched streamed calls as unexecuted closures. Preserve genuine non-zero failures,
-      structured exit codes, diagnosis evidence, and authoritative `ThreadEvent` lifecycle records. Test no
-      matches versus invalid grep arguments, dropped streamed calls versus executed failures, and interruption.
-- [x] Update compiled guidance in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs` for changed
-      agent behavior, keeping budget/presence tests current. Update the relevant development guide and audit
-      module AGENTS.md files when a new convention or gotcha is confirmed.
-- [x] Verify each increment with focused locked nextest tests, then affected-module regressions,
-      `./scripts/check-dev.sh`, warnings-denied locked Cargo checks, and Markdown/diff checks. Keep per-file,
-      blocked-call, command/path safety, verification, and execution budgets intact; add no automatic cap raises.
-- [ ] Reproduce against a freshly built binary and record its commit, version, and effective limits. Compare
-      read/search counts, overlapping pages, error categories, completion turns, and token usage with this
-      session. Passing Rust tests alone does not establish that live-provider churn is resolved.
+check there is always a noticeable delay after user's first message and subsequent responses from the model, it affects the overall responsiveness and user experience. find a way to optimize the response time and improve user experience and feedback loop. currently only global loading status is shown, which may not provide sufficient feedback to the user. suggestions:
 
-Implement one scoped increment at a time using existing VT Code patterns, KISS, and DRY. Source history
-identifies the grep failure label in `cf4211c03` and undispatched error closures in `58488e4094`; the running
-session binary SHA and the introducing commit for research churn remain unconfirmed. Report each increment as
-`problem | evidence/session event or file:line | regression commit if found | fix | verification`.
+- Implement a more granular loading indicator that shows the progress of individual tasks or messages.
+- Optimize the backend processing to reduce latency for initial and subsequent responses.
+- Consider preloading or caching frequently used resources to speed up response times.
+- Provide immediate visual feedback to the user when a new session is initiated or a command is executed.
+- Investigate and address any underlying performance bottlenecks that contribute to the observed delays.
 
-Completed increments: navigation evidence reuse, exact budget handoffs, and expected-outcome presentation.
-
-- [x] Review follow-up: require terminal exit zero before fingerprinting shell ranges, and preserve the budget
-      cause in failed planning-synthesis handoffs. Add regressions for running chunks and canonical final surfaces.
-
-Final verification: 1,745 selected locked nextest tests passed; development checks and warnings-denied builds
-passed. Maintained-document Markdown lint passed; TODO retains its existing lint violations. Live-provider
-reproduction and Transcript Review lag reproduction remain open.
+KISS and DRY principles should be applied when implementing these optimizations. Ensure that any changes made do not introduce unnecessary complexity or redundancy.
