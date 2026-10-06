@@ -96,7 +96,7 @@ VT Code enforces the following CI/CD security controls for GitHub Actions:
 
 For information about VT Code's security architecture, please see our documentation on:
 
-- [Security Posture](README.md#security-posture)
+- [Security Posture](README.md#overview)
 - [Tool Permission Policies](./config/TOOLS_CONFIG.md)
 
 ## Additional Resources

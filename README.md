@@ -29,34 +29,22 @@ resumable sessions.
 <details>
 <summary><strong>Contents</strong></summary>
 
-- [VT Code](#vt-code)
-    - [Overview](#overview)
-    - [Quick start](#quick-start)
-        - [1. Install](#1-install)
-        - [2. Configure your project](#2-configure-your-project)
-        - [3. Run your first task](#3-run-your-first-task)
-    - [Usage](#usage)
-        - [Interactive](#interactive)
-        - [Headless](#headless)
-        - [Scheduled tasks](#scheduled-tasks)
-        - [Sessions](#sessions)
-    - [Integrations](#integrations)
-        - [MCP, skills, and plugins](#mcp-skills-and-plugins)
-        - [Editors](#editors)
-        - [Cross-session memory](#cross-session-memory)
-    - [Documentation](#documentation)
-    - [Development](#development)
-    - [Contributing](#contributing)
-    - [Community](#community)
-        - [Security Advisors](#security-advisors)
-        - [Main Contributor](#main-contributor)
-        - [Core Contributors](#core-contributors)
-        - [Contributors](#contributors)
-        - [Contact](#contact)
-        - [Resources](#resources)
-        - [Share VT Code](#share-vt-code)
-        - [Sponsorship](#sponsorship)
-    - [License](#license)
+- [Overview](#overview)
+  - [Quick start](#quick-start)
+    - [1. Install](#1-install)
+    - [2. Configure your project](#2-configure-your-project)
+    - [3. Run your first task](#3-run-your-first-task)
+  - [Usage](#usage)
+    - [Interactive](#interactive)
+    - [Headless](#headless)
+    - [Scheduled tasks](#scheduled-tasks)
+    - [Sessions](#sessions)
+  - [Integrations](#integrations)
+  - [Documentation](#documentation)
+  - [Development](#development)
+  - [Contributing](#contributing)
+  - [Community](#community)
+  - [License](#license)
 
 </details>
 
@@ -64,7 +52,7 @@ resumable sessions.
 
 VT Code is an open-source terminal coding agent built in Rust. Explore a codebase, plan changes, run tools, and review
 edits in the interactive TUI, or run `vtcode exec` headless. You pick the model and permissions; the runtime handles
-context, tools, and execution policy.
+context management, tools, and execution policy.
 
 | At a glance      | What you get                                                                          |
 | ---------------- | ------------------------------------------------------------------------------------- |
@@ -73,6 +61,9 @@ context, tools, and execution policy.
 | **Long runs**    | [Headless exec](./docs/user-guide/exec-mode.md), compaction, resumption, and logs.    |
 | **Integrations** | [MCP](./docs/guides/mcp-integration.md), Skills, plugins, and editor bridges.         |
 | **Models**       | [Hosted or local providers](./docs/README.md#provider-index), chosen per task.        |
+
+The rest of this file follows that arc: install, configure, run a first task, then go deeper into usage, integrations,
+and development.
 
 ## Quick start
 
@@ -131,7 +122,8 @@ vtcode   # open the interactive TUI in your project
 ```
 
 Start with a focused request, such as "Explain how this project handles authentication," then review the diff and test
-results before committing. For automation and session commands, see [Usage](#usage).
+results before committing. For automation and session commands, see [Usage](#usage). See
+[getting started](./docs/user-guide/getting-started.md) for a guided tour.
 
 ## Usage
 
@@ -143,9 +135,9 @@ Use `vtcode` to explore, plan, and implement changes in the TUI. For larger task
 [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
 After a task, enter `/explain` to review its outcome, changes, recorded decisions, verification, and review priorities
-without another model call. Use `/explain --details` to inspect evidence, `/explain diagram` for execution relationships,
-or `/explain --web` for the browser view with an offline fallback. `/explain --export html` saves a standalone report.
-See [explanation usage](./docs/user-guide/commands.md#execution-explanations) for scopes and report options.
+without another model call. Use `/explain --details` for evidence, `/explain diagram` for execution relationships, or
+`/explain --web` for the browser view with an offline fallback; `/explain --export html` saves a standalone report. See
+[explanation usage](./docs/user-guide/commands.md#execution-explanations) for scopes and report options.
 
 ### Headless
 
@@ -160,10 +152,10 @@ vtcode review                     # agent review of uncommitted changes
 
 `exec` requires autonomous execution in `[automation.full_auto]` plus `full_auto` workspace trust. A terminal prompts
 for trust; non-TTY runs fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. Full-auto's tool allow-list, explicit
-denies, and execution policy still apply. See [exec mode](./docs/user-guide/exec-mode.md) for trust and output options
-and [full automation](./docs/guides/full-automation.md) for configuration.
+denies, and execution policy still apply. See [exec mode](./docs/user-guide/exec-mode.md) and
+[full automation](./docs/guides/full-automation.md) for trust, output, and configuration details.
 
-For repeatable, environment-checked results, use the [eval framework](./docs/guides/eval.md); a completion message
+For repeatable, environment-checked results, use the [eval framework](./docs/guides/eval.md). A completion message
 alone is not verification.
 
 ### Scheduled tasks
@@ -180,7 +172,7 @@ vtcode schedule create --name "weekly-dep-audit" \
 
 ### Sessions
 
-Resume or inspect earlier work:
+Resume or inspect earlier work from the same commands:
 
 ```bash
 # Resume the most recent interactive session
@@ -199,41 +191,27 @@ Use `vtcode continue --session-id <id>` to fork an earlier session.
 
 Enable these only when you need them; none are required for the quick start.
 
-### MCP, skills, and plugins
-
-[MCP servers](./docs/guides/mcp-integration.md), [Agent Skills](./docs/skills/SKILLS_GUIDE.md), and
-[Plugins](./docs/guides/agent-plugins.md).
-
-### Editors
-
-[ACP with Zed](./docs/guides/zed-acp.md) for editor integration. [WebMCP](./docs/user-guide/webmcp.md) pairs the TUI
-with an authenticated browser editor:
-
-```bash
-/webmcp pair <origin>    # inside the TUI
-```
-
-The hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/)
-([mirror](https://vinhnx.github.io/VTCode/)) runs on this workspace-scoped bridge. See the
-[WebMCP guide](./docs/user-guide/webmcp.md) and [deployment reference](./docs/reference/webmcp.md).
-
-### Cross-session memory
-
-[Memcode MCP](./docs/guides/memcode-mcp.md) carries context between tasks; see the
-[write-up](https://memcode.in/blogs/vt-code-memory-across-threads) for the design.
+| Integration | What it gives you |
+| ----------- | ----------------- |
+| [MCP](./docs/guides/mcp-integration.md) | Connect external tools and data sources. |
+| [Agent Skills](./docs/skills/SKILLS_GUIDE.md) | Load reusable prompt packages on demand. |
+| [Plugins](./docs/guides/agent-plugins.md) | Extend the agent with plugin manifests. |
+| [ACP with Zed](./docs/guides/zed-acp.md) | Drive VT Code from the Zed editor. |
+| [WebMCP](./docs/user-guide/webmcp.md) | Pair the TUI with an authenticated browser editor; the hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/) ([mirror](https://vinhnx.github.io/VTCode/)) runs on this bridge. Pair inside the TUI with `/webmcp pair <origin>`; see the [deployment reference](./docs/reference/webmcp.md). |
+| [Memcode MCP](./docs/guides/memcode-mcp.md) | Carry context between tasks; see the [design write-up](https://memcode.in/blogs/vt-code-memory-across-threads). |
 
 ## Documentation
 
 Guides by task; the full catalog lives in the [documentation index](./docs/INDEX.md), the
 [docs overview](./docs/README.md), and the [Wiki](https://github.com/vinhnx/VTCode/wiki):
 
-| Goal                 | Guides                                                                                                                                                                                                                                                                                                         |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Get started          | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [Providers](./docs/providers/PROVIDER_GUIDES.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md)                            |
-| Work in the TUI      | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
-| Automate             | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md)                                                                                                            |
-| Extend and integrate | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md)                                                    |
-| Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md)                               |
+| Goal | Guides |
+| ---- | ------ |
+| Get started | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [Providers](./docs/providers/PROVIDER_GUIDES.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md) |
+| Work in the TUI | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
+| Automate | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md) |
+| Extend and integrate | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md) |
+| Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) |
 
 ## Development
 
@@ -268,7 +246,7 @@ Release binaries and notes: [GitHub releases](https://github.com/vinhnx/VTCode/r
 
 ## Contributing
 
-Contributions are welcome:
+Contributions are welcome in every form:
 
 - **Code**: pick or propose an issue; keep changes surgical and tested.
 - **Docs**: every user-facing feature lands with its documentation.
@@ -280,7 +258,9 @@ Before a PR, see the [contribution guide](./docs/CONTRIBUTING.md): Conventional 
 
 ## Community
 
-Thanks to everyone who builds, tests, and improves VT Code.
+Thanks to everyone who builds, tests, and improves VT Code. Reach the maintainer directly at
+`vinhnguyen2308 [at] gmail [dot] com` for partnerships and collaboration; bugs and feature requests belong in
+[GitHub Issues](https://github.com/vinhnx/VTCode/issues).
 
 <details open>
 <summary>View all contributors</summary>
@@ -333,24 +313,23 @@ Thanks to everyone who builds, tests, and improves VT Code.
 
 </details>
 
-**Want to see your avatar here?** Every bit counts: one-line fixes, bug reports, and feedback are all welcome.
+Want to see your avatar here? Every bit counts: one-line fixes, bug reports, and feedback are all welcome.
 
 [Report a bug](https://github.com/vinhnx/VTCode/issues/new?template=bug_report.md) ·
 [Request a feature](https://github.com/vinhnx/VTCode/issues/new?template=feature_request.md) ·
 [Share feedback](https://github.com/vinhnx/VTCode/discussions) ·
 [Star the repo](https://github.com/vinhnx/VTCode/stargazers) · [Contribute](./docs/CONTRIBUTING.md)
 
-### Contact
+### Security reporting
 
-Partnerships and collaboration: `vinhnguyen2308 [at] gmail [dot] com`. Bugs and feature requests:
-[GitHub Issues](https://github.com/vinhnx/VTCode/issues). Security vulnerabilities: report privately via
+Report security vulnerabilities privately via
 [GitHub private vulnerability reporting](https://github.com/vinhnx/VTCode/security/advisories/new); never open a public
 issue. Details: [security policy](./docs/SECURITY.md).
 
 ### Resources
 
-- [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in): harness design, evals,
-  security, lessons learned.
+- [Building VT Code, a year in](https://huggingface.co/blog/vinhnx90/building-vtcode-a-year-in): harness design,
+  evals, security, and lessons learned.
 - [Podcast](https://www.youtube.com/watch?v=XLoswcd5rH0) · [Video](https://www.youtube.com/watch?v=PvL_kPjgU6o)
 
 ### Share VT Code
