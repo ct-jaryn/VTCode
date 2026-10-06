@@ -602,7 +602,7 @@ including tools like Claude Code.
 - **Authentication:** `MISTRAL_API_KEY` environment variable
 - **Base URL:** `https://api.mistral.ai/v1`, override with `MISTRAL_BASE_URL`
 - **Default model:** `mistral-large-2512`
-- **Curated picker models:** `mistral-large-2512`, `mistral-medium-3-5`, `mistral-small-2603`, `mistral-medium-2508`,
+- **Curated picker models:** `mistral-large-2512`, `mistral-large-4`, `mistral-medium-3-5`, `mistral-small-2603`, `mistral-medium-2508`,
   `codestral-2508`
 - **Features:** Streaming, tool calls, structured output, and reasoning support
 

@@ -329,6 +329,7 @@ impl ModelId {
                 | ModelId::ClaudeFable51
                 | ModelId::ClaudeOpus5
                 | ModelId::ClaudeOpus55
+                | ModelId::MistralLarge4
                 | ModelId::OpenCodeGoGlm53
                 | ModelId::MiMoV26Pro
                 | ModelId::MiMoV26ProUltraspeed
@@ -406,6 +407,9 @@ impl ModelId {
             ModelId::ClaudeOpus55 => "5.5",
             // DeepSeek generations
             ModelId::DeepSeekFlash => "4",
+            // Mistral generations
+            ModelId::MistralLarge3 => "3",
+            ModelId::MistralLarge4 => "4",
             ModelId::MergeGatewayDeepseekFlash => "4.1",
             ModelId::MetaMuseSpark11 => "Muse-Spark-1.1",
             ModelId::MetaMuseSpark13 | ModelId::MetaMuseSpark13Contributor => "Muse-Spark-1.3",

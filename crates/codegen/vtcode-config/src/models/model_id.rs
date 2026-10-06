@@ -152,6 +152,8 @@ pub enum ModelId {
     // Mistral AI models
     /// Mistral Large 3 - State-of-the-art open-weight general-purpose multimodal model
     MistralLarge3,
+    /// Mistral Large 4 - Open-weight MoE flagship (49B active / 1.05T total) with 1M context (Public Preview)
+    MistralLarge4,
     // Hugging Face models
     /// OpenAI GPT-OSS 20B via Hugging Face router
     HuggingFaceOpenAIGptOss20b,

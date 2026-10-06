@@ -80,6 +80,7 @@ impl ModelId {
             ModelId::MergeGatewayXiaomimimoMimoV26Flash,
             // Mistral models
             ModelId::MistralLarge3,
+            ModelId::MistralLarge4,
             // Z.AI models
             ModelId::ZaiGlm53,
             ModelId::ZaiGlm53Flash,

@@ -1506,6 +1506,43 @@
       }
     }
   },
+  "mistral": {
+    "id": "mistral",
+    "env": [
+      "MISTRAL_API_KEY"
+    ],
+    "api": "https://api.mistral.ai/v1",
+    "name": "Mistral AI",
+    "doc": "https://docs.mistral.ai/models",
+    "default_model": "mistral-large-2512",
+    "models": {
+      "mistral-large-4": {
+        "id": "mistral-large-4",
+        "name": "Mistral Large 4",
+        "description": "Open-weight MoE flagship (49B active / 1.05T total) with 1M context and multimodal support (Public Preview)",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1000000,
+        "capabilities": {
+          "structured_output": true
+        },
+        "is_pro": true,
+        "reasoning_efforts": [
+          "medium",
+          "high"
+        ]
+      }
+    }
+  },
   "zai": {
     "id": "zai",
     "env": [
