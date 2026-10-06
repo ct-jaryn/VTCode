@@ -2,6 +2,23 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.173.0 - 2026-10-06
+
+### Highlights
+#### Bug Fixes
+
+- Retain checker diagnostics across session polling (03639ae4) 
+- Converge navigation and preserve recovery outcomes (ad6c09b1) 
+- Fast /new teardown and bounded exit tail (d1935a6a) 
+- Fast /new busy submit and bounded teardown tail (253866ec) 
+#### Features
+
+- Add Mistral Large 4 model (e9960c6d) 
+### Other Changes
+#### Other
+
+- Update README (a1afa982) 
+- Update README (3ccf7ea5) 
 ## 0.172.4 - 2026-10-06
 
 ### Highlights
