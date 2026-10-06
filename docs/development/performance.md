@@ -202,6 +202,22 @@ layout even for unchanged code. When coverage expands during an audit, rebuild t
 the expanded harness before attributing a new regression to the candidate. Preserve both comparisons and their source
 and executable hashes.
 
+The `vtcode-ui` `markdown_render` bench exercises the public renderer with short responses, mixed content, nested
+lists, fenced code, Unicode prose, and plan wrappers containing multiline inline code. Build it with the same profile
+overrides above, then retain the executable printed by Cargo and verify its cases with `--list` before comparing:
+
+```bash
+cargo bench --locked -p vtcode-ui --bench markdown_render --no-run
+cargo bench --locked -p vtcode-ui --bench markdown_render -- \
+  --sample-size 30 --warm-up-time 0.5 --measurement-time 2 --noplot
+```
+
+Fixture construction happens outside the timed loop. Use the existing `transcript` bench as an interaction control;
+Markdown renderer results do not measure the headless ANSI fallback or whole-session latency. Documents without `<`
+can bypass plan cleanup while retaining line-ending normalization. Documents that may contain wrappers must still
+update inline-code state across line boundaries. Preserve literal tags inside code, case-insensitive wrapper removal,
+fence handling, and CRLF normalization when changing it.
+
 For CPU attribution, use a symbolized release build and `samply record --save-only`; keep profiler runs separate from
 production timing. Use the existing hotpath harness for allocation attribution and future polling, and platform
 RSS/resource sampling for memory. Record unavailable counters explicitly: process RSS is not bytes allocated,
