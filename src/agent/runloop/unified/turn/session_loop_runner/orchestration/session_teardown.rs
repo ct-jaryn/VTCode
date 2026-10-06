@@ -12,6 +12,15 @@ use vtcode_core::exec::events::ThreadCompletionSubtype;
 use vtcode_core::hooks::SessionEndReason;
 use vtcode_core::tools::ToolRegistry;
 
+/// Tight cap for user-driven teardown (exit/cancel/`/new`): the shell return
+/// or fresh prompt is waiting, so background shutdown must not park it.
+/// Normal completion keeps the full 2s budget.
+const FAST_BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(750);
+
+fn is_fast_teardown(reason: SessionEndReason) -> bool {
+    matches!(reason, SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::NewSession)
+}
+
 pub(super) struct SessionTeardownContext<'a> {
     pub harness_emitter: Option<&'a HarnessEventEmitter>,
     pub checkpoint_manager: Option<&'a SnapshotManager>,
@@ -42,6 +51,15 @@ pub(super) async fn drain_session_teardown(context: SessionTeardownContext<'_>) 
     // the previous sequential chain did. Every await carries a timeout; a
     // timeout only skips waiting (the OS reaps children at process exit),
     // it never leaks the terminal.
+    // `/new` skips the end code-change snapshot: the delta only feeds the
+    // exit summary, which `/new` bypasses via `continue`, so spawning `git`
+    // here is pure latency on the fresh-prompt path.
+    let is_new_session = matches!(session_end_reason, SessionEndReason::NewSession);
+    let exec_shutdown_timeout = if is_fast_teardown(session_end_reason) {
+        FAST_BACKGROUND_SHUTDOWN_TIMEOUT
+    } else {
+        EXIT_BACKGROUND_SHUTDOWN_TIMEOUT
+    };
     let (harness_finish_error, (), (), end_code_changes) = tokio::join!(
         async {
             let emitter = harness_emitter?;
@@ -112,12 +130,10 @@ pub(super) async fn drain_session_teardown(context: SessionTeardownContext<'_>) 
                     | SessionEndReason::Error
                     | SessionEndReason::NewSession
             ) {
-                match timeout(
-                    EXIT_BACKGROUND_SHUTDOWN_TIMEOUT,
-                    tool_registry.terminate_all_exec_sessions_for_exit_async(),
-                )
-                .await
-                {
+                // Empty registries return immediately inside `terminate_all_*`
+                // without touching backends, so the idle `/new` hot path pays
+                // only a map snapshot + pipe-manager check.
+                match timeout(exec_shutdown_timeout, tool_registry.terminate_all_exec_sessions_for_exit_async()).await {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
                         tracing::warn!(%error, "failed to terminate exec sessions during session exit");
@@ -128,7 +144,13 @@ pub(super) async fn drain_session_teardown(context: SessionTeardownContext<'_>) 
                 }
             }
         },
-        capture_code_change_snapshot(workspace, "end"),
+        async {
+            if is_new_session {
+                None
+            } else {
+                capture_code_change_snapshot(workspace, "end").await
+            }
+        },
     );
     SessionTeardownOutput { harness_finish_error, end_code_changes }
 }
@@ -223,10 +245,13 @@ pub(super) async fn finalize_persistent_memory(
 
 pub(super) async fn shutdown_subagents(tool_registry: &ToolRegistry) {
     if let Some(controller) = tool_registry.subagent_controller() {
-        if timeout(EXIT_BACKGROUND_SHUTDOWN_TIMEOUT, controller.signal_shutdown())
-            .await
-            .is_err()
-        {
+        // Bounded on every teardown path, not just fast exits: nested
+        // close_tree walks can stall on contended locks, the OS reaps any
+        // remainder at process exit, and `/new` recreates the controller
+        // anyway. This intentionally tightens the previous unconditional 2s
+        // budget to the 750ms fast cap.
+        let budget = FAST_BACKGROUND_SHUTDOWN_TIMEOUT;
+        if timeout(budget, controller.signal_shutdown()).await.is_err() {
             tracing::warn!("timed out shutting down subagent controller during session exit");
         }
     }
@@ -275,5 +300,30 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&task_path).expect("unfinished tracker"), content);
         assert!(!task_path.parent().expect("tasks directory").join("archive").exists());
+    }
+
+    #[test]
+    fn fast_teardown_covers_exit_cancel_and_new_session() {
+        use super::{FAST_BACKGROUND_SHUTDOWN_TIMEOUT, is_fast_teardown};
+        use vtcode_core::hooks::SessionEndReason;
+
+        // Asymmetric: fast reasons must map to tight cap, slow reasons keep
+        // full budget. Drive via helper so mapping itself is pinned.
+        for reason in [
+            SessionEndReason::Exit,
+            SessionEndReason::Cancelled,
+            SessionEndReason::NewSession,
+        ] {
+            assert!(is_fast_teardown(reason), "{reason:?} should be fast");
+        }
+        for reason in [SessionEndReason::Completed, SessionEndReason::Error] {
+            assert!(!is_fast_teardown(reason), "{reason:?} should keep full budget");
+        }
+        // Fast cap must be strictly tighter than the normal 2s budget so
+        // `/new` and exit never park on nested close_tree walks.
+        assert!(
+            FAST_BACKGROUND_SHUTDOWN_TIMEOUT < super::super::session_bootstrap::EXIT_BACKGROUND_SHUTDOWN_TIMEOUT,
+            "fast shutdown must be tighter than normal"
+        );
     }
 }

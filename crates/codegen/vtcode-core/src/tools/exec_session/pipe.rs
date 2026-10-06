@@ -399,8 +399,18 @@ impl PipeSessionManager {
             sessions.keys().cloned().collect::<Vec<_>>()
         };
 
-        for session_id in ids {
-            self.close_session(&session_id).await?;
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let results = futures::future::join_all(ids.into_iter().map(|session_id| {
+            let this = self.clone();
+            async move { this.close_session(&session_id).await }
+        }))
+        .await;
+
+        for result in results {
+            result?;
         }
 
         Ok(())

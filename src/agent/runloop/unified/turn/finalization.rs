@@ -28,7 +28,10 @@ pub(super) struct FinalizationOutput {
 /// Budget for the final session-archive write. The write is atomic
 /// (temp + rename) and progress snapshots are persisted during the session,
 /// so timing out only skips the final upgrade — it never corrupts the archive.
+/// Fast teardown (exit/cancel/`/new`) uses the tight cap so the shell return
+/// or fresh prompt never waits a full second on a slow disk.
 const ARCHIVE_FINALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+const ARCHIVE_FINALIZE_TIMEOUT_FAST: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Maintenance budget for one session-end task: interrupt exits (Ctrl+C /
 /// /exit) and `/new` navigation get the tight teardown cap instead of `normal`.
@@ -82,40 +85,67 @@ pub(super) async fn finalize_session(
         let total_messages = conversation_history.len();
         let session_messages: Vec<SessionMessage> = conversation_history.iter().map(SessionMessage::from).collect();
 
-        // The final write is atomic (temp + rename), so a timeout here can only
-        // skip the final upgrade past the last progress snapshot — never corrupt
-        // the archive. Blocking the shell return on a slow disk write is worse.
-        let finalize_task = tokio::task::spawn_blocking(move || {
-            archive.finalize_with_diagnostics(
-                transcript_lines,
-                total_messages,
-                distinct_tools,
-                session_messages,
-                last_turn_diagnostics,
-            )
-        });
-        match tokio::time::timeout(ARCHIVE_FINALIZE_TIMEOUT, finalize_task).await {
-            Ok(Ok(Ok(path))) => {
-                archive_path = Some(path.clone());
-                if let Some(hooks) = lifecycle_hooks {
-                    hooks.update_transcript_path(Some(path.clone())).await;
+        // `/new` detaches the final archive upgrade: progress snapshots are
+        // already persisted during the session, the write is atomic
+        // (temp + rename), and the returned path only feeds the exit summary
+        // which `/new` bypasses via `continue`. Awaiting up to 500ms here is
+        // pure latency on the fresh-prompt path — run it concurrently with
+        // the re-bootstrap instead. Exit/Cancelled still await the tight cap
+        // so the shell return keeps the last upgrade when possible.
+        if matches!(session_end_reason, SessionEndReason::NewSession) {
+            tokio::task::spawn_blocking(move || {
+                if let Err(err) = archive.finalize_with_diagnostics(
+                    transcript_lines,
+                    total_messages,
+                    distinct_tools,
+                    session_messages,
+                    last_turn_diagnostics,
+                ) {
+                    tracing::warn!("background session archive finalize failed on /new: {err}");
                 }
-                renderer.line(MessageStyle::Info, &format!("Session saved to {}", path.display()))?;
-                renderer.line_if_not_empty(MessageStyle::Output)?;
-            }
-            Ok(Ok(Err(err))) => {
-                renderer.line(MessageStyle::Error, &format!("Failed to save session: {err}"))?;
-                renderer.line_if_not_empty(MessageStyle::Output)?;
-            }
-            Ok(Err(join_error)) => {
-                renderer.line(MessageStyle::Error, &format!("Failed to save session: {join_error}"))?;
-                renderer.line_if_not_empty(MessageStyle::Output)?;
-            }
-            Err(_elapsed) => {
-                tracing::warn!(
-                    "session archive finalize timed out after {:?}; keeping the last progress snapshot",
-                    ARCHIVE_FINALIZE_TIMEOUT
-                );
+            });
+        } else {
+            // The final write is atomic (temp + rename), so a timeout here can only
+            // skip the final upgrade past the last progress snapshot — never corrupt
+            // the archive. Blocking the shell return on a slow disk write is worse.
+            // Fast teardown uses the tight cap so exit never waits a full second.
+            let archive_timeout = if is_fast_session_teardown(session_end_reason) {
+                ARCHIVE_FINALIZE_TIMEOUT_FAST
+            } else {
+                ARCHIVE_FINALIZE_TIMEOUT
+            };
+            let finalize_task = tokio::task::spawn_blocking(move || {
+                archive.finalize_with_diagnostics(
+                    transcript_lines,
+                    total_messages,
+                    distinct_tools,
+                    session_messages,
+                    last_turn_diagnostics,
+                )
+            });
+            match tokio::time::timeout(archive_timeout, finalize_task).await {
+                Ok(Ok(Ok(path))) => {
+                    archive_path = Some(path.clone());
+                    if let Some(hooks) = lifecycle_hooks {
+                        hooks.update_transcript_path(Some(path.clone())).await;
+                    }
+                    renderer.line(MessageStyle::Info, &format!("Session saved to {}", path.display()))?;
+                    renderer.line_if_not_empty(MessageStyle::Output)?;
+                }
+                Ok(Ok(Err(err))) => {
+                    renderer.line(MessageStyle::Error, &format!("Failed to save session: {err}"))?;
+                    renderer.line_if_not_empty(MessageStyle::Output)?;
+                }
+                Ok(Err(join_error)) => {
+                    renderer.line(MessageStyle::Error, &format!("Failed to save session: {join_error}"))?;
+                    renderer.line_if_not_empty(MessageStyle::Output)?;
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        "session archive finalize timed out after {:?}; keeping the last progress snapshot",
+                        archive_timeout
+                    );
+                }
             }
         }
     }
@@ -248,7 +278,7 @@ pub(super) async fn finalize_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{interrupt_budget, is_fast_session_teardown};
+    use super::{ARCHIVE_FINALIZE_TIMEOUT, ARCHIVE_FINALIZE_TIMEOUT_FAST, interrupt_budget, is_fast_session_teardown};
     use vtcode_core::hooks::SessionEndReason;
 
     #[test]
@@ -277,6 +307,17 @@ mod tests {
                 "{reason:?} must preserve the full budget"
             );
         }
+    }
+
+    #[test]
+    fn archive_finalize_fast_cap_is_tighter_than_normal() {
+        // Fast teardown (exit/cancel/`/new`) must not wait a full second on
+        // slow disk: progress snapshots already persist during the session.
+        assert!(
+            ARCHIVE_FINALIZE_TIMEOUT_FAST < ARCHIVE_FINALIZE_TIMEOUT,
+            "fast archive cap must be tighter than normal"
+        );
+        assert_eq!(ARCHIVE_FINALIZE_TIMEOUT_FAST, std::time::Duration::from_millis(500));
     }
 
     #[test]

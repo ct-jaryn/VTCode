@@ -808,12 +808,23 @@ impl ExecSessionManager {
             sessions.keys().cloned().collect::<Vec<_>>()
         };
 
-        let mut failures = Vec::new();
-        for session_id in ids {
-            if let Err(err) = self.close_session_with_mode(&session_id, mode).await {
-                failures.push(format!("{session_id}: {err}"));
-            }
+        // Parallel close: sequential closes sum per-session timeouts (12s
+        // inner cap each) into a multi-second exit tail. Concurrent closes
+        // overlap as max instead of sum; the caller's outer timeout
+        // (EXIT_BACKGROUND_SHUTDOWN_TIMEOUT) still bounds the total.
+        // Early return when empty avoids even the pipe-manager lock.
+        if ids.is_empty() {
+            return self.pipe_sessions.terminate_all_sessions().await;
         }
+
+        let results = futures::future::join_all(ids.into_iter().map(|session_id| async move {
+            self.close_session_with_mode(&session_id, mode)
+                .await
+                .map_err(|err| format!("{session_id}: {err}"))
+        }))
+        .await;
+
+        let mut failures: Vec<String> = results.into_iter().filter_map(|r| r.err()).collect();
 
         if let Err(err) = self.pipe_sessions.terminate_all_sessions().await {
             failures.push(err.to_string());
@@ -846,17 +857,30 @@ impl ExecSessionManager {
                 .collect::<Vec<_>>()
         };
 
-        let mut failures = Vec::new();
-        for session_id in ids {
-            let should_close = self
-                .session_record(session_id.as_str())
-                .await
-                .map(|record| !record.background.load(Ordering::Acquire))
-                .unwrap_or(false);
-            if should_close && let Err(err) = self.close_session_with_mode(&session_id, mode).await {
-                failures.push(format!("{session_id}: {err}"));
-            }
+        if ids.is_empty() {
+            return Ok(());
         }
+
+        // Parallel close for the same reason as terminate_all: avoid summing
+        // per-session timeouts on the exit path.
+        let results: Vec<Result<(), String>> =
+            futures::future::join_all(ids.into_iter().map(|session_id| async move {
+                let should_close = self
+                    .session_record(session_id.as_str())
+                    .await
+                    .map(|record| !record.background.load(Ordering::Acquire))
+                    .unwrap_or(false);
+                if !should_close {
+                    return Ok(());
+                }
+                self.close_session_with_mode(&session_id, mode)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| format!("{session_id}: {err}"))
+            }))
+            .await;
+
+        let failures: Vec<String> = results.into_iter().filter_map(|r| r.err()).collect();
 
         if failures.is_empty() {
             Ok(())

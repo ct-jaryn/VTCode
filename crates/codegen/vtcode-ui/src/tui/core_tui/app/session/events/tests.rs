@@ -311,6 +311,54 @@ fn locked_activity_blocks_explicit_mode_switch_commands() {
 }
 
 #[test]
+fn navigation_commands_submit_while_busy_instead_of_blocking() {
+    // Asymmetric: `/new` and `/exit` must fall through while busy so they
+    // queue/submit instead of showing "disabled".
+    // - In busy `PreparingFreshExecutionThread` (is_running true), a generic
+    //   command like `/status` stays blocked, proving the exemption is
+    //   specific.
+    // - In stage `Building`/`Recovery`, mode switches stay locked.
+    {
+        let state = vtcode_commons::ui_protocol::ActivityState::PreparingFreshExecutionThread;
+        for input in ["/new", "/exit"] {
+            let mut session = build_session();
+            session.core.handle_command(CoreInlineCommand::SetActivityState(state));
+
+            assert!(
+                !handle_running_slash_command_block_for_input(&mut session, input),
+                "{input} must not block in {state:?}"
+            );
+        }
+        let mut session = build_session();
+        session.core.handle_command(CoreInlineCommand::SetActivityState(state));
+        assert!(
+            handle_running_slash_command_block_for_input(&mut session, "/status"),
+            "/status must stay blocked in {state:?} to prove the exemption is specific"
+        );
+    }
+    for state in [
+        vtcode_commons::ui_protocol::ActivityState::Building,
+        vtcode_commons::ui_protocol::ActivityState::Recovery,
+    ] {
+        for input in ["/new", "/new fresh topic", "/exit", "   /exit   "] {
+            let mut session = build_session();
+            session.core.handle_command(CoreInlineCommand::SetActivityState(state));
+
+            assert!(
+                !handle_running_slash_command_block_for_input(&mut session, input),
+                "{input} must not block in {state:?}"
+            );
+        }
+        let mut session = build_session();
+        session.core.handle_command(CoreInlineCommand::SetActivityState(state));
+        assert!(
+            handle_running_slash_command_block_for_input(&mut session, "/mode"),
+            "/mode must stay blocked in {state:?} to prove the exemption is specific"
+        );
+    }
+}
+
+#[test]
 fn blocked_activity_allows_explicit_slash_commands() {
     for input in [
         "/mode",

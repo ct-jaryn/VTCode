@@ -107,7 +107,6 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
 
     loop {
         let session_started_at = Instant::now();
-        let start_code_changes = capture_code_change_snapshot(&config.workspace, "start").await;
         let resume_request = resume_state.take();
         let resume_ref = resume_request.as_ref();
         let session_trigger = pending_session_start_trigger.take().unwrap_or_else(|| {
@@ -130,7 +129,12 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         );
         let reserved_archive_id = crate::main_helpers::runtime_archive_session_id();
         let history_enabled = session_archive::history_persistence_enabled();
-        let session_bootstrap::SessionThreadBootstrap { thread_id, bootstrap, mut session_archive } =
+        // Overlap the `git diff` start snapshot with archive/thread prep:
+        // both are independent blocking I/O and previously summed
+        // (≈120ms snapshot + 10-100ms archive reserve) on the `/new`
+        // fresh-prompt path.
+        let (start_code_changes, thread_bootstrap) = tokio::join!(
+            capture_code_change_snapshot(&config.workspace, "start"),
             session_bootstrap::prepare_session_thread(
                 &config,
                 vt_cfg.as_ref(),
@@ -139,7 +143,8 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 reserved_archive_id,
                 history_enabled,
             )
-            .await?;
+        );
+        let session_bootstrap::SessionThreadBootstrap { thread_id, bootstrap, mut session_archive } = thread_bootstrap?;
         let thread_handle =
             vtcode_core::core::threads::ThreadManager::new().start_thread_with_identifier(thread_id, bootstrap);
         crate::main_helpers::set_runtime_archive_session_id(Some(thread_handle.thread_id().to_string()));
@@ -159,30 +164,36 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             None
         };
         let (settings_sender, shell_settings_receiver) = mpsc::unbounded_channel();
-        let shell = crate::agent::runloop::unified::session_setup::initialize_session_shell(
-            &config,
-            vt_cfg.as_ref(),
-            crate::agent::runloop::unified::session_setup::SessionUiLaunchOptions {
-                session_archive: None,
-                full_auto,
-                skip_confirmations,
-                steering_sender: steering_sender_for_shell,
-                settings_sender: settings_sender.clone(),
-            },
-        )
-        .await?;
-        let mut settings_receiver = shell_settings_receiver;
+        // Overlap shell spawn with critical-path state: both are independent
+        // (provider construction, resume history, cheap bootstrap) and
+        // previously summed on the `/new` fresh-prompt path.
         let session_critical_phase = vtcode_commons::startup_trace::phase_started();
-        let mut session_state = initialize_session_critical(
-            &config,
-            vt_cfg.as_ref(),
-            full_auto,
-            primary_agent_explicitly_configured,
-            resume_ref,
-            thread_handle.thread_id().as_str(),
-            session_primary_agent_override.as_deref(),
-        )
-        .await?;
+        let thread_id_for_critical = thread_handle.thread_id().to_string();
+        let (shell_result, critical_result) = tokio::join!(
+            crate::agent::runloop::unified::session_setup::initialize_session_shell(
+                &config,
+                vt_cfg.as_ref(),
+                crate::agent::runloop::unified::session_setup::SessionUiLaunchOptions {
+                    session_archive: None,
+                    full_auto,
+                    skip_confirmations,
+                    steering_sender: steering_sender_for_shell,
+                    settings_sender: settings_sender.clone(),
+                },
+            ),
+            initialize_session_critical(
+                &config,
+                vt_cfg.as_ref(),
+                full_auto,
+                primary_agent_explicitly_configured,
+                resume_ref,
+                thread_id_for_critical.as_str(),
+                session_primary_agent_override.as_deref(),
+            )
+        );
+        let shell = shell_result?;
+        let mut settings_receiver = shell_settings_receiver;
+        let mut session_state = critical_result?;
         vtcode_commons::startup_trace::record_phase("session_setup_critical", session_critical_phase);
         // Persist the active primary agent ("mode") so a future resume restores
         // it instead of falling back to the config default.
@@ -290,12 +301,40 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         }
 
         // Session-start hooks run only after hydration so they observe the
-        // fully initialized tool registry.
-        harness_try!(
-            run_session_start_hooks(&ui_setup.lifecycle_hooks, &mut ui_setup.renderer, &mut session_state).await
-        );
+        // fully initialized tool registry. For `/new` the fresh prompt is
+        // waiting, so bound the total: per-command timeouts default to 60s
+        // and run sequentially, which can park `/new` for 10s+ on a slow
+        // hook. Timeout skips remaining hooks (warn, continue) instead of
+        // aborting the session — startup keeps full budgets.
+        if matches!(session_trigger, SessionStartTrigger::NewSession) {
+            match tokio::time::timeout(
+                Duration::from_secs(2),
+                run_session_start_hooks(&ui_setup.lifecycle_hooks, &mut ui_setup.renderer, &mut session_state),
+            )
+            .await
+            {
+                Ok(result) => {
+                    harness_try!(result);
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        "session-start hooks timed out on /new fast path; continuing without remaining hooks"
+                    );
+                }
+            }
+        } else {
+            harness_try!(
+                run_session_start_hooks(&ui_setup.lifecycle_hooks, &mut ui_setup.renderer, &mut session_state).await
+            );
+        }
 
         vtcode_commons::startup_trace::record_phase("session_setup", session_setup_phase);
+        if matches!(session_trigger, SessionStartTrigger::NewSession) {
+            tracing::info!(
+                bootstrap_elapsed_ms = session_started_at.elapsed().as_millis() as u64,
+                "new session bootstrap completed"
+            );
+        }
         let mut renderer = ui_setup.renderer;
         let mut session = ui_setup.session;
         let handle = ui_setup.handle;
@@ -2356,6 +2395,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         // channel are no-ops, so this is safe on every end reason, including
         // NewSession/resume, which recreate the TUI afterwards.
         handle.shutdown();
+        let session_tail_started = Instant::now();
         if let Some(archive) = session_archive.as_mut() {
             archive.set_primary_agent(active_primary_agent.active().name());
             let skill_names: Vec<String> = loaded_skills.read().await.keys().cloned().collect();
@@ -2532,6 +2572,10 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             )?;
 
             refresh_runtime_debug_context_for_next_session(config.workspace.as_path(), None).await?;
+            tracing::info!(
+                teardown_elapsed_ms = session_tail_started.elapsed().as_millis() as u64,
+                "new session teardown completed"
+            );
             resume_state = None;
             pending_session_start_trigger = Some(SessionStartTrigger::NewSession);
             continue;

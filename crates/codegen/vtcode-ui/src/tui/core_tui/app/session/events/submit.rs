@@ -82,6 +82,15 @@ pub(crate) fn handle_running_slash_command_block_for_input(session: &mut Session
         return false;
     }
 
+    // Navigation commands must always submit: `/new` starts a fresh session
+    // and `/exit` leaves the program. Blocking them while a turn runs forces
+    // a retype after the turn and reads as "doesn't trigger". Falling
+    // through lets the immediate-submit path queue them so they run right
+    // after the current turn instead of being dropped.
+    if matches!(command_name, "new" | "exit") {
+        return false;
+    }
+
     // Read-only local commands are safe to defer: falling through lets the normal
     // queueing path run them right after the current turn instead of dropping them.
     if matches!(command_name, "copy") {
