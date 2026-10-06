@@ -518,6 +518,14 @@ pub(super) fn finalize_validation_result(
                 ValidationTransition::Return(outcome)
             }
         }
+        ValidationResult::ReadCapBlocked => {
+            ValidationTransition::Return(guards::blocked_tool_guard::enforce_read_cap_blocked_tool_call_guard(
+                ctx,
+                tool_call_id,
+                tool_name,
+                args_val,
+            ))
+        }
         ValidationResult::Proceed(prepared) => {
             ctx.reset_blocked_tool_call_streak();
             ValidationTransition::Proceed(prepared)

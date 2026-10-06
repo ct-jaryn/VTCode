@@ -50,8 +50,9 @@ changing the runloop, update path, allocator, or request assembly.
   explained and repaired before re-verify; tool-level failures that never executed grant no window. Truncation-only
   piped verifiers with pure `head`/`tail` tails (`cargo check 2>&1 | head`) are elided at exec time into the standalone
   verifier (output redirects preserved verbatim) with `max_output_tokens` capping, so the observed exit status is the
-  verifier's and a success clears the gate; non-rewritable pipes (`| grep`, `| wc`), `;`/`||`/background joins never
-  clear because the final status can mask an earlier failure. Run remaining un-elided verifiers standalone or as pure
+  verifier's and a success clears the gate. Static read-only filters (`| grep`, `| wc`) run with fail-closed
+  `pipefail`; filtering stays intact and only terminal exit 0 clears the gate. No matches, filter failures, and SIGPIPE
+  keep it pending. Dynamic syntax, mutating tails, and `;`/`||`/background joins never qualify. Run other verifiers as pure
   `&&` chains with `max_output_tokens` instead of pipes. Chained mutations smuggled behind a verifier prefix
   (`cargo check && rm …`) stay blocked because every shell segment must be verification-or-readonly
   (`shell_command_is_admitted_verification_attempt`). Verification commands always re-execute (excluded from read-only

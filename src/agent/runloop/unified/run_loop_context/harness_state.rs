@@ -503,6 +503,11 @@ impl HarnessTurnState {
 
     pub(crate) fn record_blocked_tool_call(&mut self) -> usize {
         self.blocked_tool_calls = self.blocked_tool_calls.saturating_add(1);
+        self.record_blocked_tool_call_streak()
+    }
+
+    /// Path-local rejections must still stop uninterrupted retry loops.
+    pub(crate) fn record_blocked_tool_call_streak(&mut self) -> usize {
         self.consecutive_blocked_tool_calls = self.consecutive_blocked_tool_calls.saturating_add(1);
         self.consecutive_blocked_tool_calls
     }

@@ -308,7 +308,11 @@ impl ToolRegistry {
     ) -> Result<PreparedExecRunRequest> {
         acquire_executor_rate_limit("exec_command:run", 2.0)?;
 
-        let payload = args
+        // Direct registry callers do not necessarily run model preflight.
+        // Normalize here as well so every pipe/PTY launch reports the same
+        // truthful verifier status the gate classifies. This is idempotent.
+        let executed_args = tool_intent::shell_args_as_executed(tools::EXEC_COMMAND, args);
+        let payload = executed_args
             .as_object()
             .ok_or_else(|| anyhow!("command execution requires a JSON object"))?;
         let background = payload.get("background").and_then(Value::as_bool).unwrap_or(false);

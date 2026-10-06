@@ -324,6 +324,30 @@ pub fn raw_command_text(args: &Value) -> Option<String> {
     Some(shell_words::join(indexed.iter().map(String::as_str)))
 }
 
+/// Complete static-classification candidate, including the quoted argv suffix
+/// that execution appends to shell text. Conflicting raw overrides cannot prove
+/// one invocation, so callers must fail closed instead of treating it as a read
+/// or verifier. Dynamic syntax and command options still need normal validation.
+pub(crate) fn shell_command_text_with_args(args: &Value) -> Option<String> {
+    let mut command = raw_command_text(args)?;
+    if args
+        .get("raw_command")
+        .and_then(Value::as_str)
+        .is_some_and(|raw| raw != command)
+    {
+        return None;
+    }
+    if let Some(arguments) = args.get("args") {
+        let arguments = arguments.as_array()?;
+        let suffix_words = arguments.iter().map(Value::as_str).collect::<Option<Vec<_>>>()?;
+        if !suffix_words.is_empty() {
+            command.push(' ');
+            command.push_str(&shell_words::join(suffix_words));
+        }
+    }
+    Some(command)
+}
+
 /// Returns whether a shell command contains syntax whose meaning depends on
 /// shell expansion rather than the literal argument text.
 ///

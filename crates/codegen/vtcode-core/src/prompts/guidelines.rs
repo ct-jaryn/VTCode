@@ -242,7 +242,7 @@ pub(crate) fn generate_tool_guidelines_for_profile(
         // classification (`tool_intent/activity.rs`, spool processing); the
         // prompt keeps only the outcome rule so wording cannot drift from
         // enforcement.
-        lines.push("- Run verifiers standalone or as a pure `&&` chain so the exit status is visible; a verifier piped only into `head` or `tail` counts as standalone, while results behind other pipes, `;`, or `||` stay unverified.".to_string());
+        lines.push("- Prefer standalone verifiers with `max_output_tokens`. Pure `head`/`tail` tails run standalone; static read-only filtering pipelines use fail-closed `pipefail`. Only terminal exit 0 clears verification; dynamic syntax, mutating tails, `;`, and `||` do not qualify.".to_string());
         // Low-effort models sometimes report a change as done without
         // exercising it: require a real check (tests, type-checker, build,
         // or the changed command itself). A syntax-only check, or a check

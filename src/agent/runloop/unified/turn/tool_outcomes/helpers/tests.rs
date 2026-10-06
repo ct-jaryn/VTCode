@@ -441,11 +441,10 @@ fn failed_verification_fix_window_is_consumed_by_repair_edits() {
 }
 
 #[test]
-fn piped_verifier_is_admitted_but_does_not_clear_gate() {
+fn filtered_verifier_success_clears_gate_with_pipefail() {
     let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
     tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
-    // Filtering-piped verifiers must run (not block) so the model sees
-    // output, but the exit status is the filter's — they never clear.
+    // The kernel enables pipefail, so an observed exit 0 verifies every stage.
     assert!(!mutation_blocked_until_verification(
         &tracker,
         tools::EXEC_COMMAND,
@@ -463,21 +462,43 @@ fn piped_verifier_is_admitted_but_does_not_clear_gate() {
         tools::EXEC_COMMAND,
         &json!({"cmd": "cargo check --locked 2>&1 | grep error"}),
     );
-    assert!(tracker.verification_is_pending());
-    assert_eq!(tracker.consecutive_mutations, BLIND_EDITING_THRESHOLD);
+    assert!(!tracker.verification_is_pending());
+    assert_eq!(tracker.consecutive_mutations, 0);
 }
 
 #[test]
-fn markdownlint_verification_clears_only_on_successful_standalone_exit() {
+fn unsafe_verifier_aliases_and_suffixes_cannot_bypass_or_clear_pending_gate() {
+    for args in [
+        json!({"cmd":"cargo check | grep marker", "raw_command":"printf marker"}),
+        json!({"cmd":"cargo check | sort", "args":["-o", "changed.txt"]}),
+        json!({"cmd":"set -o pipefail && cargo check | sort", "args":["-o", "changed.txt"]}),
+    ] {
+        let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+        tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
+        assert!(mutation_blocked_until_verification(&tracker, tools::EXEC_COMMAND, &args), "{args}");
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"exit_code":0}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        update_repetition_tracker(&mut tracker, &success, tools::EXEC_COMMAND, &args);
+        assert!(tracker.verification_is_pending(), "{args}");
+        assert_eq!(tracker.fix_edits_remaining, 0, "{args}");
+    }
+}
+
+#[test]
+fn markdownlint_verification_clears_only_on_truthful_success() {
     for (command, exit_code, clears_gate) in [
         ("npx --yes markdownlint-cli2@0.23.3 README.md", 0, true),
         ("npx --yes markdownlint-cli2@0.23.3 README.md", 1, false),
-        ("npx --yes markdownlint-cli2@0.23.3 README.md | grep error", 0, false),
+        ("npx --yes markdownlint-cli2@0.23.3 README.md | grep error", 0, true),
         ("python3 scripts/check_markdown.py", 0, true),
         ("python3 scripts/check_markdown.py", 1, false),
         ("python3 scripts/check_markdown.py --fix", 0, false),
         ("python3 scripts/check_markdown.py --list", 0, false),
-        ("python3 scripts/check_markdown.py | grep error", 0, false),
+        ("python3 scripts/check_markdown.py | grep error", 0, true),
     ] {
         let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
         tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
@@ -589,7 +610,7 @@ fn non_and_chained_verifiers_do_not_clear_gate() {
     for command in [
         "cargo check --locked; cargo nextest run --locked -p vtcode-ui",
         "cargo check --locked || cargo nextest run --locked -p vtcode-ui",
-        "cargo check --locked | grep -v warning",
+        "cargo check --locked | grep -v warning || true",
     ] {
         let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
         tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;
@@ -749,7 +770,7 @@ fn piped_verifier_success_while_pending_queues_notice_once() {
         &mut tracker,
         &piped_success,
         tools::EXEC_COMMAND,
-        &json!({"cmd": "cargo check --locked -p vtcode 2>&1 | grep -E 'error|warning'"}),
+        &json!({"cmd": "cargo check --locked -p vtcode 2>&1 | grep -E 'error|warning'; true"}),
     ));
     assert!(tracker.verification_is_pending(), "piped success must not clear the gate");
     assert!(tracker.take_piped_verification_notice(), "piped success must queue the notice");

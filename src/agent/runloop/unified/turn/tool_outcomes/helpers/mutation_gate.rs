@@ -137,8 +137,8 @@ fn is_execution_tool(name: &str) -> bool {
 /// checkpoint is pending.
 /// A failed verifier grants a bounded fix-up window ([`FAILED_VERIFICATION_FIX_ALLOWANCE`])
 /// so a broken build can be repaired, and piped verifier attempts
-/// (e.g. `cargo check 2>&1 | grep error`) are admitted to run even though
-/// they cannot clear the gate. A verifier piped only into `head`/`tail` runs
+/// (e.g. `cargo check 2>&1 | grep error`) are admitted with pipefail when their
+/// tails are statically read-only. A verifier piped only into `head`/`tail` runs
 /// as a standalone verifier (see [`shell_args_as_executed`]).
 pub(crate) fn mutation_blocked_until_verification(
     loop_tracker: &LoopTracker,
@@ -161,8 +161,7 @@ pub(crate) fn mutation_blocked_until_verification(
         let executed = shell_args_as_executed(canonical_name, args);
         let activity = classify_shell_activity(canonical_name, &executed);
         // Other piped verifier attempts (`cargo check 2>&1 | grep error`)
-        // still run so the model can see the failure; they never clear the
-        // gate (see update_repetition_tracker). The admission predicate
+        // run with pipefail when statically safe. The admission predicate
         // requires every shell segment to be verification-or-readonly, so a
         // smuggled mutation such as `cargo check && rm -rf target` stays
         // blocked.

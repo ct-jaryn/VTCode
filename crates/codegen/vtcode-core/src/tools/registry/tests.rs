@@ -84,6 +84,49 @@ async fn rejected_exec_policy_is_not_a_lost_execution_result() -> Result<()> {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn filtered_verifier_reports_checker_and_filter_failures_without_masking() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    fs::create_dir(temp_dir.path().join("scripts"))?;
+    for (checker_exit, filter, expected_exit, raw_alias) in [
+        (7, "grep README", 7, false),
+        (0, "grep README", 0, false),
+        (0, "grep missing-pattern", 1, false),
+        (0, "grep -E '['", 2, false),
+        (7, "grep README", 7, true),
+        (0, "grep README", 0, true),
+    ] {
+        fs::write(
+            temp_dir.path().join("scripts/check_markdown.py"),
+            format!(
+                "import sys\nprint('README: asymmetric evidence')\nprint('unrelated evidence')\nsys.exit({checker_exit})\n"
+            ),
+        )?;
+        let command = format!("python3 scripts/check_markdown.py 2>&1 | {filter}");
+        let mut args = json!({"cmd":command, "yield_time_ms":1000});
+        if raw_alias {
+            args["raw_command"] = json!(command);
+        }
+        let result = registry.execute_tool(tools::EXEC_COMMAND, args).await?;
+        assert_eq!(result["exit_code"], expected_exit, "{result}");
+        let output = result["output"].as_str().unwrap();
+        assert!(!output.contains("unrelated evidence"), "{output}");
+        assert_eq!(output.contains("README: asymmetric evidence"), filter == "grep README", "{output}");
+    }
+    let mut commands = registry.commands_config();
+    commands.deny_list.push("python3".into());
+    registry.apply_commands_config(&commands);
+    let denied = registry
+        .execute_tool(tools::EXEC_COMMAND, json!({"cmd":"python3 scripts/check_markdown.py | grep README"}))
+        .await?;
+    assert_eq!(denied["error"]["error_type"], "PolicyViolation");
+    assert!(denied.get("exit_code").is_none());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn public_pipe_stdin_defaults_to_eof_and_opt_in_accepts_input() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;

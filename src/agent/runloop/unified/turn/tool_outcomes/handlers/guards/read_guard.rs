@@ -362,7 +362,7 @@ pub(crate) fn enforce_read_after_write_guard(
 /// 1. Family cap: Catches identical slice retries (same path + same offset/limit)
 /// 2. Per-file-path cap: Catches paginated reads of the same file
 ///
-/// Returns `Some(ValidationResult::Blocked)` when either guard trips,
+/// Returns a blocked validation result when either guard trips,
 /// or `None` when both guards pass.
 pub(crate) fn enforce_repeated_read_only_call_guard(
     ctx: &mut TurnProcessingContext<'_>,
@@ -424,6 +424,13 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
         }
     }
 
+    // Reserve the single fresh mismatch read before either read cap. Otherwise
+    // the identical-slice guard can block recovery before the path exception.
+    let recovery_allowed = ctx
+        .tool_registry
+        .pending_patch_recovery_read_path(canonical_tool_name, effective_args)
+        .is_some_and(|path| ctx.harness_state.claim_patch_recovery_path(path));
+
     if let Some(family_key) = repeated_file_read_family_key(canonical_tool_name, effective_args) {
         // The streak mutation is stateful and stays here; the cap *decision*
         // is delegated to the pure `check_read_family_cap` helper so it can be
@@ -431,6 +438,7 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
         let streak = ctx.harness_state.record_file_read_family_call(family_key);
         if let ReadFamilyCapDecision::Tripped { target: _, block_reason, error_content } =
             check_read_family_cap(canonical_tool_name, effective_args, streak, family_cap, planning_active)
+            && !recovery_allowed
         {
             ctx.activate_recovery(block_reason.clone());
             push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
@@ -446,10 +454,6 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
     // query-aware family cap above, not pagination.
     if let Some(path) = repeated_read_path(canonical_tool_name, effective_args) {
         let path_count = ctx.harness_state.record_file_read_path_call(path.clone());
-        let recovery_allowed = ctx
-            .tool_registry
-            .pending_patch_recovery_read_path(canonical_tool_name, effective_args)
-            .is_some_and(|path| ctx.harness_state.claim_patch_recovery_path(path));
         if path_count > path_cap && !recovery_allowed {
             let block_reason = format!(
                 "Repeated reads of '{path}' hit the per-file-path cap ({path_cap}), so further reads of this path are blocked for the rest of this turn. Reads of other paths, edits, and other useful actions remain available; continue from the evidence already gathered."
@@ -462,11 +466,11 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
             )
             .to_string();
             push_guard_failure_messages(ctx, tool_call_id, canonical_tool_name, error_content, &block_reason);
-            return Some(ValidationResult::Blocked);
+            return Some(ValidationResult::ReadCapBlocked);
         }
     }
 
-    // Recovery still advances family/path counters and retains their limits.
+    // Recovery still advances family/path counters and grants only one exception.
     // The registry consumes the allowance only on execution, bypassing both
     // replay reuse here and its own caches without discarding loop history.
     if ctx.tool_registry.has_patch_recovery_read(canonical_tool_name, effective_args) {

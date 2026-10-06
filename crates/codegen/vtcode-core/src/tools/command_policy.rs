@@ -131,8 +131,13 @@ impl CommandPolicyEvaluator {
         }
 
         // Check allow rules: each segment must independently match
-        segments.iter().all(|segment| {
-            self.matches_prefix(segment, &self.allow_prefixes)
+        // The harness's exact, statically validated pipefail setup only makes
+        // status stricter. It needs no executable grant; every pipeline stage
+        // still needs its own grant, and deny rules above include the setup.
+        let verifier_setup = crate::tools::tool_intent::activity::pipefail_verifier_pipeline(cmd).is_some();
+        segments.iter().enumerate().all(|(index, segment)| {
+            (index == 0 && verifier_setup && segment == "set -o pipefail")
+                || self.matches_prefix(segment, &self.allow_prefixes)
                 || Self::matches_any(&self.allow_regexes, segment)
                 || Self::matches_any(&self.allow_glob_regexes, segment)
         })
@@ -322,6 +327,36 @@ fn compile_globs(patterns: &[String]) -> Vec<Regex> {
 mod tests {
     use super::*;
     use crate::config::CommandsConfig;
+
+    #[test]
+    fn verifier_pipefail_setup_preserves_stage_permissions_and_denials() {
+        let config = CommandsConfig {
+            allow_list: vec!["cargo check".into(), "grep".into()],
+            allow_regex: vec![],
+            allow_glob: vec![],
+            deny_list: vec![],
+            deny_regex: vec![],
+            deny_glob: vec![],
+            ..Default::default()
+        };
+        let evaluator = CommandPolicyEvaluator::from_config(&config);
+        let valid = "set -o pipefail && cargo check | grep warning";
+        assert!(evaluator.allows_text(valid));
+        for denied in [
+            "set -o pipefail && cargo build | grep warning",
+            "set -o pipefail && cargo check | wc -l",
+            "set -o pipefail && cargo check | grep warning; true",
+            "set +o pipefail && cargo check | grep warning",
+            "set -o pipefail && cargo check | grep $(touch marker)",
+        ] {
+            assert!(!evaluator.allows_text(denied), "{denied}");
+        }
+        for denied_stage in ["set", "cargo", "grep"] {
+            let mut denied = config.clone();
+            denied.deny_list.push(denied_stage.into());
+            assert!(!CommandPolicyEvaluator::from_config(&denied).allows_text(valid), "{denied_stage}");
+        }
+    }
 
     #[test]
     fn glob_allows_cargo_commands() {

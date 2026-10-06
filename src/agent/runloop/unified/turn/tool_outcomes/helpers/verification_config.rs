@@ -7,7 +7,7 @@ pub(crate) const ANTI_BLIND_EDITING_WARNING: &str = "[!] Anti-Blind-Editing: run
 /// Ends with the text of [`VERIFIER_SHELL_FORM_NOTE`] so the shell forms it
 /// describes match what the execution kernel elides; a test keeps the two in
 /// lockstep because `concat!` cannot splice a cross-crate const.
-pub(crate) const ANTI_BLIND_EDITING_DIRECTIVE: &str = "Several edits have landed without a build/test/lint run since the last check, so further code mutations are blocked until a verifier exits 0 (docs-only edits stay allowed). Run your project's build/test/lint tool with `exec_command` (e.g. `cargo check`, `go test`, `npm test`, or `pytest`), standalone or as a pure `&&` chain. Cap output with `max_output_tokens`. A verifier piped only into `head` or `tail` runs without the truncator and counts as standalone; filtering pipes (`| grep`), `;`, and `||` make the exit status another command's, so they do not clear the gate.";
+pub(crate) const ANTI_BLIND_EDITING_DIRECTIVE: &str = "Several edits have landed without a build/test/lint run since the last check, so further code mutations are blocked until a verifier exits 0 (docs-only edits stay allowed). Run your project's build/test/lint tool with `exec_command` (e.g. `cargo check`, `go test`, `npm test`, or `pytest`), standalone or as a pure `&&` chain. Cap output with `max_output_tokens`. Pure `head`/`tail` verifier tails run standalone; static read-only filtering pipelines run with fail-closed `pipefail`. Only terminal exit 0 clears the gate; `;`, `||`, dynamic syntax, and mutating tails do not qualify.";
 /// Fix-up window granted after a failed verification attempt. A failed
 /// `cargo check` / `cargo nextest run` must not deadlock the turn: the agent
 /// needs a bounded number of edits to address the reported failure before
@@ -20,7 +20,7 @@ pub(crate) const FAILED_VERIFICATION_FIX_ALLOWANCE: u8 = 2;
 pub(crate) const VERIFICATION_RESULT_LOST_WARNING: &str =
     "[!] Verification result lost: the exec session ended before the verifier's output was captured.";
 /// Model-facing directive paired with [`VERIFICATION_RESULT_LOST_WARNING`]:
-/// a standalone verifier re-run is the only way to clear the pending gate.
+/// a successful verifier re-run is required to clear the pending gate.
 pub(crate) const VERIFICATION_RESULT_LOST_DIRECTIVE: &str = "Verification result lost: the exec session ended before the verifier's output was captured. Re-run the verification command standalone or as a pure `&&` chain to confirm or reject the recent edits.";
 /// Warning rendered while the failed-verifier fix-up window is active. Distinct
 /// from [`ANTI_BLIND_EDITING_WARNING`] so the pending-verification block notice
@@ -33,17 +33,17 @@ pub(crate) const FAILED_VERIFICATION_FIX_WARNING: &str =
 /// completion.
 pub(crate) const FAILED_VERIFICATION_FIX_DIRECTIVE: &str = "The last verification command ran and failed. A bounded fix window is active: apply fixes for the reported failure, then re-run the verification command standalone or as a pure `&&` chain. The work is accepted once a verifier exits 0.";
 /// Warning rendered when a verifier behind a filtering pipe or a `;`/`||`
-/// join (e.g. `cargo check 2>&1 | grep error`) succeeded while the gate is
+/// join (e.g. `cargo check | grep error; true`) succeeded while the gate is
 /// pending: the exit status belongs to another command, so the verifier's
 /// success cannot clear the gate. Pure `head`/`tail` truncator shapes never
-/// land here: the execution kernel runs them as standalone verifiers, and the
+/// land here; static read-only filtering pipelines use pipefail. The
 /// tracker classifies the command as executed
 /// ([`vtcode_core::tools::tool_intent::shell_args_as_executed`]).
 pub(crate) const PIPED_VERIFICATION_WARNING: &str = "[!] Piped verifier did not clear the verification gate: the exit status belongs to another command, not the verifier.";
 /// Model-facing directive paired with [`PIPED_VERIFICATION_WARNING`]: without
 /// this feedback a piped success reads as "verified" to the model and the
 /// pending gate deadlocks the turn on unverified text responses.
-pub(crate) const PIPED_VERIFICATION_DIRECTIVE: &str = "The verification command ran behind a filtering pipe or a `;`/`||` join, so its exit status belongs to another command (e.g. `grep`) and it did not clear the verification gate. Re-run the verifier standalone or as a pure `&&` chain of verifiers; a pipe only into `head` or `tail` also counts as standalone. Cap output with `max_output_tokens` instead of filtering it.";
+pub(crate) const PIPED_VERIFICATION_DIRECTIVE: &str = "The verification command used a status-masking shell sequence that cannot establish verifier success, so it did not clear the verification gate. Re-run the verifier standalone or as a pure `&&` chain of verifiers; a pipe only into `head` or `tail` also counts as standalone. Cap output with `max_output_tokens` instead of filtering it.";
 /// Bounded in-turn autonomous recovery attempts when the model emits text
 /// instead of a verifier while the gate is pending.
 ///

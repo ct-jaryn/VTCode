@@ -183,7 +183,7 @@ impl ToolExecutionError {
                     "Patch context mismatch in '{path}': use complete current lines and preserve internal whitespace."
                 );
                 structured.recovery_suggestions = vec![Cow::Borrowed(
-                    "Read the affected path once with a file read limit of 1-200 lines or a single sed -n range, then retry apply_patch with complete current context. Do not probe matching with scratch edits or inspect the patch implementation. One fresh recovery read per path per turn can pass the path cap; other limits still apply.",
+                    "Read the affected path once with a file read limit of 1-200 lines or a single sed -n range, then rebuild apply_patch with complete current context. Never retry the unchanged failed patch. Do not probe matching with scratch edits or inspect the patch implementation. One fresh recovery read per path per turn can pass either read cap; other limits still apply.",
                 )];
             } else if category == ErrorCategory::InvalidParameters {
                 structured.recovery_suggestions = vec![Cow::Borrowed(

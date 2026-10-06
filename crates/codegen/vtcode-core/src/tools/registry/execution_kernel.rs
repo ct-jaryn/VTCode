@@ -423,21 +423,14 @@ pub(super) fn normalize_tool_args<'a>(
         if shell_args != *normalized.as_ref() {
             normalized = std::borrow::Cow::Owned(shell_args);
         }
-        // Truthful verifier status: a truncation-only piped verifier
-        // (`cargo check 2>&1 | tail -N`) reports the truncator's exit status,
-        // which reads as "verified" on success even when the build failed.
-        // Elide pure `head`/`tail` tails so the executed command is the
-        // standalone verifier and the observed status is its own. Pure
-        // function of the args (idempotent: rewritten text has no pipe), so
-        // validation below and every later normalize pass agree on the text.
-        // Non-matching shapes (filtering tails, joins, array forms) return
-        // `None` and run as typed. Only the canonical `command` key is
-        // replaced; the caller's original `cmd`/`raw_command` spellings are
-        // left intact as the typed record.
-        if let Some(rewritten) = crate::tools::tool_intent::rewrite_truncation_only_verifier(normalized.as_ref())
-            && let Some(payload) = normalized.to_mut().as_object_mut()
+        // Share truthful-status normalization with gate accounting. Pure
+        // truncators are elided; static read-only filters retain their output
+        // under fail-closed pipefail. Safety and permissions still validate
+        // the resulting command. Preserve the original cmd as typed evidence.
+        if let std::borrow::Cow::Owned(executed) =
+            crate::tools::tool_intent::shell_args_as_executed(normalized_tool_name, normalized.as_ref())
         {
-            payload.insert("command".to_string(), Value::String(rewritten));
+            normalized = std::borrow::Cow::Owned(executed);
         }
     }
 
@@ -466,10 +459,10 @@ fn public_exec_validation_args(normalized_tool_name: &str, args: &Value) -> Resu
     // Same truthful-status rewrite as `normalize_tool_args` (see above):
     // `EXEC_COMMAND` normalizes here rather than there, so the hook must be
     // repeated to keep validation and execution agreed on one command text.
-    if let Some(rewritten) = crate::tools::tool_intent::rewrite_truncation_only_verifier(&exec_args)
-        && let Some(payload) = exec_args.as_object_mut()
+    if let std::borrow::Cow::Owned(executed) =
+        crate::tools::tool_intent::shell_args_as_executed(normalized_tool_name, &exec_args)
     {
-        payload.insert("command".to_string(), Value::String(rewritten));
+        exec_args = executed;
     }
     let payload = exec_args
         .as_object_mut()
@@ -844,7 +837,7 @@ mod tests {
     #[test]
     fn normalize_leaves_non_rewritable_pipelines_untouched() {
         for command in [
-            "cargo check | grep error",
+            "cargo check | grep error; true",
             "cargo check && rm -rf target | tail -5",
             "cargo check | tail -5; rm foo.txt",
             "rg -n 'pattern' src | head -20",
@@ -1300,6 +1293,25 @@ mod tests {
         assert_eq!(result.effective_args["tty"], true);
         assert!(result.readonly_classification);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn planning_preflight_rejects_mutating_suffixes_and_conflicting_raw_aliases() {
+        let (_temp, registry) = new_test_registry().await;
+        registry.enable_planning();
+        for args in [
+            json!({"cmd":"cargo check | sort", "args":["-o", "changed.txt"]}),
+            json!({"cmd":"cat README.md", "raw_command":"printf changed > changed.txt"}),
+        ] {
+            let error = preflight_validate_call(&registry, tool_names::EXEC_COMMAND, &args)
+                .expect_err("mutating invocation cannot acquire planning admission");
+            assert_eq!(error.to_string(), super::agent_execution::PLANNING_DENIED_CONTEXT);
+        }
+        let safe =
+            preflight_validate_call(&registry, tool_names::EXEC_COMMAND, &json!({"cmd":"sort", "args":["README.md"]}))
+                .expect("safe appended operands remain readable in planning");
+        assert!(safe.readonly_classification);
+        assert!(safe.parallel_safe_after_preflight);
     }
 
     #[tokio::test]

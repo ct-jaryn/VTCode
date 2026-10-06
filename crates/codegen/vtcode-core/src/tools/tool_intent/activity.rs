@@ -9,6 +9,8 @@ use std::path::Path;
 use serde_json::Value;
 use vtcode_commons::validation::NonEmptySlice;
 
+use crate::tools::command_args::shell_command_text_with_args;
+
 use super::readonly::{
     command_words_are_readonly, static_shell_command_words, static_shell_command_words_with_output_plumbing,
 };
@@ -146,7 +148,7 @@ fn contains_verification_invocation(command: &str) -> bool {
 /// Quiet/existence probes intentionally return no text and are excluded. This
 /// predicate grants no execution permissions and never verifies mutations.
 pub fn shell_command_is_output_search(args: &Value) -> bool {
-    let Some(command) = crate::tools::command_args::raw_command_text(args) else {
+    let Some(command) = shell_command_text_with_args(args) else {
         return false;
     };
     let Some(segments) = static_shell_command_words(&command) else {
@@ -259,7 +261,7 @@ fn grep_words_request_quiet_output(words: &[String]) -> bool {
 /// Compound commands, shell wrappers and redirected diagnostics cannot prove
 /// the search's no-match status, even when their visible output is empty.
 pub fn shell_command_is_standalone_grep_search(args: &Value) -> bool {
-    let Some(command) = crate::tools::command_args::raw_command_text(args) else {
+    let Some(command) = shell_command_text_with_args(args) else {
         return false;
     };
     let Some(segments) = static_shell_command_words(&command) else {
@@ -349,9 +351,7 @@ pub fn default_verifier_for_workspace(workspace_root: &Path) -> Option<String> {
 /// Which shell forms of a verifier clear the anti-blind-editing gate. Shared
 /// by the recovery directive and the blocked-mutation `next_action` so the
 /// two surfaces cannot drift.
-pub const VERIFIER_SHELL_FORM_NOTE: &str = "Cap output with `max_output_tokens`. A verifier piped only into `head` or `tail` runs without \
-the truncator and counts as standalone; filtering pipes (`| grep`), `;`, and `||` make the exit status another command's, \
-so they do not clear the gate.";
+pub const VERIFIER_SHELL_FORM_NOTE: &str = "Cap output with `max_output_tokens`. Pure `head`/`tail` verifier tails run standalone; static read-only filtering pipelines run with fail-closed `pipefail`. Only terminal exit 0 clears the gate; `;`, `||`, dynamic syntax, and mutating tails do not qualify.";
 
 /// Stand-in for the verifier when no project command was detected or
 /// configured. It lists examples across ecosystems instead of naming one
@@ -391,7 +391,7 @@ pub fn verification_recovery_directive(default_verifier: Option<&str>, attempt: 
 /// Piped verifiers (e.g. `cargo check 2>&1 | head -c 4000`) must be allowed to
 /// run so the model can see the failure; otherwise the generic "cap output
 /// with `| head`" guidance deadlocks on `Mutation blocked until verification`.
-/// Only a standalone successful verifier clears the gate; this helper only
+/// Only a truthful successful verifier clears the gate; this helper only
 /// decides admission, never clearance.
 ///
 /// Fail-closed smuggling guard: every parsed shell segment must be a
@@ -400,11 +400,14 @@ pub fn verification_recovery_directive(default_verifier: Option<&str>, attempt: 
 /// instead of riding through on the verifier prefix. Unparseable (dynamic)
 /// shell syntax also stays blocked.
 pub fn shell_command_is_admitted_verification_attempt(args: &Value) -> bool {
-    let Some(command) = crate::tools::command_args::raw_command_text(args) else {
+    let Some(command) = shell_command_text_with_args(args) else {
         return false;
     };
     if crate::tools::command_args::contains_dynamic_shell_syntax(&command) {
         return false;
+    }
+    if command.starts_with(VERIFIER_PIPEFAIL_PREFIX) {
+        return pipefail_verifier_pipeline(&command).is_some();
     }
     let segments =
         static_shell_command_words(&command).or_else(|| static_shell_command_words_with_output_plumbing(&command));
@@ -561,7 +564,7 @@ fn is_pure_truncation_stage(stage: &str) -> bool {
 pub fn rewrite_truncation_only_verifier(args: &Value) -> Option<String> {
     use crate::config::constants::tools as tool_names;
 
-    let command = crate::tools::command_args::raw_command_text(args)?;
+    let command = shell_command_text_with_args(args)?;
     if !shell_command_is_admitted_verification_attempt(args) {
         return None;
     }
@@ -578,12 +581,65 @@ pub fn rewrite_truncation_only_verifier(args: &Value) -> Option<String> {
     Some(head.to_string())
 }
 
+// `&&` fails closed when the selected shell does not support pipefail.
+const VERIFIER_PIPEFAIL_PREFIX: &str = "set -o pipefail && ";
+
+/// The exact status-only shell setup, with the entire verifier pipeline validated.
+/// Command policy still checks every executable and explicit deny rule.
+pub(crate) fn pipefail_verifier_pipeline(command: &str) -> Option<&str> {
+    let pipeline = command.strip_prefix(VERIFIER_PIPEFAIL_PREFIX)?;
+    if crate::tools::command_args::contains_dynamic_shell_syntax(pipeline) {
+        return None;
+    }
+    verifier_pipeline_head(pipeline).map(|_| pipeline)
+}
+
+/// Validate a static pipeline without granting execution or mutation permissions.
+fn verifier_pipeline_head(command: &str) -> Option<&str> {
+    let stages = split_top_level_pipes(command)?;
+    let (head, tails) = stages.split_first()?;
+    let head = head.trim();
+    let head_args = serde_json::json!({"cmd": head});
+    if classify_shell_activity(crate::config::constants::tools::EXEC_COMMAND, &head_args) != ShellActivity::Verification
+    {
+        return None;
+    }
+    // Tail stages must be independently static and read-only. Logical joins,
+    // unsafe redirections, substitutions, and mutations cannot ride behind it.
+    for stage in tails {
+        let segments = static_shell_command_words(stage)?;
+        if segments.len() != 1 || !segments.first().is_some_and(|words| command_words_are_readonly(words)) {
+            return None;
+        }
+    }
+    Some(head)
+}
+
+/// Preserve filtering while making pipeline success depend on every stage.
+/// Pure truncator pipelines retain the existing standalone rewrite to avoid
+/// SIGPIPE from early-closing head/tail. Other static read-only tails use
+/// pipefail; failures (including no matches or SIGPIPE) never clear the gate.
+fn rewrite_verifier_pipeline(args: &Value) -> Option<String> {
+    if let Some(standalone) = rewrite_truncation_only_verifier(args) {
+        return Some(standalone);
+    }
+    let command = shell_command_text_with_args(args)?;
+    if command.starts_with(VERIFIER_PIPEFAIL_PREFIX)
+        || !shell_command_is_admitted_verification_attempt(args)
+        || verifier_pipeline_head(&command).is_none()
+    {
+        return None;
+    }
+    Some(format!("{VERIFIER_PIPEFAIL_PREFIX}{command}"))
+}
+
 /// Shell-call arguments as the execution kernel runs them.
 ///
-/// The kernel applies [`rewrite_truncation_only_verifier`] to every
+/// The kernel applies [`rewrite_verifier_pipeline`] to every
 /// command-run call before execution, so the process that runs (and whose
 /// exit status the outcome reports) is the standalone verifier, not the typed
-/// pipeline. Gate bookkeeping must classify that same command; classifying the
+/// pipeline. Static filtering pipelines instead enable pipefail. Gate
+/// bookkeeping must classify that same command; classifying the
 /// typed pipeline would call a truthful `cargo check 2>&1 | tail -5` success a
 /// mutation and leave the gate pending. Arguments the kernel runs unchanged
 /// (already-normalized arguments included, since the rewrite is idempotent)
@@ -592,12 +648,18 @@ pub fn shell_args_as_executed<'a>(tool_name: &str, args: &'a Value) -> std::borr
     if !super::is_command_run_tool_call(tool_name, args) {
         return std::borrow::Cow::Borrowed(args);
     }
-    let Some(rewritten) = rewrite_truncation_only_verifier(args) else {
+    let Some(rewritten) = rewrite_verifier_pipeline(args) else {
         return std::borrow::Cow::Borrowed(args);
     };
     let mut executed = args.clone();
     match executed.as_object_mut() {
         Some(payload) => {
+            if payload.get("raw_command").is_some_and(Value::is_string) {
+                payload.insert("raw_command".to_string(), Value::String(rewritten.clone()));
+            }
+            // The rewrite already includes the suffix (or elides its truncator).
+            // Keeping args would append it a second time at launch.
+            payload.remove("args");
             payload.insert("command".to_string(), Value::String(rewritten));
             std::borrow::Cow::Owned(executed)
         }
@@ -741,12 +803,23 @@ fn shell_uses_only_and_chaining(command: &str) -> bool {
 /// short-circuits on first failure.
 #[must_use]
 pub fn classify_shell_activity(tool_name: &str, args: &Value) -> ShellActivity {
-    let command = crate::tools::command_args::raw_command_text(args);
+    let command = shell_command_text_with_args(args);
+    if command.is_none() && crate::tools::command_args::raw_command_text(args).is_some() {
+        return ShellActivity::Mutation;
+    }
+    if command.as_deref().and_then(pipefail_verifier_pipeline).is_some() {
+        return ShellActivity::Verification;
+    }
     let words = crate::tools::command_args::command_words(args).ok().flatten();
     let has_unclassified_shell_sequence = command.as_deref().is_some_and(has_shell_sequence);
 
     if let Some(activity) = command.as_deref().and_then(classify_provable_shell_sequence) {
         return activity;
+    }
+    // A failed sequence proof cannot fall back to the original tool intent:
+    // appended arguments may make an otherwise read-only tail mutate state.
+    if has_unclassified_shell_sequence {
+        return ShellActivity::Mutation;
     }
 
     let intent = super::classify_tool_intent(tool_name, args);
@@ -1225,7 +1298,8 @@ mod tests {
         assert!(directive.contains("1/2"));
         assert!(directive.contains("max_output_tokens"));
         assert!(directive.contains(VERIFIER_SHELL_FORM_NOTE));
-        assert!(directive.contains("counts as standalone"));
+        assert!(directive.contains("tails run standalone"));
+        assert!(directive.contains("fail-closed `pipefail`"));
         let fallback = verification_recovery_directive(None, 2, 2);
         assert!(fallback.contains(GENERIC_VERIFIER_DESCRIPTION));
         assert!(fallback.contains("2/2"));
@@ -1322,9 +1396,75 @@ mod tests {
     }
 
     #[test]
-    fn args_as_executed_keep_filtering_pipes_and_non_run_calls_as_typed() {
+    fn verifier_rewrite_keeps_raw_alias_and_appended_arguments_in_sync() {
+        let command = "cargo check | grep";
+        let typed = json!({"cmd":command, "raw_command":command, "args":["warning"]});
+        let executed = shell_args_as_executed(tools::EXEC_COMMAND, &typed);
+        let expected = "set -o pipefail && cargo check | grep warning";
+        assert_eq!(executed["command"], expected);
+        assert_eq!(executed["raw_command"], expected);
+        assert!(executed.get("args").is_none(), "suffix must execute exactly once");
+        assert_eq!(classify_shell_activity(tools::EXEC_COMMAND, &executed), ShellActivity::Verification);
+        assert!(matches!(shell_args_as_executed(tools::EXEC_COMMAND, &executed), std::borrow::Cow::Borrowed(_)));
+
+        let truncator = json!({"cmd":"cargo check | head", "args":["-20"]});
+        assert_eq!(shell_args_as_executed(tools::EXEC_COMMAND, &truncator)["command"], "cargo check");
+    }
+
+    #[test]
+    fn verifier_pipeline_rejects_conflicting_raw_alias_and_mutating_suffix() {
+        for typed in [
+            json!({"cmd":"cargo check | grep marker", "raw_command":"printf marker"}),
+            json!({"cmd":"cargo check | sort", "args":["-o", "changed.txt"]}),
+            json!({"cmd":"set -o pipefail && cargo check | sort", "args":["-o", "changed.txt"]}),
+            json!({"cmd":"cargo check | grep", "args":"invalid"}),
+        ] {
+            assert_eq!(rewrite_verifier_pipeline(&typed), None, "{typed}");
+            assert!(!shell_command_is_admitted_verification_attempt(&typed), "{typed}");
+            assert_eq!(classify_shell_activity(tools::EXEC_COMMAND, &typed), ShellActivity::Mutation, "{typed}");
+            assert!(super::super::classify_tool_intent(tools::EXEC_COMMAND, &typed).mutating, "{typed}");
+        }
+    }
+
+    #[test]
+    fn filtered_verifier_pipeline_preserves_filters_and_truthful_status() {
         for command in [
-            "cargo check 2>&1 | grep error",
+            "python3 scripts/check_markdown.py 2>&1 | grep -E '^(README|docs/SECURITY)\\.md' | head -20",
+            "cargo check --locked | grep warning",
+            "cargo fmt --check && cargo check --locked | wc -l",
+        ] {
+            let typed = exec_command(command);
+            let executed = shell_args_as_executed(tools::EXEC_COMMAND, &typed);
+            assert_eq!(executed["command"], format!("set -o pipefail && {command}"));
+            assert_eq!(classify_shell_activity(tools::EXEC_COMMAND, &executed), ShellActivity::Verification);
+            assert!(shell_command_is_admitted_verification_attempt(&executed));
+            assert!(matches!(shell_args_as_executed(tools::EXEC_COMMAND, &executed), std::borrow::Cow::Borrowed(_)));
+            assert_eq!(classify_shell_activity(tools::EXEC_COMMAND, &typed), ShellActivity::Mutation);
+        }
+        for command in [
+            "cargo check | grep error; true",
+            "cargo check | grep error || true",
+            "cargo check | tee source.rs",
+            "cargo check | sed -i 's/old/new/' source.rs",
+            "cargo check | grep $(touch marker)",
+            "cargo check | grep error > hidden.log",
+            "cargo check | grep error &",
+            "cargo check && rm source.rs | grep error",
+        ] {
+            assert_eq!(rewrite_verifier_pipeline(&exec_command(command)), None, "{command}");
+            let prefixed = exec_command(&format!("set -o pipefail && {command}"));
+            assert_ne!(
+                classify_shell_activity(tools::EXEC_COMMAND, &prefixed),
+                ShellActivity::Verification,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn args_as_executed_keep_unsafe_joins_and_non_run_calls_as_typed() {
+        for command in [
+            "cargo check 2>&1 | grep error; true",
             "cargo check; git status",
             "cargo check || true",
         ] {

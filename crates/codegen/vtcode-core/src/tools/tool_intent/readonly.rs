@@ -1,5 +1,5 @@
 use crate::tools::command_args::{
-    command_words_after_environment_prefix, has_unsafe_readonly_options, raw_command_text,
+    command_words_after_environment_prefix, has_unsafe_readonly_options, shell_command_text_with_args,
 };
 use crate::tools::output_spooler::SpooledOutputReference;
 use serde_json::Value;
@@ -431,7 +431,7 @@ fn sanitize_static_shell_command(command: &str) -> Option<String> {
 }
 
 pub fn is_readonly_command_session_command(args: &Value) -> bool {
-    let Some(raw) = raw_command_text(args) else {
+    let Some(raw) = shell_command_text_with_args(args) else {
         return false;
     };
 
@@ -456,7 +456,7 @@ pub(crate) fn is_parallel_safe_command_session_command(args: &Value) -> bool {
     {
         return false;
     }
-    let Some(raw) = raw_command_text(args) else {
+    let Some(raw) = shell_command_text_with_args(args) else {
         return false;
     };
     static_shell_command_words(&raw)
@@ -475,7 +475,7 @@ pub fn is_spool_file_read_command(tool_name: &str, args: &Value) -> bool {
         return false;
     }
 
-    raw_command_text(args)
+    shell_command_text_with_args(args)
         .and_then(|command| static_shell_command_words(&command))
         .is_some_and(|commands| {
             commands

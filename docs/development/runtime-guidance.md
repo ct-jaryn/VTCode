@@ -27,8 +27,20 @@ For optional tooling, inspect the declared project/CI commands and check availab
 as skipped and continue. A failure from an available checker still needs to be resolved.
 
 Verify edits in place. When a checker fails and a baseline comparison is useful, read the baseline files separately
-instead of stashing and restoring workspace edits. Report the failing check and baseline comparison separately; a
-filtering pipeline's exit status does not establish verifier success.
+instead of stashing and restoring workspace edits. Report the failing check and baseline comparison separately; an
+ordinary filtering pipeline's exit status does not establish verifier success. VT Code enables fail-closed `pipefail`
+for static verifier pipelines whose remaining stages are independently read-only. Filtering is preserved; only a
+terminal exit 0 for the whole pipeline clears verification. No matches, filter errors, or SIGPIPE keep the gate pending.
+Pure `head`/`tail` pipelines retain the standalone verifier rewrite. Dynamic syntax, mutating tails, and `;`/`||` joins
+do not qualify, and all normal command safety, permissions, and budgets still apply.
+Normalization includes separate `args` and keeps a matching `raw_command` alias synchronized. Conflicting command
+aliases cannot establish verifier success; run the intended verifier with one consistent command spelling.
+
+A per-file read cap rejects that path while other reads, edits, and verification remain available. Intermittent
+path-cap rejections do not consume the global blocked-call total; consecutive retries still trip the existing fuse.
+After a typed patch context mismatch, one bounded uncached read per canonical path per user turn can pass either
+read cap. Rebuild the patch from complete current lines; unchanged failed patches must not be retried. Repeated
+mismatches and symlink aliases cannot replenish the allowance.
 
 Reuse successful reads and saved checker diagnostics. Read only missing or changed ranges, and rerun checks after
 changes or unresolved failures. Standalone `markdownlint-cli2` checks, including explicit `npx` invocations, count as

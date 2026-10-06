@@ -317,17 +317,18 @@ Existing recovery text is reused when it was already published, so the assistant
 
 A lost verification result must not deadlock the anti-blind gate. While the checkpoint is pending, a verifier-level
 `Failure`/`Timeout` (for example, the exec session ended before the verifier's output was captured, reported by a
-`write_stdin` or non-run `unified_exec` session follow-up as a missing session) grants the same bounded fix-up window as
-a genuine failed verifier and surfaces a "Verification result lost" directive; the gate still only clears on a
+`write_stdin` or non-run `unified_exec` session follow-up as a missing session) grants the same bounded fix-up window
+as a genuine failed verifier and surfaces a "Verification result lost" directive; the gate still only clears on a
 successful standalone verifier re-run. Pure `head`/`tail` truncator pipelines are elided at execution into the
 standalone verifier (capped via `max_output_tokens`), so their exit status is the verifier's own and a success clears
-the gate like any standalone run. The same feedback rule covers the remaining non-rewritable pipelines: while the gate
-is pending, an admitted `cargo check … 2>&1 | tail -5`-shaped success that the elider cannot prove safe (filtering tails
-such as `| grep`, `;` joins) queues a one-shot "piped verifier did not clear the gate" directive, because the pipeline's
-exit status belongs to the tail command and the model would otherwise read the silence as verified. The `turn.blocked`
-event also populates `last_tool`, `consecutive_cap`, and `total_cap` from the blocked-tool-call fuse when it tripped,
-and transcript block reasons are truncated (~600 chars) with a pointer to the handoff file, which retains the full
-reason.
+the gate like any standalone run. Static pipelines with independently read-only filters instead preserve filtering and
+enable fail-closed `pipefail`; only terminal exit 0 clears the gate, and a non-zero exit grants the existing bounded
+repair window. All admission, permission, command safety, and execution budgets remain enforced. Remaining non-
+rewritable sequences (such as `;` joins) queue a one-shot "piped verifier did not clear the gate" directive, because
+the pipeline's exit status belongs to the tail command and the model would otherwise read the silence as verified. The
+`turn.blocked` event also populates `last_tool`, `consecutive_cap`, and `total_cap` from the blocked-tool-call fuse
+when it tripped, and transcript block reasons are truncated (~600 chars) with a pointer to the handoff file, which
+retains the full reason.
 
 The assistant text-response safety cap distinguishes finished work from a stalled loop. When the cap fires after the
 harness promoted the latest commentary to a final answer and the anti-blind checkpoint is clear (and planning is not
@@ -415,8 +416,8 @@ existing evidence. They do not suggest another tool or narrower scope; the batch
 directive and the existing tool-free recovery pass. Control-plane waits retain their tool-call budget exemption.
 
 Turn-balancer recovery resets navigation/repetition evidence only. It preserves the anti-blind mutation count,
-`verification_pending`, and any failed-verifier fix allowance; only a successful standalone or pure-`&&` verifier clears
-that checkpoint.
+`verification_pending`, and any failed-verifier fix allowance; only a truthful successful verifier (including a validated
+pipefail pipeline) clears that checkpoint.
 
 Workspace-aware tool responses and execution summaries render paths inside the active workspace relative to that
 workspace (for example, `.vtcode/tasks/current_task.md`). Paths outside the workspace keep their absolute form so

@@ -1455,6 +1455,128 @@ async fn repeated_identical_slice_read_trips_read_family_cap() {
 }
 
 #[tokio::test]
+async fn intermittent_path_cap_rejections_allow_progress_but_consecutive_retries_trip_fuse() {
+    for productive in [true, false] {
+        let mut backing = TestContextBacking::new(64).await;
+        backing.select_build_primary_agent();
+        let sample = backing.sample_file.clone();
+        let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+continued after read cap\n*** End Patch\n"});
+        cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &patch, PermissionGrant::Permanent).await;
+        let mut tracker = LoopTracker::new();
+        let mut modified = BTreeSet::new();
+        let mut ctx = backing.turn_processing_context();
+        let cap = max_consecutive_blocked_tool_calls_per_turn(&ctx);
+        for _ in 0..6 {
+            ctx.harness_state
+                .record_file_read_path_call(sample.to_string_lossy().into_owned());
+        }
+        let mut outcome_ctx = ToolOutcomeContext {
+            ctx: &mut ctx,
+            repeated_tool_attempts: &mut tracker,
+            turn_modified_files: &mut modified,
+        };
+        let attempts = if productive { cap * 2 + 1 } else { cap + 1 };
+        for index in 1..=attempts {
+            let before = outcome_ctx.ctx.tool_registry.execution_history_len();
+            handle_single_tool_call(
+                &mut outcome_ctx,
+                &format!("capped_{index}"),
+                tool_names::READ_FILE,
+                json!({"path":sample, "offset":index, "limit":1}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), before, "capped reads cannot execute");
+            if productive {
+                let other = sample.with_file_name(format!("other_{index}.txt"));
+                std::fs::write(&other, format!("distinct evidence {index}\n")).unwrap();
+                handle_single_tool_call(
+                    &mut outcome_ctx,
+                    &format!("progress_{index}"),
+                    tool_names::READ_FILE,
+                    json!({"path":other, "offset":1, "limit":1}),
+                )
+                .await
+                .unwrap();
+                assert!(outcome_ctx.ctx.tool_registry.execution_history_len() > before);
+                assert!(!outcome_ctx.ctx.harness_state.blocked_tool_recovery_pending());
+            }
+        }
+        assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+        assert_eq!(
+            outcome_ctx.ctx.harness_state.blocked_tool_recovery_pending() || outcome_ctx.ctx.is_recovery_active(),
+            !productive,
+        );
+        if productive {
+            handle_single_tool_call(&mut outcome_ctx, "continue_patch", tool_names::APPLY_PATCH, patch)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(sample).unwrap(), "continued after read cap\n");
+        } else {
+            assert_eq!(outcome_ctx.ctx.harness_state.consecutive_blocked_tool_calls, cap + 1);
+            assert_eq!(std::fs::read_to_string(sample).unwrap(), "hello\n");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn filtered_verifier_failure_grants_repair_and_success_continues_loop() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    std::fs::create_dir(workspace.join("scripts")).unwrap();
+    let checker = workspace.join("scripts/check_markdown.py");
+    let command = "python3 scripts/check_markdown.py 2>&1 | grep";
+    let args = json!({"cmd":command, "raw_command":command, "args":["README"], "workdir":workspace});
+    cache_tool_permission(&mut backing, tool_names::EXEC_COMMAND, &args, PermissionGrant::Permanent).await;
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+verified continuation\n*** End Patch\n"});
+    cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &patch, PermissionGrant::Permanent).await;
+    let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for (exit, pending) in [(7, true), (0, false)] {
+        std::fs::write(
+            &checker,
+            format!("import sys\nprint('README: checker output')\nprint('unrelated output')\nsys.exit({exit})\n"),
+        )
+        .unwrap();
+        let start = outcome_ctx.ctx.working_history.len();
+        handle_single_tool_call(
+            &mut outcome_ctx,
+            &format!("filtered_check_{exit}"),
+            tool_names::EXEC_COMMAND,
+            args.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome_ctx.repeated_tool_attempts.verification_is_pending(), pending);
+        let output = outcome_ctx.ctx.working_history[start..]
+            .iter()
+            .filter(|message| message.role == uni::MessageRole::Tool)
+            .map(|message| message.content.as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("README: checker output"), "{output}");
+        assert!(!output.contains("unrelated output"), "filter must be preserved: {output}");
+        if pending {
+            assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 2);
+        }
+        assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    }
+    handle_single_tool_call(&mut outcome_ctx, "after_filtered_verification", tool_names::APPLY_PATCH, patch)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(workspace.join("sample.txt")).unwrap(), "verified continuation\n");
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+}
+
+#[tokio::test]
 async fn repeated_paginated_sed_reads_eventually_trip_per_file_path_cap() {
     // turn_911-style regression: simple `sed -n` pagination should behave like
     // file reads. Different ranges must not trip the identical-slice family
@@ -2529,6 +2651,14 @@ async fn patch_context_mismatch_allows_one_uncached_shell_range_after_six_reads(
             .tool_registry
             .has_patch_recovery_read(tool_names::EXEC_COMMAND, &args)
     );
+    // Cached identical reads can already be at the family boundary when a
+    // mismatch asks for this same slice again. The one fresh read covers both caps.
+    for _ in 0..3 {
+        outcome_ctx
+            .ctx
+            .harness_state
+            .record_file_read_family_call(format!("unified_exec::read::{sample_path}::off=1::lim=1"));
+    }
     let start = outcome_ctx.ctx.working_history.len();
     handle_single_tool_call(&mut outcome_ctx, "fresh_shell_range", tool_names::EXEC_COMMAND, args.clone())
         .await
@@ -2595,7 +2725,7 @@ async fn patch_recovery_path_cap_exception_is_reserved_before_batch_execution() 
         )
         .await
         .expect("second batch admission");
-        assert!(matches!(second, ValidationResult::Blocked), "prior reads: {prior_reads}");
+        assert!(matches!(second, ValidationResult::ReadCapBlocked), "prior reads: {prior_reads}");
         assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), history_len);
         assert!(
             outcome_ctx
