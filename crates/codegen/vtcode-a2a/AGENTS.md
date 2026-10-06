@@ -24,4 +24,4 @@
 
 ## Gotchas
 
-- `server.rs` uses `crate::shutdown_signal_logged` (not vtcode-core's shutdown) — local function. Feature flag chain: vtcode binary `a2a-server` -> vtcode-core `a2a-server` -> vtcode-a2a `a2a-server`. `WebhookNotifier` is always available (not feature-gated) — only the HTTP server is gated; protected server routes require bearer auth, and webhook URLs must be parsed/validated with redirects disabled.
+- `server.rs` uses `crate::shutdown_signal_logged` (not vtcode-core's shutdown) — local function. Feature flag chain: vtcode binary `a2a-server` -> vtcode-core `a2a-server` -> vtcode-a2a `a2a-server`. `WebhookNotifier` is always available (not feature-gated) — only the HTTP server is gated; protected server routes require bearer auth, and webhook URLs must be parsed/validated with redirects disabled. Bounded task queries use `Task::clone_for_query` to copy only the response history/artifacts; preserve metadata, kind, suffix order and the full stored task.

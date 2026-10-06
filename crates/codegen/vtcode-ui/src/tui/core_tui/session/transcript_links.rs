@@ -998,7 +998,9 @@ fn location_paren_suffix_start(token: &str) -> Option<usize> {
 
 fn resolve_transcript_file_target(token: &str, workspace_root: Option<&Path>) -> Option<EditorTarget> {
     let token = token.trim();
-    if token.is_empty() {
+    // Location parsing cannot make an ordinary word into a path candidate.
+    // Percent escapes can introduce path syntax, so they must still be decoded.
+    if !token.bytes().any(|byte| matches!(byte, b'.' | b'/' | b'\\' | b'%')) {
         return None;
     }
 
@@ -1061,6 +1063,70 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::tui::core_tui::types::InlineTheme;
+
+    #[test]
+    fn path_candidate_shortcut_preserves_decoded_paths_and_locations() {
+        struct Case {
+            raw: &'static str,
+            path: &'static str,
+            location: Option<&'static str>,
+        }
+        let root = tempfile::tempdir().expect("link workspace");
+        fs::create_dir(root.path().join("src")).unwrap();
+        for path in ["src/main.rs", "Cargo.toml", "東京.rs", "Cargo"] {
+            fs::write(root.path().join(path), "fixture").unwrap();
+        }
+        let cases = [
+            Case {
+                raw: "src%2Fmain%2Ers:12:3",
+                path: "src/main.rs",
+                location: Some(":12:3"),
+            },
+            Case {
+                raw: "Cargo%2Etoml(5,2)",
+                path: "Cargo.toml",
+                location: Some(":5:2"),
+            },
+            Case {
+                raw: "./Cargo.toml:7",
+                path: "Cargo.toml",
+                location: Some(":7"),
+            },
+            Case {
+                raw: "東京.rs:4",
+                path: "東京.rs",
+                location: Some(":4"),
+            },
+            Case {
+                raw: "src/main.rs",
+                path: "src/main.rs",
+                location: None,
+            },
+        ];
+        for case in cases {
+            let target = resolve_transcript_file_target(case.raw, Some(root.path())).expect("file link");
+            assert_eq!(target.path(), root.path().join(case.path), "{}", case.raw);
+            assert_eq!(target.location_suffix(), case.location, "{}", case.raw);
+        }
+        for word in ["ordinary", "3999:", "inspect", "or", "Cargo", "Cargo(5,2)"] {
+            assert!(resolve_transcript_file_target(word, Some(root.path())).is_none(), "{word}");
+        }
+    }
+
+    #[test]
+    fn path_candidate_shortcut_keeps_filesystem_checks_live() {
+        let root = tempfile::tempdir().expect("link workspace");
+        let path = root.path().join("appearing.rs");
+        assert!(resolve_transcript_file_target("appearing.rs:9", Some(root.path())).is_none());
+        fs::write(&path, "created after detection").unwrap();
+        let target = resolve_transcript_file_target("appearing.rs:9", Some(root.path())).expect("new file");
+        assert_eq!(target.path(), path);
+        assert_eq!(target.location_suffix(), Some(":9"));
+        fs::remove_file(&path).unwrap();
+        assert!(resolve_transcript_file_target("appearing.rs:9", Some(root.path())).is_none());
+        fs::create_dir(&path).unwrap();
+        assert!(resolve_transcript_file_target("appearing.rs:9", Some(root.path())).is_none());
+    }
 
     #[test]
     fn filename_candidates_ignore_sentence_punctuation() {

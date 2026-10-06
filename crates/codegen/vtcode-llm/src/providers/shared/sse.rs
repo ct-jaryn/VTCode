@@ -102,24 +102,71 @@ pub(super) fn find_sse_boundary(buffer: &str) -> Option<(usize, usize)> {
 #[inline]
 pub(crate) fn find_sse_boundary_bytes(buffer: &[u8], offset: usize) -> Option<(usize, usize)> {
     let data = &buffer[offset..];
-    let newline_boundary = data.windows(2).position(|w| w == b"\n\n").map(|idx| (idx, 2));
-    let carriage_boundary = data.windows(4).position(|w| w == b"\r\n\r\n").map(|idx| (idx, 4));
-
-    match (newline_boundary, carriage_boundary) {
-        (Some((n_idx, n_len)), Some((c_idx, c_len))) => {
-            let na = offset + n_idx;
-            let ca = offset + c_idx;
-            if na <= ca { Some((na, n_len)) } else { Some((ca, c_len)) }
-        }
-        (Some((idx, len)), None) => Some((offset + idx, len)),
-        (None, Some((idx, len))) => Some((offset + idx, len)),
-        (None, None) => None,
-    }
+    // Stop at the first delimiter of either kind. Searching the entire tail
+    // for the other kind on every event makes a single-ending burst quadratic.
+    data.windows(2).enumerate().find_map(|(index, pair)| match pair {
+        b"\n\n" => Some((offset + index, 2)),
+        b"\r\n" if data.get(index..index + 4) == Some(b"\r\n\r\n") => Some((offset + index, 4)),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_consumed_sse, extract_data_payload, find_sse_boundary, next_sse_event};
+    use super::{drain_consumed_sse, extract_data_payload, find_sse_boundary, find_sse_boundary_bytes, next_sse_event};
+
+    #[test]
+    fn byte_boundaries_match_string_search_at_every_offset() {
+        // Exhaustively cover overlapping, mixed and incomplete delimiters.
+        for length in 0..=8 {
+            for mut ordinal in 0..3_usize.pow(length) {
+                let mut text = String::new();
+                for _ in 0..length {
+                    text.push(['x', '\r', '\n'][ordinal % 3]);
+                    ordinal /= 3;
+                }
+                for offset in 0..=text.len() {
+                    let expected = [("\n\n", 2), ("\r\n\r\n", 4)]
+                        .into_iter()
+                        .filter_map(|(delimiter, size)| {
+                            text[offset..].find(delimiter).map(|index| (offset + index, size))
+                        })
+                        .min_by_key(|(index, _)| *index);
+                    assert_eq!(find_sse_boundary_bytes(text.as_bytes(), offset), expected, "{text:?} at {offset}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_unicode_events_survive_every_byte_split() {
+        let stream = "data: café\r\n\r\ndata: 東京\n\n\r\n\r\ndata: tail".as_bytes();
+        for split in 0..=stream.len() {
+            let mut buffer = Vec::new();
+            let mut offset = 0;
+            let mut events = Vec::new();
+            for chunk in [&stream[..split], &stream[split..]] {
+                buffer.extend_from_slice(chunk);
+                while let Some(event) = next_sse_event(&buffer, &mut offset).expect("complete UTF-8 event") {
+                    events.push(event.to_owned());
+                }
+                drain_consumed_sse(&mut buffer, &mut offset);
+            }
+            assert_eq!(events, ["data: café", "data: 東京", ""]);
+            assert_eq!(buffer, b"data: tail");
+            assert_eq!(offset, 0);
+        }
+    }
+
+    #[test]
+    fn invalid_event_does_not_consume_its_boundary() {
+        let buffer = b"data: valid\n\ndata: \xff\r\n\r\ndata: later\n\n";
+        let mut offset = 0;
+        assert_eq!(next_sse_event(buffer, &mut offset).unwrap(), Some("data: valid"));
+        let failed_offset = offset;
+        assert!(next_sse_event(buffer, &mut offset).is_err());
+        assert_eq!(offset, failed_offset);
+    }
 
     /// Drive one chunk through the pump, collecting raw event text.
     fn collect(buf: &mut Vec<u8>, offset: &mut usize, chunk: &str) -> Vec<String> {

@@ -217,5 +217,10 @@ harness = false
 name = "agent_harness"
 harness = false
 
+[[bench]]
+name = "runtime_paths"
+harness = false
+required-features = ["a2a-server"]
+
 [lints]
 workspace = true

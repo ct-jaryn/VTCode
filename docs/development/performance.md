@@ -51,6 +51,10 @@ persisted editor/few-shot context must be shaped for the route or the provider r
 common no-injection path from allocating multiple equivalent histories while preserving the existing normalization and
 continuation boundaries.
 
+Request-history analysis borrows call identifiers from the source messages. A repair clones only the messages retained
+in the provider-facing view and creates placeholders only for missing results; it never clones the whole shared source
+before rebuilding. Preserve causal matching, duplicate-result rejection, result order, and clean-history Arc reuse.
+
 Request envelopes retain the source tool-catalog `Arc` within a request segment. When model/provider/mode/prompt
 identity is unchanged, subsequent turns reuse the frozen ordered catalog without cloning, sorting, or re-hashing its
 schema; segment boundaries clear that marker before rebuilding.
@@ -73,6 +77,10 @@ Avoid combining `#[serde(flatten)]` with `#[serde(untagged)]` on frequent, discr
 must buffer the surrounding map to decide which flattened shape applies; direct wire structs can decode the known fields
 once and construct the tagged payload afterward. VT Code uses this for OpenResponses and ACP streaming notifications.
 Keep flattening when it is the actual contract, such as trace metadata's vendor-extension map.
+
+Bounded A2A task queries clone only the requested history suffix and included artifacts while holding the existing
+read lock. Keep status, identifiers, metadata, discriminator, suffix order, and full stored tasks unchanged; permission
+checks and pagination still belong to the existing server and task-manager paths.
 
 Keep streaming payloads as borrowed SSE text until a consumer needs an owned payload. The normalized Responses adapter
 now avoids the old `Value -> JSON -> Value` round trip; common text, reasoning, tool, and lifecycle events use typed
@@ -111,6 +119,95 @@ repetition, error categories, token cache usage, and output volume before changi
 ```
 
 Artifacts are written to `.vtcode/perf/` and include JSON metrics plus raw logs.
+
+### Workspace audit and release-matched comparisons
+
+Record the revision and dirty diff, host CPU/RAM/OS, Rust toolchain, features, allocator, compiler flags, fixture sizes,
+and cache state alongside each result. Run builds, tests, benchmarks, and profilers sequentially. Keep build wall time
+separate from test execution and operation latency: a timed `cargo bench` command includes compilation, fixture setup,
+warm-up, and analysis. Its wall time is not the latency of a tool call.
+
+The baseline script always invokes `cargo build --release --locked --bin vtcode`, even when the executable already
+exists, and stops on build/check failures. It records `release_build_ms` separately. The optional `*_bench_ms` fields
+remain command wall times for compatibility; use the estimates and raw samples in Criterion's output for runtime
+comparisons.
+
+Startup captures use the shared `scripts/perf/startup_env.py` helper to exclude inherited credentials and isolate
+workspace, config, XDG and Codex paths. Their `startup_environment` tag lets comparisons flag historical captures with
+different isolation. Interactive first-frame samples use a closed loopback Ollama endpoint and stop at the initial
+VT Code header or request prompt, without submitting a provider request. Raw terminal bytes are retained; the PTY
+is closed before the owned child is reaped so pending output cannot stall cleanup on macOS.
+
+The normal bench profile uses `opt-level = 3`; shipping release uses `"z"`. For release-matched library measurements:
+
+```bash
+export CARGO_PROFILE_BENCH_OPT_LEVEL=z
+export CARGO_PROFILE_BENCH_DEBUG_ASSERTIONS=true
+export CARGO_PROFILE_BENCH_OVERFLOW_CHECKS=true
+export CARGO_PROFILE_BENCH_DEBUG=1
+export CARGO_PROFILE_BENCH_STRIP=false
+
+cargo bench --locked -p vtcode-core --features a2a-server --bench runtime_paths --no-run
+cargo bench --locked -p vtcode-core --features a2a-server --bench runtime_paths -- \
+  --sample-size 20 --warm-up-time 0.5 --measurement-time 1 --noplot
+```
+
+These overrides retain full LTO, one codegen unit, portable target flags, and release assertions. Document the remaining
+differences: benchmark harnesses unwind, symbols are retained, library benchmarks use the system allocator, and this
+target enables the optional A2A server. The root executable uses mimalloc by default and disables `vtcode-core` default
+features; core's normal benchmark build enables `tui`. Compare identical feature sets, and do not treat a library/PTY
+measurement as a measurement of the default executable's alternate backend. `allocator_throughput` explicitly uses
+the binary's allocator selection.
+
+`runtime_paths` adds deterministic offline coverage through existing entrypoints. It uses temporary workspaces and
+loopback/stdio peers; it requires Python 3 for the synthetic MCP peer and does not call a live provider.
+
+| Group | Workload and measurement boundary |
+| --- | --- |
+| `request_history` | Shared clean histories and request-only missing-result repair, 8/128/2,048 turns |
+| `transcript_interaction` (existing `transcript` bench) | Full idle/streaming frames, mouse scrolling, and selection through app events |
+| `admitted_tool_dispatch` | Warm internal registry/cache calls for eight fixture file reads, sequential/joined futures/spawned tasks |
+| `stream_framing_helper` | Exact private SSE/UTF-8 helper source, LF/CRLF bursts and 17-byte fragments; helper attribution only |
+| `responses_provider_loopback` | Public normalized provider stream consuming 8/256/4,096 recorded text events and completion |
+| `responses_boundaries` | Explicit Responses profile through the existing custom-provider router: seven-byte reasoning/tool chunks, GPT summary suppression, malformed/incomplete input and recovery |
+| `workspace_search` | Live bounded no-follow walker, 8/256/4,096 files, wide/deep trees up to 63 levels, cancellation and visible file mutation |
+| `session_store` | Canonical event append/flush, reopen, snapshot replay, and invalidated-index rebuild; durability included |
+| `session_retention` | Completed nonempty sessions, count-based eviction while preserving one session; durable setup excluded |
+| `runner_output` | Pipe bursts, slow consumers, and bounded PTY previews from 1 KiB to 1 MiB fixtures |
+| `runner_cancellation` | Spawn, terminate and reap an owned child, including closed output and exit notification |
+| `mcp_stdio` | Real client handshake, cached discovery/search, and tool requests to a synthetic stdio peer |
+| `mcp_boundaries` | Five-millisecond peer delay, 32 outstanding requests, cancelled-call recovery and disconnect notification |
+| `a2a_loopback` | Authenticated discovery and bounded-history reads from 8/64/512-message tasks |
+| `a2a_boundaries` | Five-millisecond authenticated request delay and cancelled-call recovery |
+
+The helper benches compile the owning private source files directly to avoid widening public APIs. Pair these with the
+provider entrypoint measurement before claiming an end-to-end streaming improvement. The older `tool_pipeline`
+outcome-clone benches are simulations, not production pipeline measurements. Criterion sample distributions describe
+batch-average operation times, not individual request tail latencies.
+
+Set `VTCODE_BENCH_SCOPE` to `harness`, `streaming`, `indexing`, `memory`, `runner`, or `protocols` to construct only that
+subsystem's fixtures. Criterion name filters select timing cases but still run other fixture setup by default; that
+setup can dominate whole-process profiles, especially durable memory logs. Tree creation warms filesystem metadata;
+the wide/deep walker cases do not claim a cold OS cache. The older persistent-index benchmark measures a library API
+that currently has only benchmark/test callers. Confirm shipping callers before ranking it as a production hotspot.
+
+Capture three paired baseline/candidate runs with identical settings, fixtures, warm-up, and sample counts. Retain
+explicitly built baseline executables with hashes, rebuild the release executable before comparisons, and run control
+samples to estimate host noise. Keep a change only when its gain exceeds that noise and another required workload has
+no repeatable regression beyond noise. Archive Criterion samples and all failures under `.vtcode/perf/`; performance
+results remain informational, without machine-dependent CI thresholds.
+
+Keep the benchmark source identical in both builds as well as the production fixtures. Adding cases can change LTO
+layout even for unchanged code. When coverage expands during an audit, rebuild the baseline production revision with
+the expanded harness before attributing a new regression to the candidate. Preserve both comparisons and their source
+and executable hashes.
+
+For CPU attribution, use a symbolized release build and `samply record --save-only`; keep profiler runs separate from
+production timing. Use the existing hotpath harness for allocation attribution and future polling, and platform
+RSS/resource sampling for memory. Record unavailable counters explicitly: process RSS is not bytes allocated,
+filesystem block-operation counts are not bytes read/written, and a fresh executable copy does not evict the OS cache.
+Process-scoped filesystem tracing may require host privileges. Never weaken durability or sandbox/permission checks
+to improve a number.
 
 The perf harness builds and measures `target/release/vtcode`, not `cargo run` or the debug binary. It clears
 `RUSTC_WRAPPER` and `CARGO_BUILD_RUSTC_WRAPPER` by default for its cargo steps so local measurements still work when
@@ -332,6 +429,7 @@ This builds release with:
 
 - `-C force-frame-pointers=yes`
 - `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`
+- `CARGO_PROFILE_RELEASE_STRIP=false` so the release profile does not remove those symbols
 
 Then profile `target/release/vtcode` with your preferred tool.
 
@@ -382,10 +480,11 @@ Follow this loop for any claimed speedup; it adapts iterative `criterion` benchm
 - Use `criterion` directly with `black_box` on outputs. Do not invent custom timing harnesses.
 - Cover small and large inputs. A win on one size only is not a win; report median + statistical significance from
   `criterion`.
-- Gate on correctness. Compare output against the known-good path (golden tests, `size_of` guards, catalog-hash
-  stability asserts); accept at most a documented minor regression for a major speedup.
-- Target at least 1.2x faster than baseline per pass, then keep iterating on quick high-impact wins until gains converge
-  to ~3-5% noise. Prefer single-agent iteration; spawn parallel hypothesis work only when the slices are independent.
+- Gate on correctness. Compare output against independently expected results (golden tests, `size_of` guards,
+  catalog-hash stability assertions), including malformed input, cancellation, ordering, and invalidation.
+- Keep gains that exceed measured control-run variation in three paired runs, with no repeatable regression beyond
+  noise in another required workload. Re-rank remaining candidates after each retained change. Prefer single-agent
+  iteration; delegate only when independent work or context isolation clearly helps.
 - No `unsafe` for speed. VT Code prohibits `unsafe` in product code; use iterators, `memchr`, `with_capacity`, `Arc`
   sharing, and enum footprint reduction per `rust-performance-principles.md`.
 
