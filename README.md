@@ -43,6 +43,7 @@ resumable sessions.
   - [Documentation](#documentation)
   - [Development](#development)
   - [Contributing](#contributing)
+  - [Security](#security)
   - [Community](#community)
   - [License](#license)
 
@@ -50,9 +51,8 @@ resumable sessions.
 
 ## Overview
 
-VT Code is an open-source terminal coding agent built in Rust. Explore a codebase, plan changes, run tools, and review
-edits in the interactive TUI, or run `vtcode exec` headless. You pick the model and permissions; the runtime handles
-context management, tools, and execution policy.
+Explore a codebase, plan changes, run tools, and review edits in the interactive TUI, or run `vtcode exec` headless.
+You pick the model and permissions; the runtime handles context management, tools, and execution policy.
 
 | At a glance      | What you get                                                                          |
 | ---------------- | ------------------------------------------------------------------------------------- |
@@ -62,8 +62,7 @@ context management, tools, and execution policy.
 | **Integrations** | [MCP](./docs/guides/mcp-integration.md), Skills, plugins, and editor bridges.         |
 | **Models**       | [Hosted or local providers](./docs/README.md#provider-index), chosen per task.        |
 
-The rest of this file follows that arc: install, configure, run a first task, then go deeper into usage, integrations,
-and development.
+The sections below follow that arc: install, configure, run a first task, then go deeper.
 
 ## Quick start
 
@@ -122,7 +121,7 @@ vtcode   # open the interactive TUI in your project
 ```
 
 Start with a focused request, such as "Explain how this project handles authentication," then review the diff and test
-results before committing. For automation and session commands, see [Usage](#usage). See
+results before committing. See [Usage](#usage) for automation and session commands, or
 [getting started](./docs/user-guide/getting-started.md) for a guided tour.
 
 ## Usage
@@ -135,9 +134,14 @@ Use `vtcode` to explore, plan, and implement changes in the TUI. For larger task
 [interactive guide](./docs/user-guide/interactive-mode.md) for controls.
 
 After a task, enter `/explain` to review its outcome, changes, recorded decisions, verification, and review priorities
-without another model call. Use `/explain --details` for evidence, `/explain diagram` for execution relationships, or
-`/explain --web` for the browser view with an offline fallback; `/explain --export html` saves a standalone report. See
-[explanation usage](./docs/user-guide/commands.md#execution-explanations) for scopes and report options.
+without another model call:
+
+- `/explain --details` adds evidence.
+- `/explain diagram` shows execution relationships.
+- `/explain --web` opens the browser view with an offline fallback.
+- `/explain --export html` saves a standalone report.
+
+Scopes and report options: [explanation usage](./docs/user-guide/commands.md#execution-explanations).
 
 ### Headless
 
@@ -150,9 +154,9 @@ vtcode exec "refactor main.rs"    # headless task with the full tool loop
 vtcode review                     # agent review of uncommitted changes
 ```
 
-`exec` requires autonomous execution in `[automation.full_auto]` plus `full_auto` workspace trust. A terminal prompts
-for trust; non-TTY runs fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. Full-auto's tool allow-list, explicit
-denies, and execution policy still apply. See [exec mode](./docs/user-guide/exec-mode.md) and
+`exec` requires autonomous execution in `[automation.full_auto]` plus `full_auto` workspace trust: terminals prompt for
+trust, and non-TTY runs fail unless you set `VTCODE_TRUST_WORKSPACE=full-auto`. The tool allow-list, explicit denies,
+and execution policy still apply. See [exec mode](./docs/user-guide/exec-mode.md) and
 [full automation](./docs/guides/full-automation.md) for trust, output, and configuration details.
 
 For repeatable, environment-checked results, use the [eval framework](./docs/guides/eval.md). A completion message
@@ -197,7 +201,7 @@ Enable these only when you need them; none are required for the quick start.
 | [Agent Skills](./docs/skills/SKILLS_GUIDE.md) | Load reusable prompt packages on demand. |
 | [Plugins](./docs/guides/agent-plugins.md) | Extend the agent with plugin manifests. |
 | [ACP with Zed](./docs/guides/zed-acp.md) | Drive VT Code from the Zed editor. |
-| [WebMCP](./docs/user-guide/webmcp.md) | Pair the TUI with an authenticated browser editor; the hosted app at [vtcode.vinhnx.chatgpt.site](https://vtcode.vinhnx.chatgpt.site/) ([mirror](https://vinhnx.github.io/VTCode/)) runs on this bridge. Pair inside the TUI with `/webmcp pair <origin>`; see the [deployment reference](./docs/reference/webmcp.md). |
+| [WebMCP](./docs/user-guide/webmcp.md) | Pair the TUI with an authenticated browser editor via `/webmcp pair <origin>`; the hosted app ([site](https://vtcode.vinhnx.chatgpt.site/), [mirror](https://vinhnx.github.io/VTCode/)) runs on this bridge. See the [deployment reference](./docs/reference/webmcp.md). |
 | [Memcode MCP](./docs/guides/memcode-mcp.md) | Carry context between tasks; see the [design write-up](https://memcode.in/blogs/vt-code-memory-across-threads). |
 
 ## Documentation
@@ -255,6 +259,12 @@ Contributions are welcome in every form:
 
 Before a PR, see the [contribution guide](./docs/CONTRIBUTING.md): Conventional Commits (`type(scope): subject`),
 `./scripts/check-dev.sh` + `cargo nextest run`, and a focused diff.
+
+## Security
+
+Report vulnerabilities privately via
+[GitHub private vulnerability reporting](https://github.com/vinhnx/VTCode/security/advisories/new); never open a public
+issue. Details: [security policy](./docs/SECURITY.md).
 
 ## Community
 
@@ -319,12 +329,6 @@ Want to see your avatar here? Every bit counts: one-line fixes, bug reports, and
 [Request a feature](https://github.com/vinhnx/VTCode/issues/new?template=feature_request.md) ·
 [Share feedback](https://github.com/vinhnx/VTCode/discussions) ·
 [Star the repo](https://github.com/vinhnx/VTCode/stargazers) · [Contribute](./docs/CONTRIBUTING.md)
-
-### Security reporting
-
-Report security vulnerabilities privately via
-[GitHub private vulnerability reporting](https://github.com/vinhnx/VTCode/security/advisories/new); never open a public
-issue. Details: [security policy](./docs/SECURITY.md).
 
 ### Resources
 
