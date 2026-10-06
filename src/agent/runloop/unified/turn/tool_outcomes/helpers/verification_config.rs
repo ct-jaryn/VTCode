@@ -32,18 +32,17 @@ pub(crate) const FAILED_VERIFICATION_FIX_WARNING: &str =
 /// reported failure and re-run a standalone verifier instead of claiming
 /// completion.
 pub(crate) const FAILED_VERIFICATION_FIX_DIRECTIVE: &str = "The last verification command ran and failed. A bounded fix window is active: apply fixes for the reported failure, then re-run the verification command standalone or as a pure `&&` chain. The work is accepted once a verifier exits 0.";
-/// Warning rendered when a verifier behind a filtering pipe or a `;`/`||`
-/// join (e.g. `cargo check | grep error; true`) succeeded while the gate is
-/// pending: the exit status belongs to another command, so the verifier's
-/// success cannot clear the gate. Pure `head`/`tail` truncator shapes never
-/// land here; static read-only filtering pipelines use pipefail. The
-/// tracker classifies the command as executed
+/// Once-per-turn warning for a completed checker in an unverified shell form,
+/// regardless of gate state. Pure truncator and safe static filtering shapes
+/// never land here: they execute standalone or with pipefail. The tracker
+/// classifies the command as executed
 /// ([`vtcode_core::tools::tool_intent::shell_args_as_executed`]).
-pub(crate) const PIPED_VERIFICATION_WARNING: &str = "[!] Piped verifier did not clear the verification gate: the exit status belongs to another command, not the verifier.";
+pub(crate) const PIPED_VERIFICATION_WARNING: &str =
+    "[!] Verification was not recorded: the shell sequence cannot establish the verifier's exit status.";
 /// Model-facing directive paired with [`PIPED_VERIFICATION_WARNING`]: without
-/// this feedback a piped success reads as "verified" to the model and the
-/// pending gate deadlocks the turn on unverified text responses.
-pub(crate) const PIPED_VERIFICATION_DIRECTIVE: &str = "The verification command used a status-masking shell sequence that cannot establish verifier success, so it did not clear the verification gate. Re-run the verifier standalone or as a pure `&&` chain of verifiers; a pipe only into `head` or `tail` also counts as standalone. Cap output with `max_output_tokens` instead of filtering it.";
+/// this feedback a masked status reads as "verified" to the model, even in
+/// docs-only work where no verification gate is pending.
+pub(crate) const PIPED_VERIFICATION_DIRECTIVE: &str = "Verification was not recorded because the shell sequence cannot establish verifier success. Re-run the checker standalone or as a pure `&&` chain of verifiers. Use `max_output_tokens` and the structured exit code; do not append `; echo $?`. This notice does not grant repair edits or change the verification gate.";
 /// Bounded in-turn autonomous recovery attempts when the model emits text
 /// instead of a verifier while the gate is pending.
 ///

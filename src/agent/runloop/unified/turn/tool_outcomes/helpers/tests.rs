@@ -813,6 +813,192 @@ fn piped_verifier_success_without_pending_gate_stays_silent() {
 }
 
 #[test]
+fn masked_verifier_feedback_is_once_per_turn_without_changing_gate_or_repair_budget() {
+    let args = json!({"cmd":"npx markdownlint-cli2 README.md; echo \"lint exit: $?\""});
+    for pending in [false, true] {
+        let mut tracker = LoopTracker::with_verification_snapshot((pending, 0));
+        assert_eq!(
+            mutation_blocked_until_verification(&tracker, tools::EXEC_COMMAND, &args),
+            pending,
+            "diagnostic detection must not change admission"
+        );
+        let success = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"exit_code":0}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for attempt in 0..3 {
+            assert!(!update_repetition_tracker(&mut tracker, &success, tools::EXEC_COMMAND, &args));
+            assert_eq!(tracker.take_piped_verification_notice(), attempt == 0);
+            assert_eq!(tracker.verification_is_pending(), pending);
+            assert_eq!(tracker.fix_edits_remaining, 0);
+            tracker.reset_after_balancer_recovery();
+        }
+        update_repetition_tracker(
+            &mut tracker,
+            &success,
+            tools::EXEC_COMMAND,
+            &json!({"cmd":"npx markdownlint-cli2 README.md"}),
+        );
+        assert!(!tracker.verification_is_pending());
+        update_repetition_tracker(&mut tracker, &success, tools::EXEC_COMMAND, &args);
+        assert!(!tracker.take_piped_verification_notice(), "successful verification must not replenish coaching");
+        assert!(!tracker.verification_is_pending());
+    }
+}
+
+#[test]
+fn masked_verifier_feedback_requires_execution_and_terminal_status() {
+    let args = json!({"cmd":"cargo check; echo $?"});
+    for status in [
+        ToolExecutionStatus::Success {
+            output: json!({"session_id":"running-check"}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        },
+        ToolExecutionStatus::Failure {
+            error: vtcode_core::tools::registry::ToolExecutionError::policy_violation(tools::EXEC_COMMAND, "denied"),
+        },
+        ToolExecutionStatus::Cancelled,
+    ] {
+        let mut tracker = LoopTracker::new();
+        update_repetition_tracker(&mut tracker, &ToolPipelineOutcome::from_status(status), tools::EXEC_COMMAND, &args);
+        assert!(!tracker.take_piped_verification_notice());
+        assert!(!tracker.verification_is_pending());
+        assert_eq!(tracker.fix_edits_remaining, 0);
+    }
+}
+
+#[test]
+fn masked_checker_polling_retains_only_diagnostic_identity() {
+    for pending in [false, true] {
+        for exit_code in [0, 7] {
+            let mut tracker = LoopTracker::with_verification_snapshot((pending, 0));
+            let running = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                output: json!({"session_id": "42"}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            });
+            for id in ["42", "43"] {
+                let running = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                    output: json!({"session_id": id}),
+                    stdout: None,
+                    modified_files: vec![],
+                    command_success: true,
+                });
+                update_repetition_tracker(
+                    &mut tracker,
+                    &running,
+                    tools::EXEC_COMMAND,
+                    &json!({"cmd":"cargo check; echo $?"}),
+                );
+            }
+            assert!(!tracker.take_piped_verification_notice());
+            assert!(tracker.pending_verifier_session_id.is_none());
+            let terminal = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+                output: json!({"exit_code":exit_code}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: exit_code == 0,
+            });
+            update_repetition_tracker(&mut tracker, &terminal, tools::WRITE_STDIN, &json!({"session_id":"99"}));
+            update_repetition_tracker(
+                &mut tracker,
+                &running,
+                tools::UNIFIED_EXEC,
+                &json!({"session_id":"42","action":"wait"}),
+            );
+            assert!(!tracker.take_piped_verification_notice());
+            tracker.reset_after_balancer_recovery();
+            for (id, name) in [(" 42 ", tools::WRITE_STDIN), ("43", tools::UNIFIED_EXEC)] {
+                assert!(!update_repetition_tracker(
+                    &mut tracker,
+                    &terminal,
+                    name,
+                    &json!({"session_id":id,"action":"wait"})
+                ));
+                assert_eq!(tracker.take_piped_verification_notice(), id.trim() == "42");
+                assert_eq!(tracker.verification_is_pending(), pending);
+                assert_eq!(tracker.fix_edits_remaining, 0);
+                assert!(!tracker.take_verification_result_lost_notice());
+            }
+            assert!(tracker.pending_checker_session_ids.is_empty());
+            update_repetition_tracker(&mut tracker, &terminal, tools::WRITE_STDIN, &json!({"session_id":"42"}));
+            assert!(!tracker.take_piped_verification_notice());
+        }
+    }
+}
+
+#[test]
+fn masked_checker_session_loss_and_cleanup_never_grant_verifier_recovery() {
+    for (action, lost) in [("wait", true), ("close", false), ("close", true)] {
+        let mut tracker = LoopTracker::new();
+        let running = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"session_id":"diagnostic"}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        update_repetition_tracker(&mut tracker, &running, tools::EXEC_COMMAND, &json!({"cmd":"cargo check; echo $?"}));
+        tracker.mark_verification_pending();
+        let args = json!({"session_id":"diagnostic", "action":action});
+        let cancelled = ToolPipelineOutcome::from_status(ToolExecutionStatus::Cancelled);
+        update_repetition_tracker(&mut tracker, &cancelled, tools::WRITE_STDIN, &args);
+        assert!(tracker.pending_checker_session_ids.contains("diagnostic"));
+        let rejected = ToolPipelineOutcome::from_status(ToolExecutionStatus::Failure {
+            error: vtcode_core::tools::registry::ToolExecutionError::policy_violation(tools::WRITE_STDIN, "denied"),
+        });
+        update_repetition_tracker(&mut tracker, &rejected, tools::WRITE_STDIN, &args);
+        assert!(tracker.pending_checker_session_ids.contains("diagnostic"));
+        let outcome = if !lost {
+            ToolExecutionStatus::Success {
+                output: json!({"exit_code":0}),
+                stdout: None,
+                modified_files: vec![],
+                command_success: true,
+            }
+        } else {
+            ToolExecutionStatus::Failure {
+                error: vtcode_core::tools::registry::ToolExecutionError::new(
+                    tools::WRITE_STDIN,
+                    vtcode_core::tools::registry::ToolErrorType::ExecutionError,
+                    "exec session 'diagnostic' not found".to_string(),
+                ),
+            }
+        };
+        assert!(!update_repetition_tracker(
+            &mut tracker,
+            &ToolPipelineOutcome::from_status(outcome),
+            tools::WRITE_STDIN,
+            &args
+        ));
+        assert!(tracker.pending_checker_session_ids.is_empty());
+        assert!(tracker.verification_is_pending());
+        assert_eq!(tracker.fix_edits_remaining, 0);
+        assert!(!tracker.take_piped_verification_notice());
+        assert!(!tracker.take_verification_result_lost_notice());
+    }
+}
+
+#[test]
+fn failed_masked_checker_queues_feedback_without_granting_repair_edits() {
+    let mut tracker = LoopTracker::new();
+    let failure = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+        output: json!({"exit_code":7}),
+        stdout: None,
+        modified_files: vec![],
+        command_success: false,
+    });
+    update_repetition_tracker(&mut tracker, &failure, tools::EXEC_COMMAND, &json!({"cmd":"cargo check; echo $?"}));
+    assert!(tracker.take_piped_verification_notice());
+    assert!(!tracker.verification_is_pending());
+    assert_eq!(tracker.fix_edits_remaining, 0);
+}
+
+#[test]
 fn fmt_check_clears_gate_but_plain_fmt_does_not() {
     let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
     tracker.consecutive_mutations = BLIND_EDITING_THRESHOLD;

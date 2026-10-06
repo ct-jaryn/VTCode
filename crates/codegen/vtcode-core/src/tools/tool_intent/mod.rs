@@ -14,7 +14,7 @@ pub use actions::{
 pub use activity::{
     GENERIC_VERIFIER_DESCRIPTION, ShellActivity, VERIFIER_SHELL_FORM_NOTE, classify_shell_activity,
     default_verifier_for_workspace, rewrite_truncation_only_verifier, shell_args_as_executed,
-    shell_command_is_admitted_verification_attempt, shell_command_is_output_search,
+    shell_command_contains_verifier, shell_command_is_admitted_verification_attempt, shell_command_is_output_search,
     shell_command_is_standalone_grep_search, verification_recovery_directive, verifier_reference,
 };
 pub use classify::{

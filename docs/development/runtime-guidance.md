@@ -36,6 +36,14 @@ do not qualify, and all normal command safety, permissions, and budgets still ap
 Normalization includes separate `args` and keeps a matching `raw_command` alias synchronized. Conflicting command
 aliases cannot establish verifier success; run the intended verifier with one consistent command spelling.
 
+Run checkers standalone, cap previews with `max_output_tokens`, and use the structured exit code. Appending
+`; echo $?` masks the checker status and does not establish verification. A completed command containing a
+recognizable checker in an unverified shell sequence gets one diagnostic per turn, even for docs-only work
+with no pending gate. This feedback grants no permissions or repair edits and never clears or arms verification;
+normal mutation accounting still applies. Running calls retain diagnostic-only session identity; only matching
+terminal polling results queue the notice. Session cleanup or loss discards that identity without granting repair
+edits. Rejected, cancelled, and still-running calls do not produce this notice.
+
 A per-file read cap rejects that path while other reads, edits, and verification remain available. Intermittent
 path-cap rejections do not consume the global blocked-call total; consecutive retries still trip the existing fuse.
 After a typed patch context mismatch, one bounded uncached read per canonical path per user turn can pass either

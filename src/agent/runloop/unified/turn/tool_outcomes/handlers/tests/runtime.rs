@@ -1521,6 +1521,131 @@ async fn intermittent_path_cap_rejections_allow_progress_but_consecutive_retries
 
 #[cfg(unix)]
 #[tokio::test]
+async fn masked_checker_feedback_is_bounded_and_standalone_verification_continues_loop() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    std::fs::create_dir(workspace.join("scripts")).unwrap();
+    let checker = workspace.join("scripts/check_markdown.py");
+    std::fs::write(&checker, "import sys, time, pathlib\nwhile not pathlib.Path('release-checker').exists(): time.sleep(0.01)\nprint('README: checker failed')\nsys.exit(7)\n").unwrap();
+    let masked = json!({"cmd":"python3 scripts/check_markdown.py; echo \"lint exit: $?\"", "workdir":workspace, "yield_time_ms":250});
+    let standalone = json!({"cmd":"python3 scripts/check_markdown.py", "workdir":workspace});
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+continued after verification\n*** End Patch\n"});
+    for (name, args) in [
+        (tool_names::EXEC_COMMAND, &masked),
+        (tool_names::EXEC_COMMAND, &standalone),
+        (tool_names::WRITE_STDIN, &json!({"session_id":"placeholder", "chars":""})),
+        (tool_names::APPLY_PATCH, &patch),
+    ] {
+        cache_tool_permission(&mut backing, name, args, PermissionGrant::Permanent).await;
+    }
+    let mut tracker = LoopTracker::new();
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for index in 0..2 {
+        let mut call_id = format!("masked_checker_{index}");
+        let call = PreparedAssistantToolCall::new(uni::ToolCall::function(
+            call_id.clone(),
+            tool_names::EXEC_COMMAND.to_string(),
+            serde_json::to_string(&masked).unwrap(),
+        ));
+        assert!(handle_tool_calls(&mut outcome_ctx, &[call]).await.unwrap().is_none());
+        let output = outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(&call_id))
+            .unwrap()
+            .content
+            .as_text();
+        if index == 0 {
+            let running: serde_json::Value = serde_json::from_str(&output).unwrap();
+            std::fs::write(workspace.join("release-checker"), "release").unwrap();
+            assert!(running.get("exit_code").is_none());
+            assert!(running["next_wait_args"]["session_id"].is_string(), "expected a running session: {running}");
+            assert!(!outcome_ctx.repeated_tool_attempts.piped_verification_notice_pending);
+            assert!(
+                !outcome_ctx
+                    .ctx
+                    .working_history
+                    .iter()
+                    .any(|message| message.content.as_text().contains("Verification was not recorded because"))
+            );
+            call_id = "masked_checker_poll".to_string();
+            let poll = PreparedAssistantToolCall::new(uni::ToolCall::function(
+                call_id.clone(),
+                tool_names::WRITE_STDIN.to_string(),
+                serde_json::to_string(&json!({"session_id":running["next_wait_args"]["session_id"], "action":"wait", "wait_timeout_seconds":10}))
+                    .unwrap(),
+            ));
+            assert!(handle_tool_calls(&mut outcome_ctx, &[poll]).await.unwrap().is_none());
+        }
+        let output = outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(&call_id))
+            .unwrap()
+            .content
+            .as_text();
+        assert!(output.contains("lint exit: 7"), "the checker must really have failed: {output}");
+        let payload: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(payload["exit_code"], 0, "the final echo masks the checker's failure");
+        let notice_count = outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .filter(|message| {
+                message.role == uni::MessageRole::System
+                    && message.content.as_text().contains("Verification was not recorded because")
+            })
+            .count();
+        assert_eq!(notice_count, 1, "repeated completed calls must not repeat coaching");
+        if index == 0 {
+            let history = &outcome_ctx.ctx.working_history;
+            let output_index = history
+                .iter()
+                .position(|message| message.tool_call_id.as_deref() == Some(&call_id))
+                .unwrap();
+            let notice_index = history
+                .iter()
+                .position(|message| {
+                    message.role == uni::MessageRole::System
+                        && message.content.as_text().contains("Verification was not recorded because")
+                })
+                .unwrap();
+            assert!(output_index < notice_index, "coaching must follow the tool's evidence");
+        }
+        assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+        assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 0);
+    }
+    std::fs::write(&checker, "print('README: checker passed')\n").unwrap();
+    outcome_ctx.repeated_tool_attempts.mark_verification_pending();
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "standalone_checker", tool_names::EXEC_COMMAND, standalone)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "verified_edit", tool_names::APPLY_PATCH, patch)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read_to_string(workspace.join("sample.txt")).unwrap(), "continued after verification\n");
+    assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn filtered_verifier_failure_grants_repair_and_success_continues_loop() {
     let mut backing = TestContextBacking::new(12).await;
     backing.select_build_primary_agent();

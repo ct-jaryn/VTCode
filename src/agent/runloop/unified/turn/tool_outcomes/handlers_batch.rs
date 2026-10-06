@@ -26,9 +26,8 @@ const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 4;
 /// Surface queued verification directives after the tool response lands.
 /// `update_repetition_tracker` queues them when a pending gate's verifier
 /// result was lost (verifier-level Failure/Timeout, or a dead exec session)
-/// or when an admitted piped verifier succeeded (its exit status belongs to
-/// the pipeline tail and cannot clear the gate), so the model gets one
-/// diagnostic explanation of what the pending gate still requires.
+/// or when a completed checker used an unverified shell form. The latter is
+/// one diagnostic per turn even when no verification gate is pending.
 fn flush_verification_notices(
     ctx: &mut TurnProcessingContext<'_>,
     loop_tracker: &mut super::super::helpers::LoopTracker,
@@ -299,7 +298,6 @@ async fn execute_parallel_group<'a, 'b>(
             // diagnostic explanation before the pending-verification text cap
             // re-applies instead of blocking the turn on the failure summary.
             t_ctx.ctx.harness_state.reset_assistant_text_response_streak();
-            flush_verification_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
         }
         t_ctx
             .ctx
@@ -320,6 +318,7 @@ async fn execute_parallel_group<'a, 'b>(
                     return Err(error);
                 }
             };
+        flush_verification_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
         if let Some(outcome) = handler_outcome {
             if let TurnHandlerOutcome::Break(
                 turn_result @ (crate::agent::runloop::unified::turn::context::TurnLoopResult::Exit
@@ -639,7 +638,6 @@ async fn execute_and_handle_tool_call_inner<'a>(
         // A failed verifier grants fix-up edits; reset the text streak so the
         // model can diagnose the failure before the text cap re-applies.
         ctx.harness_state.reset_assistant_text_response_streak();
-        flush_verification_notices(ctx, repeated_tool_attempts);
     }
     ctx.session_stats
         .set_verification_snapshot(repeated_tool_attempts.verification_snapshot());
@@ -655,6 +653,7 @@ async fn execute_and_handle_tool_call_inner<'a>(
         tool_execution_start,
     )
     .await?;
+    flush_verification_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
 
     Ok(outcome)
 }

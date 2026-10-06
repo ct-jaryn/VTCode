@@ -141,6 +141,17 @@ fn contains_verification_invocation(command: &str) -> bool {
         .is_some_and(|commands| commands.iter().any(|words| is_verification_invocation(words)))
 }
 
+/// Recognize a verifier for diagnostic feedback, including status-masking tails
+/// such as `; echo $?` that cannot pass static verification admission.
+/// This heuristic grants no permissions, verification credit, or repair edits.
+pub fn shell_command_contains_verifier(args: &Value) -> bool {
+    let Some(command) = shell_command_text_with_args(args) else {
+        return false;
+    };
+    super::readonly::parse_shell_command_words(&command)
+        .is_some_and(|commands| commands.iter().any(|words| is_verification_invocation(words)))
+}
+
 /// Whether a command inspects search results that normally produce output.
 ///
 /// Used only for progress accounting: an empty read-only search pipeline can
@@ -859,6 +870,33 @@ mod tests {
 
     fn exec_command(command: &str) -> Value {
         json!({"cmd": command})
+    }
+
+    #[test]
+    fn verifier_diagnostics_recognize_masked_status_without_granting_admission() {
+        for command in [
+            "npx markdownlint-cli2 README.md; echo \"lint exit: $?\"",
+            "cargo check; echo $?",
+            "python3 scripts/check_markdown.py; echo \"lint exit: $?\"",
+            "cargo check --locked || true",
+            "cargo check; rm marker",
+        ] {
+            let args = exec_command(command);
+            assert!(shell_command_contains_verifier(&args), "{command}");
+            assert_eq!(classify_shell_activity(tools::EXEC_COMMAND, &args), ShellActivity::Mutation);
+        }
+        let masked = exec_command("npx markdownlint-cli2 README.md; echo \"lint exit: $?\"");
+        assert!(!shell_command_is_admitted_verification_attempt(&masked));
+        assert_eq!(shell_args_as_executed(tools::EXEC_COMMAND, &masked).as_ref(), &masked);
+        for args in [
+            exec_command("echo 'cargo check; echo $?'"),
+            exec_command("grep 'cargo check' README.md"),
+            exec_command("npx markdownlint-cli2 --fix README.md"),
+            json!({"cmd":"cargo check; true", "raw_command":"echo hello"}),
+            json!({"cmd":"npx markdownlint-cli2", "args":["--fix", "README.md"]}),
+        ] {
+            assert!(!shell_command_contains_verifier(&args), "{args}");
+        }
     }
 
     #[test]

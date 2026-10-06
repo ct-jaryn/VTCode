@@ -197,11 +197,10 @@ pub(crate) fn mutation_blocked_until_verification(
 /// verdict. In that case the tracker queues
 /// [`VERIFICATION_RESULT_LOST_DIRECTIVE`] for the handlers to surface.
 ///
-/// A `true` return finally covers a *piped* verifier success while the gate
-/// is pending (`cargo check 2>&1 | grep error`): the exit status belongs to
-/// another command and cannot clear the gate, so the tracker queues
-/// [`PIPED_VERIFICATION_DIRECTIVE`] instead of leaving the model to believe
-/// the check verified the edits.
+/// A `true` return also covers an admitted status-masking verifier success
+/// while the gate is pending. Completed unverified checker sequences queue
+/// [`PIPED_VERIFICATION_DIRECTIVE`] independently of gate state; that coaching
+/// alone never changes this return value or grants fix-up edits.
 pub(crate) fn update_repetition_tracker(
     loop_tracker: &mut LoopTracker,
     outcome: &ToolPipelineOutcome,
@@ -215,16 +214,43 @@ pub(crate) fn update_repetition_tracker(
     let canonical_name = canonical_tool_name(name);
     let signature_key = signature_key_for(canonical_name, args);
     loop_tracker.record(signature_key.clone());
+    let session_id = vtcode_core::tools::command_args::session_id_text(args);
     let targets_pending_verifier = loop_tracker
         .pending_verifier_session_id
         .as_deref()
-        .is_some_and(|session_id| vtcode_core::tools::command_args::session_id_text(args) == Some(session_id));
+        .is_some_and(|pending_id| session_id == Some(pending_id));
+    let targets_diagnostic_checker = is_session_follow_up(canonical_name, args)
+        && session_id.is_some_and(|id| loop_tracker.pending_checker_session_ids.contains(id));
+    let session_result_lost = matches!(&outcome.status, ToolExecutionStatus::Failure { error }
+        if error.is_exec_session_not_found() || error_text_indicates_lost_session(&error.message));
     // Session cleanup never represents a workspace edit or a verifier verdict.
     if vtcode_core::tools::tool_intent::is_exec_session_cleanup_call(canonical_name, args) {
         if matches!(&outcome.status, ToolExecutionStatus::Success { .. }) && targets_pending_verifier {
             loop_tracker.pending_verifier_session_id = None;
         }
+        if (matches!(&outcome.status, ToolExecutionStatus::Success { .. }) || session_result_lost)
+            && let Some(session_id) = session_id
+        {
+            loop_tracker.pending_checker_session_ids.remove(session_id);
+        }
         return false;
+    }
+    if targets_diagnostic_checker {
+        let completed = matches!(&outcome.status, ToolExecutionStatus::Success { output, .. }
+            if output.get("exit_code").and_then(serde_json::Value::as_i64).is_some());
+        if (completed || session_result_lost)
+            && let Some(session_id) = session_id
+        {
+            loop_tracker.pending_checker_session_ids.remove(session_id);
+        }
+        if completed {
+            loop_tracker.piped_verification_notice_pending = true;
+        }
+        // A diagnostic session's loss cannot activate the legacy fallback for
+        // an unknown verifier identity or grant repair edits.
+        if session_result_lost && !targets_pending_verifier {
+            return false;
+        }
     }
     if is_session_follow_up(canonical_name, args)
         && targets_pending_verifier
@@ -284,8 +310,7 @@ pub(crate) fn update_repetition_tracker(
     if is_session_follow_up(canonical_name, args)
         && loop_tracker.verification_is_pending()
         && (loop_tracker.pending_verifier_session_id.is_none() || targets_pending_verifier)
-        && let ToolExecutionStatus::Failure { error } = &outcome.status
-        && (error.is_exec_session_not_found() || error_text_indicates_lost_session(&error.message))
+        && session_result_lost
     {
         loop_tracker.verification_result_lost_notice_pending = true;
         loop_tracker.record_failed_verification();
@@ -359,8 +384,20 @@ pub(crate) fn update_repetition_tracker(
                 loop_tracker.reset_navigation_window(low_signal_family.is_none());
             }
             ShellActivity::Mutation => {
-                // Piped verifier attempts that the kernel cannot elide (e.g.
-                // `cargo check 2>&1 | grep error`, or a `;` join) are admitted
+                // Diagnostic only: docs-only work may never arm the gate, and
+                // `$?` tails cannot pass static admission. Still explain why
+                // a completed checker was not recorded as verification.
+                if shell_command_contains_verifier(&executed)
+                    && let ToolExecutionStatus::Success { output, .. } = &outcome.status
+                {
+                    if output.get("exit_code").and_then(serde_json::Value::as_i64).is_some() {
+                        loop_tracker.piped_verification_notice_pending = true;
+                    } else if let Some(session_id) = vtcode_core::tools::command_args::session_id_text(output) {
+                        loop_tracker.pending_checker_session_ids.insert(session_id.into());
+                    }
+                }
+                // Static verifier attempts that retain status-masking joins
+                // (e.g. `cargo check | grep error; true`) may be admitted
                 // to run but never clear the gate: the exit status belongs to
                 // another command, not the verifier. Don't count them as
                 // blind edits; a failed piped attempt still
@@ -381,13 +418,12 @@ pub(crate) fn update_repetition_tracker(
                     // gate is pending that silence reads as "verified" to
                     // the model (checkpoint session-vtcode-20260912T083718Z:
                     // a piped verifier exited 0 and the turn still
-                    // deadlocked). Queue the one-shot piped-verifier
-                    // directive so the handlers surface it after the tool
-                    // response lands.
+                    // deadlocked). Keep the existing pending-gate recovery
+                    // signal; the notice above is queued only for terminal
+                    // outcomes and is independently bounded per turn.
                     if loop_tracker.verification_is_pending()
                         && matches!(&outcome.status, ToolExecutionStatus::Success { command_success: true, .. })
                     {
-                        loop_tracker.piped_verification_notice_pending = true;
                         loop_tracker.reset_navigation_window(low_signal_family.is_none());
                         return true;
                     }

@@ -149,7 +149,7 @@ fn is_version_or_help_probe(command_words: &[String]) -> bool {
 /// becomes read-only merely because parsing succeeded.
 pub(crate) fn static_shell_command_words(command: &str) -> Option<Vec<Vec<String>>> {
     let sanitized = sanitize_static_shell_command(command)?;
-    parse_static_shell_command_words(&sanitized)
+    parse_shell_command_words(&sanitized)
 }
 
 /// Parse a command whose only shell operators outside quotes are output
@@ -161,10 +161,13 @@ pub(crate) fn static_shell_command_words_with_output_plumbing(command: &str) -> 
     if !crate::command_safety::shell_parser::has_only_output_redirections(command) {
         return None;
     }
-    parse_static_shell_command_words(command)
+    parse_shell_command_words(command)
 }
 
-fn parse_static_shell_command_words(command: &str) -> Option<Vec<Vec<String>>> {
+/// Tokenize shell invocations without proving static execution or safety.
+/// Permission and activity predicates must sanitize before using these words;
+/// diagnostic-only consumers may inspect dynamic shell text without grants.
+pub(super) fn parse_shell_command_words(command: &str) -> Option<Vec<Vec<String>>> {
     let commands = crate::command_safety::shell_parser::parse_shell_commands_tree_sitter(command).ok()?;
     if commands.is_empty() {
         return None;

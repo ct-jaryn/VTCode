@@ -54,13 +54,17 @@ pub(crate) struct LoopTracker {
     /// tool-outcome handlers so the lost-result directive is surfaced after
     /// the tool response lands.
     pub verification_result_lost_notice_pending: bool,
-    /// Set when an admitted piped verifier (e.g. `cargo check 2>&1 | tail -5`)
-    /// succeeded while the gate was pending. A pipeline's exit status cannot
-    /// clear the gate, and without feedback the piped success reads as
-    /// "verified" to the model. Consumed once by the tool-outcome handlers;
+    /// Set when a completed command contains a verifier but its shell form
+    /// cannot establish verification. Consumed by the tool-outcome handlers;
     /// never persisted in [`Self::verification_snapshot`] because it is
     /// turn-scoped coaching, not gate state.
     pub piped_verification_notice_pending: bool,
+    /// Bound status-masking feedback to one notice per turn, including across
+    /// successful verification and navigation recovery.
+    piped_verification_notice_emitted: bool,
+    /// Diagnostic-only identities, bounded by this turn's tool budget. Never
+    /// confer verifier authority; removed on completion, loss, or cleanup.
+    pub(super) pending_checker_session_ids: FxHashSet<vtcode_core::types::CompactStr>,
     /// Bounded in-turn autonomous recovery attempts consumed when the model
     /// emits text instead of a verifier while the gate is pending. Turn-scoped
     /// (reset each turn, cleared on verification success); never persisted in
@@ -111,6 +115,8 @@ impl LoopTracker {
             verification_block_notice_emitted: false,
             verification_result_lost_notice_pending: false,
             piped_verification_notice_pending: false,
+            piped_verification_notice_emitted: false,
+            pending_checker_session_ids: FxHashSet::default(),
             verification_auto_recovery_attempts: 0,
             auto_verification_executed: false,
             pending_verifier_session_id: None,
@@ -293,11 +299,16 @@ impl LoopTracker {
         std::mem::take(&mut self.verification_result_lost_notice_pending)
     }
 
-    /// One-shot accessor for the piped-verifier notice queued by
+    /// Once-per-turn accessor for the status-masking notice queued by
     /// [`update_repetition_tracker`]. Handlers consume it after the tool
     /// response lands so the directive never splits an assistant batch.
     pub(crate) fn take_piped_verification_notice(&mut self) -> bool {
-        std::mem::take(&mut self.piped_verification_notice_pending)
+        let pending = std::mem::take(&mut self.piped_verification_notice_pending);
+        if !pending || self.piped_verification_notice_emitted {
+            return false;
+        }
+        self.piped_verification_notice_emitted = true;
+        true
     }
 
     /// Grant a bounded fix-up window after a failed verifier. The gate stays

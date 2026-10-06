@@ -6,7 +6,8 @@ use vtcode_core::core::agent::refusal;
 use vtcode_core::llm::provider as uni;
 use vtcode_core::tools::names::canonical_tool_name;
 use vtcode_core::tools::tool_intent::{
-    ShellActivity, classify_shell_activity, shell_args_as_executed, shell_command_is_admitted_verification_attempt,
+    ShellActivity, classify_shell_activity, shell_args_as_executed, shell_command_contains_verifier,
+    shell_command_is_admitted_verification_attempt,
 };
 
 use crate::agent::runloop::unified::tool_pipeline::{ToolExecutionStatus, ToolPipelineOutcome};
