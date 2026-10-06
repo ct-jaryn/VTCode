@@ -152,4 +152,49 @@ Remove only the temporary probe afterward. Check the scoped diff and final workt
 
 ===
 
-validate again vtcode session it seems still troublesome and encouter lots of failure error /Users/vinhnguyenxuan/Developer/learn-by-doing/vtcode/.vtcode/sessions/session-vtcode-20261006T101231Z_122150-96359
+## Agent-loop convergence: action plan (2026-10-06)
+
+Session: `session-vtcode-20261006T101231Z_122150-96359` under `.vtcode/sessions/`.
+Local audit: `.vtcode/reviews/session-20261006T101231Z-audit.md`.
+
+- [x] Reconstruct the four turns and corroborate archive events with model-facing checkpoints and trajectory
+      metrics. Turn 2 made 39 README searches before exhausting 60 loop steps; turn 3 repeated overlapping
+      file/spool reads before exhausting 32 execution calls. The task completed in turn 4.
+- [x] Classify the 19 error events: seven grep no-match exits, seven read-cap rejections, one planning denial,
+      two execution-budget rejections, and two undispatched streamed-call closures. No blocked-call fuse,
+      patch-context mismatch, or masked-verifier failure occurred in this session.
+- [x] Independently verify README lint, diff whitespace, literal dash absence, heading depth, and link
+      preservation. Preserve the existing README changes.
+- [ ] **P2, first increment: reuse evidence and converge before exhausting budgets.** Inspect
+      `tool_outcomes/handlers/guards/read_guard.rs`, `tool_outcomes/helpers/history_dedup.rs`, and
+      `tool_outcomes/helpers/loop_tracker.rs` under `src/agent/runloop/unified/turn/`. Reuse existing read/search
+      identities and navigation guards to detect redundant inspection across varying commands. Preserve
+      legitimate distinct queries, missing non-overlapping spool pages, and fresh context after file mutation.
+      At a cap, direct the agent toward editing, verification, or synthesis using retained evidence; never
+      automatically copy the capped file to another path to evade the cap.
+- [ ] Add focused regressions for repeated successful searches on one unchanged file, overlapping spool reads,
+      cap rejection followed by a useful edit/verifier, changed-file invalidation, and legitimate new evidence.
+      Use a session-shaped fixture that reaches productive continuation before the unchanged hard limits.
+- [ ] **P2, second increment: preserve the exact budget reason in handoffs.** Inspect `turn_loop.rs` and
+      `turn_loop_helpers.rs`. Reuse existing budget metrics and completion paths so the fallback names the
+      exhausted budget, reports used/max, and retains completed work and remaining tracker steps. Replace
+      generic retry advice with an accurate resumable handoff. Test both loop-step and execution-call exhaustion,
+      including failure of the final synthesis pass; retain a non-empty final response.
+- [ ] **P3, third increment: distinguish expected diagnostics from execution failures.** Inspect outcome
+      diagnosis, streamed-call teardown, and archive/UI rendering. Show proven grep no-match results as empty
+      searches and undispatched streamed calls as unexecuted closures. Preserve genuine non-zero failures,
+      structured exit codes, diagnosis evidence, and authoritative `ThreadEvent` lifecycle records. Test no
+      matches versus invalid grep arguments, dropped streamed calls versus executed failures, and interruption.
+- [ ] Update compiled guidance in `crates/codegen/vtcode-core/src/prompts/runtime_guidance.rs` for changed
+      agent behavior, keeping budget/presence tests current. Update the relevant development guide and audit
+      module AGENTS.md files when a new convention or gotcha is confirmed.
+- [ ] Verify each increment with focused locked nextest tests, then affected-module regressions,
+      `./scripts/check-dev.sh`, warnings-denied locked Cargo checks, and Markdown/diff checks. Keep per-file,
+      blocked-call, command/path safety, verification, and execution budgets intact; add no automatic cap raises.
+- [ ] Reproduce against a freshly built binary and record its commit, version, and effective limits. Compare
+      read/search counts, overlapping pages, error categories, completion turns, and token usage with this
+      session. Passing Rust tests alone does not establish that live-provider churn is resolved.
+
+Implement one scoped increment at a time using existing VT Code patterns, KISS, and DRY. No introducing
+regression commit has been established for these remaining findings. Report each increment as
+`problem | evidence/session event or file:line | regression commit if found | fix | verification`.
