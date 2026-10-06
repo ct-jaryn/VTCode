@@ -31,13 +31,19 @@ pub(super) struct FinalizationOutput {
 const ARCHIVE_FINALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Maintenance budget for one session-end task: interrupt exits (Ctrl+C /
-/// /exit) get the tight teardown cap instead of `normal`.
+/// /exit) and `/new` navigation get the tight teardown cap instead of `normal`.
 fn interrupt_budget(interrupt_exit: bool, normal: std::time::Duration) -> std::time::Duration {
     if interrupt_exit {
         std::time::Duration::from_millis(500)
     } else {
         normal
     }
+}
+
+/// User-driven teardown (exit, cancel, or `/new` navigation) must stay fast.
+/// `Completed` and `Error` keep full budgets; the other three share the 500ms cap.
+fn is_fast_session_teardown(reason: SessionEndReason) -> bool {
+    matches!(reason, SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::NewSession)
 }
 
 /// Restore terminal to a clean state after session exit
@@ -120,13 +126,14 @@ pub(super) async fn finalize_session(
         }
     }
 
-    // A user-requested exit (Ctrl+C / /exit / Ctrl+D) must not park the shell
-    // on maintenance work: session-end hooks and MCP shutdown are best-effort
-    // here (the OS reaps MCP children at process exit), so bound them tightly
-    // instead of the 3s/2s they get on a normal session end. They are
-    // independent of each other, so their budgets overlap via `join!` instead
-    // of adding up sequentially.
-    let interrupt_exit = matches!(session_end_reason, SessionEndReason::Exit | SessionEndReason::Cancelled);
+    // A user-requested exit (Ctrl+C / /exit / Ctrl+D) or navigation (/new)
+    // must not park the shell on maintenance work: session-end hooks and MCP
+    // shutdown are best-effort here (the OS reaps MCP children at process
+    // exit), so bound them tightly instead of the 3s/2s they get on a normal
+    // session end. They are independent of each other, so their budgets
+    // overlap via `join!` instead of adding up sequentially. `/new` shares
+    // the tight budget because the user is waiting for a fresh prompt.
+    let interrupt_exit = is_fast_session_teardown(session_end_reason);
 
     let hooks_future = async {
         let Some(hooks) = lifecycle_hooks else {
@@ -175,8 +182,14 @@ pub(super) async fn finalize_session(
     // earlier flips the screen back while the TUI is still drawing, which
     // paints transcript frames onto the main CLI screen. The TUI was told to
     // shut down at the start of the session tail, so this join usually
-    // returns immediately.
-    if !session.wait_for_exit(std::time::Duration::from_millis(2000)).await {
+    // returns immediately. User-driven exits and `/new` use a tighter budget
+    // since the next visible frame (shell prompt or fresh session) is waiting.
+    let tui_exit_budget = if interrupt_exit {
+        std::time::Duration::from_millis(1000)
+    } else {
+        std::time::Duration::from_millis(2000)
+    };
+    if !session.wait_for_exit(tui_exit_budget).await {
         tracing::warn!("TUI task did not exit after shutdown; forcing terminal restore");
     }
 
@@ -231,4 +244,46 @@ pub(super) async fn finalize_session(
     }
 
     Ok(FinalizationOutput { archive_path })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{interrupt_budget, is_fast_session_teardown};
+    use vtcode_core::hooks::SessionEndReason;
+
+    #[test]
+    fn fast_teardown_covers_exit_cancel_and_new_session_only() {
+        // Asymmetric: fast paths must collapse to the 500ms cap while slow
+        // paths preserve the caller's full budget. Drive `interrupt_budget`
+        // from the helper under test so the mapping itself is pinned, not
+        // just each side independently.
+        for reason in [
+            SessionEndReason::Exit,
+            SessionEndReason::Cancelled,
+            SessionEndReason::NewSession,
+        ] {
+            assert!(is_fast_session_teardown(reason), "{reason:?} should be fast");
+            assert_eq!(
+                interrupt_budget(is_fast_session_teardown(reason), std::time::Duration::from_secs(3)),
+                std::time::Duration::from_millis(500),
+                "{reason:?} must map to the tight cap"
+            );
+        }
+        for reason in [SessionEndReason::Completed, SessionEndReason::Error] {
+            assert!(!is_fast_session_teardown(reason), "{reason:?} should keep full budget");
+            assert_eq!(
+                interrupt_budget(is_fast_session_teardown(reason), std::time::Duration::from_secs(2)),
+                std::time::Duration::from_secs(2),
+                "{reason:?} must preserve the full budget"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupt_budget_preserves_normal_duration_when_not_interrupted() {
+        let normal = std::time::Duration::from_secs(2);
+        assert_eq!(interrupt_budget(false, normal), normal);
+        // Boundary: zero normal stays zero when not interrupted.
+        assert_eq!(interrupt_budget(false, std::time::Duration::from_millis(0)), std::time::Duration::from_millis(0));
+    }
 }

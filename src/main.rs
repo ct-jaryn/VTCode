@@ -463,8 +463,14 @@ async fn run(prepared: PreparedRun) -> Result<()> {
     // printed by the shell as visible escape-code garbage after exit.
     // Finish it here so TTY replies are consumed before returning; when the
     // agent loop already awaited the probe this returns immediately.
+    // Bounded so a stuck `/dev/tty` read cannot park process exit.
     if startup_policy.run_terminal_probe() {
-        agent::probe::finish_terminal_palette_probe().await;
+        if tokio::time::timeout(std::time::Duration::from_millis(500), agent::probe::finish_terminal_palette_probe())
+            .await
+            .is_err()
+        {
+            tracing::debug!("terminal palette probe finish timed out during exit; continuing teardown");
+        }
     }
     perform_queued_runtime_relaunch();
     vtcode_core::utils::trace_writer::flush_trace_log();

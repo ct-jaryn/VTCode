@@ -2432,11 +2432,29 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         .await;
         agent_touched_paths.extend(context_manager.tracked_instruction_activity_paths());
         // Skip persistent memory on interrupt-exits (it makes LLM API calls which
-        // delay shutdown significantly). For normal exits, wait up to 5 s for
-        // the kickoff; the spawned task is *not* cancelled on timeout — it
-        // detaches and keeps running (coordinated by the memory lock) while
-        // the TUI finalizes, instead of being dropped mid-flight.
-        if !matches!(session_end_reason, SessionEndReason::Exit) {
+        // delay shutdown significantly). `/new` detaches it so the fresh
+        // session paints immediately while memory still finalizes in the
+        // background. For normal exits, wait up to 5 s for the kickoff; the
+        // spawned task is *not* cancelled on timeout — it detaches and keeps
+        // running (coordinated by the memory lock) while the TUI finalizes,
+        // instead of being dropped mid-flight.
+        if matches!(session_end_reason, SessionEndReason::Exit) {
+            // Skipped: LLM-backed, would park the shell return.
+        } else if matches!(session_end_reason, SessionEndReason::NewSession) {
+            let finalize_config = config.clone();
+            let finalize_vt_cfg = vt_cfg.clone();
+            let finalize_messages = runtime.state.messages.clone();
+            let finalize_session_id = turn_run_id.0.clone();
+            tokio::spawn(async move {
+                session_teardown::finalize_persistent_memory(
+                    finalize_config,
+                    finalize_vt_cfg,
+                    finalize_messages,
+                    finalize_session_id,
+                )
+                .await;
+            });
+        } else {
             session_teardown::finalize_persistent_memory(
                 config.clone(),
                 vt_cfg.clone(),

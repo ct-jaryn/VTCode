@@ -102,10 +102,15 @@ pub(super) async fn drain_session_teardown(context: SessionTeardownContext<'_>) 
             // turn-level cancellation never ran. Terminate them before
             // teardown so no child outlives the TUI. `Immediate` PTY mode
             // (group SIGKILL, no SIGTERM grace window) because the user
-            // asked to leave.
+            // asked to leave. `/new` shares this path so the previous
+            // session's children cannot leak into the fresh session or
+            // accumulate into a slower final process exit.
             if matches!(
                 session_end_reason,
-                SessionEndReason::Exit | SessionEndReason::Cancelled | SessionEndReason::Error
+                SessionEndReason::Exit
+                    | SessionEndReason::Cancelled
+                    | SessionEndReason::Error
+                    | SessionEndReason::NewSession
             ) {
                 match timeout(
                     EXIT_BACKGROUND_SHUTDOWN_TIMEOUT,
@@ -129,16 +134,23 @@ pub(super) async fn drain_session_teardown(context: SessionTeardownContext<'_>) 
 }
 
 /// Await filesystem cleanup on the blocking pool before starting the next lifecycle phase.
+/// Bounded so a slow disk cannot park `/new` or process exit; retention
+/// catches strays on the next startup.
 pub(super) async fn cleanup_completed_artifacts(workspace: &Path, turn_run_id: &str, session_id: &str) {
     let workspace = workspace.to_path_buf();
     let turn_run_id = turn_run_id.to_owned();
     let session_id = session_id.to_owned();
-    if let Err(error) = tokio::task::spawn_blocking(move || {
+    let cleanup_task = tokio::task::spawn_blocking(move || {
         cleanup_completed_artifacts_blocking(&workspace, &turn_run_id, &session_id);
-    })
-    .await
-    {
-        tracing::warn!(%error, "completed session artifact cleanup task failed");
+    });
+    match timeout(Duration::from_secs(1), cleanup_task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "completed session artifact cleanup task failed");
+        }
+        Err(_elapsed) => {
+            tracing::warn!("completed session artifact cleanup timed out after 1s; continuing teardown");
+        }
     }
 }
 
