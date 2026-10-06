@@ -883,3 +883,52 @@ fn mode_adds_no_input_border_chrome() {
     assert!(session.active_subagent_input_title().is_none());
     assert_eq!(session.input_block_extra_height(), 0);
 }
+
+#[test]
+fn hidden_header_init_sequence_shows_agent_with_provider_model_and_effort() {
+    // Regression for the missing top-right summary: init must push
+    // `SetHeaderContext` (provider/model/effort) before `SetPrimaryAgent`.
+    // Asymmetric values so a missing piece fails distinctly.
+    let mut session = fresh_session();
+    session.appearance.hide_header = true;
+    session.apply_transcript_width(VIEW_WIDTH);
+
+    let mut context = session.header_context.clone();
+    context.provider = format!("{}moonshot", ui::HEADER_PROVIDER_PREFIX);
+    context.model = format!("{}kimi-k2.6", ui::HEADER_MODEL_PREFIX);
+    context.reasoning = format!("{}high", ui::HEADER_REASONING_PREFIX);
+    context.primary_agent = None;
+    session.handle_command(InlineCommand::SetHeaderContext { context: Box::new(context) });
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+
+    let line = header_line_text(&mut session);
+    assert!(line.contains("Build"), "missing agent badge, got: {line}");
+    assert!(line.contains("Moonshot"), "missing provider, got: {line}");
+    assert!(line.contains("Kimi-K2"), "missing model, got: {line}");
+    assert!(line.contains("high"), "missing reasoning effort, got: {line}");
+}
+
+#[test]
+fn hidden_header_preserves_agent_when_context_refreshes_after_agent() {
+    // Post-hydration path pushes agent first, then a context refresh with
+    // `primary_agent: None` must not clobber it.
+    let mut session = fresh_session();
+    session.appearance.hide_header = true;
+    session.apply_transcript_width(VIEW_WIDTH);
+    session.handle_command(InlineCommand::SetPrimaryAgent { name: Some("duck".to_string()), color: None });
+
+    let mut context = session.header_context.clone();
+    context.provider = format!("{}mimo", ui::HEADER_PROVIDER_PREFIX);
+    context.model = format!("{}mimo-v2.6-pro", ui::HEADER_MODEL_PREFIX);
+    context.reasoning = format!("{}low", ui::HEADER_REASONING_PREFIX);
+    context.primary_agent = None;
+    session.handle_command(InlineCommand::SetHeaderContext { context: Box::new(context) });
+
+    let line = header_line_text(&mut session);
+    assert!(line.contains("Duck"), "agent must survive context refresh, got: {line}");
+    assert!(line.contains("Mimo Mimo-V2.6-Pro"), "missing provider/model, got: {line}");
+    assert!(line.contains("low"), "missing reasoning effort, got: {line}");
+}

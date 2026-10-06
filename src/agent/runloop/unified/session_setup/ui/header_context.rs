@@ -76,6 +76,10 @@ pub(super) async fn initialize_header_context(
         apply_persistent_memory_header_guide(&mut header_context, memory_status);
     }
 
+    // Push initial context so the compact header shows provider/model on
+    // first paint. `SetHeaderContext` preserves the TUI primary agent.
+    handle.set_header_context(header_context.clone());
+
     Ok(header_context)
 }
 
