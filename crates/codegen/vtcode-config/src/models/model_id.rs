@@ -116,10 +116,6 @@ pub enum ModelId {
     MergeGatewayMoonshotKimiK3,
     /// Thinking Machines Inkling through Merge Gateway
     MergeGatewayThinkingMachinesInkling,
-    /// Meta Muse Spark 1.1 through Merge Gateway
-    MergeGatewayMetaMuseSpark11,
-    /// Meta Muse Spark 1.3 through Merge Gateway
-    MergeGatewayMetaMuseSpark13,
     /// Z.AI GLM-5.3 Flash through Merge Gateway
     MergeGatewayZaiGlm53Flash,
     /// Z.AI GLM-5.3 FlashX through Merge Gateway

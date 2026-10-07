@@ -97,8 +97,6 @@ fn test_model_providers() {
     assert_eq!(ModelId::MergeGatewayMinimaxH3.provider(), Provider::MergeGateway);
     assert_eq!(ModelId::MergeGatewayMoonshotKimiK3.provider(), Provider::MergeGateway);
     assert_eq!(ModelId::MergeGatewayThinkingMachinesInkling.provider(), Provider::MergeGateway);
-    assert_eq!(ModelId::MergeGatewayMetaMuseSpark11.provider(), Provider::MergeGateway);
-    assert_eq!(ModelId::MergeGatewayMetaMuseSpark13.provider(), Provider::MergeGateway);
     assert_eq!(ModelId::MergeGatewayOpenAIGpt56Luna.provider(), Provider::MergeGateway);
     assert_eq!(ModelId::MergeGatewayOpenAIGpt56Sol.provider(), Provider::MergeGateway);
     assert_eq!(ModelId::MergeGatewayOpenAIGpt56Terra.provider(), Provider::MergeGateway);
@@ -266,7 +264,7 @@ fn test_models_for_provider() {
     assert!(nvidia_models.contains(&ModelId::NvidiaNemotron3Super120bA12b));
 
     let merge_gateway_models = ModelId::models_for_provider(Provider::MergeGateway);
-    assert_eq!(merge_gateway_models.len(), 28);
+    assert_eq!(merge_gateway_models.len(), 26);
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayXiaomimimoMimoV26Pro));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayXiaomimimoMimoV26Flash));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayDefaultRouting));
@@ -274,7 +272,6 @@ fn test_models_for_provider() {
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayAnthropicClaudeFable51));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayDeepseekFlash));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt56Terra));
-    assert!(merge_gateway_models.contains(&ModelId::MergeGatewayMetaMuseSpark13));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt6Astra));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt6Sol));
     assert!(merge_gateway_models.contains(&ModelId::MergeGatewayOpenAIGpt61Sol));
@@ -632,7 +629,6 @@ fn test_all_models_have_non_empty_metadata_and_parse() {
             | ModelId::MergeGatewayAnthropicClaudeSonnet5
             | ModelId::MergeGatewayAnthropicClaudeSonnet55
             | ModelId::MergeGatewayGoogleGemini38Flash
-            | ModelId::MergeGatewayMetaMuseSpark13
             | ModelId::MergeGatewayOpenAIGpt6Astra
             | ModelId::MergeGatewayOpenAIGpt6Sol
             | ModelId::MergeGatewayOpenAIGpt6Luna => continue,

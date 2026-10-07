@@ -243,6 +243,12 @@ below based on the topic area.
   - **Content**: Release changelog ownership
   - **User Questions**: "What can you tell me about Release changelog ownership?"
 
+- **File**: `docs/development/response-progress.md`
+  - **Content**: Response progress and latency
+  - **Topics**: Measurements, Checkpoint preparation
+  - **User Questions**: "What can you tell me about Response progress and latency?", "How does Measurements work?", "How
+    does Checkpoint preparation work?"
+
 - **File**: `docs/development/responses-websocket-streaming.md`
   - **Content**: Responses WebSocket streaming
   - **Topics**: Lifecycle and cancellation, Continuation, Fallback and service tiers, Local verification
@@ -1841,10 +1847,9 @@ below based on the topic area.
 
 - **File**: `docs/user-guide/interactive-mode.md`
   - **Content**: Interactive Mode Reference
-  - **Topics**: Keyboard Shortcuts, Execution Explanations, Reduced Motion, Fullscreen Rendering, Scheduled Prompts And
-    Reminders
-  - **User Questions**: "What can you tell me about Interactive Mode Reference?", "How does Keyboard Shortcuts work?",
-    "How does Execution Explanations work?"
+  - **Topics**: Response progress, Keyboard Shortcuts, Execution Explanations, Reduced Motion, Fullscreen Rendering
+  - **User Questions**: "What can you tell me about Interactive Mode Reference?", "How does Response progress work?",
+    "How does Keyboard Shortcuts work?"
 
 ## Enhanced Trigger Questions
 

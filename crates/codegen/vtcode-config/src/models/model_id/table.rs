@@ -364,20 +364,6 @@ model_id_table! {
         display: "Inkling (Merge Gateway)",
         description: "Thinking Machines Inkling accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
-    MergeGatewayMetaMuseSpark11 {
-        provider: MergeGateway,
-        id: models::merge_gateway::META_MUSE_SPARK_1_1,
-        parse: [models::merge_gateway::META_MUSE_SPARK_1_1],
-        display: "Muse Spark 1.1 (Merge Gateway)",
-        description: "Meta Muse Spark 1.1 accessed through Merge Gateway's OpenAI-compatible endpoint",
-    },
-    MergeGatewayMetaMuseSpark13 {
-        provider: MergeGateway,
-        id: models::merge_gateway::META_MUSE_SPARK_1_3,
-        parse: [models::merge_gateway::META_MUSE_SPARK_1_3],
-        display: "Muse Spark 1.3 (Merge Gateway)",
-        description: "Meta Muse Spark 1.3 accessed through Merge Gateway's OpenAI-compatible endpoint",
-    },
     MergeGatewayZaiGlm53Flash {
         provider: MergeGateway,
         id: models::merge_gateway::ZAI_GLM_5_3_FLASH,
@@ -865,7 +851,6 @@ mod tests {
                     | ModelId::MergeGatewayAnthropicClaudeSonnet5
                     | ModelId::MergeGatewayAnthropicClaudeSonnet55
                     | ModelId::MergeGatewayGoogleGemini38Flash
-                    | ModelId::MergeGatewayMetaMuseSpark13
                     | ModelId::MergeGatewayOpenAIGpt6Astra
                     | ModelId::MergeGatewayOpenAIGpt6Sol
                     | ModelId::MergeGatewayOpenAIGpt61Sol

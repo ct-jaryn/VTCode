@@ -338,7 +338,6 @@ impl ModelId {
                 | ModelId::VercelDeepseekFlash
                 | ModelId::MetaMuseSpark13
                 | ModelId::MetaMuseSpark13Contributor
-                | ModelId::MergeGatewayMetaMuseSpark13
                 | ModelId::ZaiGlm53
                 | ModelId::ZaiGlm53Flash
                 | ModelId::ZaiGlm53Flashx
@@ -467,8 +466,6 @@ impl ModelId {
             ModelId::MergeGatewayAnthropicClaudeHaiku4520251001 => "4.5",
             ModelId::MergeGatewayMinimaxH3 => "H3",
             ModelId::MergeGatewayThinkingMachinesInkling => "Inkling",
-            ModelId::MergeGatewayMetaMuseSpark11 => "Muse-Spark-1.1",
-            ModelId::MergeGatewayMetaMuseSpark13 => "Muse-Spark-1.3",
             ModelId::MergeGatewayOpenAIGpt56Luna
             | ModelId::MergeGatewayOpenAIGpt56Sol
             | ModelId::MergeGatewayOpenAIGpt56Terra => "5.6",

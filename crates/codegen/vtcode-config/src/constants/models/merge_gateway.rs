@@ -13,8 +13,6 @@ pub const XAI_GROK_4_7: &str = "xai/grok-4.7";
 pub const MINIMAX_H3: &str = "minimax/minimax-h3";
 pub const MOONSHOT_KIMI_K3: &str = "moonshot/kimi-k3";
 pub const THINKINGMACHINES_INKLING: &str = "thinkingmachines/inkling";
-pub const META_MUSE_SPARK_1_1: &str = "meta/muse-spark-1.1";
-pub const META_MUSE_SPARK_1_3: &str = "meta/muse-spark-1.3";
 pub const ZAI_GLM_5_3_FLASH: &str = "zai/glm-5.3-flash";
 pub const ZAI_GLM_5_3_FLASHX: &str = "zai/glm-5.3-flashx";
 pub const OPENAI_GPT_5_6_LUNA: &str = "openai/gpt-5.6-luna";
@@ -54,8 +52,6 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     MINIMAX_H3,
     MOONSHOT_KIMI_K3,
     THINKINGMACHINES_INKLING,
-    META_MUSE_SPARK_1_1,
-    META_MUSE_SPARK_1_3,
     ZAI_GLM_5_3_FLASH,
     ZAI_GLM_5_3_FLASHX,
     OPENAI_GPT_5_6_LUNA,
@@ -77,8 +73,6 @@ pub const REASONING_EFFORT_ROUTES: &[&str] = &[
     XAI_GROK_4_6,
     XAI_GROK_4_7,
     MOONSHOT_KIMI_K3,
-    META_MUSE_SPARK_1_1,
-    META_MUSE_SPARK_1_3,
     ZAI_GLM_5_3_FLASH,
     ZAI_GLM_5_3_FLASHX,
     OPENAI_GPT_5_6_LUNA,
@@ -126,8 +120,6 @@ pub const REASONING_MODELS: &[&str] = &[
     MINIMAX_H3,
     MOONSHOT_KIMI_K3,
     THINKINGMACHINES_INKLING,
-    META_MUSE_SPARK_1_1,
-    META_MUSE_SPARK_1_3,
     ZAI_GLM_5_3_FLASH,
     ZAI_GLM_5_3_FLASHX,
     OPENAI_GPT_5_6_LUNA,
@@ -147,7 +139,6 @@ pub fn route_uses_reasoning_effort(model: &str) -> bool {
     model.starts_with("openai/")
         || model.starts_with("xai/")
         || model.starts_with("moonshot/")
-        || model.starts_with("meta/")
         || model.starts_with("zai/")
 }
 

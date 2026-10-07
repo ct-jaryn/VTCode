@@ -61,8 +61,6 @@ impl ModelId {
             ModelId::MergeGatewayMinimaxH3,
             ModelId::MergeGatewayMoonshotKimiK3,
             ModelId::MergeGatewayThinkingMachinesInkling,
-            ModelId::MergeGatewayMetaMuseSpark11,
-            ModelId::MergeGatewayMetaMuseSpark13,
             ModelId::MergeGatewayZaiGlm53Flash,
             ModelId::MergeGatewayZaiGlm53Flashx,
             ModelId::MergeGatewayOpenAIGpt56Luna,

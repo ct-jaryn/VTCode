@@ -344,7 +344,7 @@ disclosure does not replace the retained evidence or expose provider chain-of-th
 - **Curated picker models:** `openai/gpt-5.5`, `anthropic/claude-opus-5`, `anthropic/claude-opus-5-5`,
   `anthropic/claude-sonnet-5`, `anthropic/claude-sonnet-5-5`, `google/gemini-3.6-flash`, `google/gemini-3.7-flash`,
   `deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`, `xai/grok-4.6`, `qwen/qwen3.8-max`,
-  `minimax/minimax-h3`, `moonshot/kimi-k3`, `thinkingmachines/inkling`, `meta/muse-spark-1.1`, `zai/glm-5.3-flash`,
+  `minimax/minimax-h3`, `moonshot/kimi-k3`, `thinkingmachines/inkling`, `zai/glm-5.3-flash`,
   `zai/glm-5.3-flashx`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-6-astra`,
   `openai/gpt-6-sol`, `openai/gpt-6.1-sol`, `openai/gpt-6-luna`, and `mistral/mistral-large-4-0`
 - **Features:** Native Responses, streaming, tool calling, structured outputs, authenticated paginated model catalog,

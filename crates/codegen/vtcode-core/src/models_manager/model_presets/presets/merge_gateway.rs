@@ -127,20 +127,6 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             false,
         ),
         (
-            models::merge_gateway::META_MUSE_SPARK_1_1,
-            "Muse Spark 1.1 (Merge Gateway)",
-            "Meta Muse Spark 1.1 through Merge Gateway",
-            1_000_000,
-            false,
-        ),
-        (
-            models::merge_gateway::META_MUSE_SPARK_1_3,
-            "Muse Spark 1.3 (Merge Gateway)",
-            "Meta Muse Spark 1.3 through Merge Gateway",
-            1_000_000,
-            false,
-        ),
-        (
             models::merge_gateway::ZAI_GLM_5_3_FLASH,
             "GLM-5.3 Flash (Merge Gateway)",
             "Z.AI GLM-5.3 Flash through Merge Gateway",
