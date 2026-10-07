@@ -1,23 +1,3 @@
-===
-
-Planning-contract restatement — guidelines.rs:456-458 vs system.rs:55/64/34 state the same three planning rules; they co-render in planning mode. Highest token win, but plan_blocks.rs parses <proposed_plan> output shaped by that text — riskiest item, worth its own change.
-tool-specs inline literals — crates/common/vtcode-utility-tool-specs/src/lib.rs:226, 261 hardcode 1/50000/10000 next to the consts at :55-59; outside the prompts focus.
-generate_temporal_context (temporal.rs:26) is production-dead (only generate_temporal_date_context is used); deleting it is defensible but touches doctests.
-Verifier/sandbox prompt↔enforcement splits — intentionally two homes per inline comments and .vtcode/memory gotchas; do not merge.
-Two audit claims turned out false on verification, so nothing was changed there: the guards::MAX_SAME_FILE_PATH_READ_CALLS twin exists (read_guard.rs:33), and the Skills truncation the DEFERRED_TOOLS_MAX_DESC_CHARS comment cites exists (vtcode-skills/src/render.rs:133).
-
-===
-
-Known limitations
-
-1. The interactive TUI uses alternate-screen fullscreen rendering (like vim or less). This limits terminal scrollback and some screen-reader virtual buffers. Workarounds: headless ask/exec, Transcript Review raw mode (R), [ for native scrollback, or v to read in your editor.
-2. Complex live-updating rows (progress, background-task indicators) are simplified under reduced-motion and screen-reader modes, but not every animated surface has a separate static equivalent yet.
-3. Windows support and some terminal-specific key bindings (for example Shift+Enter multiline input) vary by terminal; the keyboard-shortcuts guide documents per-terminal notes and fallbacks.
-
-We treat these as bugs when they block real workflows. Reporting them helps us prioritize.
-
-===
-
 scan for large and monolith files and module and plan deduplication and refactor and extract reusable components.
 
 ===
@@ -113,22 +93,6 @@ cargo nextest run --locked -p vtcode-ui --lib \
 Assert exact expected search rows and equality between incremental and full results. Timing values are observations, not pass/fail assertions.
 
 Remove only the temporary probe afterward. Check the scoped diff and final worktree status, preserving the existing unrelated edit. Report timings, attribution, and the selected next step; commit nothing.
-
-===
-
-check /new command doesn't trigger new session properly and lagging a very long delay ~10s and very slow. also when the program exit, there is a noticeable delay before it fully terminates.
-
-===
-
-check there is always a noticeable delay after user's first message and subsequent responses from the model, it affects the overall responsiveness and user experience. find a way to optimize the response time and improve user experience and feedback loop. currently only global loading status is shown, which may not provide sufficient feedback to the user. suggestions:
-
-- Implement a more granular loading indicator that shows the progress of individual tasks or messages.
-- Optimize the backend processing to reduce latency for initial and subsequent responses.
-- Consider preloading or caching frequently used resources to speed up response times.
-- Provide immediate visual feedback to the user when a new session is initiated or a command is executed.
-- Investigate and address any underlying performance bottlenecks that contribute to the observed delays.
-
-KISS and DRY principles should be applied when implementing these optimizations. Ensure that any changes made do not introduce unnecessary complexity or redundancy.
 
 ===
 
