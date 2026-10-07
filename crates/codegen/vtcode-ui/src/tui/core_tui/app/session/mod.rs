@@ -1143,6 +1143,10 @@ impl AppSession {
                 self.refresh_compact_activity_presentations();
             }
             InlineCommand::SetAppearance { appearance } => {
+                let enabling_screen_reader = appearance.screen_reader_mode && !self.core.appearance.screen_reader_mode;
+                if enabling_screen_reader && let Some(viewer) = self.tool_output_viewer_state.as_mut() {
+                    viewer.set_render_mode(tool_output_viewer::TranscriptRenderMode::Raw);
+                }
                 self.handle_core_command(crate::tui::core_tui::types::InlineCommand::SetAppearance { appearance });
                 self.refresh_compact_activity_presentations();
             }

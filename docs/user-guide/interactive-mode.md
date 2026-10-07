@@ -41,6 +41,10 @@ Multiline methods (`Shift+Enter`, `Option+Enter`, `\`+`Enter`, `Ctrl+J`, paste) 
 > Tip: `Shift+Enter` works natively in `Ghostty`, `Kitty`, `WezTerm`, `iTerm2`, and `Warp`. Run `/terminal-setup` in
 > supported terminals such as `VS Code`, `Alacritty`, or `Zed` when you want VT Code's guided setup flow.
 
+With the composer focused, Shift/Alt+Enter inserts a newline even for `/stop`, `/plan`, and `/help` drafts during a running
+turn. These shortcuts preserve a literal trailing backslash; plain backslash+Enter removes it and inserts a newline.
+Ctrl+Enter retains submission/queueing behavior. Palettes and other overlays retain their own bindings.
+
 ### Clipboard Paste
 
 - `Ctrl+V` and `Alt+V` are VT Code shortcuts for image paste. They read a clipboard image and attach it to the current
@@ -85,7 +89,15 @@ Windows and macOS system settings, plus best-effort GNOME, KDE Plasma, and XFCE 
 and local-agent status labels remain visible as static text, and transcript file-operation markers remain static.
 
 To keep progress animation while reduced motion is enabled, set `ui.reduce_motion_keep_progress_animation = true`.
-Screen reader mode always keeps progress animation disabled.
+Screen reader mode always keeps progress animation disabled. Suppressed thinking indicators use text such as `Thinking`
+in the footer, composer status, and terminal title, without a Braille spinner. Configured status text remains visible.
+
+Enable `ui.screen_reader_mode = true` or run with `VTCODE_SCREEN_READER=1`. Transcript Review opens in raw mode;
+enabling the setting during an open review also switches it to raw. You can still toggle rich/raw manually. Disabling
+screen-reader mode leaves the current review mode unchanged.
+
+The fullscreen TUI still uses an alternate screen and redraws content. Raw review and ANSI-free copy/export can help,
+but compatibility depends on your terminal and assistive technology. A line-oriented interactive mode is not provided.
 
 ## Fullscreen Rendering
 
@@ -136,10 +148,10 @@ that group. Other transcript clicks continue to support selection and links. Suc
 command group and show a separate glance row with the affected path, `(+N -M)` counts, and numbered diff lines; the
 complete result remains available in the review and agent history.
 
-Rich rendering is the default and reuses the transcript's colors, links, and width-aware wrapping. Press the configured
-render-mode binding (default `R`) to switch to ANSI-free raw rendering for copying or export. Copying with `Ctrl+O`,
-opening the editor with `v`, or handing the review to native scrollback with `[` always uses the complete ANSI-free
-conversation text.
+Rich rendering is the default unless screen-reader mode is enabled, and reuses the transcript's colors, links, and
+width-aware wrapping. Press the configured render-mode binding (default `R`) to switch to ANSI-free raw rendering
+for copying or export. Copying with `Ctrl+O`, opening the editor with `v`, or handing the review to native
+scrollback with `[` always uses the complete ANSI-free conversation text.
 
 | Shortcut                                     | Description                                                                                |
 | :------------------------------------------- | :----------------------------------------------------------------------------------------- |

@@ -85,6 +85,10 @@ be retained per VT Code runtime. A modal that owns input before action dispatch 
 | Local agents window                | `Down` opens on empty composer; `Alt+S` focuses. `Enter` inspects; `Ctrl+K` stops; `Ctrl+X` force-terminates or closes. For `exec-session` rows, `Ctrl+R` toggles stdin focus and `Ctrl+P` previews the bounded snapshot.                                                                                                                                       |
 | Queued-input edit                  | `Alt+Up` (or `Shift+Left` in tmux) pops newest queued message into composer.                                                                                                                                                                                                                                                                                    |
 
+With the composer focused, Shift/Alt+Enter inserts a newline before command dispatch, including `/stop`, `/plan`, and
+`/help` while a turn runs. Modified Enter preserves a trailing backslash; plain backslash+Enter consumes it.
+Overlay bindings still take precedence.
+
 ## Transcript Review and fullscreen
 
 | Shortcut                                                                | Action                                            |
@@ -95,6 +99,9 @@ be retained per VT Code runtime. A modal that owns input before action dispatch 
 | `j`/`k`, `Up`/`Down`, `Ctrl+U`/`D`, `Ctrl+B`/`F`, `g`/`G`, `Home`/`End` | Scroll line, half-page, full-page, top/bottom.    |
 | `v`, `[`, `q`                                                           | Open in editor, hand to native scrollback, close. |
 | `PgUp`/`PgDn`, wheel, `Ctrl+Home`/`End`                                 | Fullscreen transcript scroll.                     |
+
+Screen-reader mode opens review in raw mode and switches an open review to raw when enabled. Manual rich/raw toggling
+remains available; disabling the setting leaves the current mode unchanged.
 
 ## Multiline input methods
 

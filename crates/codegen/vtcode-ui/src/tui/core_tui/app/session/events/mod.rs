@@ -740,6 +740,14 @@ fn process_key_with_clipboard_readers(
                 return None;
             }
 
+            // Check for multiline input options (Shift/Alt)
+            if !has_control && (has_shift || has_alt) {
+                // Insert newline for multiline input
+                session.insert_char('\n');
+                session.mark_dirty();
+                return None;
+            }
+
             if maybe_show_help_modal(session) {
                 return None;
             }
@@ -813,14 +821,6 @@ fn process_key_with_clipboard_readers(
                 } else {
                     Some(InlineEvent::Submit(submitted))
                 };
-            }
-
-            // Check for multiline input options (Shift/Alt)
-            if has_shift || has_alt {
-                // Insert newline for multiline input
-                session.insert_char('\n');
-                session.mark_dirty();
-                return None;
             }
 
             let should_submit_now = slash::should_submit_immediately_from_palette(session);

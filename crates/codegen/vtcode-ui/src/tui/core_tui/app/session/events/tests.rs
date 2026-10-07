@@ -1654,3 +1654,50 @@ fn secure_prompt_modal_consumes_composer_shortcuts() {
     assert!(session.core.input_manager.content().is_empty(), "Tab must not insert a character");
     assert!(session.has_active_overlay(), "modal should remain open when Tab is pressed");
 }
+
+#[test]
+fn modified_enter_preserves_command_drafts_and_literal_backslashes() {
+    for running in [false, true] {
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            for draft in ["/stop", "/plan", "/help", "/stop\\", "/plan\\", "/help\\", "literal\\"] {
+                let mut session = build_session();
+                if running {
+                    session.core.handle_command(CoreInlineCommand::SetActivityState(
+                        vtcode_commons::ui_protocol::ActivityState::Building,
+                    ));
+                }
+                session.core.input_manager.set_content(draft.to_string());
+                let event = session.process_key(KeyEvent::new(KeyCode::Enter, modifiers));
+                assert!(event.is_none(), "{draft} {modifiers:?} running={running}");
+                assert_eq!(session.core.input_manager.content(), format!("{draft}\n"));
+                assert!(session.core.queued_inputs.is_empty());
+                assert!(!session.has_active_overlay());
+            }
+        }
+    }
+}
+
+#[test]
+fn composer_enter_and_control_j_keep_existing_newline_and_submit_behavior() {
+    let mut session = build_session();
+    session.core.input_manager.set_content("literal\\".to_string());
+    assert!(session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+    assert_eq!(session.core.input_manager.content(), "literal\n");
+    session.core.input_manager.set_content("/help".to_string());
+    assert!(
+        session
+            .process_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+            .is_none()
+    );
+    assert_eq!(session.core.input_manager.content(), "/help\n");
+    for modifiers in [
+        KeyModifiers::NONE,
+        KeyModifiers::CONTROL,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ] {
+        session.core.input_manager.set_content("send this".to_string());
+        assert!(
+            matches!(session.process_key(KeyEvent::new(KeyCode::Enter, modifiers)), Some(InlineEvent::Submit(input)) if input.text == "send this")
+        );
+    }
+}

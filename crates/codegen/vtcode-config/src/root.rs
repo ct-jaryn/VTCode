@@ -426,8 +426,9 @@ pub struct UiConfig {
     #[serde(default)]
     pub fullscreen: UiFullscreenConfig,
 
-    /// Screen reader mode: disables animations, uses plain text indicators,
-    /// and optimizes output for assistive technology compatibility.
+    /// Screen reader mode: disables animations, uses plain text thinking indicators,
+    /// and opens Transcript Review in raw mode. Alternate-screen compatibility
+    /// depends on the terminal and assistive technology.
     /// Can also be enabled via VTCODE_SCREEN_READER=1 environment variable.
     #[serde(default = "default_screen_reader_mode")]
     pub screen_reader_mode: bool,

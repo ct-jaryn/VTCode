@@ -634,6 +634,13 @@ pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<Inline
                 return None;
             }
 
+            // Check for multiline input options (Shift/Alt)
+            if !has_control && (has_shift || has_alt) {
+                session.insert_char('\n');
+                session.mark_dirty();
+                return None;
+            }
+
             if !has_control
                 && !has_shift
                 && !has_alt
@@ -674,13 +681,6 @@ pub(super) fn process_key(session: &mut Session, key: KeyEvent) -> Option<Inline
                 } else {
                     Some(InlineEvent::Submit(submitted))
                 };
-            }
-
-            // Check for multiline input options (Shift/Alt)
-            if has_shift || has_alt {
-                session.insert_char('\n');
-                session.mark_dirty();
-                return None;
             }
 
             let Some(submitted) = take_submitted_input(session) else {

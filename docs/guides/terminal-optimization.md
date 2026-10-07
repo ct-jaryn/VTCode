@@ -78,6 +78,24 @@ VT Code supports several multiline input paths:
 - In Terminal.app, enable `Use Option as Meta Key` in Settings -> Profiles -> Keyboard.
 - In iTerm2 or the VS Code terminal, set the left/right Option key to `Esc+` if you rely on Option-based shortcuts.
 
+### Zed manual setup
+
+`/terminal-setup` displays instructions for Zed before resolving paths or creating backups. It does not write Zed files.
+Run `zed: open keymap` in Zed's command palette and add this object to the existing keymap array. Separate it from other
+entries with a comma and keep existing bindings:
+
+```json
+{
+  "context": "Terminal",
+  "bindings": {
+    "shift-enter": ["terminal::SendText", "\n"]
+  }
+}
+```
+
+This sends a newline only when the terminal owns focus. See Zed's [terminal bindings](https://zed.dev/docs/terminal#sending-text-and-keystrokes)
+and [user keymaps](https://zed.dev/docs/key-bindings#user-keymaps).
+
 ### Shift+Enter
 
 - Native terminals: `Ghostty`, `Kitty`, `WezTerm`, `iTerm2`, and `Warp` already handle multiline input without VT Code

@@ -1105,8 +1105,10 @@ impl Session {
                 }
             }
         } else if self.thinking_spinner.is_active && !progress_row_visible {
-            spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
-            spans.push(Span::raw(" "));
+            if self.appearance.should_animate_progress_status() {
+                spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled("Thinking", dim_style));
         }
 

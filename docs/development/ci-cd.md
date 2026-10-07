@@ -19,10 +19,11 @@ The project uses several GitHub Actions workflows to ensure code quality and aut
 
 - **Format Check (rustfmt)**: Ensures code is properly formatted
 - **Lint Check (clippy)**: Runs comprehensive linting with `-D warnings`
-- **Test**: Runs `cargo nextest run` on Ubuntu (plus macOS and Windows for PRs)
-- **Benchmarks**: Performance regression testing
-- **Security Audit**: `cargo audit` for vulnerable dependencies
-- **Documentation**: Builds and tests documentation (`cargo doc`)
+- **Test**: Runs `cargo nextest run` on Ubuntu and focused harness regressions using the same Cargo `ci` profile
+- **Windows**: Workspace compilation and Clippy, plus focused UI, input, terminal-setup, and detection regressions
+- **Security Audit**: Workflow policy, `cargo audit`, and license-notice checks
+- **Documentation**: Markdown linting, documentation placement, and core link checks
+- **Scheduled/manual checks**: Cross-platform compilation and an advisory nightly smoke check
 
 ### 2. Tool Eval Workflow (`tool-eval.yml`)
 
@@ -405,14 +406,46 @@ and the [June 2026 changelog](https://github.blog/changelog/2026-06-25-actions-s
   itself may run as a background step); outputs/env from a background step are visible only after
   `wait`/`wait-all`; implicit `wait-all` runs before post-job cleanup.
 - Prefer `parallel:` for I/O-wait overlap (python linters, `bun run typecheck` + `bun run test`).
-  Keep CPU-bound Rust builds on job-level `matrix` across runners: 2-vCPU `ubuntu-latest` runners
-  show little speedup for parallel `cargo build`/`cargo test`, and concurrent `cargo` invocations on
-  the same `target/` directory contend on the Cargo package/target lock.
+  Consider job-level `matrix` across runners for CPU-bound Rust builds only after measuring runner costs and timings.
+  Same-runner builds compete for available CPUs, and concurrent Cargo invocations on the same `target/` directory
+  contend on the Cargo package/target lock.
 - Do not parallelize steps that share one output file (e.g. two harnesses `tee`ing to the same log)
   or that both invoke `cargo` on the same workspace (e.g. `cargo build` + `cargo tree`).
 
 Current uses: `webmcp.yml` typecheck + test, `ci.yml` `large-files` (3 python checks),
-`zen-governance` (3 baselines), `lint-markdown` (2 selector tests + lint).
+`zen-governance` (3 baselines), `lint-markdown` (2 selector tests + lint), and independent Rust setup tasks.
+
+In `ci.yml`, Clippy and scheduled cross-platform checks restore Cargo caches alongside sccache setup. The Ubuntu test
+job also installs pinned nextest in that group; Windows overlaps Cargo cache restoration with nextest installation.
+Toolchain setup completes first because the cache action needs compiler metadata. These groups have two or three
+members, and their implicit barrier finishes before any Cargo command runs. `cache-bin: false` prevents cache
+restoration from overwriting binaries that a concurrent installer writes into `~/.cargo/bin`. Cache keys retain their
+existing job and target isolation. The nextest installer uses `fallback: none`, so missing prebuilt binaries fail instead
+of starting a Cargo build inside the parallel group.
+
+The focused PTY, pipe, and inline-event suites run through one nextest command with
+`--profile ci-harness --cargo-profile ci`.
+This reuses the main test job's build profile, schedules tests through nextest's bounded runner, and reports all selected
+suites even when one fails. It remains a separate step with `if: success() || failure()` so a main-suite failure does not
+skip focused regressions. Cargo processes remain sequential within each job to avoid target-directory lock contention.
+
+All CI nextest commands explicitly load the tracked `.github/nextest.toml`; local `.config/nextest.toml` is intentionally
+ignored and cannot provide profiles on a clean checkout. `ci-harness`, `ci-windows-ui`, and `ci-windows-terminal` inherit
+the nextest `ci` settings. Their separate profile
+directories preserve each suite's JUnit report; using `--profile ci` for every sequential command would overwrite earlier
+reports, including failure evidence. The Ubuntu test job runs `scripts/tests/test_ci_nextest_reports.py` against the
+configured workflow profiles to verify that a passing follow-up suite preserves an earlier failing report.
+
+This applies the batching, bounded-concurrency, and shared-resource lessons from
+[Principles for fast Tokio applications](https://dial9-rs.github.io/blog/principles-for-fast-tokio-applications/)
+and [uv PR #21372](https://github.com/astral-sh/uv/pull/21372) to CI scheduling. It is an analogy, not a Tokio runtime
+optimization. The existing Python check groups already follow this pattern.
+
+To validate a scheduling change, check dependency barriers, action inputs, isolated output paths, nonzero nextest
+selection, and failure propagation before comparing hosted job/step durations on the same commit and cache state.
+Separate queue/setup time, compilation time, and test runtime. Do not infer a speedup from local Rust runtime benchmarks
+or from a shorter YAML file. As of 2026-10-07, the registered CI workflow is `disabled_manually`; source changes and local
+checks do not establish a hosted performance result or re-enable the workflow.
 
 ## Security
 

@@ -14,7 +14,13 @@ impl ToolOutputViewerState {
         message.evidence_links.get(local_row)?.as_deref()
     }
     pub(crate) fn toggle_render_mode(&mut self) {
-        self.mode = self.mode.toggle();
+        self.set_render_mode(self.mode.toggle());
+    }
+    pub(crate) fn set_render_mode(&mut self, mode: TranscriptRenderMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
         for message in &mut self.messages {
             // Search rows are derived from the active render mode. Invalidate
             // the lowercase cache when rich wrapping and raw lines switch.
@@ -23,6 +29,8 @@ impl ToolOutputViewerState {
         self.update_row_offsets();
         self.recompute_matches();
         self.clamp_scroll(self.height);
+        self.search.restore_scroll_top = self.search.restore_scroll_top.min(self.max_scroll(self.height));
+        self.search.restore_match = self.search.current_match;
     }
     pub(crate) fn set_viewer_area(&mut self, area: Rect) {
         self.viewer_area = area;

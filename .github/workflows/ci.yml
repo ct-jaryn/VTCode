@@ -205,8 +205,14 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with: { components: clippy }
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # Toolchain setup must finish before the cache computes compiler metadata.
+      - parallel:
+          - name: Restore Cargo cache
+            uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+            with:
+              cache-bin: false
+          - name: Set up sccache
+            uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: cargo clippy --locked --jobs 4
 
   # Check for unmaintained dependencies.
@@ -316,8 +322,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ matrix.toolchain }}
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # Toolchain setup must finish before the cache computes compiler metadata.
+      - parallel:
+          - name: Restore Cargo cache
+            uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+            with:
+              cache-bin: false
+          - name: Set up sccache
+            uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: cargo check --locked --jobs 4
 
   check-windows:
@@ -338,16 +350,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: x86_64-pc-windows-msvc
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          key: x86_64-pc-windows-msvc
+      - parallel:
+          - name: Restore Cargo cache
+            uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+            with:
+              key: x86_64-pc-windows-msvc
+              cache-bin: false
+          - name: Install cargo-nextest
+            uses: taiki-e/install-action@fae525311e5e299134b606bf247d465dd0df8190 # nextest
+            with:
+              tool: cargo-nextest@0.9.140
+              fallback: none
       - name: Check Windows workspace (deny warnings)
         shell: bash
         run: cargo check --locked --target x86_64-pc-windows-msvc --workspace --all-targets --jobs 4
       - name: Clippy Windows workspace (deny warnings)
         shell: bash
         run: cargo clippy --locked --target x86_64-pc-windows-msvc --workspace --all-targets --jobs 4 -- -D warnings
+
+      - name: Windows UI accessibility and input regressions
+        shell: bash
+        run: >-
+          cargo nextest run --locked --config-file .github/nextest.toml
+          --target x86_64-pc-windows-msvc --profile ci-windows-ui
+          -p vtcode-ui -E 'test(thinking) | test(reduce_motion) | test(screen_reader) | test(tool_output_viewer) | test(queue_inputs) | test(input_navigation) | test(slash_palette) | test(events::tests)'
+      - name: Windows terminal setup and detection regressions
+        shell: bash
+        run: >-
+          cargo nextest run --locked --config-file .github/nextest.toml
+          --target x86_64-pc-windows-msvc --profile ci-windows-terminal
+          -p vtcode-core -p vtcode-commons -E 'test(terminal_setup) | test(terminal_detection)'
 
   test:
     name: "Cargo nextest"
@@ -372,21 +404,34 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # Toolchain setup must finish before the cache computes compiler metadata.
+      - parallel:
+          - name: Restore Cargo cache
+            uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+            with:
+              cache-bin: false
+          - name: Set up sccache
+            uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+          - name: Install cargo-nextest
+            uses: taiki-e/install-action@fae525311e5e299134b606bf247d465dd0df8190 # nextest
+            with:
+              tool: cargo-nextest@0.9.140
+              fallback: none
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@fae525311e5e299134b606bf247d465dd0df8190 # nextest
+      - name: Test nextest report isolation
+        run: python3 scripts/tests/test_ci_nextest_reports.py
 
       - name: Run tests
-        run: cargo nextest run --locked --profile ci --cargo-profile ci
+        run: cargo nextest run --locked --config-file .github/nextest.toml --profile ci --cargo-profile ci --build-jobs 4
 
       - name: Run focused harness PTY/TUI regressions
         if: success() || failure()
-        run: |
-          cargo test --locked -p vtcode-core --test pty_tests
-          cargo test --locked -p vtcode-bash-runner --test pipe_tests
-          cargo test --locked -p vtcode --bin vtcode inline_events::tests
+        # Batch independent suites in nextest, reusing the main test build profile.
+        run: >-
+          cargo nextest run --locked --config-file .github/nextest.toml
+          --profile ci-harness --cargo-profile ci --build-jobs 4 --test-threads 4
+          -p vtcode-core -p vtcode-bash-runner -p vtcode
+          -E 'binary(/^pty_tests$/) | binary(/^pipe_tests$/) | (binary(/^vtcode$/) & test(inline_events::tests))'
 
   msrv:
     name: MSRV Check (1.98.1)

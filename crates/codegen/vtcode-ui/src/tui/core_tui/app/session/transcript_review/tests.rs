@@ -740,3 +740,114 @@ fn cancel_search_keeps_committed_matches() {
     assert_eq!(viewer.search.matches, vec![0]);
     assert_eq!(viewer.search.current_match, Some(0));
 }
+
+#[test]
+fn screen_reader_review_opening_and_live_enablement_preserve_search_and_export() {
+    let mut session = test_session();
+    session.handle_command(InlineCommand::RecordToolOutput {
+        id: 73,
+        lines: vec![
+            "\x1b[31mfirst evidence long enough to wrap into many rows\x1b[0m".into(),
+            "second evidence".into(),
+            "tail".into(),
+        ],
+    });
+    session.handle_command(InlineCommand::AppendToolOutputLine {
+        id: 73,
+        kind: InlineMessageKind::Tool,
+        segments: vec![text_segment("captured evidence")],
+    });
+    session.open_tool_output_viewer(100, 2, None);
+    let viewer = session.tool_output_viewer_state_mut().unwrap();
+    assert_eq!(viewer.mode, TranscriptRenderMode::Rich);
+    viewer.start_search();
+    viewer.insert_search_text("evidence");
+    viewer.commit_search(2);
+    let export = viewer.export_text();
+    assert!(export.contains("first evidence long enough to wrap into many rows"));
+    assert!(export.contains("second evidence"));
+    assert!(export.ends_with("tail"));
+    assert!(!export.contains('\x1b'));
+
+    let mut appearance = session.core.appearance.clone();
+    appearance.screen_reader_mode = true;
+    session.handle_command(InlineCommand::SetAppearance { appearance: appearance.clone() });
+    let viewer = session.tool_output_viewer_state_mut().unwrap();
+    assert_eq!(viewer.mode, TranscriptRenderMode::Raw);
+    assert_eq!(viewer.search.matches, vec![0, 1]);
+    assert_eq!(viewer.row_offsets, vec![0]);
+    assert_eq!(viewer.total_lines, 3);
+    assert!(viewer.scroll_top <= viewer.max_scroll(2));
+    assert_eq!(viewer.export_text(), export);
+    let scroll_top = viewer.scroll_top;
+    viewer.set_render_mode(TranscriptRenderMode::Raw);
+    assert_eq!(viewer.scroll_top, scroll_top);
+    assert_eq!(viewer.search.matches, vec![0, 1]);
+    viewer.toggle_render_mode();
+    assert_eq!(viewer.mode, TranscriptRenderMode::Rich);
+    session.handle_command(InlineCommand::SetAppearance { appearance: appearance.clone() });
+    assert_eq!(
+        session.tool_output_viewer_state().unwrap().mode,
+        TranscriptRenderMode::Rich,
+        "reapplying config preserves manual toggle"
+    );
+    appearance.screen_reader_mode = false;
+    session.handle_command(InlineCommand::SetAppearance { appearance: appearance.clone() });
+    assert_eq!(session.tool_output_viewer_state().unwrap().mode, TranscriptRenderMode::Rich);
+    appearance.screen_reader_mode = true;
+    session.handle_command(InlineCommand::SetAppearance { appearance });
+    session.close_tool_output_viewer();
+    for focus in [None, Some(73)] {
+        if let Some(id) = focus {
+            session.core.apply_transcript_width(100);
+            session.core.apply_transcript_rows(2);
+            session.handle_command(InlineCommand::FocusTranscriptReview { id });
+        } else {
+            session.open_tool_output_viewer(100, 2, None);
+        }
+        let viewer = session.tool_output_viewer_state_mut().unwrap();
+        assert_eq!(viewer.mode, TranscriptRenderMode::Raw);
+        assert_eq!(viewer.focus_target, None);
+        assert_eq!(viewer.scroll_top, if focus.is_some() { 0 } else { 1 });
+        assert!(viewer.scroll_top <= viewer.max_scroll(2));
+        assert_eq!(viewer.export_text(), export);
+        viewer.toggle_render_mode();
+        viewer.toggle_render_mode();
+        assert_eq!(viewer.mode, TranscriptRenderMode::Raw);
+    }
+}
+
+#[test]
+fn review_mode_setter_invalidates_wrapped_search_rows_and_clamps_cancel_scroll() {
+    let mut viewer = ToolOutputViewerState {
+        height: 1,
+        messages: vec![CachedToolOutputBlock {
+            lines: vec!["first target second target".into(), "tail".into()],
+            rich_lines: vec![
+                Line::raw("first"),
+                Line::raw("target"),
+                Line::raw("second"),
+                Line::raw("target"),
+                Line::raw("tail"),
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    viewer.update_row_offsets();
+    viewer.start_search();
+    viewer.insert_search_text("target");
+    viewer.commit_search(1);
+    assert_eq!(viewer.search.matches, vec![1, 3]);
+    viewer.scroll_to_bottom(1);
+    viewer.start_search();
+    viewer.set_render_mode(TranscriptRenderMode::Raw);
+    assert_eq!(viewer.search.matches, vec![0]);
+    assert_eq!(viewer.total_lines, 2);
+    assert_eq!(viewer.scroll_top, 1);
+    viewer.cancel_search();
+    assert!(viewer.scroll_top <= 1);
+    assert_eq!(viewer.current_match_line(), Some(0));
+    viewer.toggle_render_mode();
+    assert_eq!(viewer.search.matches, vec![1, 3]);
+}

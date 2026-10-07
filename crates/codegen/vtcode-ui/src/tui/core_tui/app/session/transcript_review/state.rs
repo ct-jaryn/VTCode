@@ -7,7 +7,12 @@ impl ToolOutputViewerState {
         Self::open_focused(session, width, height, None)
     }
     pub(crate) fn open_focused(session: &Session, width: u16, height: u16, focus_target: Option<u64>) -> Self {
-        let mut state = Self { focus_target, ..Self::default() };
+        let mode = if session.core.appearance.screen_reader_mode {
+            TranscriptRenderMode::Raw
+        } else {
+            TranscriptRenderMode::Rich
+        };
+        let mut state = Self { focus_target, mode, ..Self::default() };
         state.refresh(session, width, height);
         if focus_target.is_none() {
             state.scroll_to_bottom(height);
