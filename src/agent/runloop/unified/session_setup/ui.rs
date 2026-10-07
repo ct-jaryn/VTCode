@@ -125,6 +125,7 @@ pub(crate) async fn initialize_session_ui(
         skip_confirmations,
         legacy_key_bindings,
     } = shell;
+    let initialization_progress = handle.begin_progress(vtcode_commons::ui_protocol::ProgressPhase::Initializing);
     session_state.session_bootstrap.legacy_key_bindings = legacy_key_bindings;
     // Embedded callers without the CLI bootstrap snapshot: load dot-config
     // after the shell is painted so first paint never waits on disk I/O.
@@ -327,10 +328,18 @@ pub(crate) async fn initialize_session_ui(
     checkpoint_config.storage_dir = config.checkpointing_storage_dir.clone();
     checkpoint_config.max_snapshots = config.checkpointing_max_snapshots;
     checkpoint_config.max_age_days = config.checkpointing_max_age_days;
-    let checkpoint_manager = match vtcode_core::core::agent::snapshots::SnapshotManager::new(checkpoint_config) {
-        Ok(manager) => Some(manager),
-        Err(err) => {
+    let checkpoint_manager = match tokio::task::spawn_blocking(move || {
+        vtcode_core::core::agent::snapshots::SnapshotManager::new(checkpoint_config)
+    })
+    .await
+    {
+        Ok(Ok(manager)) => Some(manager),
+        Ok(Err(err)) => {
             warn!("Failed to initialize checkpoint manager: {}", err);
+            None
+        }
+        Err(error) => {
+            warn!(%error, "Checkpoint initialization worker failed");
             None
         }
     };
@@ -466,11 +475,24 @@ pub(crate) async fn initialize_session_ui(
         }
     }
 
-    let next_checkpoint_turn = checkpoint_manager
-        .as_ref()
-        .and_then(|manager| manager.next_turn_number().ok())
-        .unwrap_or(1);
+    let next_checkpoint_turn = if let Some(manager) = checkpoint_manager.as_ref() {
+        let manager = manager.clone();
+        match tokio::task::spawn_blocking(move || manager.next_turn_number()).await {
+            Ok(Ok(turn)) => turn,
+            Ok(Err(error)) => {
+                warn!(%error, "Failed to inspect checkpoint turn numbers");
+                1
+            }
+            Err(error) => {
+                warn!(%error, "Checkpoint enumeration worker failed");
+                1
+            }
+        }
+    } else {
+        1
+    };
 
+    initialization_progress.transfer();
     Ok(SessionUISetup {
         settings_task_guard,
         renderer,

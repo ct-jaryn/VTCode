@@ -543,6 +543,7 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
         }
     };
     let mut emitted_tokens = false;
+    let mut visible_output_observed = false;
     let mut reasoning_state = StreamingReasoningState::new(stream_reasoning_deltas);
     let mut spinner_message_updated = false;
     let mut reasoning_accumulated = String::new();
@@ -568,6 +569,7 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
     let mut reasoning_emitted = false;
     let mut stream_sanitizer = StreamSanitizer::new();
     let mut first_progress_timeout = first_progress_timeout;
+    let mut first_wire_event_reported = false;
 
     loop {
         if ctrl_c_state.is_cancel_requested() || ctrl_c_state.is_exit_requested() {
@@ -624,7 +626,14 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
                                 metadata: None,
                             });
                         };
+                        if let Some(callback) = on_progress.as_deref_mut() {
+                            callback(StreamProgressEvent::ProviderActivity);
+                        }
                         handler.handle_runtime_request(renderer, request).await?;
+                        // Return status mapping to the caller after tool/approval work.
+                        if let Some(callback) = on_progress.as_deref_mut() {
+                            callback(StreamProgressEvent::ProviderActivity);
+                        }
                         continue;
                     }
                     None => {
@@ -669,6 +678,9 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
                     }
                     Some(StreamProgressEvent::ProviderActivity) => {
                         first_progress_timeout = None;
+                        if let Some(callback) = on_progress.as_deref_mut() {
+                            callback(StreamProgressEvent::ProviderActivity);
+                        }
                         continue;
                     }
                     None => {
@@ -684,6 +696,12 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
             break;
         };
 
+        if event_result.is_ok() && !first_wire_event_reported {
+            first_wire_event_reported = true;
+            if let Some(callback) = on_progress.as_deref_mut() {
+                callback(StreamProgressEvent::ProviderActivity);
+            }
+        }
         match event_result {
             Ok(LLMStreamEvent::Token { delta }) => {
                 first_progress_timeout = None;
@@ -759,6 +777,7 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
                 }
                 if let Some(callback) = on_progress.as_deref_mut() {
                     callback(StreamProgressEvent::OutputDelta(visible_delta.clone()));
+                    visible_output_observed |= !visible_delta.trim().is_empty();
                 }
                 if !supports_streaming_markdown && !reasoning_accumulated.trim().is_empty() && !emitted_tokens {
                     pending_content.push_str(&visible_delta);
@@ -883,8 +902,9 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
         let trailing_plan_parse = parser.finish();
         streamed_plan_text = trailing_plan_parse.plan_text;
         if !is_output_suppressed(&options) && !trailing_plan_parse.stripped_text.is_empty() {
-            if let Some(callback) = on_progress {
+            if let Some(callback) = on_progress.as_deref_mut() {
                 callback(StreamProgressEvent::OutputDelta(trailing_plan_parse.stripped_text.clone()));
+                visible_output_observed |= !trailing_plan_parse.stripped_text.trim().is_empty();
             }
             if !supports_streaming_markdown && !reasoning_accumulated.trim().is_empty() && !emitted_tokens {
                 pending_content.push_str(&trailing_plan_parse.stripped_text);
@@ -1024,6 +1044,9 @@ pub(crate) async fn render_stream_with_options_and_copilot_runtime_impl(
                     renderer
                         .line(MessageStyle::Response, content)
                         .map_err(|err| map_render_error(provider_name, err))?;
+                }
+                if !visible_output_observed && let Some(callback) = on_progress {
+                    callback(StreamProgressEvent::OutputDelta(content.to_owned()));
                 }
                 emitted_tokens = true;
                 aggregated = content.to_string();
@@ -1184,6 +1207,8 @@ mod tests {
         let ctrl_c_state = Arc::new(CtrlCState::new());
         let ctrl_c_notify = Arc::new(Notify::new());
 
+        let mut observed = Vec::new();
+        let mut on_progress = |event| observed.push(event);
         let result = render_stream_with_options_and_copilot_runtime_impl(
             "mock",
             &mut legacy,
@@ -1196,11 +1221,22 @@ mod tests {
             &ctrl_c_state,
             &ctrl_c_notify,
             StreamSpinnerOptions::default(),
-            None,
+            Some(&mut on_progress),
         )
         .await;
 
         assert!(result.is_ok(), "hidden provider progress should clear the first-progress timeout");
+        assert!(
+            observed
+                .iter()
+                .any(|event| matches!(event, StreamProgressEvent::ProviderActivity))
+        );
+        assert!(
+            !observed
+                .iter()
+                .any(|event| matches!(event, StreamProgressEvent::ReasoningDelta(_))),
+            "private reasoning must never become visible output"
+        );
     }
 
     fn completed_response(content: &str) -> LLMResponse {
@@ -1229,6 +1265,117 @@ mod tests {
                 _ => None,
             })
             .collect::<String>()
+    }
+
+    #[tokio::test]
+    async fn completion_output_is_observed_once_and_respects_suppression() {
+        for inline in [false, true] {
+            for streamed in [false, true] {
+                for suppressed in [false, true] {
+                    for content in ["answer", " \n", ""] {
+                        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+                        let handle = InlineHandle::new_for_tests(command_tx);
+                        let spinner = PlaceholderSpinner::new(&handle, None, None, "");
+                        let mut renderer = if inline {
+                            AnsiRenderer::with_inline_ui(handle, Default::default())
+                        } else {
+                            AnsiRenderer::stdout()
+                        };
+                        let mut events = Vec::new();
+                        if streamed {
+                            events.push(Ok(LLMStreamEvent::Token { delta: content.into() }));
+                        }
+                        events.push(Ok(LLMStreamEvent::Completed { response: Box::new(completed_response(content)) }));
+                        let mut stream: uni::LLMStream = Box::pin(stream::iter(events));
+                        let mut observed = Vec::new();
+                        let mut on_progress = |event| {
+                            if let StreamProgressEvent::OutputDelta(delta) = event {
+                                observed.push(delta);
+                            }
+                        };
+                        let (_, rendered) = render_stream_with_options_and_copilot_runtime_impl(
+                            "mock",
+                            &mut stream,
+                            None,
+                            None,
+                            None,
+                            None,
+                            &spinner,
+                            &mut renderer,
+                            &Arc::new(CtrlCState::new()),
+                            &Arc::new(Notify::new()),
+                            StreamSpinnerOptions {
+                                suppress_output: suppressed,
+                                ..StreamSpinnerOptions::default()
+                            },
+                            Some(&mut on_progress),
+                        )
+                        .await
+                        .unwrap();
+                        let visible: Vec<_> = observed
+                            .iter()
+                            .map(String::as_str)
+                            .filter(|text| !text.trim().is_empty())
+                            .collect();
+                        if content == "answer" && !suppressed {
+                            assert_eq!(visible, ["answer"], "no duplicate completion observation after tokens");
+                            assert!(rendered);
+                            if inline {
+                                assert!(collect_rendered_inline_text(&mut command_rx).contains("answer"));
+                            }
+                        } else {
+                            assert!(visible.is_empty(), "blank or suppressed content is not visible output");
+                        }
+                        if suppressed {
+                            assert!(!rendered);
+                            assert!(observed.is_empty());
+                            assert!(!collect_rendered_inline_text(&mut command_rx).contains("answer"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_only_plan_observation_contains_only_visible_prose() {
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(command_tx);
+        let spinner = PlaceholderSpinner::new(&handle, None, None, "");
+        let mut renderer = AnsiRenderer::with_inline_ui(handle, Default::default());
+        let mut stream: uni::LLMStream = Box::pin(stream::iter([Ok(LLMStreamEvent::Completed {
+            response: Box::new(completed_response("answer\n<proposed_plan>\n- hidden plan\n</proposed_plan>")),
+        })]));
+        let mut observed = Vec::new();
+        let mut on_progress = |event| {
+            if let StreamProgressEvent::OutputDelta(delta) = event {
+                observed.push(delta);
+            }
+        };
+        render_stream_with_options_and_copilot_runtime_impl(
+            "mock",
+            &mut stream,
+            None,
+            None,
+            None,
+            None,
+            &spinner,
+            &mut renderer,
+            &Arc::new(CtrlCState::new()),
+            &Arc::new(Notify::new()),
+            StreamSpinnerOptions {
+                strip_proposed_plan_blocks: true,
+                ..StreamSpinnerOptions::default()
+            },
+            Some(&mut on_progress),
+        )
+        .await
+        .unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].trim(), "answer");
+        let rendered = collect_rendered_inline_text(&mut command_rx);
+        assert!(rendered.contains("answer"));
+        assert!(!rendered.contains("hidden plan"));
     }
 
     #[tokio::test]
@@ -1582,7 +1729,7 @@ mod tests {
 
         assert_eq!(response.content.as_deref(), Some("final response"));
         assert!(rendered);
-        assert!(output_deltas.is_empty(), "suppressed tokens must not trigger OutputDelta callbacks");
+        assert_eq!(output_deltas, ["final response"], "only the visible completion may trigger OutputDelta");
 
         let rendered_text = std::iter::from_fn(|| command_rx.try_recv().ok())
             .filter_map(|command| match command {

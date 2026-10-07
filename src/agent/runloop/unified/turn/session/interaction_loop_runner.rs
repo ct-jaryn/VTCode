@@ -376,6 +376,11 @@ pub(super) async fn run_interaction_loop_impl(
             continue;
         }
 
+        let submission_progress = ctx
+            .handle
+            .begin_progress(vtcode_commons::ui_protocol::ProgressPhase::PreparingContext);
+        tracing::debug!(target: "vtcode.response_latency", operation_id = submission_progress.operation().id(), "submission accepted");
+
         // A fresh submitted input starts a new turn. Clear any stale local cancel
         // latch left behind by a prior interrupted turn so permission modals and
         // the provider stream don't inherit a spurious "interrupted" state.
@@ -662,6 +667,7 @@ pub(super) async fn run_interaction_loop_impl(
 
         let prompt_message_index = ctx.conversation_history.len();
         ctx.conversation_history.push(user_message);
+        submission_progress.transfer();
         return Ok(InteractionOutcome::Continue {
             input: input.to_string(),
             prompt_message_index: Some(prompt_message_index),

@@ -1545,6 +1545,7 @@ fn other_name(command: &InlineCommand) -> &'static str {
         InlineCommand::SetHeaderContext { .. } => "SetHeaderContext",
         InlineCommand::SetInputStatus { .. } => "SetInputStatus",
         InlineCommand::SetActivityState(_) => "SetActivityState",
+        InlineCommand::UpdateProgress(_) => "UpdateProgress",
         InlineCommand::SetTerminalTitleItems { .. } => "SetTerminalTitleItems",
         InlineCommand::SetTerminalTitleThreadLabel { .. } => "SetTerminalTitleThreadLabel",
         InlineCommand::SetTerminalTitleGitBranch { .. } => "SetTerminalTitleGitBranch",

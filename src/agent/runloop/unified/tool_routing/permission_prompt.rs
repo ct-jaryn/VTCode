@@ -835,6 +835,7 @@ pub(super) async fn prompt_tool_permission<S: UiSession + ?Sized>(
     {
         tracing::debug!(error = %err, "Failed to emit HITL notification");
     }
+    handle.set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::WaitingForApproval);
     let _placeholder_guard = PlaceholderGuard::new(handle, default_placeholder);
     let outcome = show_overlay_and_wait(
         handle,
@@ -967,6 +968,7 @@ pub(super) async fn prompt_policy_denied_tool<S: UiSession + ?Sized>(
 
     let overlay = TransientRequest::List(request);
 
+    handle.set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::WaitingForApproval);
     let result =
         show_overlay_and_wait(handle, session, overlay, ctrl_c_state, ctrl_c_notify, |submission| match submission {
             TransientSubmission::Selection(InlineListSelection::ToolApprovalEnable) => Some(HitlDecision::Enable),

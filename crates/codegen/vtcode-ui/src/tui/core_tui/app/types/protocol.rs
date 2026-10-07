@@ -126,6 +126,7 @@ define_inline_message_commands! {
             right: Option<String>,
         },
         SetActivityState(ActivityState),
+        UpdateProgress(vtcode_commons::ui_protocol::ProgressUpdate),
         SetTerminalTitleItems {
             items: Option<Vec<String>>,
         },
@@ -318,6 +319,7 @@ pub struct InlineHandle {
     /// the next visible surface before releasing input ownership.
     ui_owned_transient_activity: bool,
     next_tool_output_id: Arc<AtomicU64>,
+    progress_operation: Arc<Mutex<Option<vtcode_commons::ui_protocol::ProgressOperation>>>,
 }
 
 impl InlineHandle {
@@ -348,6 +350,7 @@ impl InlineHandle {
             transient_activity,
             ui_owned_transient_activity,
             next_tool_output_id: Arc::new(AtomicU64::new(0)),
+            progress_operation: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -389,6 +392,44 @@ impl InlineHandle {
 
     impl_inline_message_methods!(InlineCommand);
     impl_inline_control_methods!(InlineCommand);
+
+    /// Own a transient row through completion, errors and cancellation.
+    pub fn begin_progress(&self, phase: vtcode_commons::ui_protocol::ProgressPhase) -> ProgressGuard {
+        let operation = vtcode_commons::ui_protocol::ProgressOperation::start();
+        if let Ok(mut current) = self.progress_operation.lock() {
+            *current = Some(operation);
+        }
+        self.update_progress(vtcode_commons::ui_protocol::ProgressUpdate::Begin { operation, phase });
+        ProgressGuard {
+            handle: self.clone(),
+            operation,
+            clear_on_drop: true,
+        }
+    }
+
+    /// Resume ownership after the interaction loop transfers a submitted turn.
+    pub fn resume_progress(&self, phase: vtcode_commons::ui_protocol::ProgressPhase) -> ProgressGuard {
+        if let Some(operation) = self.current_progress_operation() {
+            self.update_progress(vtcode_commons::ui_protocol::ProgressUpdate::Phase { operation, phase });
+            ProgressGuard {
+                handle: self.clone(),
+                operation,
+                clear_on_drop: true,
+            }
+        } else {
+            self.begin_progress(phase)
+        }
+    }
+
+    pub fn current_progress_operation(&self) -> Option<vtcode_commons::ui_protocol::ProgressOperation> {
+        self.progress_operation.lock().ok().and_then(|current| *current)
+    }
+
+    pub fn set_progress_phase(&self, phase: vtcode_commons::ui_protocol::ProgressPhase) {
+        if let Some(operation) = self.current_progress_operation() {
+            self.update_progress(vtcode_commons::ui_protocol::ProgressUpdate::Phase { operation, phase });
+        }
+    }
 
     pub fn record_tool_output(&self, lines: Vec<String>) -> ToolOutputId {
         let id = self.next_tool_output_id.fetch_add(1, Ordering::Relaxed);
@@ -648,6 +689,38 @@ fn transient_input_state(request: &TransientRequest) -> Option<bool> {
     }
 }
 
+/// Scoped owner; transferring a turn preserves its monotonic start time.
+pub struct ProgressGuard {
+    handle: InlineHandle,
+    operation: vtcode_commons::ui_protocol::ProgressOperation,
+    clear_on_drop: bool,
+}
+
+impl ProgressGuard {
+    pub fn operation(&self) -> vtcode_commons::ui_protocol::ProgressOperation {
+        self.operation
+    }
+
+    pub fn transfer(mut self) {
+        self.clear_on_drop = false;
+    }
+}
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        if !self.clear_on_drop {
+            return;
+        }
+        self.handle
+            .update_progress(vtcode_commons::ui_protocol::ProgressUpdate::Finish { operation: self.operation });
+        if let Ok(mut current) = self.handle.progress_operation.lock()
+            && *current == Some(self.operation)
+        {
+            *current = None;
+        }
+    }
+}
+
 pub struct InlineSession {
     pub handle: InlineHandle,
     pub events: UnboundedReceiver<InlineEvent>,
@@ -747,6 +820,47 @@ impl crate::tui::core_tui::runner::TuiCommand for InlineCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_scope_transfers_identity_and_only_clears_its_operation() {
+        use vtcode_commons::ui_protocol::ProgressPhase;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(tx);
+        let first = handle.begin_progress(ProgressPhase::PreparingContext);
+        let operation = first.operation();
+        first.transfer();
+        let resumed = handle.resume_progress(ProgressPhase::SavingCheckpoint);
+        assert_eq!(resumed.operation(), operation);
+        let replacement = handle.begin_progress(ProgressPhase::Initializing);
+        drop(resumed);
+        assert_eq!(handle.current_progress_operation(), Some(replacement.operation()));
+        drop(replacement);
+        assert_eq!(handle.current_progress_operation(), None);
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(updates.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_progress_scope_and_emits_matching_finish() {
+        use vtcode_commons::ui_protocol::{ProgressPhase, ProgressUpdate};
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(tx);
+        let worker_handle = handle.clone();
+        let worker = tokio::spawn(async move {
+            let _guard = worker_handle.begin_progress(ProgressPhase::WaitingForModel);
+            std::future::pending::<()>().await;
+        });
+        let operation = match rx.recv().await.unwrap() {
+            InlineCommand::UpdateProgress(ProgressUpdate::Begin { operation, .. }) => operation,
+            _ => panic!("expected progress begin"),
+        };
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(
+            matches!(rx.recv().await, Some(InlineCommand::UpdateProgress(ProgressUpdate::Finish { operation: finished })) if finished == operation)
+        );
+        assert!(handle.current_progress_operation().is_none());
+    }
 
     #[test]
     fn evidence_navigation_records_capture_before_focus_and_reports_closed_ui() {

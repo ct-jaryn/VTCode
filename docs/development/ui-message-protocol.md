@@ -33,7 +33,12 @@ by these macros.
 
 ## Common control forwarding
 
-`types/control_commands.rs` owns 36 identical control methods in the private
+Both command protocols expose `UpdateProgress(ProgressUpdate)` and the shared `update_progress` forwarding method.
+The payload's canonical owner is `vtcode-commons::ui_protocol`. The app handle additionally owns scoped progress
+guards and operation transfer across interaction/turn boundaries. The core session rejects stale operation updates
+and renders one transient row outside transcript storage and hit-testing. See [response progress](response-progress.md).
+
+`types/control_commands.rs` owns 37 identical control methods in the private
 `impl_inline_control_methods` macro. Both handles invoke it inside their existing
 implementation. Control variant definitions remain in their respective enums,
 so their original interleaving with app-only commands and variant order stay intact.
@@ -41,7 +46,7 @@ so their original interleaving with app-only commands and variant order stay int
 | Group | Forwarding responsibilities |
 | --- | --- |
 | Lifecycle | Suspend/resume, clear queue, stop/start stream, clear screen, redraw, shutdown |
-| Prompt/status | Prompt, placeholder, boxed header, left/right status, activity, reasoning stage |
+| Prompt/status | Prompt, placeholder, boxed header, left/right status, activity, reasoning stage, typed progress |
 | Terminal title | Items, thread label, Git branch |
 | Appearance | Theme, automatic color scheme, appearance config, fullscreen settings |
 | Input | Cursor/input/image/vim toggles, literal text, draft restoration, suggestions |

@@ -4,6 +4,16 @@ The VT Code terminal UI includes an interactive mode that combines keyboard-firs
 agent control. This page consolidates the shortcuts, input modes, and background execution behaviors available while you
 are connected to a session.
 
+## Response progress
+
+A temporary row and the footer show the current phase and elapsed seconds while your request is being prepared or
+answered. Phases include saving a checkpoint, waiting for the model, processing, receiving a response, retrying,
+checking permissions, waiting for approval, and running admitted tools. The row disappears when the operation ends.
+Approval waits stay static; reduced-motion and screen-reader settings keep labels visible without shimmer. Progress
+does not appear in saved conversation history or exports, and queued messages keep their existing display.
+
+For measurements and integration details, see [response progress and latency](../development/response-progress.md).
+
 ## Keyboard Shortcuts
 
 > Canonical reference: [Keyboard Shortcuts](./keyboard-shortcuts.md). It is the single source of truth; this page keeps

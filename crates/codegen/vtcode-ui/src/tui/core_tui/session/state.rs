@@ -337,7 +337,7 @@ impl Session {
     pub(crate) fn handle_tick(&mut self) {
         let animate_progress = self.appearance.should_animate_progress_status();
         self.step_drag_auto_scroll();
-        let mut animation_updated = false;
+        let mut animation_updated = self.progress.tick();
         if animate_progress && self.thinking_spinner.is_active && self.thinking_spinner.update() {
             animation_updated = true;
             // Refresh collapsed thinking summaries so the live spinner frame and
@@ -347,7 +347,8 @@ impl Session {
             // requested below via `animation_updated`.
             self.mark_thinking_run_starts_dirty();
         }
-        let shimmer_active = animate_progress && (self.is_shimmer_active() || self.background_status_shimmer_active());
+        let shimmer_active = animate_progress
+            && (self.is_shimmer_active() || self.background_status_shimmer_active() || self.progress.is_animated());
         if shimmer_active && self.shimmer_state.update() {
             animation_updated = true;
         }
@@ -382,6 +383,9 @@ impl Session {
     /// independently of recent user input, so a truly idle session (no input,
     /// no animation, no pending expiry) can rest at the low upkeep rate.
     pub(crate) fn needs_animation_tick(&self) -> bool {
+        if self.progress.is_animated() && self.appearance.should_animate_progress_status() {
+            return true;
+        }
         // Drag auto-scroll must keep stepping while the pointer rests at an edge.
         if self.drag_auto_scroll.is_some() {
             return true;

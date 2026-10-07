@@ -34,6 +34,12 @@ inspection can opt in with `cargo doc --workspace --no-deps --document-private-i
 
 ### Bounded I/O on the agent hot path
 
+Prompt checkpoint preparation and dirty-worktree inspection run concurrently on the blocking pool. Hot checkpoint
+retention skips live JSON and content garbage collection when there are no retired records; full maintenance retains
+orphan collection. See [response progress and latency](response-progress.md) for phase feedback, monotonic diagnostics,
+and the distinction between provider activity and visible model text. Preparation remains outside execution-budget
+clocks while end-to-end latency observations include it.
+
 Independent code-search backends (literal, declaration, and path search) are started together with `tokio::join!`;
 filesystem reads, tree-sitter parsing, and candidate aggregation run in one `spawn_blocking` task. Keep the async
 coordinator responsible for ordering and cancellation, not synchronous disk work. For synchronous side-channel APIs such

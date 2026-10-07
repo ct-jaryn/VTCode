@@ -502,10 +502,34 @@ impl SnapshotManager {
         prompt: &str,
         conversation: &[SessionMessage],
     ) -> Result<PromptCheckpointLease> {
-        let mut state = self.navigation(session)?;
-        anyhow::ensure!(state.pending.is_none(), "Interrupted rewind; run /rewind-recover before continuing");
+        let manager = self.clone();
+        let session = session.to_owned();
+        let prompt = prompt.to_owned();
+        let conversation = conversation.to_vec();
+        // Lock acquisition, scanning, serialization and durable publication
+        // all belong on the blocking worker. Its lease retains the same lock
+        // through pruning and the complete agent turn, including on cancellation.
+        let lease =
+            tokio::task::spawn_blocking(move || manager.begin_prompt_blocking(turn, &session, &prompt, &conversation))
+                .await
+                .context("checkpoint preparation worker failed")??;
+        if let Err(error) = self.prune_snapshot_budget().await {
+            tracing::debug!(%error, "checkpoint budget prune failed");
+        }
+        Ok(lease)
+    }
+
+    fn begin_prompt_blocking(
+        &self,
+        turn: usize,
+        session: &str,
+        prompt: &str,
+        conversation: &[SessionMessage],
+    ) -> Result<PromptCheckpointLease> {
         let lock = acquire_verified_rewind_lock(&self.storage_dir.join("rewind.lock"))
             .context("Another turn or rewind is using this workspace")?;
+        let mut state = self.navigation(session)?;
+        anyhow::ensure!(state.pending.is_none(), "Interrupted rewind; run /rewind-recover before continuing");
         let workspace = self.canonical_workspace.clone();
         let storage = self.storage_dir.clone();
         let engine = format!("vt-{}", uuid::Uuid::new_v4());
@@ -517,7 +541,7 @@ impl SnapshotManager {
             engine: engine.clone(),
             watch: watch.clone(),
         };
-        let files = tokio::task::spawn_blocking(move || -> Result<Vec<FileSnapshot>> {
+        let files = {
             let store = filesnap::WorkspaceStore::open(&storage, &workspace)?;
             store.note_turn(&watch, &engine)?;
             let watched: Vec<_> = store
@@ -531,9 +555,8 @@ impl SnapshotManager {
             for file in &files {
                 SnapshotManager::checked_file_path(&workspace, &storage, Path::new(&file.path))?;
             }
-            Ok(files)
-        })
-        .await??;
+            files
+        };
         let metadata = SnapshotMetadata {
             id: format!("turn_{turn}"),
             turn_number: turn,
@@ -560,16 +583,17 @@ impl SnapshotManager {
         )?;
         state.active.push(turn);
         for entry in std::mem::take(&mut state.redo) {
-            self.retire_recovery_record(&entry.snapshot).await;
+            if uuid::Uuid::parse_str(&entry.snapshot).is_ok() {
+                let record = recovery_path(&self.storage_dir, &entry.snapshot);
+                let retired = record.with_extension(format!("retired-{}", uuid::Uuid::new_v4()));
+                if let Err(error) = fs::rename(&record, retired)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(%error, "Failed to retire discarded recovery record");
+                }
+            }
         }
         atomic_json(&self.navigation_path(session)?, &state)?;
-        // Cheap count-budget prune so checkpoints stay bounded on the per-turn
-        // hot path. Navigation-referenced turns are protected inside the prune.
-        // Age expiry (which reads every checkpoint body) stays on the cold
-        // `cleanup_old_snapshots` path.
-        if let Err(error) = self.prune_snapshot_budget().await {
-            tracing::debug!(%error, "checkpoint budget prune failed");
-        }
         active_map()
             .lock()
             .map_err(|error| anyhow::anyhow!("Checkpoint lock poisoned: {error}"))?

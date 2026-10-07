@@ -241,6 +241,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
         )
         .await;
         let mut ui_setup = harness_try!(ui_setup);
+        let initialization_progress = ui_setup
+            .handle
+            .resume_progress(vtcode_commons::ui_protocol::ProgressPhase::Initializing);
         vtcode_commons::startup_trace::record_phase("session_setup_ui", session_ui_phase);
 
         // Registry-light critical path: ToolRegistry + discovery run after the
@@ -328,6 +331,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
             );
         }
 
+        drop(initialization_progress);
         vtcode_commons::startup_trace::record_phase("session_setup", session_setup_phase);
         if matches!(session_trigger, SessionStartTrigger::NewSession) {
             tracing::info!(
@@ -929,6 +933,9 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     handle.set_placeholder(default_placeholder.clone());
                     handle.set_activity_state(ActivityState::Idle);
                 }
+                let turn_progress =
+                    handle.resume_progress(vtcode_commons::ui_protocol::ProgressPhase::PreparingContext);
+                let preparation_started_at = Instant::now();
                 let (next_turn_input, completed_turn_prompt_message_index) = match interaction_outcome {
                     InteractionOutcome::Exit { reason } => {
                         session_end_reason = reason;
@@ -1276,7 +1283,14 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     completed_turn_prompt_message_index,
                     &next_turn_input,
                 );
+                let workspace_buf = config.workspace.clone();
+                let touched_clone = agent_touched_paths.clone();
+                let dirty_worktree_task = tokio::task::spawn_blocking(move || {
+                    build_unrelated_dirty_worktree_note(&workspace_buf, &touched_clone)
+                });
+                let checkpoint_started_at = Instant::now();
                 let _prompt_checkpoint_lease = if let Some(manager) = checkpoint_manager.as_ref() {
+                    handle.set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::SavingCheckpoint);
                     let prefix = completed_turn_prompt_message_index
                         .unwrap_or(working_history.len())
                         .min(working_history.len());
@@ -1288,6 +1302,8 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     {
                         Ok(lease) => lease,
                         Err(err) => {
+                            // Drain the independent worker before retrying this prompt.
+                            let _ = dirty_worktree_task.await;
                             tracing::warn!(error = %err, "Checkpoint unavailable; prompt retained in input");
                             let message = checkpoint_unavailable_notice(&format!("{err:#}"));
                             let _ = renderer.line(MessageStyle::Info, message);
@@ -1325,18 +1341,10 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                 } else {
                     None
                 };
-                // Pre-fetch the unrelated dirty worktree note off the async
-                // executor. `build_unrelated_dirty_worktree_note` spawns
-                // blocking `git` subprocesses — see the `# Blocking` docs in
-                // `git.rs`. The note is passed into `append_transient_turn_notes`
-                // so the sync helper never blocks the runtime.
-                let workspace_buf = config.workspace.clone();
-                let touched_clone = agent_touched_paths.clone();
-                let unrelated_dirty_note = match tokio::task::spawn_blocking(move || {
-                    build_unrelated_dirty_worktree_note(&workspace_buf, &touched_clone)
-                })
-                .await
-                {
+                tracing::debug!(target: "vtcode.response_latency", operation_id = turn_progress.operation().id(),
+                    checkpoint_ms = checkpoint_started_at.elapsed().as_secs_f64() * 1000.0, "checkpoint preparation complete");
+                handle.set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::PreparingContext);
+                let unrelated_dirty_note = match dirty_worktree_task.await {
                     Ok(Ok(Some(note))) => Some(note),
                     Ok(Err(err)) => {
                         tracing::warn!(
@@ -1345,7 +1353,11 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         );
                         None
                     }
-                    _ => None,
+                    Err(error) => {
+                        tracing::warn!(%error, "Dirty worktree inspection worker failed");
+                        None
+                    }
+                    Ok(Ok(None)) => None,
                 };
                 let transient_system_notes = append_transient_turn_notes(
                     working_history,
@@ -1355,6 +1367,10 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                     pending_background_completions.take_transient_note(),
                 )
                 .await;
+                tracing::debug!(target: "vtcode.response_latency", operation_id = turn_progress.operation().id(),
+                    preparation_ms = preparation_started_at.elapsed().as_secs_f64() * 1000.0,
+                    accepted_to_prepared_ms = turn_progress.operation().started_at().elapsed().as_secs_f64() * 1000.0,
+                    "turn preparation complete");
                 let turn_started_at = Instant::now();
                 let history_snapshot_bytes = estimate_history_bytes(working_history);
                 let mut turn_metadata_cache = None;
@@ -1472,6 +1488,7 @@ pub(crate) async fn run_single_agent_loop_unified_impl(
                         aborted_turn_diagnostics,
                     )
                 };
+                drop(turn_progress);
                 let outcome = match turn_result {
                     Ok(outcome) => outcome,
                     Err(err) => {

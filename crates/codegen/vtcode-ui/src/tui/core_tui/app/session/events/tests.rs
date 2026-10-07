@@ -24,6 +24,41 @@ fn build_session() -> Session {
 }
 
 #[test]
+fn runtime_progress_owns_feedback_through_the_production_event_path() {
+    use crate::tui::core_tui::app::types::InlineHandle;
+    use ratatui::backend::TestBackend;
+    use vtcode_commons::ui_protocol::ProgressPhase;
+
+    for fullscreen in [false, true] {
+        let mut session = build_session();
+        session.core.set_fullscreen_active(fullscreen);
+        session.core.set_input("hello");
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        session.handle_event(CrosstermEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), &event_tx, None);
+        assert!(matches!(event_rx.try_recv().unwrap(), InlineEvent::Submit(input) if input.text == "hello"));
+        assert!(!session.core.progress.is_active(), "local routing must not create an unowned operation");
+
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = InlineHandle::new_for_tests(command_tx);
+        let guard = handle.begin_progress(ProgressPhase::PreparingContext);
+        session.handle_command(command_rx.try_recv().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| session.render(frame)).unwrap();
+        let text: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Preparing context"));
+        assert!(!session.core.is_running_activity());
+        assert!(session.core.transcript_export_text().is_empty());
+
+        drop(guard);
+        session.handle_command(command_rx.try_recv().unwrap());
+        assert!(!session.core.progress.is_active());
+        terminal.draw(|frame| session.render(frame)).unwrap();
+        let text: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+        assert!(!text.contains("Preparing context"));
+    }
+}
+
+#[test]
 #[serial_test::serial(theme_runtime)]
 fn cancelling_a_list_modal_notifies_the_preview_owner() {
     use crate::tui::core_tui::app::types::ListOverlayRequest;
@@ -399,6 +434,42 @@ fn rendered_buffer_text(terminal: &Terminal<ratatui::backend::TestBackend>) -> S
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[test]
+fn progress_renders_in_both_surfaces_and_survives_overlay_clipping() {
+    use vtcode_commons::ui_protocol::{ProgressOperation, ProgressPhase, ProgressUpdate};
+    for fullscreen in [false, true] {
+        for width in [120, 48] {
+            let mut session = build_session();
+            session.core.set_fullscreen_active(fullscreen);
+            let operation = ProgressOperation::start();
+            session.handle_command(InlineCommand::UpdateProgress(ProgressUpdate::Begin {
+                operation,
+                phase: ProgressPhase::WaitingForApproval,
+            }));
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| session.render(frame)).unwrap();
+            assert!(rendered_buffer_text(&terminal).contains("Waiting for approval"));
+            let body = session.core.transcript_area().unwrap();
+            assert!(body.bottom() < 24);
+            assert!(session.core.transcript_export_text().is_empty());
+            session.show_transient(TransientRequest::Modal(ModalOverlayRequest {
+                title: "Approval details".into(),
+                lines: vec!["Review this request".into()],
+                secure_prompt: None,
+                is_help_modal: false,
+            }));
+            terminal.draw(|frame| session.render(frame)).unwrap();
+            assert!(rendered_buffer_text(&terminal).contains("Approval details"));
+            session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            terminal.draw(|frame| session.render(frame)).unwrap();
+            assert!(rendered_buffer_text(&terminal).contains("Waiting for approval"));
+            session.handle_command(InlineCommand::UpdateProgress(ProgressUpdate::Finish { operation }));
+            terminal.draw(|frame| session.render(frame)).unwrap();
+            assert!(!rendered_buffer_text(&terminal).contains("Waiting for approval"));
+        }
+    }
 }
 
 fn add_compact_activity(session: &mut Session, id: u64, command: &str) {

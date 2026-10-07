@@ -18,6 +18,10 @@ what it will do before starting, updates only on findings, direction changes, or
 first, then what changed, what it checked, and anything the user must do. Structured tool-call events remain the
 authoritative status signal. These are user-facing updates, not a transcript of every call.
 
+The UI reports runtime phases automatically. Compiled guidance tells the model to avoid echoing those labels or
+inventing percentages, leaving its updates for findings and decisions. The runtime guidance presence and size tests
+cover this rule in every prompt profile.
+
 Compact transcript mode may collapse successful command bodies while retaining complete output in Transcript Review. The
 model must not rerun commands merely to reveal hidden output; material findings belong in a visible progress update or
 the final reply. The provider-neutral collapsed-output disclosure reinforces this after each affected tool result.

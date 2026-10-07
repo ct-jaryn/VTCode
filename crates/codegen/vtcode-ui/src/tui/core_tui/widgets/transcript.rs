@@ -62,7 +62,12 @@ impl<'a> Widget for TranscriptWidget<'a> {
             return;
         }
 
-        let inner = transcript_content_area(area);
+        let mut inner = transcript_content_area(area);
+        if self.session.progress.is_active() && inner.height > 0 {
+            let progress_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+            self.session.render_progress(progress_area, buf);
+            inner.height = inner.height.saturating_sub(1);
+        }
 
         if inner.height == 0 || inner.width == 0 {
             self.session.set_transcript_area(None);

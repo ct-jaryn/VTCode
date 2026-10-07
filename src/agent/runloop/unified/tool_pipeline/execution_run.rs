@@ -136,6 +136,8 @@ pub(crate) async fn run_tool_call_with_args(
     turn_index: usize,
     prevalidated: bool,
 ) -> Result<ToolPipelineOutcome, anyhow::Error> {
+    ctx.handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::CheckingPermissions);
     let invocation_started_at = std::time::Instant::now();
     let mut effective_args = std::borrow::Cow::Borrowed(args_val);
     let mut canonical_name = None;
@@ -377,6 +379,10 @@ pub(crate) async fn run_tool_call_with_args(
     if excludes_hitl_wait {
         ctx.harness_state.begin_budget_excluded_wait();
     }
+    if excludes_hitl_wait {
+        ctx.handle
+            .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::WaitingForApproval);
+    }
     let hitl_result = execute_hitl_tool(
         name,
         ctx.handle,
@@ -435,6 +441,8 @@ pub(crate) async fn run_tool_call_with_args(
         ctx.harness_state.begin_budget_excluded_wait();
     }
     let show_live_pty_preview = !ctx.renderer.supports_inline_ui() || !ctx.renderer.is_compact_display();
+    ctx.handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::RunningTools);
     let execution = execute_with_cache_and_streaming(
         ctx.tool_registry,
         ctx.tool_result_cache,

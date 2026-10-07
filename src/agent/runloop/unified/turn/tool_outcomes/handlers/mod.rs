@@ -871,6 +871,8 @@ pub(crate) async fn validate_tool_call<'a>(
     tool_name: &str,
     args_val: &serde_json::Value,
 ) -> Result<ValidationResult> {
+    ctx.handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::CheckingPermissions);
     // Early guard: reject empty tool names with a clear error message.
     // This handles malformed LLM responses where tool name is missing.
     // The "empty tool name" phrase is matched by `preflight_failure_is_llm_mistake`.

@@ -110,6 +110,13 @@ impl Session {
                 // can be derived from either status field.
                 self.invalidate_header_cache();
             }
+            InlineCommand::UpdateProgress(update) => {
+                if self.progress.apply(update) {
+                    self.request_transcript_clear();
+                } else {
+                    command_needs_redraw = false;
+                }
+            }
             InlineCommand::SetActivityState(state) => {
                 self.activity_state = state;
                 self.input_status_left = state.status().map(ToOwned::to_owned);

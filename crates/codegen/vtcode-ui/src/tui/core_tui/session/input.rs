@@ -973,8 +973,10 @@ impl Session {
             return None;
         }
 
-        let mut left = self
-            .copy_notification_text()
+        let copy_notification = self.copy_notification_text();
+        let showing_progress = copy_notification.is_none() && self.progress.is_active();
+        let mut left = copy_notification
+            .or_else(|| self.progress.text())
             .or_else(|| self.status_left_text().map(str::to_owned));
         let right = self.status_right_text().map(str::to_string);
 
@@ -1051,7 +1053,12 @@ impl Session {
         // Add left content (git status or shimmered activity)
         if let Some(left_value) = left.as_ref() {
             let before: u16 = spans.iter().map(|s| measure_text_width(&s.content)).sum();
-            if status_requires_shimmer(left_value) && self.appearance.should_animate_progress_status() {
+            if (if showing_progress {
+                self.progress.is_animated()
+            } else {
+                status_requires_shimmer(left_value)
+            }) && self.appearance.should_animate_progress_status()
+            {
                 spans.extend(shimmer_spans_with_style_at_phase(
                     left_value,
                     self.styles.accent_style().add_modifier(Modifier::DIM),

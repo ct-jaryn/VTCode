@@ -17,7 +17,7 @@ pub(crate) const RUNTIME_GUIDANCE_SECTION: &str = r#"## Runtime Guidance
 - Diagnose failures; change approach. Treat empty searches as evidence. Check optional tools once; report unavailable checks as skipped. Use returned `next_wait_args`; completion notices are final.
 - Reuse evidence; read missing/changed ranges. At caps, edit/verify, never copy. Verify standalone; use `max_output_tokens`, exit codes, never `; echo $?`.
 - Tool previews are bounded per result; accumulated output never exhausts tool access. Page a `spool_path` in small non-overlapping ranges within `spool_line_count`, or request targeted extraction; stop at EOF. Tool-free recovery restrictions expire at a fresh turn; recover cleared context with a targeted read under current policy.
-- Say in one sentence what you will do before starting, then update only on findings, direction changes, or blockers. Do not repeat the opening plan or narrate each call. Finish with the outcome, then what changed, what you checked, and what the user must do. Be concise by being selective, not by dropping words.
+- Say in one sentence what you will do before starting, then update only on findings, direction changes, or blockers. Do not repeat the opening plan or narrate each call. The UI reports runtime phases; do not echo them or invent percentages. Finish with the outcome, then what changed, what you checked, and what the user must do. Be concise by being selective, not by dropping words.
 - Write plain text without emojis, including verification results: `pass (6/6)`, not checkmarks or crosses.
 "#;
 
@@ -34,8 +34,9 @@ pub(crate) const VERIFICATION_OUTCOME_LINE: &str = "- Verify: never claim a chec
 /// Raised from 480 for direct patch calls and bounded context-mismatch recovery.
 /// Raised from 570 to explain spool extent and avoiding duplicate reads.
 /// Raised from 590: reuse-reads and standalone-verification rule shared by all profiles.
+/// Raised from 630 for automatic UI-phase feedback and avoiding fabricated percentages.
 /// Scoped read-cap continuation and patch retry guidance remain within this budget.
-pub(crate) const RUNTIME_GUIDANCE_MAX_ESTIMATED_TOKENS: usize = 630;
+pub(crate) const RUNTIME_GUIDANCE_MAX_ESTIMATED_TOKENS: usize = 650;
 
 /// Preserve the compiled guidance when a workspace replaces the static base
 /// prompt with `.vtcode/prompts/system.md`.
@@ -127,6 +128,9 @@ mod tests {
         assert!(RUNTIME_GUIDANCE_SECTION.contains("even at either read cap"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("Never retry an unchanged failed patch"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("At caps, edit/verify"));
+        assert!(
+            RUNTIME_GUIDANCE_SECTION.contains("The UI reports runtime phases; do not echo them or invent percentages")
+        );
         assert!(RUNTIME_GUIDANCE_SECTION.contains("Write plain text without emojis"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("including verification results"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("`pass (6/6)`, not checkmarks or crosses"));

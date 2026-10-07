@@ -41,6 +41,10 @@ macro_rules! impl_inline_control_methods {
             self.send_command($command::SetInputStatus { left, right });
         }
 
+        pub fn update_progress(&self, update: vtcode_commons::ui_protocol::ProgressUpdate) {
+            self.send_command($command::UpdateProgress(update));
+        }
+
         pub fn set_activity_state(&self, state: vtcode_commons::ui_protocol::ActivityState) {
             self.send_command($command::SetActivityState(state));
         }

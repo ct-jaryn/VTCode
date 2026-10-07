@@ -169,6 +169,7 @@ impl Session {
             // --- Thinking Indicator ---
             thinking_spinner: ThinkingSpinner::new(),
             shimmer_state: ShimmerState::new(),
+            progress: progress::TransientProgress::default(),
 
             // --- Reverse Search ---
             reverse_search_state: reverse_search::ReverseSearchState::new(),

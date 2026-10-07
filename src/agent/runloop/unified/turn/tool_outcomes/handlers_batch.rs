@@ -209,6 +209,10 @@ async fn execute_parallel_group<'a, 'b>(
         .iter()
         .any(|validated_call| exec_session_tool_active(&validated_call.prepared.canonical_name));
 
+    t_ctx
+        .ctx
+        .handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::RunningTools);
     let mut execution_futures = FuturesUnordered::new();
     for validated_call in validated_calls {
         let registry = registry.clone();

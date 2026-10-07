@@ -125,6 +125,7 @@ define_inline_message_commands! {
             right: Option<String>,
         },
         SetActivityState(ActivityState),
+        UpdateProgress(vtcode_commons::ui_protocol::ProgressUpdate),
         SetTerminalTitleItems {
             items: Option<Vec<String>>,
         },
