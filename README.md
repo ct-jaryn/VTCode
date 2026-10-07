@@ -19,7 +19,7 @@ resumable sessions.
 [![Agent Client Protocol](https://img.shields.io/badge/Agent_Client_Protocol-383B73?style=flat-square&logo=zedindustries&logoColor=white)](./docs/guides/zed-acp.md)
 [![Model Context Protocol](https://img.shields.io/badge/Model_Context_Protocol-A63333?style=flat-square&logo=modelcontextprotocol&logoColor=white)](./docs/guides/mcp-integration.md)
 [![Agent Plugins](https://img.shields.io/badge/Agent_Plugins-5865F2?style=flat-square)](./docs/guides/agent-plugins.md)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vinhnx/VTCode)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vinhnx/vtcode)
 
 <!-- markdownlint-disable-next-line MD013 -->
 <img src="./resources/gif/vtcode.gif" alt="VT Code demo: plan, then review changes in the terminal" width="70%" />
@@ -29,7 +29,8 @@ resumable sessions.
 <details>
 <summary><strong>Contents</strong></summary>
 
-- [Overview](#overview)
+- [VT Code](#vt-code)
+  - [Overview](#overview)
   - [Quick start](#quick-start)
     - [1. Install](#1-install)
     - [2. Configure your project](#2-configure-your-project)
@@ -45,9 +46,13 @@ resumable sessions.
   - [Contributing](#contributing)
   - [Security](#security)
   - [Community](#community)
-    - [Resources](#resources)
-    - [Share VT Code](#share-vt-code)
-    - [Sponsorship](#sponsorship)
+    - [Security Advisors](#security-advisors)
+    - [Main Contributor](#main-contributor)
+    - [Core Contributors](#core-contributors)
+    - [Contributors](#contributors)
+      - [Resources](#resources)
+      - [Share VT Code](#share-vt-code)
+      - [Sponsorship](#sponsorship)
   - [License](#license)
 
 </details>
@@ -198,27 +203,27 @@ Use `vtcode continue --session-id <id>` to fork an earlier session.
 
 Enable these only when you need them; none are required for the quick start.
 
-| Integration | What it gives you |
-| ----------- | ----------------- |
-| [MCP](./docs/guides/mcp-integration.md) | Connect external tools and data sources. |
-| [Agent Skills](./docs/skills/SKILLS_GUIDE.md) | Load reusable prompt packages on demand. |
-| [Plugins](./docs/guides/agent-plugins.md) | Extend the agent with plugin manifests. |
-| [ACP with Zed](./docs/guides/zed-acp.md) | Drive VT Code from the Zed editor. |
-| [WebMCP](./docs/user-guide/webmcp.md) | Pair the TUI with an authenticated browser editor via `/webmcp pair <origin>`; the hosted app ([site](https://vtcode.vinhnx.chatgpt.site/), [mirror](https://vinhnx.github.io/VTCode/)) connects through this bridge. See the [deployment reference](./docs/reference/webmcp.md). |
-| [Memcode MCP](./docs/guides/memcode-mcp.md) | Carry context between tasks; see the [design write-up](https://memcode.in/blogs/vt-code-memory-across-threads). |
+| Integration                                   | What it gives you                                                                                                                                                                                                                                                                 |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [MCP](./docs/guides/mcp-integration.md)       | Connect external tools and data sources.                                                                                                                                                                                                                                          |
+| [Agent Skills](./docs/skills/SKILLS_GUIDE.md) | Load reusable prompt packages on demand.                                                                                                                                                                                                                                          |
+| [Plugins](./docs/guides/agent-plugins.md)     | Extend the agent with plugin manifests.                                                                                                                                                                                                                                           |
+| [ACP with Zed](./docs/guides/zed-acp.md)      | Drive VT Code from the Zed editor.                                                                                                                                                                                                                                                |
+| [WebMCP](./docs/user-guide/webmcp.md)         | Pair the TUI with an authenticated browser editor via `/webmcp pair <origin>`; the hosted app ([site](https://vtcode.vinhnx.chatgpt.site/), [mirror](https://vinhnx.github.io/VTCode/)) connects through this bridge. See the [deployment reference](./docs/reference/webmcp.md). |
+| [Memcode MCP](./docs/guides/memcode-mcp.md)   | Carry context between tasks; see the [design write-up](https://memcode.in/blogs/vt-code-memory-across-threads).                                                                                                                                                                   |
 
 ## Documentation
 
 Guides by task; the full catalog lives in the [documentation index](./docs/INDEX.md), the
 [docs overview](./docs/README.md), and the [Wiki](https://github.com/vinhnx/VTCode/wiki):
 
-| Goal | Guides |
-| ---- | ------ |
-| Get started | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [Providers](./docs/providers/PROVIDER_GUIDES.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md) |
-| Work in the TUI | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
-| Automate | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md) |
-| Extend and integrate | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md) |
-| Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md) |
+| Goal                 | Guides                                                                                                                                                                                                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Get started          | [Installation](./docs/installation/README.md) · [Getting started](./docs/user-guide/getting-started.md) · [Providers](./docs/providers/PROVIDER_GUIDES.md) · [OAuth login](./docs/guides/oauth-authentication.md) · [FAQ](./docs/FAQ.md) · [Compatibility](./docs/COMPATIBILITY.md)                            |
+| Work in the TUI      | [TUI](./docs/user-guide/interactive-mode.md) · [Command reference](./docs/user-guide/commands.md) · [Planning](./docs/guides/planning-workflow.md) · [Turn diffs](./docs/development/diff-preview.md) · [Configuration](./docs/config/CONFIG_FIELD_REFERENCE.md) · [Safety](./docs/security/SECURITY_MODEL.md) |
+| Automate             | [Exec mode](./docs/user-guide/exec-mode.md) · [Full automation](./docs/guides/full-automation.md) · [Scheduled tasks](./docs/user-guide/scheduled-tasks.md) · [Hooks](./docs/guides/hooks-guide.md)                                                                                                            |
+| Extend and integrate | [Skills](./docs/skills/SKILLS_GUIDE.md) · [Plugins](./docs/guides/agent-plugins.md) · [MCP](./docs/guides/mcp-integration.md) · [Editors (ACP)](./docs/guides/zed-acp.md) · [WebMCP](./docs/user-guide/webmcp.md) · [Memcode](./docs/guides/memcode-mcp.md)                                                    |
+| Develop and evaluate | [Development](./docs/development/README.md) · [Testing](./docs/development/testing.md) · [Evals](./docs/guides/eval.md) · [Architecture](./docs/ARCHITECTURE.md) · [Protocols](./docs/protocols/OPEN_RESPONSES.md) · [Loop engineering](./docs/project/PLAN-loop-engineering.md)                               |
 
 ## Development
 
