@@ -2,6 +2,16 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.173.1 - 2026-10-07
+
+### Highlights
+#### Documentation
+
+- Add opt-in Parallel Search configuration  (6462f5b8) (@georgeatparallel)
+#### Features
+
+- Add mistral-large-4-0 route (40c6f044) 
+### Other Changes
 ## 0.174.0 - 2026-10-07
 
 ### Highlights
