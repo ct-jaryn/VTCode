@@ -2,6 +2,35 @@
 
 All notable changes to vtcode will be documented in this file.
 
+## 0.173.2 - 2026-10-07
+
+### Highlights
+#### Bug Fixes
+
+- Preserve configured status during response progress (2cb2b6d0) 
+- Deduplicate planning guidance and preserve mode sections (f2f94a79) 
+- Harden accessibility and CI workflows (e10bc82d) 
+#### Features
+
+- Show response progress and streamline checkpoints (50beab35) 
+- Strict Agent Plugins 1.0.0 conformance for MCP, paths, and plugin data (7270cd5c) 
+- Apply Agent Skills progressive disclosure and authoring patterns (9c37fe0b) 
+- Complete v1 session lifecycle and clarify legacy stack (15fea267) 
+### Other Changes
+#### CI
+
+- Run independent steps in parallel (2d9c0e39) 
+#### Other
+
+- Fix README (5794cd37) 
+- Setup dprint (446f8444) 
+#### Refactors
+
+- Remove muse spark models (1fdb9d59) 
+#### Tests
+
+- Benchmark directory listing responsiveness (d3b74089) 
+- Clarify size fixtures and strengthen section boundaries (6de9c827) 
 ## 0.173.1 - 2026-10-07
 
 ### Highlights
