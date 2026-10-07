@@ -43,13 +43,14 @@ jobs:
         working-directory: apps/webmcp
         run: bun install --frozen-lockfile
 
-      - name: Typecheck browser editor
-        working-directory: apps/webmcp
-        run: bun run typecheck
+      - parallel:
+          - name: Typecheck browser editor
+            working-directory: apps/webmcp
+            run: bun run typecheck
 
-      - name: Test browser editor
-        working-directory: apps/webmcp
-        run: bun run test
+          - name: Test browser editor
+            working-directory: apps/webmcp
+            run: bun run test
 
       - name: Build Vite editor
         working-directory: apps/webmcp

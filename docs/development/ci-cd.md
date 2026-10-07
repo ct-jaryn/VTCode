@@ -377,6 +377,43 @@ strategy:
     os: [ubuntu-latest, macos-latest, windows-latest]
 ```
 
+#### Parallel steps within one job (GitHub Actions `parallel` / `background`)
+
+Since June 2026, steps in a single job can run concurrently on the same runner while keeping
+separate logs. This repo uses `parallel:` for independent, I/O-bound steps in the same job:
+
+```yaml
+steps:
+  - parallel:
+      - name: Typecheck browser editor
+        working-directory: apps/webmcp
+        run: bun run typecheck
+      - name: Test browser editor
+        working-directory: apps/webmcp
+        run: bun run test
+```
+
+Rules applied in this repo (see
+[workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+and the [June 2026 changelog](https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/)):
+
+- Use `parallel:` for self-contained groups (lint + typecheck + python checks). It is shorthand for
+  `background: true` + implicit `wait`. Use `background:` + `wait:`/`wait-all`/`cancel:` only when
+  you need fine-grained control (long-running service, overlapping foreground work).
+- Limits: max 10 concurrent background steps per job; `wait`/`wait-all`/`cancel` always run and do
+  not support `if:`; `background` cannot be declared inside a composite action (a composite action
+  itself may run as a background step); outputs/env from a background step are visible only after
+  `wait`/`wait-all`; implicit `wait-all` runs before post-job cleanup.
+- Prefer `parallel:` for I/O-wait overlap (python linters, `bun run typecheck` + `bun run test`).
+  Keep CPU-bound Rust builds on job-level `matrix` across runners: 2-vCPU `ubuntu-latest` runners
+  show little speedup for parallel `cargo build`/`cargo test`, and concurrent `cargo` invocations on
+  the same `target/` directory contend on the Cargo package/target lock.
+- Do not parallelize steps that share one output file (e.g. two harnesses `tee`ing to the same log)
+  or that both invoke `cargo` on the same workspace (e.g. `cargo build` + `cargo tree`).
+
+Current uses: `webmcp.yml` typecheck + test, `ci.yml` `large-files` (3 python checks),
+`zen-governance` (3 baselines), `lint-markdown` (2 selector tests + lint).
+
 ## Security
 
 ### Dependency Auditing
