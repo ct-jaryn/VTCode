@@ -476,6 +476,13 @@ model_id_table! {
         display: "MiMo V2.6 Flash (Merge Gateway)",
         description: "Xiaomi MiMo V2.6 Flash efficient reasoning model accessed through Merge Gateway",
     },
+    MergeGatewayMistralLarge4 {
+        provider: MergeGateway,
+        id: models::merge_gateway::MISTRAL_LARGE_4,
+        parse: [models::merge_gateway::MISTRAL_LARGE_4],
+        display: "Mistral Large 4 (Merge Gateway)",
+        description: "Mistral Large 4 open-weight MoE flagship with 1M context accessed through Merge Gateway",
+    },
     // Mistral models
     MistralLarge3 {
         provider: Mistral,

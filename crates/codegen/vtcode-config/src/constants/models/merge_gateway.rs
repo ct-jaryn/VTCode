@@ -30,6 +30,7 @@ pub const ANTHROPIC_CLAUDE_FABLE_5_1: &str = "anthropic/claude-fable-5-1";
 pub const DEEPSEEK_FLASH: &str = "deepseek/deepseek-v4.1-flash";
 pub const XIAOMIMIMO_MIMO_V2_6_PRO: &str = "xiaomimimo/mimo-v2.6-pro";
 pub const XIAOMIMIMO_MIMO_V2_6_FLASH: &str = "xiaomimimo/mimo-v2.6-flash";
+pub const MISTRAL_LARGE_4: &str = "mistral/mistral-large-4-0";
 
 pub const DEFAULT_MODEL: &str = DEFAULT_ROUTING;
 
@@ -66,6 +67,7 @@ pub const SUPPORTED_MODELS: &[&str] = &[
     OPENAI_GPT_6_LUNA,
     XIAOMIMIMO_MIMO_V2_6_PRO,
     XIAOMIMIMO_MIMO_V2_6_FLASH,
+    MISTRAL_LARGE_4,
 ];
 
 /// Routes that advertise provider-native `reasoning_effort` controls through

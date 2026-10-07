@@ -79,6 +79,7 @@ vtcode --provider merge-gateway --model anthropic/claude-opus-5
 | `openai/gpt-6-luna` | 1.05M | Yes | OpenAI route |
 | `xiaomimimo/mimo-v2.6-pro` | 1M | Yes | Xiaomi MiMo route; reasoning controls omitted (gateway has no vendor serving reasoning jointly with tools) |
 | `xiaomimimo/mimo-v2.6-flash` | 1M | Yes | Xiaomi MiMo route; reasoning controls omitted (gateway has no vendor serving reasoning jointly with tools) |
+| `mistral/mistral-large-4-0` | 1M | Yes | Mistral route (Public Preview); reasoning controls omitted pending catalog confirmation |
 
 These are the models shown in VT Code's picker. Merge model IDs are not a
 closed local allowlist: any valid explicit `provider/model` route can be used

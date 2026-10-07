@@ -4452,6 +4452,29 @@
           "function_calling": true,
           "structured_output": false
         }
+      },
+      "mistral/mistral-large-4-0": {
+        "id": "mistral/mistral-large-4-0",
+        "name": "Mistral Large 4 (Merge Gateway)",
+        "description": "Mistral Large 4 open-weight MoE flagship with 1M context served through Merge Gateway's native Responses API.",
+        "reasoning": false,
+        "tool_call": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "context": 1000000,
+        "capabilities": {
+          "streaming": true,
+          "function_calling": true,
+          "structured_output": true
+        },
+        "is_pro": true
       }
     }
   },

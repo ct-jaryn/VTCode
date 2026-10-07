@@ -78,6 +78,7 @@ impl ModelId {
             ModelId::MergeGatewayOpenAIGpt6Luna,
             ModelId::MergeGatewayXiaomimimoMimoV26Pro,
             ModelId::MergeGatewayXiaomimimoMimoV26Flash,
+            ModelId::MergeGatewayMistralLarge4,
             // Mistral models
             ModelId::MistralLarge3,
             ModelId::MistralLarge4,

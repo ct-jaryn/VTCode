@@ -217,6 +217,13 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             1_048_576,
             false,
         ),
+        (
+            models::merge_gateway::MISTRAL_LARGE_4,
+            "Mistral Large 4 (Merge Gateway)",
+            "Mistral Large 4 open-weight MoE flagship with 1M context through Merge Gateway",
+            1_000_000,
+            false,
+        ),
     ]
     .into_iter()
     .map(|(model, display_name, description, context_window, is_default)| {

@@ -346,7 +346,7 @@ disclosure does not replace the retained evidence or expose provider chain-of-th
   `deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`, `xai/grok-4.6`, `qwen/qwen3.8-max`,
   `minimax/minimax-h3`, `moonshot/kimi-k3`, `thinkingmachines/inkling`, `meta/muse-spark-1.1`, `zai/glm-5.3-flash`,
   `zai/glm-5.3-flashx`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-6-astra`,
-  `openai/gpt-6-sol`, `openai/gpt-6.1-sol`, and `openai/gpt-6-luna`
+  `openai/gpt-6-sol`, `openai/gpt-6.1-sol`, `openai/gpt-6-luna`, and `mistral/mistral-large-4-0`
 - **Features:** Native Responses, streaming, tool calling, structured outputs, authenticated paginated model catalog,
   cache-backed picker metadata, and arbitrary explicit Merge route IDs
 - **Limitations:** Reasoning controls remain route-specific and are not inferred generically; routing metadata and

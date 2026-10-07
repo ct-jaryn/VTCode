@@ -148,6 +148,8 @@ pub enum ModelId {
     MergeGatewayXiaomimimoMimoV26Pro,
     /// Xiaomi MiMo V2.6 Flash through Merge Gateway
     MergeGatewayXiaomimimoMimoV26Flash,
+    /// Mistral Large 4 through Merge Gateway
+    MergeGatewayMistralLarge4,
 
     // Mistral AI models
     /// Mistral Large 3 - State-of-the-art open-weight general-purpose multimodal model

@@ -359,6 +359,7 @@ impl ModelId {
                 | ModelId::VercelSpacexaiGrok47
                 | ModelId::MergeGatewayXiaomimimoMimoV26Pro
                 | ModelId::MergeGatewayXiaomimimoMimoV26Flash
+                | ModelId::MergeGatewayMistralLarge4
         )
     }
 
@@ -426,6 +427,7 @@ impl ModelId {
             ModelId::OpenCodeGoKimiK3 => "k3",
             ModelId::MiMoV26Pro | ModelId::MiMoV26Flash | ModelId::MiMoV26ProUltraspeed => "v2.6",
             ModelId::MergeGatewayXiaomimimoMimoV26Pro | ModelId::MergeGatewayXiaomimimoMimoV26Flash => "v2.6",
+            ModelId::MergeGatewayMistralLarge4 => "4",
             ModelId::OpenCodeGoMinimaxM3 => "m3",
             ModelId::OllamaGptOss20b => "oss",
             ModelId::OllamaGptOss20bCloud => "oss-cloud",

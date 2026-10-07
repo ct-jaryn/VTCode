@@ -614,6 +614,12 @@ below based on the topic area.
   - **User Questions**: "What can you tell me about PTY Integration Testing Guide?", "How does Automated Verification
     work?", "How does Manual TUI Walkthrough work?"
 
+- **File**: `docs/guides/parallel-search-mcp.md`
+  - **Content**: Parallel Search MCP
+  - **Topics**: Configure the provider, Verify and use, Troubleshooting and removal
+  - **User Questions**: "What can you tell me about Parallel Search MCP?", "How does Configure the provider work?", "How
+    does Verify and use work?"
+
 - **File**: `docs/guides/planning-workflow.md`
   - **Content**: Planning Workflow
   - **Topics**: Overview, Bounded blocked-call recovery, Usage, Plan Output Format, Summary
