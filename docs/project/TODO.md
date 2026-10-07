@@ -129,3 +129,7 @@ check there is always a noticeable delay after user's first message and subseque
 - Investigate and address any underlying performance bottlenecks that contribute to the observed delays.
 
 KISS and DRY principles should be applied when implementing these optimizations. Ensure that any changes made do not introduce unnecessary complexity or redundancy.
+
+===
+
+https://developers.openai.com/api/docs/guides/decisions
