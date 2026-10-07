@@ -15,7 +15,7 @@ environment placeholders, and enforces path containment.
 | --------- | -------------- | ------------------------------------------------------------ |
 | Manifest  | `manifest.rs`  | `PluginManifest` parsing and validation                      |
 | Discovery | `discovery.rs` | `LoadedPlugin` load, skill/MCP discovery                     |
-| MCP       | `mcp.rs`       | `mcp.json` parsing into `ServerConfig`                       |
+| MCP       | `mcp.rs`       | Closed `ServerConfig` variants; entry-local skip             |
 | Loading   | `loader.rs`    | `PluginLoader` / `PluginInstaller` traits + filesystem impls |
 | Expansion | `expansion.rs` | `PLUGIN_ROOT` / `PLUGIN_DATA` placeholder expansion          |
 | Errors    | `errors.rs`    | `PluginError` diagnostics                                    |
@@ -31,10 +31,11 @@ alphanumeric, and contain no `--` or `..`.
 
 ### LoadedPlugin
 
-`LoadedPlugin::load_from_dir` reads `plugin.json`, discovers `skills/*/SKILL.md` (immediate children only), and parses
-`mcp.json`. Each skill must pass the strict Agent Skills validation, and its `name` must match its parent directory. A
-broken skill is skipped with a warning rather than failing the whole plugin. An `mcp.json` schema version that differs
-from `plugin.json` disables MCP for that plugin.
+`LoadedPlugin::load_from_dir` canonicalizes the root, reads `plugin.json` (escape rejects the plugin), discovers
+`skills/*/SKILL.md` (immediate children only, escapes/wrong-kind isolated per boundary), and parses `mcp.json`
+(escape/wrong-kind disables MCP only). A directory-name mismatch warns but loads by manifest name per the Agent Skills
+client guide. A broken skill is skipped with a warning rather than failing the whole plugin. An `mcp.json` schema
+version that differs from `plugin.json` disables MCP for that plugin.
 
 ### Loader and Installer
 
@@ -46,11 +47,19 @@ from `plugin.json` disables MCP for that plugin.
 - Directory copies skip the source's `.git` directory and hidden files, follow symlinks by re-creating them (never
   dereferencing), and abort on symlink cycles.
 
+### MCP
+
+`mcp.json` is closed (`$schema` + `mcpServers`); unknown top-level fields disable MCP only. Each server entry must
+match exactly one variant: unknown or cross-variant fields, bad `command`/`cwd` forms, reserved `env` keys, and
+invalid remote URLs/headers skip only that entry (`ServerConfigError::MissingField` vs `WrongType`).
+
 ### Expansion
 
-For stdio MCP servers VT Code injects `PLUGIN_ROOT` and `PLUGIN_DATA` environment variables and expands `${PLUGIN_ROOT}`
-/ `${PLUGIN_DATA}` placeholders in `args`, `env`, and `cwd`. `validate_plugin_relative` requires `./`-prefixed paths and
-resolves them with `canonicalize`, so symlinks that point outside the plugin root are rejected.
+For stdio MCP servers VT Code injects `PLUGIN_ROOT` (canonical root) and `PLUGIN_DATA`
+(`data-dir/plugin-data/<plugin>`, preserved across updates) and expands `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` once,
+non-recursively, in `args`, `env` values, and `cwd` only. `validate_plugin_relative` requires `./`-prefixed paths,
+`validate_command_token` enforces single-token commands, `validate_cwd_form` enforces the three `cwd` forms, and
+`resolve_cwd` enforces post-expansion containment; symlinks escaping the root or data dir are rejected.
 
 ## Runtime Integration
 

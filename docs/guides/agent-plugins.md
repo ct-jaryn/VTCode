@@ -76,34 +76,50 @@ git clone https://github.com/vinhnx/vtcode-plugins.git .agents/plugins/vtcode-pl
 
 ## Skills
 
-Plugin skills are discovered from `skills/*/SKILL.md` (immediate children of `skills/` only). Each skill must pass the
-strict Agent Skills validation that VT Code applies: `name` matches the parent directory, `description` is required, and
-only supported frontmatter keys are allowed.
+Plugin skills are discovered from `skills/*/SKILL.md` (immediate children of `skills/` only, no recursive descent).
+A missing `skills/` directory is valid absence; a `skills` path that is not a directory or escapes the plugin root
+disables only skills. Each `SKILL.md` must resolve within the plugin root (symlink escapes are skipped) and pass
+Agent Skills validation. A directory-name mismatch warns but loads by manifest name so cross-client renames still
+work; other broken skills are skipped with a warning, never fatal to the plugin.
 
 ## MCP servers
 
-Plugin MCP servers are declared in `mcp.json`. VT Code supports:
+Plugin MCP servers are declared in `mcp.json` (`$schema` + `mcpServers` only; unknown top-level fields disable MCP
+for that plugin). Each entry is a closed variant and is skipped independently when invalid:
 
-- `stdio` transport: `command`, `args`, `env`, `cwd`
-- `streamable-http` transport: `url`, `headers`
+- `stdio`: `type`, `command` (single token: bare name or `./`-relative, no shell strings), optional `args`, `env`
+  (string map, must not set `PLUGIN_ROOT`/`PLUGIN_DATA`), `cwd` (`./...`, `${PLUGIN_ROOT}[/...]`, or
+  `${PLUGIN_DATA}[/...]` only).
+- `streamable-http`: `type`, `url` (absolute http/https, no userinfo/fragment, non-loopback requires https),
+  optional literal `headers` (valid field names, case-insensitive duplicates rejected, no expansion).
+- `sse`: parsed but skipped (unsupported by VT Code's MCP client).
 
-The legacy `sse` transport is parsed but skipped (unsupported by VT Code's MCP client).
+A `mcp.json` schema version that differs from `plugin.json` disables MCP for that plugin; other components still load.
 
 At session startup each plugin MCP server is exposed as an MCP provider named `<plugin-name>.<server-name>` (for
 example, `my-plugin.local`), available through `/mcp` like any other configured server.
 
 ### Environment expansion
 
-For stdio servers, VT Code injects `PLUGIN_ROOT` and `PLUGIN_DATA` environment variables and expands `${PLUGIN_ROOT}`
-and `${PLUGIN_DATA}` placeholders in `args`, `env` values, and `cwd`. `PLUGIN_DATA` defaults to `<plugin-root>/data` and
-is created automatically before the subprocess launches.
+For stdio servers, VT Code injects `PLUGIN_ROOT` (canonical plugin root) and `PLUGIN_DATA` (client-managed
+`data-dir/plugin-data/<plugin>`, preserved across updates) and expands `${PLUGIN_ROOT}`/`${PLUGIN_DATA}` once,
+non-recursively, in `args`, `env` values, and `cwd` only — never in `command`, `env` keys, URLs, or headers.
+`PLUGIN_DATA` is created automatically before launch. Unrecognized placeholders stay literal.
 
 ### Path containment
 
-`./`-prefixed paths in `command` and `cwd` must resolve within the plugin root; symlink resolution is applied so a
-symlink that points outside the plugin root is rejected. Resolved paths are canonicalized eagerly before the subprocess
-is spawned. Names passed to `plugins add --name` and `plugins remove` must satisfy the same rules as manifest names, so
-a crafted name cannot escape the plugins directory.
+Every package file read or executed must resolve within the filesystem-resolved plugin root (symlinks followed).
+`plugin.json` escape rejects the plugin; `skills/` or `mcp.json` escape/wrong-kind disables only that type;
+`SKILL.md` escape skips only that skill; stdio `command`/`cwd` escapes skip only that server. `./`-prefixed paths
+are canonicalized eagerly before spawn. Names passed to `plugins add --name` and `plugins remove` must satisfy the
+same rules as manifest names, so a crafted name cannot escape the plugins directory.
+
+### Portable vs VT Code-owned
+
+Portable core is `plugin.json` + `skills/` + `mcp.json` + `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`. Installation sources
+(git/local), `plugins list/info/add/remove` UX, trust/sandboxing, skill presentation, and the legacy
+`.vtcode-plugin/` template (`commands/`, `agents/`, `hooks/`, `.mcp.json`, `${VTCODE_PLUGIN_ROOT}`) are VT Code-owned
+client behavior under `com.vtcode.*` and are not portable.
 
 ## CLI
 
