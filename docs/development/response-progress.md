@@ -3,7 +3,15 @@
 The inline and fullscreen interfaces show one temporary progress row as soon as a request is accepted. The row
 follows actual work: initialization, context preparation, checkpoint saving, model wait, processing, response reception,
 retry backoff, permission checks, approval waits, and admitted tool execution. Individual tool rows and queued prompts
-keep their existing presentation. The footer uses the same phase label and elapsed seconds.
+keep their existing presentation. Progress appears once: the footer uses the same phase label and elapsed seconds
+only when the current layout cannot show the transcript progress row. Git status stays static even when the branch
+name contains an activity word such as `blocked`. While that row is visible, the footer retains
+the configured status-line content: Git/worktree context in `auto` mode, custom command output in `command` mode,
+and no configured text in `hidden` mode. The existing `ui.status_line` settings, clock visibility, command refresh
+interval/timeout, automatic fallback for a missing command, and live configuration reload remain effective.
+Configured output is retained by source, so text such as `Running custom dashboard` is not discarded as tool activity.
+Copy notifications and independent background
+or shell hints retain their footer presentation.
 
 `ProgressOperation`, `ProgressPhase`, and `ProgressUpdate` live in `vtcode-commons::ui_protocol`. The UI accepts a new
 operation identity, updates only that active identity, and clears only the matching operation. Finished identities
@@ -32,7 +40,7 @@ error strings. Relevant observations are:
 
 | Observation | Meaning |
 | --- | --- |
-| `accepted_to_feedback_ms` | Acceptance to the frame painting the transient row |
+| `accepted_to_feedback_ms` | Acceptance to the final frame containing the progress row or footer fallback |
 | `checkpoint_ms` | Awaited checkpoint preparation, including durable publication and retention |
 | `preparation_ms` | Outer turn preparation before the execution clock starts |
 | `accepted_to_prepared_ms` | Includes earlier interaction-loop preparation |
@@ -40,6 +48,9 @@ error strings. Relevant observations are:
 | `dispatch_to_first_event_ms` | Provider dispatch to the first observed provider activity |
 | `dispatch_to_visible_output_ms` | Provider dispatch to the first nonempty visible text emission |
 | `accepted_to_visible_output_ms` | Includes preparation before the execution clock |
+
+Feedback is observed once per operation after overlays are painted. A covered row, suppressed footer, empty area,
+or footer containing only an ellipsis does not establish visible feedback.
 
 Completion-only streaming responses emit a visible-output observation after sanitized fallback rendering. Already
 streamed text does not emit a duplicate completion observation, and suppressed or blank output does not count.

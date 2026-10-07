@@ -771,7 +771,7 @@ async fn execute_llm_request_with_options_impl(
         let cached_prompt_tokens = usage.cached_prompt_tokens.unwrap_or(0);
         let cache_read_tokens = usage.cache_read_tokens_or_fallback();
         let cache_creation_tokens = usage.cache_creation_tokens_or_zero();
-        let cache_hit_ratio = usage.cache_hit_rate().unwrap_or(0.0) / 100.0;
+        let cache_hit_ratio = metrics::prompt_cache_hit_ratio(ctx.provider_client.name(), usage);
         let record = PromptCacheMetricsRecord {
             kind: "prompt_cache_metrics",
             turn: step_count,

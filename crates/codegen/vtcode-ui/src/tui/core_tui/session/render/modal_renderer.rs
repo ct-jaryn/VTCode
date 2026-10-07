@@ -319,6 +319,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
 
     let styles = modal_render_styles(session);
     let input_styles = input_styles_from_theme(&session.theme);
+    session.occlude_progress_feedback(area);
     render_modal_background(frame, area, styles.background);
     let link_style = session.styles.transcript_link_style().add_modifier(Modifier::UNDERLINED);
     let hovered_link_style = link_style.add_modifier(Modifier::BOLD);

@@ -150,6 +150,11 @@ Parallel read-only calls consume any existing streamed invocation ID and emit th
 completion events as serial calls. Completion belongs to the execution future, including when the group is drained after
 interruption, so turn teardown cannot label an executed call as unexecuted.
 
+Read-only cache and history reuse also consume the streamed invocation ID and complete its invocation/output items
+with the retained result, exit status, and spool reference. Reuse does not charge a fresh execution or fabricate a
+latency observation. Pre-execution rejections use the same item identity but retain their failed status. Teardown closes
+only calls that remain undispatched, so a cached result cannot later become a false cancellation in the archive.
+
 When the product collapses or bounds a tool result, every provider/model receives the fixed disclosure after the
 tool-result user message:
 <!-- markdownlint-disable-next-line MD013 -->

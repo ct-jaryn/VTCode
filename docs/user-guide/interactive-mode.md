@@ -6,9 +6,13 @@ are connected to a session.
 
 ## Response progress
 
-A temporary row and the footer show the current phase and elapsed seconds while your request is being prepared or
-answered. Phases include saving a checkpoint, waiting for the model, processing, receiving a response, retrying,
-checking permissions, waiting for approval, and running admitted tools. The row disappears when the operation ends.
+A temporary row shows the current phase and elapsed seconds while your request is being prepared or answered.
+While the row is visible, the footer keeps your configured `ui.status_line`: automatic Git/worktree context,
+custom command output, or hidden configured text. Clock, refresh, timeout, and live-reload settings still apply.
+The footer shows progress only when
+the row cannot fit. Phases include saving a checkpoint, waiting for the model,
+processing, receiving a response, retrying, checking permissions, waiting for approval, and running admitted tools.
+The row disappears when the operation ends.
 Approval waits stay static; reduced-motion and screen-reader settings keep labels visible without shimmer. Progress
 does not appear in saved conversation history or exports, and queued messages keep their existing display.
 

@@ -181,6 +181,7 @@ struct SessionLayout {
 impl Widget for &mut SessionWidget<'_> {
     #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.session.set_progress_area(None);
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -338,13 +339,14 @@ impl<'a> SessionWidget<'a> {
     }
 
     fn render_footer(&mut self, area: Rect, buf: &mut Buffer, mode: LayoutMode) {
-        // Git status is displayed in the header metadata. Do not mirror it in
-        // the footer; the footer should contain only transient activity text.
-        let left_status = self
-            .session
-            .status_left_text()
-            .filter(|status| !status.trim_start().starts_with("git:"))
-            .unwrap_or("");
+        let left_status = if self.session.progress_row_visible() {
+            self.session.progress_footer_status_text()
+        } else {
+            self.session
+                .status_left_text()
+                .filter(|status| !status.trim_start().starts_with("git:"))
+        }
+        .unwrap_or("");
         let right_status = self.session.status_right_text().unwrap_or("");
 
         // Blocked/recovery detection combines the first-class activity state
@@ -383,9 +385,12 @@ impl<'a> SessionWidget<'a> {
             .hint(hint)
             .mode(mode);
 
-        if self.session.thinking_spinner.is_active {
+        if self.session.thinking_spinner.is_active && !self.session.progress_row_visible() {
             footer = footer.spinner(self.session.thinking_spinner.current_frame());
-        } else if self.session.activity_state.is_stage() && self.session.is_shimmer_active() {
+        } else if self.session.activity_state.is_stage()
+            && self.session.is_shimmer_active()
+            && !self.session.progress_row_visible()
+        {
             footer = footer.spinner(pulse_spinner_frame_for_phase(self.session.shimmer_state.phase()));
         }
 
@@ -428,6 +433,31 @@ mod tests {
             text: text.to_string(),
             style: Arc::new(InlineTextStyle::default()),
         }
+    }
+
+    #[test]
+    fn compatibility_footer_keeps_git_status_while_transcript_owns_progress() {
+        use vtcode_commons::ui_protocol::{ActivityState, ProgressOperation, ProgressPhase, ProgressUpdate};
+
+        let mut session = Session::new(InlineTheme::default(), None, 24);
+        session.handle_command(InlineCommand::SetConfiguredInputStatus {
+            left: Some("topic/footer*".to_owned()),
+            right: Some("10:30".to_owned()),
+        });
+        session.handle_command(InlineCommand::SetActivityState(ActivityState::Building));
+        session.handle_command(InlineCommand::UpdateProgress(ProgressUpdate::Begin {
+            operation: ProgressOperation::start(),
+            phase: ProgressPhase::WaitingForModel,
+        }));
+        let area = Rect::new(0, 0, 120, 24);
+        let mut buf = Buffer::empty(area);
+        session.render_progress(Rect::new(0, 0, 120, 1), &mut buf);
+        SessionWidget::new(&mut session).render_footer(Rect::new(0, 1, 120, 4), &mut buf, LayoutMode::Wide);
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert_eq!(text.matches("Waiting for model").count(), 1, "{text}");
+        assert!(text.contains("topic/footer*"), "{text}");
+        assert!(text.contains("10:30"), "{text}");
+        assert!(!text.contains("Building..."), "{text}");
     }
 
     #[test]

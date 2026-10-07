@@ -56,6 +56,7 @@ impl<'a> TranscriptWidget<'a> {
 impl<'a> Widget for TranscriptWidget<'a> {
     #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.session.set_progress_area(None);
         if area.height == 0 || area.width == 0 {
             self.session.set_transcript_area(None);
             self.session.clear_transcript_file_link_targets();
@@ -63,7 +64,7 @@ impl<'a> Widget for TranscriptWidget<'a> {
         }
 
         let mut inner = transcript_content_area(area);
-        if self.session.progress.is_active() && inner.height > 0 {
+        if self.session.progress.is_active() && inner.height > 0 && inner.width > 0 {
             let progress_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
             self.session.render_progress(progress_area, buf);
             inner.height = inner.height.saturating_sub(1);

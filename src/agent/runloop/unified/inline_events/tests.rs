@@ -1544,6 +1544,7 @@ fn other_name(command: &InlineCommand) -> &'static str {
         InlineCommand::SetMessageLabels { .. } => "SetMessageLabels",
         InlineCommand::SetHeaderContext { .. } => "SetHeaderContext",
         InlineCommand::SetInputStatus { .. } => "SetInputStatus",
+        InlineCommand::SetConfiguredInputStatus { .. } => "SetConfiguredInputStatus",
         InlineCommand::SetActivityState(_) => "SetActivityState",
         InlineCommand::UpdateProgress(_) => "UpdateProgress",
         InlineCommand::SetTerminalTitleItems { .. } => "SetTerminalTitleItems",

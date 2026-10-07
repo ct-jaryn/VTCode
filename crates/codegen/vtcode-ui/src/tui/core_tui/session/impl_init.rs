@@ -95,6 +95,7 @@ impl Session {
             placeholder,
             placeholder_style: None,
             input_status_left: None,
+            footer_context_status: None,
             input_status_right: None,
             copy_notification_until: None,
             copy_notification_failed: false,

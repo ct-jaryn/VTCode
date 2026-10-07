@@ -415,9 +415,10 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
                     )),
                 );
             }
-            ctx.push_tool_response(
+            ctx.push_reused_tool_response(
                 tool_call_id,
-                Some(canonical_tool_name),
+                canonical_tool_name,
+                effective_args,
                 maybe_inline_spooled(canonical_tool_name, &reused_value),
             );
             ctx.harness_state.record_successful_readonly_signature(signature);
@@ -493,9 +494,10 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
         if let Some(obj) = reused_value.as_object_mut() {
             super::super::apply_reused_read_only_loop_metadata(obj);
         }
-        ctx.push_tool_response(
+        ctx.push_reused_tool_response(
             tool_call_id,
-            Some(canonical_tool_name),
+            canonical_tool_name,
+            effective_args,
             maybe_inline_spooled(canonical_tool_name, &reused_value),
         );
         ctx.harness_state.record_reused_result();
@@ -515,9 +517,10 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
         if let Some(obj) = reused_value.as_object_mut() {
             super::super::apply_reused_read_only_loop_metadata(obj);
         }
-        ctx.push_tool_response(
+        ctx.push_reused_tool_response(
             tool_call_id,
-            Some(canonical_tool_name),
+            canonical_tool_name,
+            effective_args,
             maybe_inline_spooled(canonical_tool_name, &reused_value),
         );
         ctx.harness_state.record_successful_readonly_signature(signature);
@@ -536,13 +539,14 @@ pub(crate) fn enforce_repeated_read_only_call_guard(
             if let Some(obj) = parsed.as_object_mut() {
                 super::super::apply_reused_read_only_loop_metadata(obj);
             }
-            ctx.push_tool_response(
+            ctx.push_reused_tool_response(
                 tool_call_id,
-                Some(canonical_tool_name),
+                canonical_tool_name,
+                effective_args,
                 maybe_inline_spooled(canonical_tool_name, &parsed),
             );
         } else {
-            ctx.push_tool_response(tool_call_id, Some(canonical_tool_name), raw_output);
+            ctx.push_reused_tool_response(tool_call_id, canonical_tool_name, effective_args, raw_output);
         }
         ctx.harness_state.record_reused_result();
         return Some(ValidationResult::Handled);

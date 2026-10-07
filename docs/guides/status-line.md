@@ -20,6 +20,12 @@ The `mode` key accepts three values:
 
 When `mode = "command"` the command must be provided via the optional `command` key. The runtime executes it with
 `sh -c`, piping a JSON payload to stdin and rendering the first line from stdout if it is not empty.
+Commands may ignore the JSON input; a closed stdin pipe does not discard successful output. Nonzero exit statuses,
+timeouts, and other I/O failures remain errors.
+
+During response progress, the transcript owns the loading row and the footer keeps this configured content:
+automatic context, your command's output, or no configured text in hidden mode. Live configuration changes still
+apply, including switching modes, changing the command, and hiding the clock.
 
 ```toml
 [ui.status_line]

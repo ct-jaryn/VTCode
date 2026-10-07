@@ -125,6 +125,10 @@ define_inline_message_commands! {
             left: Option<String>,
             right: Option<String>,
         },
+        SetConfiguredInputStatus {
+            left: Option<String>,
+            right: Option<String>,
+        },
         SetActivityState(ActivityState),
         UpdateProgress(vtcode_commons::ui_protocol::ProgressUpdate),
         SetTerminalTitleItems {

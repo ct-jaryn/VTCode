@@ -450,7 +450,7 @@ fn progress_renders_in_both_surfaces_and_survives_overlay_clipping() {
             }));
             let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
             terminal.draw(|frame| session.render(frame)).unwrap();
-            assert!(rendered_buffer_text(&terminal).contains("Waiting for approval"));
+            assert_eq!(rendered_buffer_text(&terminal).matches("Waiting for approval").count(), 1);
             let body = session.core.transcript_area().unwrap();
             assert!(body.bottom() < 24);
             assert!(session.core.transcript_export_text().is_empty());
@@ -462,9 +462,10 @@ fn progress_renders_in_both_surfaces_and_survives_overlay_clipping() {
             }));
             terminal.draw(|frame| session.render(frame)).unwrap();
             assert!(rendered_buffer_text(&terminal).contains("Approval details"));
+            assert_eq!(rendered_buffer_text(&terminal).matches("Waiting for approval").count(), 1);
             session.process_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             terminal.draw(|frame| session.render(frame)).unwrap();
-            assert!(rendered_buffer_text(&terminal).contains("Waiting for approval"));
+            assert_eq!(rendered_buffer_text(&terminal).matches("Waiting for approval").count(), 1);
             session.handle_command(InlineCommand::UpdateProgress(ProgressUpdate::Finish { operation }));
             terminal.draw(|frame| session.render(frame)).unwrap();
             assert!(!rendered_buffer_text(&terminal).contains("Waiting for approval"));

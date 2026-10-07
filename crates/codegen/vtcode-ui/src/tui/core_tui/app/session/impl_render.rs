@@ -101,8 +101,10 @@ impl Session {
             || self.tool_output_viewer_state().is_some()
         {
             self.core.clear_sticky_prompt_target();
+            self.core.occlude_progress_feedback(layout.viewport);
         }
         self.core.finalize_mouse_selection(frame, layout.viewport);
+        self.core.observe_progress_feedback();
     }
 
     #[expect(

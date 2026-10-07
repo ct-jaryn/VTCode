@@ -1287,6 +1287,9 @@ fn to_core_command(command: &InlineCommand) -> Option<crate::tui::core_tui::type
         InlineCommand::SetInputStatus { left, right } => {
             CoreCommand::SetInputStatus { left: left.clone(), right: right.clone() }
         }
+        InlineCommand::SetConfiguredInputStatus { left, right } => {
+            CoreCommand::SetConfiguredInputStatus { left: left.clone(), right: right.clone() }
+        }
         InlineCommand::SetActivityState(state) => CoreCommand::SetActivityState(*state),
         InlineCommand::UpdateProgress(update) => CoreCommand::UpdateProgress(*update),
         InlineCommand::SetTerminalTitleItems { items } => CoreCommand::SetTerminalTitleItems { items: items.clone() },

@@ -38,7 +38,12 @@ The payload's canonical owner is `vtcode-commons::ui_protocol`. The app handle a
 guards and operation transfer across interaction/turn boundaries. The core session rejects stale operation updates
 and renders one transient row outside transcript storage and hit-testing. See [response progress](response-progress.md).
 
-`types/control_commands.rs` owns 37 identical control methods in the private
+`SetConfiguredInputStatus { left, right }` and `set_configured_input_status` carry the result of status-line
+configuration through both protocols. They update the ordinary status fields and retained footer context atomically.
+`SetInputStatus` remains the existing transient runtime status API; it does not replace the retained configured text.
+An explicit configured `None` or empty left value clears that text, including when a live reload selects hidden mode.
+
+`types/control_commands.rs` owns shared stateless control methods in the private
 `impl_inline_control_methods` macro. Both handles invoke it inside their existing
 implementation. Control variant definitions remain in their respective enums,
 so their original interleaving with app-only commands and variant order stay intact.
@@ -46,7 +51,7 @@ so their original interleaving with app-only commands and variant order stay int
 | Group | Forwarding responsibilities |
 | --- | --- |
 | Lifecycle | Suspend/resume, clear queue, stop/start stream, clear screen, redraw, shutdown |
-| Prompt/status | Prompt, placeholder, boxed header, left/right status, activity, reasoning stage, typed progress |
+| Prompt/status | Prompt, placeholder, boxed header, runtime/configured left/right status, activity, reasoning stage, typed progress |
 | Terminal title | Items, thread label, Git branch |
 | Appearance | Theme, automatic color scheme, appearance config, fullscreen settings |
 | Input | Cursor/input/image/vim toggles, literal text, draft restoration, suggestions |

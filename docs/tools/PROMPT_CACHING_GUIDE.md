@@ -234,6 +234,12 @@ zero-filled. Cost accounting still uses `cache_read_tokens` without double-count
 usage often reports cache activity only as Anthropic-style `cache_read_input_tokens` / `cache_creation_input_tokens`;
 the same dual mapping keeps trajectory and session cache summaries honest.
 
+The trajectory's `prompt_cache_metrics.cache_hit_ratio` is cached input divided by total normalized input (0 to 1),
+including uncached tails and every sampling iteration. Anthropic and Minimax counters add cache reads and writes to
+their exclusive input count before division. Raw token fields remain provider-reported; the ratio uses the same
+normalization as canonical session usage. Older trajectory ratios used cache reads divided by reads plus writes and
+could report 1.0 despite uncached input; use the recorded token counters when auditing those historical records.
+
 Merge Gateway first-progress timeout is floored at **120s on planning and non-planning turns** when non-streaming
 fallback is available. Other remote providers with non-streaming fallback get a once-per-session advisory when a stream
 first-token timeout triggers the full-prompt retry (local providers excluded).

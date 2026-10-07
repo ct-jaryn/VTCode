@@ -41,6 +41,11 @@ macro_rules! impl_inline_control_methods {
             self.send_command($command::SetInputStatus { left, right });
         }
 
+        /// Set the configured status line, retained while progress occupies the transcript.
+        pub fn set_configured_input_status(&self, left: Option<String>, right: Option<String>) {
+            self.send_command($command::SetConfiguredInputStatus { left, right });
+        }
+
         pub fn update_progress(&self, update: vtcode_commons::ui_protocol::ProgressUpdate) {
             self.send_command($command::UpdateProgress(update));
         }

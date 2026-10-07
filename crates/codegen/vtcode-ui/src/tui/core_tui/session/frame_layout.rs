@@ -18,6 +18,7 @@ pub(crate) struct SessionFrameLayout {
 
 impl Session {
     pub(crate) fn begin_frame(&mut self, frame: &mut Frame<'_>) -> Option<Rect> {
+        self.set_progress_area(None);
         let viewport = frame.area();
         if viewport.height == 0 || viewport.width == 0 {
             return None;

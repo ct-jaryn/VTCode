@@ -1179,15 +1179,13 @@ mod tests {
         let guidelines = generate_tool_guidelines_for_profile(&tools, None, ResolvedShellPromptProfile::UnixLike, true);
         assert!(guidelines.contains("Batch independent read-only calls"));
         assert!(guidelines.contains("code_search"));
-        // Shipped verifier discipline: every exec-capable profile must carry
-        // the truthful-status outcome rule (standalone/pure-`&&`, a pure
-        // `head`/`tail` truncator counts as standalone, other pipes stay
-        // unverified), matching `VERIFIER_SHELL_FORM_NOTE`. Elision and `max_output_tokens` detail
-        // lives in runtime enforcement, not prompt text.
-        assert!(guidelines.contains("stay unverified"));
-        assert!(guidelines.contains("pure `&&`"));
+        // Exec-capable profiles describe the fail-closed verifier pipeline
+        // contract, including the terminal outcome and rejected shell forms.
+        assert!(guidelines.contains("static read-only filtering pipelines use fail-closed `pipefail`"));
+        assert!(guidelines.contains("Only terminal exit 0 clears verification"));
+        assert!(guidelines.contains("dynamic syntax, mutating tails, `;`, and `||` do not qualify"));
         assert!(!guidelines.contains("elided"));
-        assert!(!guidelines.contains("max_output_tokens"));
+        assert!(guidelines.contains("max_output_tokens"));
         assert!(guidelines.contains("Build and Auto share tools and safety gates"));
         let approx_tokens = vtcode_commons::estimate_tokens(&guidelines);
         // The batching, bounded-diff, and verifier-discipline guardrails are
@@ -1286,7 +1284,7 @@ mod tests {
         assert!(guidelines.contains("serialize mutations"));
         // No exec tools in this profile: the verifier truthful-status rule is
         // exec-conditional and must not spend budget here.
-        assert!(!guidelines.contains("stay unverified"));
+        assert!(!guidelines.contains("Only terminal exit 0 clears verification"));
     }
 
     #[test]

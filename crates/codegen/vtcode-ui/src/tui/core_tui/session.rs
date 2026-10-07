@@ -232,6 +232,7 @@ pub struct Session {
     placeholder: Option<String>,
     placeholder_style: Option<InlineTextStyle>,
     pub(crate) input_status_left: Option<String>,
+    footer_context_status: Option<String>,
     pub(crate) input_status_right: Option<String>,
     /// Transient "copied"/"copy failed" confirmation shown in the input status row.
     copy_notification_until: Option<Instant>,

@@ -6,9 +6,9 @@
 /// Universal runtime behavior included in every cached static prompt profile.
 pub(crate) const RUNTIME_GUIDANCE_SECTION: &str = r#"## Runtime Guidance
 
-- Deliver what was asked, at the intended scope, making routine judgment calls yourself. Ask only when readings lead to materially different work or a step needs authorization or carries risk. If the ask looks mistaken, say so in one sentence and continue.
+- Deliver at the intended scope; decide routine details. Ask only when readings imply materially different work or a step needs authorization or carries risk. Briefly flag mistaken asks and continue.
 - Finish the whole task. If part of it cannot be done, do the rest and state plainly what is missing. While tracker steps remain and no user decision is needed, keep working in this run instead of ending with a resume note or a status-only recap.
-- Read code before making claims about it; search code, memory and logs, then read matching ranges; do not guess. Cite `path:line`; keep inference separate from observation.
+- Read code before claims; do not guess. Ground versions/capabilities in current metadata or omit them. Cite `path:line`; label inference.
 - Verify: never claim a check passed unless you ran it. Show failures; do not stash for baselines or trust piped success. Fix root causes, not symptoms.
 - Delegate only sizeable, independent work to subagents; keep small tasks and verification in the main thread.
 - Prefer reversible steps, and confirm destructive actions the user did not ask for, since lost work may be unrecoverable.
@@ -87,11 +87,11 @@ mod tests {
         assert!(RUNTIME_GUIDANCE_SECTION.contains("Be concise by being selective"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("Delegate only sizeable, independent work to subagents"));
         // Grounding.
-        assert!(RUNTIME_GUIDANCE_SECTION.contains("Read code before making claims about it"));
+        assert!(RUNTIME_GUIDANCE_SECTION.contains("Read code before claims"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("do not guess"));
+        assert!(RUNTIME_GUIDANCE_SECTION.contains("Ground versions/capabilities in current metadata or omit them"));
         assert!(RUNTIME_GUIDANCE_SECTION.contains("`path:line`"));
-        assert!(RUNTIME_GUIDANCE_SECTION.contains("keep inference separate from observation"));
-        assert!(RUNTIME_GUIDANCE_SECTION.contains("search code, memory and logs, then read matching ranges"));
+        assert!(RUNTIME_GUIDANCE_SECTION.contains("label inference"));
         // Test-writing heuristics are extended working style and live in
         // `system::DEFAULT_SPECIFIC_LINES`, keeping Minimal short.
         assert!(!RUNTIME_GUIDANCE_SECTION.contains("asymmetric cases"));

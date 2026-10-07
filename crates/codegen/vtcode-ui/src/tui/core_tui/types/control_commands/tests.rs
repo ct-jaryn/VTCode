@@ -62,6 +62,17 @@ macro_rules! protocol_control_tests {
             }
 
             #[test]
+            fn configured_status_preserves_custom_text_and_explicit_clear() {
+                let (sender, mut receiver) = mpsc::unbounded_channel();
+                let handle = protocol::InlineHandle::new_for_tests(sender);
+                handle.set_configured_input_status(Some("Running custom dashboard".into()), Some("configured right".into()));
+                handle.set_configured_input_status(None, None);
+                assert!(matches!(receiver.try_recv().unwrap(), protocol::InlineCommand::SetConfiguredInputStatus { left: Some(left), right: Some(right) } if left == "Running custom dashboard" && right == "configured right"));
+                assert!(matches!(receiver.try_recv().unwrap(), protocol::InlineCommand::SetConfiguredInputStatus { left: None, right: None }));
+                assert!(receiver.try_recv().is_err());
+            }
+
+            #[test]
             fn optional_status_and_queued_entries_remain_distinct() {
                 let (sender, mut receiver) = mpsc::unbounded_channel();
                 let handle = protocol::InlineHandle::new_for_tests(sender);

@@ -1259,8 +1259,16 @@ async fn recovery_skip_step_pushes_structured_tool_message() {
 
 #[tokio::test]
 async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
+    use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
+    use crate::agent::runloop::unified::run_loop_context::StreamedToolCallItem;
+    use vtcode_core::core::agent::events::tool_started_event;
+
     let mut backing = TestContextBacking::new(4).await;
     backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    let emitter = HarnessEventEmitter::new_async(&workspace, "cached-read-lifecycle", None)
+        .await
+        .unwrap();
     let args = json!({
         "path": backing.sample_file.to_string_lossy()
     });
@@ -1268,6 +1276,7 @@ async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
     let mut repeated_tool_attempts = LoopTracker::new();
     let mut turn_modified_files = BTreeSet::new();
     let mut tp_ctx = backing.turn_processing_context();
+    tp_ctx.harness_emitter = Some(&emitter);
     let mut outcome_ctx = ToolOutcomeContext {
         ctx: &mut tp_ctx,
         repeated_tool_attempts: &mut repeated_tool_attempts,
@@ -1296,11 +1305,30 @@ async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
             .is_some()
     );
 
-    let second = handle_single_tool_call(&mut outcome_ctx, "read_twice", tool_names::READ_FILE, args)
+    outcome_ctx.ctx.harness_state.remember_streamed_tool_call_items([(
+        "read_twice".to_owned(),
+        StreamedToolCallItem {
+            item_id: "streamed-cached-read".to_owned(),
+            tool_name: tool_names::READ_FILE.to_owned(),
+        },
+    )]);
+    emitter
+        .emit(tool_started_event(
+            "streamed-cached-read".to_owned(),
+            tool_names::READ_FILE,
+            Some(&args),
+            Some("read_twice"),
+        ))
+        .unwrap();
+    let second = handle_single_tool_call(&mut outcome_ctx, "read_twice", tool_names::READ_FILE, args.clone())
         .await
         .expect("duplicate readonly call should be reused");
 
     assert!(second.is_none());
+    assert!(
+        outcome_ctx.ctx.harness_state.take_all_streamed_tool_call_item_ids().is_empty(),
+        "cached reads must not be cancelled by teardown"
+    );
     assert_eq!(outcome_ctx.ctx.harness_state.tool_calls, 1);
     assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), 1);
     assert_eq!(
@@ -1311,6 +1339,31 @@ async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
             .reused_results,
         1
     );
+    emitter.finish().await.unwrap();
+    let persisted =
+        std::fs::read_to_string(workspace.join(".vtcode/sessions/cached-read-lifecycle/events.jsonl")).unwrap();
+    let events = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let completions = events
+        .iter()
+        .map(|record| &record["event"])
+        .filter(|event| event["type"] == "item.completed" && event["item"]["tool_call_id"] == "read_twice")
+        .collect::<Vec<_>>();
+    assert_eq!(completions.len(), 2, "one cached invocation and output completion");
+    let invocation = completions
+        .iter()
+        .find(|event| event["item"]["type"] == "tool_invocation")
+        .unwrap();
+    assert_eq!(invocation["item"]["id"], "streamed-cached-read");
+    assert_eq!(invocation["item"]["status"], "completed");
+    assert_eq!(invocation["item"]["outcome"], "success");
+    assert_eq!(invocation["item"]["arguments"], args);
+    let output = completions.iter().find(|event| event["item"]["type"] == "tool_output").unwrap();
+    assert_eq!(output["item"]["status"], "completed");
+    assert!(output["item"]["output"].as_str().unwrap().contains("hello"));
+    assert!(!output["item"]["output"].as_str().unwrap().contains("before it could execute"));
     assert!(
         outcome_ctx
             .ctx

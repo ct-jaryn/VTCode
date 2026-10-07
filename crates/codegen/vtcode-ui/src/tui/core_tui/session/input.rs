@@ -2,6 +2,7 @@ use super::{
     Action, PLACEHOLDER_COLOR, Session, measure_text_width, ratatui_color_from_ansi, ratatui_style_from_inline,
 };
 use crate::tui::config::constants::ui;
+use crate::tui::core_tui::blocked_status::is_git_status;
 use crate::tui::ui::tui::types::InlineTextStyle;
 use anstyle::{Color as AnsiColorEnum, Effects};
 use ratatui::{
@@ -58,6 +59,13 @@ pub(super) struct InputRender {
     pub(super) text: Text<'static>,
     cursor_x: u16,
     cursor_y: u16,
+}
+
+#[derive(Default)]
+struct InputStatusLine {
+    line: Line<'static>,
+    background_hits: Vec<(u16, u16)>,
+    progress_columns: u16,
 }
 
 struct CompactInputPreview {
@@ -340,15 +348,18 @@ impl Session {
         }
 
         if let Some(status_area) = status_area {
-            let (status_line, background_hits) = self
-                .render_input_status_line_with_hit(status_area.width)
-                .unwrap_or((Line::default(), Vec::new()));
+            let status = self.build_input_status_line(status_area.width).unwrap_or_default();
             {
                 let buf = frame.buffer_mut();
                 buf.set_style(status_area, self.styles.default_style());
-                paint_pre_wrapped_line(&status_line, status_area, buf, self.styles.default_style());
+                paint_pre_wrapped_line(&status.line, status_area, buf, self.styles.default_style());
             }
-            let hits = background_hits
+            if status.progress_columns > 0 {
+                let feedback_area = Rect::new(status_area.x, status_area.y, status.progress_columns, 1);
+                self.set_progress_feedback_area(feedback_area.intersection(frame.area()));
+            }
+            let hits = status
+                .background_hits
                 .into_iter()
                 .map(|(start, end)| {
                     Rect::new(status_area.x.saturating_add(start), status_area.y, end.saturating_sub(start), 1)
@@ -967,17 +978,34 @@ impl Session {
     /// Status line plus column ranges (relative to the status area) of the
     /// clickable background indicator spans: the activity text and the
     /// `{key} background` hint only.
-    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(crate) fn render_input_status_line_with_hit(&self, width: u16) -> Option<(Line<'static>, Vec<(u16, u16)>)> {
+        self.build_input_status_line(width)
+            .map(|status| (status.line, status.background_hits))
+    }
+
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
+    fn build_input_status_line(&self, width: u16) -> Option<InputStatusLine> {
         if width == 0 {
             return None;
         }
 
         let copy_notification = self.copy_notification_text();
-        let showing_progress = copy_notification.is_none() && self.progress.is_active();
-        let mut left = copy_notification
-            .or_else(|| self.progress.text())
-            .or_else(|| self.status_left_text().map(str::to_owned));
+        let progress_row_visible = self.progress_row_visible();
+        let showing_progress = copy_notification.is_none() && self.progress.is_active() && !progress_row_visible;
+        // The transcript owns progress when it fits. Keep the footer fallback
+        // for constrained layouts without repeating legacy foreground activity.
+        let mut left = copy_notification.or_else(|| {
+            if progress_row_visible {
+                self.progress_footer_status_text().map(str::to_owned)
+            } else {
+                self.progress.text().or_else(|| self.status_left_text().map(str::to_owned))
+            }
+        });
+        let progress_columns = if showing_progress {
+            left.as_deref().map(measure_text_width).unwrap_or_default()
+        } else {
+            0
+        };
         let right = self.status_right_text().map(str::to_string);
 
         if let Some(shell_hint) = self.shell_mode_status_hint() {
@@ -1076,7 +1104,7 @@ impl Session {
                     background_hits.push((start, end));
                 }
             }
-        } else if self.thinking_spinner.is_active {
+        } else if self.thinking_spinner.is_active && !progress_row_visible {
             spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
             spans.push(Span::raw(" "));
             spans.push(Span::styled("Thinking", dim_style));
@@ -1151,7 +1179,11 @@ impl Session {
                 (start < clamped_end).then_some((start, clamped_end))
             })
             .collect::<Vec<_>>();
-        Some((line, hits))
+        Some(InputStatusLine {
+            line,
+            background_hits: hits,
+            progress_columns: progress_columns.min(content_width),
+        })
     }
 
     fn input_uses_shell_prefix(&self) -> bool {
@@ -1584,6 +1616,11 @@ pub(crate) fn status_requires_shimmer(text: &str) -> bool {
     // has_status_spinner / is_shimmer_active, so
     // avoiding the per-call String allocation matters.
     let trimmed = text.trim();
+    // Git branch names may contain activity words. Recognize the existing
+    // labelled and compact Git formats before interpreting free-form status.
+    if is_git_status(trimmed) {
+        return false;
+    }
     let needles = [
         "running command:",
         "running tool:",
