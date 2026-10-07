@@ -1039,7 +1039,7 @@ below based on the topic area.
 
 - **File**: `docs/skills/SKILLS_GUIDE.md`
   - **Content**: Agent Skills Guide
-  - **Topics**: Discovery, Skill Structure, SKILL.md, Prompting Behavior, Sub-LLM Tool Execution
+  - **Topics**: Discovery, Skill Structure, SKILL.md, Prompting Behavior, Activation Context
   - **User Questions**: "What can you tell me about Agent Skills Guide?", "How does Discovery work?", "How does Skill
     Structure work?"
 

@@ -81,6 +81,18 @@ VT Code does not support `agents/openai.yaml`. That file is Codex-specific and i
 - Implicit matching uses `description`
 - Full `SKILL.md` bodies are loaded only when a skill is selected
 - Referenced resources are loaded on demand
+- Catalog modes: `lean` (default, name + description + path + scope) and `full` (lean plus
+  `compatibility` and `allowed-tools` when present). Up to 10 skills inline; overflow links to `list_skills`.
+
+## Activation Context
+
+Activated skills render as bounded `<untrusted_skill_instructions>` with:
+
+- `Skill directory:` base path for resolving relative `scripts/`/`references/`/`assets/` paths
+- Escaped body (fence-injection safe, 32 KiB cap with truncation marker)
+- `<skill_resources>` listing (sorted, capped at 32) loaded on demand, never bulk-loaded
+
+Skill content is untrusted resource data; host tool and sandbox policy remains authoritative.
 
 ## Sub-LLM Tool Execution
 
@@ -146,3 +158,23 @@ VT Code also exposes the interactive slash-command surface as skills.
   `disable-model-invocation`.
 - User-facing skill metadata in VT Code is limited to the strict `SKILL.md` fields above.
 - Bundled system skills are surfaced as `system` scope.
+
+## Authoring Patterns
+
+Scaffold includes `Gotchas`, `Output Format`, `Checklist`, and `Validation` sections per agentskills.io
+best-practices:
+
+- Gotchas: non-obvious facts the agent will get wrong (soft-deletes, ID aliases, health-check quirks).
+- Output Format: concrete template; store long templates under `assets/` and reference them.
+- Checklist: trigger match, load only needed refs, prefer `scripts/`, validate before finishing.
+- Validation loop: produce artifact, run validator, fix and re-run until passing.
+- Prefer one default tool path with a brief escape hatch; describe reusable procedures, not single answers.
+
+## Script Design
+
+Bundled `scripts/` helpers must be non-interactive and agentic-friendly:
+
+- `argparse` with `--help`, `--format json|text`, `--output -|FILE`, `--dry-run` for previews.
+- Structured data to stdout (JSON), diagnostics to stderr, meaningful exit codes.
+- Idempotent (`create if not exists`); PEP723 `# /// script` inline deps when needed.
+- Pin one-off `uvx`/`npx` versions; state prerequisites in `compatibility`.
