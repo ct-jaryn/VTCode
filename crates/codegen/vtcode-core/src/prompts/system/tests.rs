@@ -31,6 +31,13 @@ async fn planning_prompt_size_fixed_fixture() {
         RuntimePromptContract, append_runtime_mode_sections, append_runtime_tool_prompt_sections_for_model,
     };
 
+    struct PlanningPromptSizeCase {
+        density: &'static str,
+        prompt_budget_tokens: u64,
+        max_prompt_bytes: usize,
+        max_estimated_tokens: usize,
+    }
+
     let workspace = tempfile::TempDir::new().expect("workspace");
     let provider = OpenAIProvider::new("offline-fixture".into());
     let names = [
@@ -60,8 +67,20 @@ async fn planning_prompt_size_fixed_fixture() {
     );
     // Fixed fixture caps are below the pre-deduplication byte counts (10,222
     // Default and 10,244 Minimal); retain the canonical output contract.
-    for (density, budget, max_bytes, max_tokens) in [("Default", 100_000, 9_800, 2_100), ("Minimal", 1, 10_100, 2_200)]
-    {
+    for case in [
+        PlanningPromptSizeCase {
+            density: "Default",
+            prompt_budget_tokens: 100_000,
+            max_prompt_bytes: 9_800,
+            max_estimated_tokens: 2_100,
+        },
+        PlanningPromptSizeCase {
+            density: "Minimal",
+            prompt_budget_tokens: 1,
+            max_prompt_bytes: 10_100,
+            max_estimated_tokens: 2_200,
+        },
+    ] {
         let mut config = VTCodeConfig::default();
         config.agent.system_prompt_mode = SystemPromptMode::Minimal;
         config.agent.include_temporal_context = false;
@@ -82,7 +101,7 @@ async fn planning_prompt_size_fixed_fixture() {
                 ..Default::default()
             },
         );
-        config.agent.max_system_prompt_tokens = budget;
+        config.agent.max_system_prompt_tokens = case.prompt_budget_tokens;
         append_runtime_tool_prompt_sections_for_model(
             &mut prompt,
             &snapshot,
@@ -92,10 +111,19 @@ async fn planning_prompt_size_fixed_fixture() {
             crate::config::constants::models::openai::DEFAULT_MODEL,
             Some(&config),
         );
-        eprintln!("planning fixture {density}: {} bytes, {} estimated tokens", prompt.len(), estimate_tokens(&prompt));
+        eprintln!(
+            "planning fixture {}: {} bytes, {} estimated tokens",
+            case.density,
+            prompt.len(),
+            estimate_tokens(&prompt)
+        );
         assert!(prompt.contains(PLANNING_WORKFLOW_PLAN_PERSISTENCE_POLICY_LINE));
-        assert!(prompt.len() <= max_bytes, "{density} planning fixture exceeded byte budget");
-        assert!(estimate_tokens(&prompt) <= max_tokens, "{density} planning fixture exceeded token budget");
+        assert!(prompt.len() <= case.max_prompt_bytes, "{} planning fixture exceeded byte budget", case.density);
+        assert!(
+            estimate_tokens(&prompt) <= case.max_estimated_tokens,
+            "{} planning fixture exceeded token budget",
+            case.density
+        );
     }
 }
 

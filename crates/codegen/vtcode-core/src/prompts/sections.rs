@@ -54,11 +54,11 @@ mod tests {
 
     #[test]
     fn bracket_only_mode_ignores_markdown_headings() {
-        let prompt = "Base\n[Harness Limits]\n- a\n## Environment\n- b\n";
+        let prompt = "Base\n[Harness Limits]\n- a\n# Planning\n- b\n## Environment\n- c\n[Next Section]\n- d\n";
         let bounds = find_prompt_section_bounds(prompt, "[Harness Limits]", SectionBoundaryMode::BracketOnly)
             .expect("section bounds");
 
-        assert_eq!(&prompt[bounds.0..bounds.1], "[Harness Limits]\n- a\n## Environment\n- b\n");
+        assert_eq!(&prompt[bounds.0..bounds.1], "[Harness Limits]\n- a\n# Planning\n- b\n## Environment\n- c\n");
     }
 
     #[test]
