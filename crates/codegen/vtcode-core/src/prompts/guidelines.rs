@@ -322,8 +322,8 @@ pub fn append_runtime_tool_prompt_sections_for_model(
         config.and_then(|cfg| cfg.agent.harness.max_budget_usd),
     );
     let parallel_tools = provider.supports_parallel_tool_config(model);
-    // The detailed planning contract contains no parallel-call hint and remains
-    // intact in Default. Minimal retains the same read-only and output contract.
+    // The planning mode section owns the output contract at every density.
+    // Default planning tool guidance contains no parallel-call hint.
     if tool_snapshot.planning_active && profile == ToolGuidanceProfile::Default {
         return;
     }
@@ -377,10 +377,10 @@ fn append_runtime_tool_sections_with_names(
     }
 }
 
-/// Planning addendum for the compact (Minimal) tool guidance, where the
-/// detailed planning contract is dropped to fit the budget.
+/// Compact tool reminders; the planning mode section retains the canonical
+/// research, step-quality, output, and persistence contract at every density.
 fn append_minimal_planning_addendum(guidance: &mut String, names: &[String]) {
-    guidance.push_str("\n- Planning is read-only. Stop research when the plan is specified or the budget is near; emit one `<proposed_plan>` block with concrete targets and verification for each step.");
+    guidance.push_str("\n- Planning is read-only.");
     let read_tools = [TOOL_READ_FILE, TOOL_GREP_FILE, TOOL_CODE_SEARCH, TOOL_LIST_FILES]
         .into_iter()
         .filter(|tool| names.iter().any(|name| name == tool))
@@ -509,9 +509,6 @@ fn generate_runtime_tool_guidelines_for_profile(
 
     let mut lines = vec!["- Planning workflow active: stay within the read-safe tool list.".to_string()];
     lines.push(OPTIONAL_MARKDOWN_VALIDATION_GUIDANCE.to_string());
-    lines.push("- Monitor the available planning tool-loop budget; stop research when the plan is specified or the limit is near, then synthesize one compact decision-ready plan from existing evidence.".to_string());
-    lines.push("- Every implementation step in the final plan must name a concrete repository target and include a concrete verification command or observable check.".to_string());
-    lines.push("- When the plan is ready, emit only one `<proposed_plan>` block; do not repeat planning policy text or add surrounding prose.".to_string());
     if let Some(browse_guidance) =
         browse_tool_guidance(has_exec, has_search, has_list_files, has_read_file, shell_profile)
     {
@@ -1336,8 +1333,8 @@ mod tests {
 
         assert!(guidelines.contains("Planning workflow active"));
         assert!(guidelines.contains("`exec_command` only for read-only verification"));
-        assert!(guidelines.contains("concrete repository target"));
-        assert!(guidelines.contains("emit only one `<proposed_plan>` block"));
+        assert!(!guidelines.contains("<proposed_plan>"));
+        assert!(!guidelines.contains("Every implementation step"));
         assert!(guidelines.contains("omit unused filters"));
         assert!(!guidelines.contains("Inspect before edit"));
     }

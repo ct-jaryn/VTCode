@@ -257,9 +257,9 @@ below based on the topic area.
 
 - **File**: `docs/development/runtime-guidance.md`
   - **Content**: Runtime Guidance and Project Instructions
-  - **Topics**: User-facing progress contract, Continuity and long-running work
-  - **User Questions**: "What can you tell me about Runtime Guidance and Project Instructions?", "How does User-facing
-    progress contract work?", "How does Continuity and long-running work work?"
+  - **Topics**: Planning contract ownership, User-facing progress contract, Continuity and long-running work
+  - **User Questions**: "What can you tell me about Runtime Guidance and Project Instructions?", "How does Planning
+    contract ownership work?", "How does User-facing progress contract work?"
 
 - **File**: `docs/development/rust-performance-principles.md`
   - **Content**: Rust-Specific Performance Principles for VT Code

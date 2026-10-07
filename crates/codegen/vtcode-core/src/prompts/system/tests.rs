@@ -22,6 +22,83 @@ const REMOVED_MODEL_FACING_TOOL_NAMES: &[&str] = &[
     "grep_file",
 ];
 
+#[tokio::test]
+async fn planning_prompt_size_fixed_fixture() {
+    use crate::core::agent::harness_kernel::SessionToolCatalogSnapshot;
+    use crate::llm::provider::ToolDefinition;
+    use crate::llm::providers::OpenAIProvider;
+    use crate::prompts::{
+        RuntimePromptContract, append_runtime_mode_sections, append_runtime_tool_prompt_sections_for_model,
+    };
+
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    let provider = OpenAIProvider::new("offline-fixture".into());
+    let names = [
+        tools::EXEC_COMMAND,
+        tools::CODE_SEARCH,
+        tools::TASK_TRACKER,
+        tools::REQUEST_USER_INPUT,
+    ];
+    let snapshot = SessionToolCatalogSnapshot::new(
+        7,
+        9,
+        true,
+        true,
+        Some(std::sync::Arc::new(
+            names
+                .iter()
+                .map(|name| {
+                    ToolDefinition::function(
+                        (*name).to_string(),
+                        "Fixture tool".to_string(),
+                        serde_json::json!({"type": "object"}),
+                    )
+                })
+                .collect(),
+        )),
+        false,
+    );
+    // Fixed fixture caps are below the pre-deduplication byte counts (10,222
+    // Default and 10,244 Minimal); retain the canonical output contract.
+    for (density, budget, max_bytes, max_tokens) in [("Default", 100_000, 9_800, 2_100), ("Minimal", 1, 10_100, 2_200)]
+    {
+        let mut config = VTCodeConfig::default();
+        config.agent.system_prompt_mode = SystemPromptMode::Minimal;
+        config.agent.include_temporal_context = false;
+        config.agent.include_working_directory = true;
+        config.agent.instruction_max_bytes = 0;
+        config.agent.shell_prompt_profile = ShellPromptProfile::UnixLike;
+        let mut context = PromptContext {
+            available_tools: names.iter().map(|name| (*name).to_string()).collect(),
+            ..Default::default()
+        };
+        context.set_current_directory(PathBuf::from("/workspace"));
+        let mut prompt = compose_system_instruction_text(workspace.path(), Some(&config), Some(&context)).await;
+        append_runtime_mode_sections(
+            &mut prompt,
+            RuntimePromptContract {
+                planning_active: true,
+                request_user_input_enabled: true,
+                ..Default::default()
+            },
+        );
+        config.agent.max_system_prompt_tokens = budget;
+        append_runtime_tool_prompt_sections_for_model(
+            &mut prompt,
+            &snapshot,
+            true,
+            ResolvedShellPromptProfile::UnixLike,
+            &provider,
+            crate::config::constants::models::openai::DEFAULT_MODEL,
+            Some(&config),
+        );
+        eprintln!("planning fixture {density}: {} bytes, {} estimated tokens", prompt.len(), estimate_tokens(&prompt));
+        assert!(prompt.contains(PLANNING_WORKFLOW_PLAN_PERSISTENCE_POLICY_LINE));
+        assert!(prompt.len() <= max_bytes, "{density} planning fixture exceeded byte budget");
+        assert!(estimate_tokens(&prompt) <= max_tokens, "{density} planning fixture exceeded token budget");
+    }
+}
+
 fn assert_no_removed_model_facing_tool_names(prompt: &str) {
     for tool_name in REMOVED_MODEL_FACING_TOOL_NAMES {
         assert!(!prompt.contains(tool_name), "prompt should not mention removed tool name {tool_name}");

@@ -15,6 +15,16 @@ Repository claims must follow observed code and current metadata. Exact versions
 when that evidence is unavailable, rather than filled in from model memory. This rule shares the existing runtime
 guidance presence and size tests across prompt profiles; it adds no automatic metadata scans or provider requests.
 
+## Planning contract ownership
+
+The `# PLANNING WORKFLOW (READ-ONLY)` mode section owns the canonical research budget, step-quality, output,
+and runtime-owned persistence rules from `prompts/system/constants.rs`. Both interactive and headless composition
+retain that section at Default and Minimal tool-guidance densities. Active Tools supplies tool-specific inspection,
+read-only, and tracker reminders without repeating the planning output contract. Section replacement recognizes
+both `#` and `##` headings, so updating Active Tools preserves the planning contract even without Environment addenda.
+
+Plan markup, validation, persistence, and approval controls continue to use the existing runtime contract.
+
 ## User-facing progress contract
 
 The compiled guidance tells the model that its text between tool calls is what the user reads. It says in one sentence
