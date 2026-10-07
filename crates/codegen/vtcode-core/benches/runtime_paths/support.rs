@@ -1,3 +1,4 @@
+mod file_listing;
 mod harness;
 mod indexing;
 mod memory;
@@ -11,6 +12,7 @@ pub(super) fn benchmarks(c: &mut criterion::Criterion) {
         match scope.to_str().expect("VTCODE_BENCH_SCOPE must be UTF-8") {
             "harness" => harness::benchmarks(c),
             "indexing" => indexing::benchmarks(c),
+            "file_listing" => file_listing::benchmarks(c),
             "streaming" => streaming::benchmarks(c),
             "memory" => memory_benchmarks(c),
             "runner" => runner::benchmarks(c),
@@ -25,6 +27,7 @@ pub(super) fn benchmarks(c: &mut criterion::Criterion) {
     harness::benchmarks(c);
     streaming::benchmarks(c);
     indexing::benchmarks(c);
+    file_listing::benchmarks(c);
     memory_benchmarks(c);
     runner::benchmarks(c);
     protocols::benchmarks(c);

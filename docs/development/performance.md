@@ -177,6 +177,7 @@ loopback/stdio peers; it requires Python 3 for the synthetic MCP peer and does n
 | `responses_provider_loopback` | Public normalized provider stream consuming 8/256/4,096 recorded text events and completion |
 | `responses_boundaries` | Explicit Responses profile through the existing custom-provider router: seven-byte reasoning/tool chunks, GPT summary suppression, malformed/incomplete input and recovery |
 | `workspace_search` | Live bounded no-follow walker, 8/256/4,096 files, wide/deep trees up to 63 levels, cancellation and visible file mutation |
+| `file_listing` | Public basic-list tool, 8/256/4,096 mixed file/directory entries with dotfiles and selective globs, directory-cache misses/hits, listing latency and concurrent timer wake delay on current-thread and normal multithreaded Tokio runtimes |
 | `session_store` | Canonical event append/flush, reopen, snapshot replay, and invalidated-index rebuild; durability included |
 | `session_retention` | Completed nonempty sessions, count-based eviction while preserving one session; durable setup excluded |
 | `runner_output` | Pipe bursts, slow consumers, and bounded PTY previews from 1 KiB to 1 MiB fixtures |
@@ -191,9 +192,10 @@ provider entrypoint measurement before claiming an end-to-end streaming improvem
 outcome-clone benches are simulations, not production pipeline measurements. Criterion sample distributions describe
 batch-average operation times, not individual request tail latencies.
 
-Set `VTCODE_BENCH_SCOPE` to `harness`, `streaming`, `indexing`, `memory`, `runner`, or `protocols` to construct only that
-subsystem's fixtures. Criterion name filters select timing cases but still run other fixture setup by default; that
-setup can dominate whole-process profiles, especially durable memory logs. Tree creation warms filesystem metadata;
+Set `VTCODE_BENCH_SCOPE` to `harness`, `streaming`, `indexing`, `file_listing`, `memory`, `runner`, or `protocols` to
+construct only that subsystem's fixtures. Criterion name filters select timing cases but still run other fixture setup
+by default; that setup can dominate whole-process profiles, especially durable memory logs. Tree creation warms
+filesystem metadata;
 the wide/deep walker cases do not claim a cold OS cache. The older persistent-index benchmark measures a library API
 that currently has only benchmark/test callers. Confirm shipping callers before ranking it as a production hotspot.
 
@@ -207,6 +209,56 @@ Keep the benchmark source identical in both builds as well as the production fix
 layout even for unchanged code. When coverage expands during an audit, rebuild the baseline production revision with
 the expanded harness before attributing a new regression to the candidate. Preserve both comparisons and their source
 and executable hashes.
+
+For directory-list responsiveness, run the retained `runtime_paths` executable in an isolated process:
+
+```bash
+VTCODE_BENCH_SCOPE=file_listing VTCODE_FILE_LISTING_SAMPLES=100 \
+  target/release/deps/runtime_paths-<hash> --bench --noplot > listing.jsonl
+```
+
+This mode emits individual JSON measurements and idle timer controls, rather than Criterion batch averages.
+Without `VTCODE_FILE_LISTING_SAMPLES`, the scope exposes Criterion `latency` and `wake_delay` cases.
+Fixture setup, cache clearing, priming, and timer arming are excluded from listing latency; normal tool validation,
+filtering, formatting, pagination, and cache publication remain included. Each call records its maximum delay past
+a one-millisecond timer deadline and its tick count. Short calls still collect one tick, which may occur after the
+listing completes, so process wall time exceeds summed listing latency. Tokio timer granularity and OS scheduling
+contribute to this proxy; it is not a direct poll-time
+or scheduler-latency metric. Compare idle controls and cache hits, retain noisy runs, and report both runtime types.
+Metadata is warm, the global ignore matcher has its normal empty default, and no cold-disk, loaded-ignore, live-provider,
+or whole-agent latency claim follows from these workloads.
+
+### Directory listing experiment (2026-10-07)
+
+A private basic-list candidate moved the full directory scan into one blocking task per cache miss, following
+[Tokio filesystem batching guidance](https://dial9-rs.github.io/blog/principles-for-fast-tokio-applications/)
+and [uv's blocking extraction change](https://github.com/astral-sh/uv/pull/21372). Path validation, metadata lookup,
+cache lookup, pagination, and cache publication stayed on their existing paths; formatting and ignore helpers were
+unchanged. The candidate was **rejected and removed** under the recorded acceptance rules.
+
+On an Apple Silicon macOS host, both retained binaries used the identical frozen harness and the release-matched
+profile above. Three pairs alternated baseline/candidate, candidate/baseline, baseline/candidate. Each binary run
+collected 100 individual observations for each of 24 listing cases plus two idle controls: 15,600 observations total.
+Builds and checks completed before timing. No instrumented profiler ran alongside these measurements.
+
+For 4,096-entry cache misses, current-thread p95 maximum timer wake delay improved in every pair: visible listings
+fell from 2.224–2.399 ms to 1.412–1.435 ms; selective listings fell from 2.219–2.272 ms to 1.422–1.436 ms.
+These paired reductions were approximately 35–40%, beyond deterministic 95% bootstrap intervals with 5,000 resamples.
+Normal multithreaded wake delays stayed near the timer floor and failed to improve beyond those intervals in five
+of six large-scan comparisons. Large-scan mean listing latency changed by approximately -3.5% to +1.3%.
+
+The latency guard also failed: the current-thread 4,096-entry visible cache-hit case became 17.0%, 17.3%, and 36.2%
+slower across the three pairs. Baseline/candidate means were 187/219, 183/215, and 144/196 microseconds; even the lower
+95% ratio bounds exceeded a 5% regression. This is an observation about these artifacts, not proof that the blocking
+scan itself caused the cache-hit cost. Other cache controls and idle samples also varied, particularly in pair three;
+all measurements were retained rather than selecting favorable cases. The evidence did not meet the complete gate.
+
+Raw observations, both executables, source snapshots and hashes, profile settings, bootstrap analysis, failed checks,
+and the excluded compilation-overlapping smoke run remain in the local, gitignored
+`.vtcode/perf/2026-10-07-file-listing/` directory (`provenance.json`, `acceptance.json`, `runs.json`, `analysis.json`,
+and `results.md`). The benchmark and behavior regressions remain available for future measurements; no production
+directory-listing optimization was retained. These local warm-metadata results do not establish cross-platform or
+whole-agent performance.
 
 The `vtcode-ui` `markdown_render` bench exercises the public renderer with short responses, mixed content, nested
 lists, fenced code, Unicode prose, and plan wrappers containing multiline inline code. Build it with the same profile
