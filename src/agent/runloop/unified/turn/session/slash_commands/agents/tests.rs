@@ -119,24 +119,27 @@ fn summarize_thread_event_preview_uses_latest_live_updates() {
     let preview = summarize_thread_event_preview(&[
         ThreadEvent::ItemStarted(ItemStartedEvent {
             item: ThreadItem {
+                context: None,
                 id: "reasoning-1".to_string(),
-                details: ThreadItemDetails::Reasoning(ReasoningItem {
+                details: ThreadItemDetails::Reasoning(Box::new(ReasoningItem {
                     text: "Inspecting the diff".to_string(),
                     stage: None,
-                }),
+                })),
             },
         }),
         ThreadEvent::ItemUpdated(ItemUpdatedEvent {
             item: ThreadItem {
+                context: None,
                 id: "reasoning-1".to_string(),
-                details: ThreadItemDetails::Reasoning(ReasoningItem {
+                details: ThreadItemDetails::Reasoning(Box::new(ReasoningItem {
                     text: "Inspecting the diff carefully".to_string(),
                     stage: None,
-                }),
+                })),
             },
         }),
         ThreadEvent::ItemUpdated(ItemUpdatedEvent {
             item: ThreadItem {
+                context: None,
                 id: "tool-output-1".to_string(),
                 details: ThreadItemDetails::ToolOutput(Box::new(ToolOutputItem {
                     call_id: "call-1".to_string(),

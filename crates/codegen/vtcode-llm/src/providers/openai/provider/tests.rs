@@ -102,29 +102,7 @@ $lines | Select-Object -Skip 1 | Set-Content -Path tokens.txt
     }
 }
 
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else {
-        "unknown panic".to_string()
-    }
-}
-
-async fn start_mock_server_or_skip() -> Option<MockServer> {
-    match tokio::spawn(async { MockServer::start().await }).await {
-        Ok(s) => Some(s),
-        Err(e) if e.is_panic() => {
-            let msg = panic_message(e.into_panic());
-            if msg.contains("Operation not permitted") || msg.contains("PermissionDenied") {
-                return None;
-            }
-            panic!("mock server should start: {msg}");
-        }
-        Err(e) => panic!("mock server task should complete: {e}"),
-    }
-}
+use crate::providers::test_support::start_mock_server_or_skip;
 
 // ─── Helper constructors ─────────────────────────────────────────────────────
 fn tool_def(name: &str, desc: &str, schema: Value) -> provider::ToolDefinition {
@@ -2893,8 +2871,9 @@ fn responses_payload_includes_prompt_cache_retention_for_native_openai() {
         None,
         None,
     );
-    // Responses API model
-    let payload = responses_payload_for(models::openai::GPT_5_CODEX, &provider);
+    // Responses API model (non-GPT-5.6: uses the legacy `prompt_cache_retention`
+    // field; GPT-5.6+ instead emits `prompt_cache_options.ttl`).
+    let payload = responses_payload_for(models::openai::GPT_5_1, &provider);
     assert_eq!(payload.get("prompt_cache_retention").and_then(Value::as_str), Some("24h"));
     // Chat Completions model - should NOT have it
     let chat_payload = chat_payload_for(models::openai::GPT_5, &provider);
@@ -3077,8 +3056,11 @@ fn responses_payload_uses_max_output_tokens_field() {
 
 #[test]
 fn chatgpt_backend_omits_max_output_tokens_and_blocks_unsupported_minimal_reasoning() {
-    let provider = chatgpt_backend_provider(models::openai::GPT_5_CODEX);
-    let mut request = sample_request(models::openai::GPT_5_CODEX);
+    // `gpt-5.6-sol` is the current Codex-family model (the deprecation
+    // replacement for `gpt-5-codex`); it advertises low/medium/high/xhigh/max,
+    // so `minimal` must fail closed rather than degrade silently.
+    let provider = chatgpt_backend_provider(models::openai::GPT_5_6_SOL);
+    let mut request = sample_request(models::openai::GPT_5_6_SOL);
     request.max_tokens = Some(512);
     assert_absent(&provider.convert_to_openai_responses_format(&request).expect("should succeed"), "max_output_tokens");
 
@@ -3098,9 +3080,9 @@ fn responses_payload_defaults_gpt_5_6_sol_reasoning_to_none() {
 }
 
 #[test]
-fn responses_payload_defaults_gpt_5_codex_reasoning_to_high() {
+fn responses_payload_defaults_gpt_5_6_terra_reasoning_to_high() {
     let payload =
-        responses_payload_for(models::openai::GPT_5_CODEX, &native_openai_provider(models::openai::GPT_5_CODEX));
+        responses_payload_for(models::openai::GPT_5_6_TERRA, &native_openai_provider(models::openai::GPT_5_6_TERRA));
     assert_eq!(payload.get("reasoning").and_then(|r| r.get("effort")).and_then(Value::as_str), Some("high"));
 }
 
@@ -3205,7 +3187,7 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
     let Some(server) = start_mock_server_or_skip().await else {
         return;
     };
-    let provider = test_provider(&server.uri(), models::openai::GPT_5_NANO);
+    let provider = test_provider(&server.uri(), models::openai::GPT_6_ASTRA);
     let seen_models = Arc::new(Mutex::new(Vec::new()));
     let seen_for_mock = Arc::clone(&seen_models);
 
@@ -3215,8 +3197,8 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
             let model = payload.get("model").and_then(Value::as_str).expect("model required");
             seen_for_mock.lock().expect("not poisoned").push(model.to_string());
             match model {
-                models::openai::GPT_5_NANO => ResponseTemplate::new(404).set_body_string("model_not_found"),
-                models::openai::GPT_5_MINI => ResponseTemplate::new(200).set_body_json(json!({
+                models::openai::GPT_6_ASTRA => ResponseTemplate::new(404).set_body_string("model_not_found"),
+                models::openai::GPT_5_6_SOL => ResponseTemplate::new(200).set_body_json(json!({
                     "id": "resp_fallback", "status": "completed",
                     "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fallback response"}]}]
                 })),
@@ -3227,7 +3209,7 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
     let response = provider
         .generate(provider::LLMRequest {
             messages: vec![provider::Message::user("Hello".to_string())].into(),
-            model: models::openai::GPT_5_NANO.to_string(),
+            model: models::openai::GPT_6_ASTRA.to_string(),
             ..Default::default()
         })
         .await
@@ -3236,8 +3218,8 @@ async fn responses_request_retries_with_fallback_model_after_not_found() {
     assert_eq!(
         seen_models.lock().expect("not poisoned").as_slice(),
         &[
-            models::openai::GPT_5_NANO.to_string(),
-            models::openai::GPT_5_MINI.to_string()
+            models::openai::GPT_6_ASTRA.to_string(),
+            models::openai::GPT_5_6_SOL.to_string()
         ]
     );
 }
@@ -3250,7 +3232,7 @@ async fn responses_request_retries_without_flex_service_tier() {
     let provider = OpenAIProvider::from_config(
         Some("key".to_owned()),
         None,
-        Some(models::openai::GPT_5_CODEX.to_string()),
+        Some(models::openai::GPT_6_ASTRA.to_string()),
         Some(native_openai_mock_base_url(&server)),
         None,
         None,
@@ -3270,7 +3252,7 @@ async fn responses_request_retries_without_flex_service_tier() {
     let response = provider
         .generate(provider::LLMRequest {
             messages: vec![provider::Message::user("Hello".to_string())].into(),
-            model: models::openai::GPT_5_CODEX.to_string(),
+            model: models::openai::GPT_6_ASTRA.to_string(),
             ..Default::default()
         })
         .await
@@ -3420,4 +3402,259 @@ fn openai_request_auth_debug_redacts_rig_chatgpt_auth() {
     assert!(!debug_str.contains("rig-secret-access"), "rig access token leaked in Debug: {debug_str}");
     // Non-secret metadata should still be visible.
     assert!(debug_str.contains("acc_123"), "account_id should be visible: {debug_str}");
+}
+
+#[tokio::test]
+async fn streaming_service_tier_retry_is_cached_for_both_entrypoints_and_http_apis() {
+    for responses in [false, true] {
+        for normalized in [false, true] {
+            for tier in ["flex", "ultrafast"] {
+                let server = MockServer::start().await;
+                let route = if responses { "/responses" } else { "/chat/completions" };
+                let body = if responses {
+                    concat!(
+                        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"sequence_number\":1,\"delta\":\"ok\"}\n\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tierless\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+                    )
+                } else {
+                    concat!(
+                        "data: {\"id\":\"chat_tierless\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+                        "data: {\"id\":\"chat_tierless\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+                        "data: [DONE]\n\n",
+                    )
+                };
+                Mock::given(method("POST"))
+                    .and(path(route))
+                    .respond_with(move |request: &wiremock::Request| {
+                        let payload: Value = serde_json::from_slice(&request.body).unwrap();
+                        if payload.get("service_tier").is_some() {
+                            ResponseTemplate::new(400).set_body_json(json!({"error": {
+                                "param":"service_tier", "code":"invalid_request_error",
+                                "message":"The requested service tier is not allowed for this project"
+                            }}))
+                        } else {
+                            ResponseTemplate::new(200)
+                                .insert_header("content-type", "text/event-stream")
+                                .set_body_string(body)
+                        }
+                    })
+                    .expect(3)
+                    .mount(&server)
+                    .await;
+                let mut provider = OpenAIProvider::new_with_client(
+                    "test-key".to_string(),
+                    None,
+                    "gpt-6-astra".to_string(),
+                    reqwest::Client::builder().no_proxy().build().unwrap(),
+                    native_openai_mock_base_url(&server),
+                    TimeoutsConfig::default(),
+                );
+                provider.responses_url = Arc::from(format!("{}/responses", server.uri()));
+                provider.chat_completions_url = Arc::from(format!("{}/chat/completions", server.uri()));
+                if !responses {
+                    provider.set_responses_api_state("gpt-6-astra", ResponsesApiState::Disabled);
+                }
+                for _ in 0..2 {
+                    let request = provider::LLMRequest {
+                        model: "gpt-6-astra".to_string(),
+                        service_tier: Some(tier.to_string()),
+                        messages: vec![provider::Message::user("hello".to_string())].into(),
+                        metadata: Some(json!({"turn":"tier-test"})),
+                        ..Default::default()
+                    };
+                    let mut completed = None;
+                    if normalized {
+                        let mut stream = provider.stream_normalized_request(request).await.unwrap();
+                        while let Some(event) = stream.next().await {
+                            if let NormalizedStreamEvent::Done { response } = event.unwrap() {
+                                completed = Some(response);
+                            }
+                        }
+                    } else {
+                        let mut stream = provider.stream_request(request).await.unwrap();
+                        while let Some(event) = stream.next().await {
+                            if let provider::LLMStreamEvent::Completed { response } = event.unwrap() {
+                                completed = Some(response);
+                            }
+                        }
+                    }
+                    let completed = completed.expect("completion");
+                    assert_eq!(completed.content.as_deref(), Some("ok"));
+                    assert_eq!(completed.usage.as_ref().unwrap().total_tokens, 5);
+                }
+                let requests = server.received_requests().await.unwrap();
+                assert_eq!(requests.len(), 3);
+                let payloads: Vec<Value> = requests
+                    .iter()
+                    .map(|request| serde_json::from_slice(&request.body).unwrap())
+                    .collect();
+                assert_eq!(payloads[0]["service_tier"], tier);
+                assert!(
+                    payloads[1..]
+                        .iter()
+                        .all(|payload| payload.get("service_tier").is_none() && payload["stream"] == true)
+                );
+                assert!(
+                    requests
+                        .iter()
+                        .all(|request| request.headers["authorization"] == "Bearer test-key"
+                            && request.headers["x-turn-metadata"] == r#"{"turn":"tier-test"}"#)
+                );
+                assert_ne!(requests[0].headers["x-client-request-id"], requests[1].headers["x-client-request-id"]);
+                if responses {
+                    assert!(requests.iter().all(|request| request.headers["openai-beta"] == "responses=v1"));
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn streaming_service_tier_retry_is_bounded_when_default_is_also_rejected() {
+    for normalized in [false, true] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                json!({"error":{"param":"service_tier","message":"Unsupported service_tier: ultrafast"}}),
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let provider = OpenAIProvider::new_with_client(
+            "test-key".to_string(),
+            None,
+            "gpt-6-astra".to_string(),
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            native_openai_mock_base_url(&server),
+            TimeoutsConfig::default(),
+        );
+        let request = provider::LLMRequest {
+            model: "gpt-6-astra".to_string(),
+            service_tier: Some("ultrafast".to_string()),
+            messages: vec![provider::Message::user("hello".to_string())].into(),
+            ..Default::default()
+        };
+        let error = if normalized {
+            provider.stream_normalized_request(request).await.err().unwrap()
+        } else {
+            provider.stream_request(request).await.err().unwrap()
+        };
+        assert!(error.to_string().contains("Unsupported service_tier"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn streaming_service_tier_retry_preserves_transport_fallback_and_required_routes() {
+    for normalized in [false, true] {
+        for required in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/responses"))
+                .respond_with(|request: &wiremock::Request| {
+                    let payload: Value = serde_json::from_slice(&request.body).unwrap();
+                    if payload.get("service_tier").is_some() {
+                        ResponseTemplate::new(400).set_body_json(
+                            json!({"error": {"param":"service_tier", "message":"Unsupported service_tier: ultrafast"}}),
+                        )
+                    } else {
+                        ResponseTemplate::new(404)
+                            .insert_header("x-request-id", "retry_transport_error")
+                            .set_body_json(
+                                json!({"error": {"message":"Responses API is not supported by this endpoint"}}),
+                            )
+                    }
+                })
+                .expect(2)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST")).and(path("/chat/completions"))
+                .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_string(concat!(
+                    "data: {\"id\":\"chat_reply\",\"choices\":[{\"delta\":{\"content\":\"fallback reply\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"chat_reply\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
+                    "data: [DONE]\n\n",
+                ))).expect(if required {0} else {1}).mount(&server).await;
+            let mut provider = OpenAIProvider::new_with_client(
+                "test-key".to_string(),
+                None,
+                "gpt-6-astra".to_string(),
+                reqwest::Client::builder().no_proxy().build().unwrap(),
+                native_openai_mock_base_url(&server),
+                TimeoutsConfig::default(),
+            );
+            provider.responses_url = Arc::from(format!("{}/responses", server.uri()));
+            provider.chat_completions_url = Arc::from(format!("{}/chat/completions", server.uri()));
+            provider.set_responses_api_state(
+                "gpt-6-astra",
+                if required {
+                    ResponsesApiState::Required
+                } else {
+                    ResponsesApiState::Allowed
+                },
+            );
+            let request = provider::LLMRequest {
+                model: "gpt-6-astra".to_string(),
+                service_tier: Some("ultrafast".to_string()),
+                metadata: Some(json!({"turn":"fallback"})),
+                messages: vec![provider::Message::user("hello".to_string())].into(),
+                ..Default::default()
+            };
+            let mut completed = None;
+            let error = if normalized {
+                match provider.stream_normalized_request(request).await {
+                    Ok(mut stream) => {
+                        while let Some(event) = stream.next().await {
+                            if let NormalizedStreamEvent::Done { response } = event.unwrap() {
+                                completed = Some(response);
+                            }
+                        }
+                        None
+                    }
+                    Err(error) => Some(error),
+                }
+            } else {
+                match provider.stream_request(request).await {
+                    Ok(mut stream) => {
+                        while let Some(event) = stream.next().await {
+                            if let provider::LLMStreamEvent::Completed { response } = event.unwrap() {
+                                completed = Some(response);
+                            }
+                        }
+                        None
+                    }
+                    Err(error) => Some(error),
+                }
+            };
+            if required {
+                let error = error.unwrap().to_string();
+                assert!(error.contains("Responses API is not supported"));
+                assert!(error.contains("retry_transport_error"));
+                assert!(completed.is_none());
+            } else {
+                assert!(error.is_none(), "allowed Responses route should fall back: {error:?}");
+                let completed = completed.unwrap();
+                assert_eq!(completed.content.as_deref(), Some("fallback reply"));
+                assert_eq!(completed.usage.as_ref().unwrap().total_tokens, 9);
+                assert_eq!(provider.responses_api_state("gpt-6-astra"), ResponsesApiState::Disabled);
+            }
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), if required { 2 } else { 3 });
+            assert_eq!(requests[0].url.path(), "/responses");
+            assert_eq!(requests[1].url.path(), "/responses");
+            let payloads: Vec<Value> = requests
+                .iter()
+                .map(|request| serde_json::from_slice(&request.body).unwrap())
+                .collect();
+            assert_eq!(payloads[0]["service_tier"], "ultrafast");
+            assert!(payloads[1..].iter().all(|payload| payload.get("service_tier").is_none()));
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.headers["authorization"] == "Bearer test-key"
+                        && request.headers["x-turn-metadata"] == r#"{"turn":"fallback"}"#)
+            );
+            assert_ne!(requests[0].headers["x-client-request-id"], requests[1].headers["x-client-request-id"]);
+        }
+    }
 }

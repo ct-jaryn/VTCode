@@ -58,7 +58,6 @@ pub mod debug;
 pub mod defaults;
 pub(crate) mod env_helpers;
 pub mod hooks;
-pub mod ide_context;
 pub mod loader;
 pub mod mcp;
 pub mod models;
@@ -110,10 +109,6 @@ pub use defaults::{
 pub use hooks::{
     HookCommandConfig, HookCommandKind, HookGroupConfig, HooksConfig, LifecycleHooksConfig, WorkspaceHookCommand,
     WorkspaceLifecycleHooks,
-};
-pub use ide_context::{
-    IdeContextConfig, IdeContextProviderConfig, IdeContextProviderFamily, IdeContextProviderMode,
-    IdeContextProvidersConfig,
 };
 pub use loader::layers::{
     ConfigLayerEntry, ConfigLayerLoadError, ConfigLayerMetadata, ConfigLayerSource, ConfigLayerStack,

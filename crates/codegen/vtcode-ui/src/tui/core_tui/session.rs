@@ -47,6 +47,7 @@ mod message;
 pub mod modal;
 pub mod mouse_selection;
 mod navigation;
+mod progress;
 mod queue;
 pub(crate) mod render;
 mod render_state;
@@ -231,6 +232,7 @@ pub struct Session {
     placeholder: Option<String>,
     placeholder_style: Option<InlineTextStyle>,
     pub(crate) input_status_left: Option<String>,
+    footer_context_status: Option<String>,
     pub(crate) input_status_right: Option<String>,
     /// Transient "copied"/"copy failed" confirmation shown in the input status row.
     copy_notification_until: Option<Instant>,
@@ -321,6 +323,7 @@ pub struct Session {
     // --- Thinking Indicator ---
     pub(crate) thinking_spinner: ThinkingSpinner,
     pub(crate) shimmer_state: ShimmerState,
+    pub(crate) progress: progress::TransientProgress,
 
     // --- Reverse Search ---
     pub(crate) reverse_search_state: reverse_search::ReverseSearchState,

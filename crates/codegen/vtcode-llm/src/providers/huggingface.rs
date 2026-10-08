@@ -1112,21 +1112,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_step35_flash_provider_suffix() {
-        let provider = HuggingFaceProvider::with_model("test-key".to_string(), "stepfun-ai/Step-3.5-Flash".to_string());
-
-        let normalized = provider
-            .normalize_model_id("stepfun-ai/Step-3.5-Flash")
-            .expect("normalization should succeed");
-        assert_eq!(normalized, "stepfun-ai/Step-3.5-Flash:featherless-ai".to_string());
-
-        let normalized_legacy = provider
-            .normalize_model_id("stepfun-ai/Step-3.5-Flash:fastest")
-            .expect("legacy suffix normalization should succeed");
-        assert_eq!(normalized_legacy, "stepfun-ai/Step-3.5-Flash:featherless-ai".to_string());
-    }
-
-    #[test]
     fn format_for_chat_completions_keeps_apply_patch_as_function_tool() {
         let provider =
             HuggingFaceProvider::with_model("test-key".to_string(), "Qwen/Qwen3-Coder-480B-A35B-Instruct".to_string());

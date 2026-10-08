@@ -149,7 +149,6 @@ pub(in crate::agent::runloop::slash_commands) fn config_consolidated_section(
 ) -> Option<&'static str> {
     match command_key {
         "permissions" => Some("permissions"),
-        "ide" => Some("ide"),
         "tasks" => Some("tasks"),
         "jobs" => Some("jobs"),
         "log" => Some("log"),

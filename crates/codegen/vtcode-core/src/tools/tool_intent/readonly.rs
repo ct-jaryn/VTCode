@@ -1,5 +1,5 @@
 use crate::tools::command_args::{
-    command_words_after_environment_prefix, has_unsafe_readonly_options, raw_command_text,
+    command_words_after_environment_prefix, has_unsafe_readonly_options, shell_command_text_with_args,
 };
 use crate::tools::output_spooler::SpooledOutputReference;
 use serde_json::Value;
@@ -149,7 +149,7 @@ fn is_version_or_help_probe(command_words: &[String]) -> bool {
 /// becomes read-only merely because parsing succeeded.
 pub(crate) fn static_shell_command_words(command: &str) -> Option<Vec<Vec<String>>> {
     let sanitized = sanitize_static_shell_command(command)?;
-    parse_static_shell_command_words(&sanitized)
+    parse_shell_command_words(&sanitized)
 }
 
 /// Parse a command whose only shell operators outside quotes are output
@@ -161,10 +161,13 @@ pub(crate) fn static_shell_command_words_with_output_plumbing(command: &str) -> 
     if !crate::command_safety::shell_parser::has_only_output_redirections(command) {
         return None;
     }
-    parse_static_shell_command_words(command)
+    parse_shell_command_words(command)
 }
 
-fn parse_static_shell_command_words(command: &str) -> Option<Vec<Vec<String>>> {
+/// Tokenize shell invocations without proving static execution or safety.
+/// Permission and activity predicates must sanitize before using these words;
+/// diagnostic-only consumers may inspect dynamic shell text without grants.
+pub(super) fn parse_shell_command_words(command: &str) -> Option<Vec<Vec<String>>> {
     let commands = crate::command_safety::shell_parser::parse_shell_commands_tree_sitter(command).ok()?;
     if commands.is_empty() {
         return None;
@@ -199,6 +202,15 @@ pub(crate) fn command_words_are_readonly(words: &[String]) -> bool {
 
     if has_unsafe_readonly_options(words) {
         return false;
+    }
+
+    if first == "command" {
+        return matches!(command_words.get(1).map(String::as_str), Some("-v" | "-V"))
+            && command_words.len() > 2
+            && command_words
+                .iter()
+                .skip(2)
+                .all(|word| !word.starts_with('-') && !word.is_empty());
     }
 
     if is_readonly_base_command(&first)
@@ -422,14 +434,13 @@ fn sanitize_static_shell_command(command: &str) -> Option<String> {
 }
 
 pub fn is_readonly_command_session_command(args: &Value) -> bool {
-    let Some(raw) = raw_command_text(args) else {
+    let Some(raw) = shell_command_text_with_args(args) else {
         return false;
     };
 
-    // `is_readonly_command_string` intentionally rejects compound separators
-    // for its conservative raw-string API. The static parser above is the
-    // stricter structured boundary for this allow-list and accepts a compound
-    // command only when every parsed command is independently safe.
+    // `sanitize_static_shell_command` rejects `;`, `||`, redirections, and
+    // background `&` up front; a `&&` chain is accepted only when every
+    // parsed segment independently passes the allow-list below.
     static_shell_command_words(&raw)
         .is_some_and(|commands| commands.iter().all(|words| command_words_are_readonly(words)))
 }
@@ -448,7 +459,7 @@ pub(crate) fn is_parallel_safe_command_session_command(args: &Value) -> bool {
     {
         return false;
     }
-    let Some(raw) = raw_command_text(args) else {
+    let Some(raw) = shell_command_text_with_args(args) else {
         return false;
     };
     static_shell_command_words(&raw)
@@ -467,7 +478,7 @@ pub fn is_spool_file_read_command(tool_name: &str, args: &Value) -> bool {
         return false;
     }
 
-    raw_command_text(args)
+    shell_command_text_with_args(args)
         .and_then(|command| static_shell_command_words(&command))
         .is_some_and(|commands| {
             commands
@@ -484,6 +495,22 @@ mod tests {
 
     fn run_cmd(command: &str) -> Value {
         json!({"action": "run", "command": command})
+    }
+
+    #[test]
+    fn command_availability_probes_do_not_admit_execution() {
+        for command in ["command -v npx", "command -V python3 cargo", "command -v npx || true"] {
+            assert!(is_readonly_command_session_command(&run_cmd(command)), "{command}");
+        }
+        for command in [
+            "command rm file",
+            "command -p rm file",
+            "command -v",
+            "command -v -- rm",
+            "command -v $(touch file)",
+        ] {
+            assert!(!is_readonly_command_session_command(&run_cmd(command)), "{command}");
+        }
     }
 
     #[test]
@@ -605,6 +632,43 @@ mod tests {
             "awk -v",
             // Shell-level redirection stays mutating even with a safe program.
             "awk 'NR>=1' README.md > out.txt",
+        ] {
+            assert!(!is_readonly_command_session_command(&run_cmd(command)), "expected mutating command: {command}");
+        }
+    }
+
+    #[test]
+    fn awk_string_literal_operators_are_readonly() {
+        // The reported false positive: a quoted `"|"` passed to `index()` is a
+        // string literal, not a command pipe, so the lexer must not reject it.
+        for command in [
+            r#"awk '{n=index(rest,"|"); print n}' README.md"#,
+            r#"awk 'index($0,">")' README.md"#,
+            // `>=` comparison and `||` boolean operators are not redirection
+            // or a pipe.
+            r#"awk '$3>=100 && $4||$5 {print $1}' README.md"#,
+            // Division must not be mistaken for a regex literal.
+            r#"awk '{print $1 / $2}' README.md"#,
+            // Exact reported shape: a multi-line program whose `index(rest,"|")`
+            // carries a quoted pipe and a `# ...` comment line.
+            r#"awk 'NR>=208 && NR<=212 {line=$0; body=substr(line,1,length(line)-1); n=0; while (body ~ / \$/) { body=substr(body,1,length(body)-1); n++ }} # find guide start after label cell
+rest=substr(line,3); g=index(rest,"|")+1; guide=substr(rest,g+2); gp=0; gg=guide; while (gg ~ / \$/) { gg=substr(gg,1,length(gg)-1); gp++ } print "%d: linelen=%d labelcell=%s pad_before_final_pipe=%d guide_pad=%d\n", NR, length(line), substr(line,3,20), n, gp }' README.md"#,
+        ] {
+            assert!(is_readonly_command_session_command(&run_cmd(command)), "expected readonly command: {command}");
+        }
+    }
+
+    #[test]
+    fn awk_regex_with_quote_cannot_hide_pipe() {
+        // Adversarial shape for a naive quote-toggling scanner: `/a"b/` opens
+        // a "string" that stays open, hiding the real `|`; the later `/c"d/`
+        // rebalances the quote count, so an unbalanced-quote guard never
+        // fires. The lexer treats quotes as regex content and still catches
+        // the pipe.
+        for command in [
+            r#"awk '/a"b/ {print | "sort"} /c"d/' README.md"#,
+            // Regex alternation stays mutating (pinned conservative policy).
+            r#"awk '/a|b/ {print}' README.md"#,
         ] {
             assert!(!is_readonly_command_session_command(&run_cmd(command)), "expected mutating command: {command}");
         }

@@ -38,7 +38,7 @@ pub(crate) mod slash;
 /// Slash command palette widget.
 pub mod slash_palette;
 mod task_panel;
-#[path = "transcript_review.rs"]
+#[path = "transcript_review/mod.rs"]
 mod tool_output_viewer;
 mod transient;
 /// Workspace trust state management.
@@ -1143,6 +1143,10 @@ impl AppSession {
                 self.refresh_compact_activity_presentations();
             }
             InlineCommand::SetAppearance { appearance } => {
+                let enabling_screen_reader = appearance.screen_reader_mode && !self.core.appearance.screen_reader_mode;
+                if enabling_screen_reader && let Some(viewer) = self.tool_output_viewer_state.as_mut() {
+                    viewer.set_render_mode(tool_output_viewer::TranscriptRenderMode::Raw);
+                }
                 self.handle_core_command(crate::tui::core_tui::types::InlineCommand::SetAppearance { appearance });
                 self.refresh_compact_activity_presentations();
             }
@@ -1173,6 +1177,11 @@ impl AppSession {
             InlineCommand::CloseTransient => self.close_transient(),
             InlineCommand::ShowTransient { request } => self.show_transient(*request),
             InlineCommand::RecordDiffReview(anchor) => self.record_diff_review(anchor),
+            InlineCommand::FocusTranscriptReview { id } => self.open_tool_output_viewer(
+                self.core.transcript_width.max(1),
+                self.core.transcript_rows.max(1),
+                Some(id),
+            ),
             InlineCommand::UpdateFilePaletteSearch { files } => {
                 if let Some(palette) = &mut self.file_palette {
                     palette.set_search_index(files);
@@ -1263,6 +1272,7 @@ fn to_core_command(command: &InlineCommand) -> Option<crate::tui::core_tui::type
             link_ranges: link_ranges.clone(),
         },
         InlineCommand::RecordToolOutput { .. }
+        | InlineCommand::FocusTranscriptReview { .. }
         | InlineCommand::AppendToolOutputLine { .. }
         | InlineCommand::AppendCompactActivity(_)
         | InlineCommand::ReplaceCompactActivity(_)
@@ -1281,7 +1291,11 @@ fn to_core_command(command: &InlineCommand) -> Option<crate::tui::core_tui::type
         InlineCommand::SetInputStatus { left, right } => {
             CoreCommand::SetInputStatus { left: left.clone(), right: right.clone() }
         }
+        InlineCommand::SetConfiguredInputStatus { left, right } => {
+            CoreCommand::SetConfiguredInputStatus { left: left.clone(), right: right.clone() }
+        }
         InlineCommand::SetActivityState(state) => CoreCommand::SetActivityState(*state),
+        InlineCommand::UpdateProgress(update) => CoreCommand::UpdateProgress(*update),
         InlineCommand::SetTerminalTitleItems { items } => CoreCommand::SetTerminalTitleItems { items: items.clone() },
         InlineCommand::SetTerminalTitleThreadLabel { label } => {
             CoreCommand::SetTerminalTitleThreadLabel { label: label.clone() }
@@ -1361,6 +1375,14 @@ impl TuiSessionDriver for AppSession {
         // already ORs `background_status_shimmer_active` into its single update
         // per tick, so no separate drawer-visible pass is needed here.
         self.core.handle_tick();
+    }
+
+    fn needs_animation_tick(&self) -> bool {
+        // Core covers drag, spinner, shimmer, core background, and expiries;
+        // AppSession adds its own drawer-local background loading count, which
+        // feeds `has_status_spinner` but lives outside `core`.
+        self.core.needs_animation_tick()
+            || (self.core.appearance.should_animate_progress_status() && self.background_activity_active())
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {

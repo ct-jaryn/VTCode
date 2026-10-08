@@ -50,6 +50,7 @@ use fallbacks::{
 pub(crate) use guards::BlockedToolCallLimits;
 #[cfg(test)]
 pub(crate) use guards::blocked_tool_guard::BlockedToolCallFuseTrip;
+pub(crate) use guards::read_guard::parse_simple_exec_read_target;
 pub(crate) use guards::{
     blocked_tool_call_fuse_trip, blocked_tool_call_limits, blocked_tool_call_limits_for_tool,
     blocked_tool_call_messages_detailed, max_consecutive_blocked_tool_calls_per_turn,
@@ -149,7 +150,8 @@ pub(crate) fn handle_preflight_failure(
     } else if circuit_tripped {
         "Stop retrying this malformed call. Tools are disabled for the next pass — synthesize a plain-text response reporting the failure to the user."
     } else {
-        "Correct the arguments using schema_correction, then retry this tool once."
+        vtcode_core::tools::error_messages::agent_execution::preflight_policy_correction(error)
+            .unwrap_or("Correct the arguments using schema_correction, then retry this tool once.")
     };
     let failure_kind = if circuit_tripped {
         "preflight_circuit_breaker"
@@ -197,6 +199,9 @@ pub(crate) fn handle_preflight_failure(
 }
 
 fn preflight_schema_correction(tool_name: &str, error: &str) -> String {
+    if let Some(correction) = vtcode_core::tools::error_messages::agent_execution::preflight_policy_correction(error) {
+        return correction.to_owned();
+    }
     if tool_name == tool_names::APPLY_PATCH || error.contains("apply_patch is a tool") {
         return vtcode_core::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION.to_string();
     }
@@ -249,6 +254,14 @@ pub(crate) fn drain_preflight_circuit_responses(
 
 fn build_failure_error_content(error: String, failure_kind: &'static str) -> String {
     super::execution_result::build_error_content(error, None, None, failure_kind).to_string()
+}
+
+fn build_turn_budget_error_content(error: String) -> String {
+    let mut payload = super::execution_result::build_error_content(error, None, None, "policy");
+    if let Some(next_action) = payload.get_mut("next_action") {
+        *next_action = crate::agent::runloop::unified::run_loop_context::BUDGET_EXHAUSTED_SYNTHESIS_NOTE.into();
+    }
+    payload.to_string()
 }
 
 const INTERVIEW_DENIAL_RECOVERY_DIRECTIVE: &str = "Planning recovery: the interactive interview is unavailable in this runtime. Tools are disabled for the next pass. If you have a clarifying question, present it to the user in plain text and end your turn — the user's next message will answer it and you can continue planning. Otherwise, synthesize exactly one completed `<proposed_plan>` from the research already gathered. Do not emit tool calls or request approval until the plan is present.";
@@ -505,6 +518,14 @@ pub(super) fn finalize_validation_result(
             } else {
                 ValidationTransition::Return(outcome)
             }
+        }
+        ValidationResult::ReadCapBlocked => {
+            ValidationTransition::Return(guards::blocked_tool_guard::enforce_read_cap_blocked_tool_call_guard(
+                ctx,
+                tool_call_id,
+                tool_name,
+                args_val,
+            ))
         }
         ValidationResult::Proceed(prepared) => {
             ctx.reset_blocked_tool_call_streak();
@@ -850,6 +871,8 @@ pub(crate) async fn validate_tool_call<'a>(
     tool_name: &str,
     args_val: &serde_json::Value,
 ) -> Result<ValidationResult> {
+    ctx.handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::CheckingPermissions);
     // Early guard: reject empty tool names with a clear error message.
     // This handles malformed LLM responses where tool name is missing.
     // The "empty tool name" phrase is matched by `preflight_failure_is_llm_mistake`.
@@ -888,7 +911,7 @@ pub(crate) async fn validate_tool_call<'a>(
             tool_call_id,
             Some(tool_name),
             Some(args_val),
-            build_failure_error_content(error_msg, "policy"),
+            build_turn_budget_error_content(error_msg),
         );
         return Ok(ValidationResult::Blocked);
     }
@@ -908,7 +931,7 @@ pub(crate) async fn validate_tool_call<'a>(
             tool_call_id,
             Some(tool_name),
             Some(args_val),
-            build_failure_error_content(error_msg, "policy"),
+            build_turn_budget_error_content(error_msg),
         );
         return Ok(ValidationResult::Blocked);
     }
@@ -929,7 +952,7 @@ pub(crate) async fn validate_tool_call<'a>(
                     .as_ref()
                     .map(|(tool, args)| (Some(tool.clone()), Some(args.clone())))
                     .unwrap_or((None, None));
-                let error_text = err.to_string();
+                let error_text = format!("{err:#}");
                 if check_is_argument_error(&error_text)
                     || error_text.to_ascii_lowercase().contains("tool preflight validation failed")
                 {
@@ -941,7 +964,7 @@ pub(crate) async fn validate_tool_call<'a>(
                     Some(tool_name),
                     Some(args_val),
                     build_validation_error_content_with_fallback(
-                        format!("Tool preflight validation failed: {err}"),
+                        format!("Tool preflight validation failed: {err:#}"),
                         "preflight",
                         fallback_tool,
                         fallback_tool_args,

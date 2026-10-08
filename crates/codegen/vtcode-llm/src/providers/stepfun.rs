@@ -820,7 +820,7 @@ mod tests {
     use vtcode_config::constants::models;
     use vtcode_config::types::ReasoningEffortLevel;
     use wiremock::matchers::{body_partial_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, ResponseTemplate};
 
     fn build_payload(request: &LLMRequest) -> Value {
         let provider = StepFunProvider::new("test-key".to_string());
@@ -838,29 +838,7 @@ mod tests {
         )
     }
 
-    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        if let Some(message) = payload.downcast_ref::<String>() {
-            return message.clone();
-        }
-        if let Some(message) = payload.downcast_ref::<&str>() {
-            return (*message).to_string();
-        }
-        "unknown panic".to_string()
-    }
-
-    async fn start_mock_server_or_skip() -> Option<MockServer> {
-        match tokio::spawn(async { MockServer::start().await }).await {
-            Ok(server) => Some(server),
-            Err(err) if err.is_panic() => {
-                let message = panic_message(err.into_panic());
-                if message.contains("Operation not permitted") || message.contains("PermissionDenied") {
-                    return None;
-                }
-                panic!("mock server should start: {message}");
-            }
-            Err(err) => panic!("mock server task should complete: {err}"),
-        }
-    }
+    use crate::providers::test_support::start_mock_server_or_skip;
 
     fn completed_response_body() -> Value {
         json!({

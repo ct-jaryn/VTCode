@@ -20,7 +20,6 @@ use super::types::{BackgroundTaskGuard, SessionState, SessionUISetup};
 use crate::agent::runloop::ResumeSession;
 use crate::agent::runloop::unified::context_manager;
 use crate::agent::runloop::unified::reasoning::{model_supports_reasoning, resolve_reasoning_visibility};
-use crate::agent::runloop::unified::session_setup::ide_context::IdeContextBridge;
 use crate::agent::runloop::unified::session_setup::spawn_editor_open_coordinator;
 use crate::agent::runloop::unified::turn::utils::{append_additional_context, render_hook_messages};
 use anyhow::Result;
@@ -45,7 +44,6 @@ use vtcode_core::utils::session_archive::SessionArchive;
 use vtcode_core::utils::transcript;
 use vtcode_ui::tui::app::{AgentPaletteItem, InlineHandle, SlashCommandItem};
 
-pub(crate) use self::header_context::apply_ide_context_snapshot;
 use self::header_context::{HeaderContextInit, initialize_header_context, maybe_render_system_prompt_budget_warning};
 pub(crate) use self::local_agents::refresh_local_agents;
 use self::resume_render::render_resume_state_if_present;
@@ -127,6 +125,7 @@ pub(crate) async fn initialize_session_ui(
         skip_confirmations,
         legacy_key_bindings,
     } = shell;
+    let initialization_progress = handle.begin_progress(vtcode_commons::ui_protocol::ProgressPhase::Initializing);
     session_state.session_bootstrap.legacy_key_bindings = legacy_key_bindings;
     // Embedded callers without the CLI bootstrap snapshot: load dot-config
     // after the shell is painted so first paint never waits on disk I/O.
@@ -250,7 +249,6 @@ pub(crate) async fn initialize_session_ui(
     let highlight_config = vt_cfg.as_ref().map(|cfg| cfg.syntax_highlighting.clone()).unwrap_or_default();
 
     transcript::set_inline_handle(Arc::new(handle.clone()));
-    let mut ide_context_bridge = Some(IdeContextBridge::new(config.workspace.clone()));
     let mut renderer = AnsiRenderer::with_inline_ui(handle.clone(), highlight_config);
     let supports_reasoning = model_supports_reasoning(&*session_state.provider_client, &config.model);
     renderer.set_reasoning_visible(resolve_reasoning_visibility(vt_cfg, supports_reasoning));
@@ -268,11 +266,14 @@ pub(crate) async fn initialize_session_ui(
     handle_for_palette.configure_file_palette(
         workspace_for_palette.clone(),
         vtcode_ui::tui::core_tui::app::session::file_palette::DirLister::new({
-            let ws = workspace_for_palette.clone();
+            // Build the indexer once: it is stateless for `discover_dir_entries`,
+            // and constructing it per directory would rebuild the excluded-dir
+            // config on every palette navigation.
+            let indexer = vtcode_core::SimpleIndexer::new(workspace_for_palette.clone());
             move |dir| {
                 // Symlink target and kind metadata are captured once per child
                 // here, so the render path never touches the filesystem.
-                vtcode_core::SimpleIndexer::new(ws.clone())
+                indexer
                     .discover_dir_entries(dir)
                     .into_iter()
                     .map(|(path, is_dir)| {
@@ -327,10 +328,18 @@ pub(crate) async fn initialize_session_ui(
     checkpoint_config.storage_dir = config.checkpointing_storage_dir.clone();
     checkpoint_config.max_snapshots = config.checkpointing_max_snapshots;
     checkpoint_config.max_age_days = config.checkpointing_max_age_days;
-    let checkpoint_manager = match vtcode_core::core::agent::snapshots::SnapshotManager::new(checkpoint_config) {
-        Ok(manager) => Some(manager),
-        Err(err) => {
+    let checkpoint_manager = match tokio::task::spawn_blocking(move || {
+        vtcode_core::core::agent::snapshots::SnapshotManager::new(checkpoint_config)
+    })
+    .await
+    {
+        Ok(Ok(manager)) => Some(manager),
+        Ok(Err(err)) => {
             warn!("Failed to initialize checkpoint manager: {}", err);
+            None
+        }
+        Err(error) => {
+            warn!(%error, "Checkpoint initialization worker failed");
             None
         }
     };
@@ -406,8 +415,6 @@ pub(crate) async fn initialize_session_ui(
     let mut header_context = initialize_header_context(
         &mut renderer,
         &handle,
-        &mut context_manager,
-        &mut ide_context_bridge,
         HeaderContextInit {
             config,
             vt_cfg,
@@ -468,18 +475,30 @@ pub(crate) async fn initialize_session_ui(
         }
     }
 
-    let next_checkpoint_turn = checkpoint_manager
-        .as_ref()
-        .and_then(|manager| manager.next_turn_number().ok())
-        .unwrap_or(1);
+    let next_checkpoint_turn = if let Some(manager) = checkpoint_manager.as_ref() {
+        let manager = manager.clone();
+        match tokio::task::spawn_blocking(move || manager.next_turn_number()).await {
+            Ok(Ok(turn)) => turn,
+            Ok(Err(error)) => {
+                warn!(%error, "Failed to inspect checkpoint turn numbers");
+                1
+            }
+            Err(error) => {
+                warn!(%error, "Checkpoint enumeration worker failed");
+                1
+            }
+        }
+    } else {
+        1
+    };
 
+    initialization_progress.transfer();
     Ok(SessionUISetup {
         settings_task_guard,
         renderer,
         session,
         handle,
         header_context,
-        ide_context_bridge,
         ctrl_c_state,
         ctrl_c_notify,
         input_activity_counter,

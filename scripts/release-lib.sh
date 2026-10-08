@@ -5,6 +5,9 @@
 
 [ -z "${SCRIPT_DIR:-}" ] && SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
+# Shared classification; legacy formatting remains below.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/release-changelog-common.sh"
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -33,6 +36,7 @@ get_github_username() {
 }
 
 # ── Changelog ────────────────────────────────────────────────────────
+
 
 add_username_tags() {
 	local changelog=$1
@@ -77,16 +81,6 @@ add_username_tags() {
 	done <<<"$changelog"
 	rm -f "$temp_mapping_file"
 	echo "$result"
-}
-
-parse_commit_type() {
-	local message="$1"
-	local type=$(echo "$message" | sed -E 's/^([a-z]+)(\([^)]+\))?:.*/\1/')
-	if [[ "$type" == "$message" ]]; then
-		echo "other"
-	else
-		echo "$type"
-	fi
 }
 
 get_type_prefix() {
@@ -162,10 +156,7 @@ generate_structured_changelog() {
 			local hash message
 			hash=$(echo "$line" | awk '{print $1}')
 			message=$(echo "$line" | cut -d' ' -f2-)
-			# Skip release noise + owner-only TODO churn (docs/project/TODO.md).
-			local lower_msg
-			lower_msg=$(echo "$message" | tr '[:upper:]' '[:lower:]')
-			if [[ "$lower_msg" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog|update.*todo|docs\(todo\)|docs\(project\).*todo|^update project$) ]]; then
+			if release_commit_is_excluded "$message"; then
 				continue
 			fi
 			local type
@@ -259,19 +250,12 @@ update_changelog_from_commits() {
 				if grep -q "^## $version " CHANGELOG.md; then
 					print_warning "Version $version already exists in CHANGELOG.md, skipping update"
 				else
-					local header
-					header=$(head -n 4 CHANGELOG.md)
-					local remainder
-					remainder=$(tail -n +5 CHANGELOG.md)
-					{
-						printf '%s\n' "$header"
-						if [[ -n "$version_section" ]]; then
-							printf '%s\n' "$version_section"
-						else
-							printf '%s\n' "$changelog_content"
-						fi
-						printf '%s\n' "$remainder"
-					} >CHANGELOG.md
+					# Insert git-cliff's generated content above the newest version
+					if [[ -n "$version_section" ]]; then
+						insert_changelog_entry "$version_section"
+					else
+						insert_changelog_entry "$changelog_content"
+					fi
 				fi
 			else
 				cp "$temp_changelog" CHANGELOG.md
@@ -343,15 +327,8 @@ update_changelog_builtin() {
 		if grep -q "^## $version " CHANGELOG.md; then
 			print_warning "Version $version already exists in CHANGELOG.md, skipping update"
 		else
-			local header
-			header=$(head -n 4 CHANGELOG.md)
-			local remainder
-			remainder=$(tail -n +5 CHANGELOG.md)
-			{
-				printf '%s\n' "$header"
-				printf '%b\n' "$changelog_entry"
-				printf '%s\n' "$remainder"
-			} >CHANGELOG.md
+			# Insert new entry above the newest version
+			insert_changelog_entry "$changelog_entry"
 		fi
 	else
 		{

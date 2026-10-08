@@ -6,6 +6,8 @@
 
 use vtcode_config::core::AnthropicPromptCacheSettings;
 
+use crate::provider::PromptCacheProfile;
+
 pub fn get_cache_ttl_for_seconds(ttl_seconds: u64) -> &'static str {
     if ttl_seconds >= 3600 { "1h" } else { "5m" }
 }
@@ -35,8 +37,27 @@ pub fn get_profile_cache_ttl(settings: &AnthropicPromptCacheSettings) -> &'stati
     }
 }
 
-pub fn requires_extended_ttl_beta(settings: &AnthropicPromptCacheSettings) -> bool {
+/// Effective messages TTL for a request profile.
+///
+/// The wire builder and the beta-header decision both derive the TTL here so a
+/// `1h` messages breakpoint can never be emitted without the extended-TTL beta
+/// header (profile requests override the configured messages TTL).
+pub fn messages_cache_ttl_for_profile(
+    settings: &AnthropicPromptCacheSettings,
+    profile: Option<PromptCacheProfile>,
+) -> &'static str {
+    match profile {
+        Some(PromptCacheProfile::BudgetContinuation) => get_profile_cache_ttl(settings),
+        None => get_messages_cache_ttl(settings),
+    }
+}
+
+pub fn requires_extended_ttl_beta(
+    settings: &AnthropicPromptCacheSettings,
+    profile: Option<PromptCacheProfile>,
+) -> bool {
     // Beta is required when an emitted breakpoint TTL is 1h. `prefer_extended_ttl`
-    // promotes tools/messages, so it is covered by the effective TTL check.
-    get_tools_cache_ttl(settings) == "1h" || get_messages_cache_ttl(settings) == "1h"
+    // promotes tools/messages and profile requests promote messages, so the
+    // effective-TTL check covers every emitted breakpoint.
+    get_tools_cache_ttl(settings) == "1h" || messages_cache_ttl_for_profile(settings, profile) == "1h"
 }

@@ -79,7 +79,7 @@ pub(super) use ui::{
     handle_select_primary_agent_from_slash, handle_start_file_browser, handle_start_history_picker,
     handle_start_mode_palette, handle_start_model_selection, handle_start_session_palette,
     handle_start_statusline_setup, handle_start_terminal_title_setup, handle_start_theme_palette, handle_theme_changed,
-    handle_toggle_ide_context, handle_toggle_vim_mode,
+    handle_toggle_vim_mode,
 };
 pub(super) use update::handle_update;
 pub(super) use webmcp::{handle_show_webmcp_help, handle_show_webmcp_status, handle_start_webmcp, handle_stop_webmcp};

@@ -612,13 +612,7 @@ fn decode_html_entities(input: &str) -> String {
 }
 
 fn truncate_chars(input: &str, max_chars: usize) -> String {
-    let trimmed = input.trim();
-    if trimmed.chars().count() <= max_chars {
-        return trimmed.to_string();
-    }
-    let mut out: String = trimmed.chars().take(max_chars).collect();
-    out.push('…');
-    out
+    vtcode_commons::formatting::truncate_text(input.trim(), max_chars, "…")
 }
 
 #[async_trait]

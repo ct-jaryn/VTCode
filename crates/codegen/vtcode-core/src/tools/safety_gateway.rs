@@ -28,8 +28,8 @@ use crate::tools::invocation::ToolInvocationId;
 use crate::tools::rate_limit_config::{tool_calls_per_minute_from_env, tool_calls_per_second_from_env};
 use crate::tools::registry::{RiskLevel, ToolRiskContext, ToolRiskScorer, ToolSource, WorkspaceTrust};
 use crate::tools::tool_intent::{
-    action_qualified_policy_name, classify_tool_intent, command_session_action_in, command_session_action_is,
-    file_operation_action_is,
+    ToolIntent, action_qualified_policy_name, classify_tool_intent, command_session_action_in,
+    command_session_action_is, file_operation_action_is,
 };
 use vtcode_config::constants::tool_limits::{
     DEFAULT_MAX_TOOL_CALLS_PER_TURN, DEFAULT_SAFETY_MAX_TOOL_CALLS_PER_SESSION, MAX_CONTROL_PLANE_TOOL_CALLS_PER_TURN,
@@ -510,24 +510,6 @@ impl SafetyGateway {
         preapproved.contains(tool_name)
     }
 
-    /// Check if a tool is destructive
-    pub fn is_destructive(&self, tool_name: &str) -> bool {
-        classify_tool_intent(tool_name, &Value::Object(Default::default())).destructive
-    }
-
-    /// Check if a tool is mutating
-    pub fn is_mutating(&self, tool_name: &str) -> bool {
-        classify_tool_intent(tool_name, &Value::Object(Default::default())).mutating
-    }
-
-    fn is_destructive_call(&self, tool_name: &str, args: &Value) -> bool {
-        classify_tool_intent(tool_name, args).destructive
-    }
-
-    fn is_mutating_call(&self, tool_name: &str, args: &Value) -> bool {
-        classify_tool_intent(tool_name, args).mutating
-    }
-
     /// Main entry point: check safety for a tool invocation.
     ///
     /// Returns a [`SafetyDecision`] indicating whether execution can proceed.
@@ -671,11 +653,15 @@ impl SafetyGateway {
             return SafetyDecision::Allow;
         }
 
-        let risk_ctx = self.build_risk_context(tool_name, args);
+        // Classify once for the risk context, the justification, and the
+        // destructive gate below: all three read the same tool name and args,
+        // and each re-classification re-parses command payloads.
+        let intent = classify_tool_intent(tool_name, args);
+        let risk_ctx = self.build_risk_context(tool_name, args, &intent);
         let risk_level = ToolRiskScorer::calculate_risk(&risk_ctx);
 
         if ToolRiskScorer::requires_justification(risk_level, self.config.read().approval_risk_threshold) {
-            let justification = self.build_approval_justification(tool_name, &risk_level, args);
+            let justification = self.build_approval_justification(tool_name, &risk_level, args, &intent);
             tracing::info!(
                 invocation_id = %inv_id,
                 tool = %tool_name,
@@ -685,7 +671,7 @@ impl SafetyGateway {
             return SafetyDecision::NeedsApproval(justification);
         }
 
-        if self.is_destructive_call(tool_name, args) {
+        if intent.destructive {
             let justification = format!("Tool '{tool_name}' is destructive and may modify files or execute commands.");
             tracing::info!(
                 invocation_id = %inv_id,
@@ -892,7 +878,7 @@ impl SafetyGateway {
     }
 
     /// Build risk context from tool name and arguments
-    fn build_risk_context(&self, tool_name: &str, args: &Value) -> ToolRiskContext {
+    fn build_risk_context(&self, tool_name: &str, args: &Value, intent: &ToolIntent) -> ToolRiskContext {
         let source = if tool_name.starts_with("mcp_") {
             ToolSource::Mcp
         } else if tool_name.starts_with("acp_") {
@@ -906,10 +892,10 @@ impl SafetyGateway {
         let mut ctx = ToolRiskContext::new(risk_tool_name.to_string(), source, self.config.read().workspace_trust);
 
         // Set flags based on tool type
-        if self.is_mutating_call(tool_name, args) {
+        if intent.mutating {
             ctx = ctx.as_write();
         }
-        if self.is_destructive_call(tool_name, args) {
+        if intent.destructive {
             ctx = ctx.as_destructive();
         }
 
@@ -926,13 +912,19 @@ impl SafetyGateway {
     }
 
     /// Build justification message for approval prompt
-    fn build_approval_justification(&self, tool_name: &str, risk_level: &RiskLevel, args: &Value) -> String {
+    fn build_approval_justification(
+        &self,
+        tool_name: &str,
+        risk_level: &RiskLevel,
+        args: &Value,
+        intent: &ToolIntent,
+    ) -> String {
         let mut parts = Vec::new();
 
         parts.push(format!("Tool: {tool_name}"));
         parts.push(format!("Risk level: {risk_level}"));
 
-        if self.is_destructive_call(tool_name, args) {
+        if intent.destructive {
             parts.push("This tool may modify or delete files.".to_string());
         }
 

@@ -568,6 +568,20 @@ impl Session {
                         }
 
                         if self.tool_output_viewer_state().is_some() {
+                            if mouse_event.modifiers == crossterm::event::KeyModifiers::ALT
+                                && let Some(target) = self
+                                    .tool_output_viewer_state()
+                                    .and_then(|viewer| viewer.evidence_at(mouse_event.column, mouse_event.row))
+                                    .map(str::to_owned)
+                            {
+                                self.handle_link_click_action(
+                                    TranscriptLinkClickAction::Open(CoreInlineEvent::OpenUrl(target)),
+                                    true,
+                                    events,
+                                    callback,
+                                );
+                                return;
+                            }
                             if self
                                 .tool_output_viewer_state()
                                 .is_some_and(|viewer| viewer.body_contains(mouse_event.column, mouse_event.row))

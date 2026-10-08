@@ -9,8 +9,8 @@ it does not replace the model provider or the built-in `web_search` tool.
 
 Create an API key in the [Baizhi console](https://agent-toolkit.app.baizhi.cloud/).
 Supply the raw key as `BAIZHI_API_KEY` to the process that starts VT Code,
-using a trusted secret manager or environment injection. Do not include the
-`Bearer ` prefix in the variable: `api_key_env` adds it to the HTTP header.
+using a trusted secret manager or environment injection. Do not include a
+`Bearer` prefix or its following space: `api_key_env` adds them to the HTTP header.
 Keep the value out of TOML, command-line arguments, source control, and chat.
 
 Add the following to your trusted user-level `vtcode.toml`. Run

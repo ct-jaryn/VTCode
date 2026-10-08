@@ -512,20 +512,28 @@ impl McpProvider {
         })
     }
 
-    pub(super) async fn cached_tools(&self) -> Option<Vec<McpToolInfo>> {
-        self.caches.lock().await.tools.as_ref().map(|tools| tools.as_ref().clone())
+    /// Return the cached tool list as a shared handle.
+    ///
+    /// The cache already stores `Arc<Vec<McpToolInfo>>`; returning the `Arc`
+    /// avoids deep-cloning every tool description and JSON schema on each hit.
+    pub(super) async fn cached_tools_shared(&self) -> Option<Arc<Vec<McpToolInfo>>> {
+        self.caches.lock().await.tools.as_ref().map(Arc::clone)
     }
 
-    pub(super) async fn cached_tools_or_refresh(
+    /// Return cached tools or refresh them, handing back the shared cache entry.
+    ///
+    /// Callers that only need to read/record the list can keep the `Arc` and
+    /// skip the per-call deep clone that the owned-`Vec` return used to force.
+    pub(super) async fn cached_tools_or_refresh_shared(
         &self,
         allowlist: &McpAllowListConfig,
         timeout: Option<Duration>,
-    ) -> Result<Vec<McpToolInfo>> {
-        if let Some(tools) = self.cached_tools().await {
+    ) -> Result<Arc<Vec<McpToolInfo>>> {
+        if let Some(tools) = self.cached_tools_shared().await {
             return Ok(tools);
         }
 
-        self.refresh_tools(allowlist, timeout).await
+        self.refresh_tools_shared(allowlist, timeout).await
     }
 
     pub(super) async fn shutdown(&self) -> Result<()> {

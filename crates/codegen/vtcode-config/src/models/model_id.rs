@@ -116,10 +116,6 @@ pub enum ModelId {
     MergeGatewayMoonshotKimiK3,
     /// Thinking Machines Inkling through Merge Gateway
     MergeGatewayThinkingMachinesInkling,
-    /// Meta Muse Spark 1.1 through Merge Gateway
-    MergeGatewayMetaMuseSpark11,
-    /// Meta Muse Spark 1.3 through Merge Gateway
-    MergeGatewayMetaMuseSpark13,
     /// Z.AI GLM-5.3 Flash through Merge Gateway
     MergeGatewayZaiGlm53Flash,
     /// Z.AI GLM-5.3 FlashX through Merge Gateway
@@ -144,10 +140,18 @@ pub enum ModelId {
     MergeGatewayOpenAIGpt61Sol,
     /// OpenAI GPT-6 Luna through Merge Gateway
     MergeGatewayOpenAIGpt6Luna,
+    /// Xiaomi MiMo V2.6 Pro through Merge Gateway
+    MergeGatewayXiaomimimoMimoV26Pro,
+    /// Xiaomi MiMo V2.6 Flash through Merge Gateway
+    MergeGatewayXiaomimimoMimoV26Flash,
+    /// Mistral Large 4 through Merge Gateway
+    MergeGatewayMistralLarge4,
 
     // Mistral AI models
     /// Mistral Large 3 - State-of-the-art open-weight general-purpose multimodal model
     MistralLarge3,
+    /// Mistral Large 4 - Open-weight MoE flagship (49B active / 1.05T total) with 1M context (Public Preview)
+    MistralLarge4,
     // Hugging Face models
     /// OpenAI GPT-OSS 20B via Hugging Face router
     HuggingFaceOpenAIGptOss20b,

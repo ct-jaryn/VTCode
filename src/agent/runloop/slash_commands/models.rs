@@ -105,6 +105,9 @@ pub(crate) enum SlashCommandOutcome {
     Handled,
     ThemeChanged(String),
     ShowTranscriptStats,
+    Explain {
+        args: String,
+    },
     ExportTranscript {
         path: Option<String>,
     },
@@ -128,7 +131,6 @@ pub(crate) enum SlashCommandOutcome {
     SelectPrimaryAgent {
         name: String,
     },
-    ToggleIdeContext,
     ToggleVimMode {
         enable: Option<bool>,
     },

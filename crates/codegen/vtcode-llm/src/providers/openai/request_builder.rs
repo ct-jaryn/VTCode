@@ -619,7 +619,8 @@ fn build_responses_item_history(
     ctx: &ResponsesRequestContext<'_>,
 ) -> Result<OpenAIResponsesPayload, provider::LLMError> {
     let preserve_structured_history = ctx.include_structured_history_in_input
-        || (ctx.preserve_structured_history_on_replay && is_openai_gpt_responses_model(&request.model));
+        || (ctx.preserve_structured_history_on_replay
+            && (is_openai_gpt_responses_model(&request.model) || is_gpt5_codex_model(&request.model)));
     let mut responses_payload = build_standard_responses_payload(request, preserve_structured_history)?;
     if responses_payload.instructions.is_none()
         && preserve_structured_history

@@ -81,6 +81,7 @@ pub(crate) async fn prompt_workspace_hook_approval<S: UiSession + ?Sized>(
         },
     ];
 
+    handle.set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::WaitingForApproval);
     let outcome = show_overlay_and_wait(
         handle,
         session,
@@ -108,6 +109,7 @@ pub(crate) async fn prompt_workspace_hook_approval<S: UiSession + ?Sized>(
     )
     .await?;
 
+    handle.set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::Initializing);
     Ok(match outcome {
         OverlayWaitOutcome::Submitted(decision) => decision,
         OverlayWaitOutcome::Cancelled

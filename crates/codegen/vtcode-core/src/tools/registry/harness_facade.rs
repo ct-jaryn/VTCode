@@ -11,6 +11,10 @@ use super::ToolRegistry;
 use crate::config::constants::tools;
 
 impl ToolRegistry {
+    /// Attach the canonical queue barrier used by public decision recording.
+    pub fn set_decision_evidence_validator(&self, validator: crate::core::agent::events::DecisionEvidenceValidator) {
+        *self.harness_context.decision_validator.write() = Some(validator);
+    }
     async fn process_harness_command_session_output(&self, value: Value) -> Result<Value> {
         let processed = self
             .process_tool_output(

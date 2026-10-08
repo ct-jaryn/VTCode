@@ -173,9 +173,15 @@ impl<'a> TurnProcessingContext<'a> {
         } else {
             detail.to_string()
         };
-        let message = format!(
+        let mut message = format!(
             "Planning remains active, but the one tool-free recovery synthesis did not produce an approval-ready plan ({detail}). The latest request and bounded evidence are preserved. The next attempt can reuse the tool outputs above instead of re-reading files, and should emit one complete `<proposed_plan>` with `Action -> files: [path] -> verify: [command]` steps. Each `verify:` must be a concrete command or observable check: valid examples are `verify: [cargo nextest run -p vtcode]`, `verify: [rg -n 'symbol' src/file.rs]`, `verify: [sed -n '1,40p' docs/file.md]`, and `verify: [grep -n 'symbol' src/file.rs]`; invalid examples are `verify: [run checks]`, `verify: [check later]`, and `verify: [git diff --check]`. Re-state the planning request or type `keep planning` to try again; no changes were applied."
         );
+        let mut reason =
+            "planning recovery did not produce an approval-ready plan; planning remains active".to_string();
+        if let Some(cause) = self.harness_state.budget_recovery_reason() {
+            message = format!("{cause}. {message}");
+            reason = format!("{cause}. {reason}");
+        }
 
         self.harness_state.mark_final_response_fallback();
         self.handle_assistant_response(message, Vec::new(), None, false, Some(uni::AssistantPhase::FinalAnswer))?;
@@ -183,11 +189,7 @@ impl<'a> TurnProcessingContext<'a> {
             append_rejected_plan_draft_to_last_assistant(self.working_history, rejected_plan);
         }
         self.finish_recovery_pass();
-        Ok(TurnHandlerOutcome::Break(TurnLoopResult::Blocked {
-            reason: Some(
-                "planning recovery did not produce an approval-ready plan; planning remains active".to_string(),
-            ),
-        }))
+        Ok(TurnHandlerOutcome::Break(TurnLoopResult::Blocked { reason: Some(reason) }))
     }
 
     /// Bounded repair for a planning tool-free violation that still carried

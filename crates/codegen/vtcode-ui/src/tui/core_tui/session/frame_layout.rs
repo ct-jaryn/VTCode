@@ -18,6 +18,7 @@ pub(crate) struct SessionFrameLayout {
 
 impl Session {
     pub(crate) fn begin_frame(&mut self, frame: &mut Frame<'_>) -> Option<Rect> {
+        self.set_progress_area(None);
         let viewport = frame.area();
         if viewport.height == 0 || viewport.width == 0 {
             return None;
@@ -106,8 +107,10 @@ impl Session {
             return;
         }
 
-        let selection_area = if self.sticky_prompt_target.is_some() && self.mouse_selection.is_transcript_selection() {
-            self.transcript_area().unwrap_or(viewport)
+        let selection_area = if (self.sticky_prompt_target.is_some() || self.progress.is_active())
+            && self.mouse_selection.is_transcript_selection()
+        {
+            self.transcript_area().unwrap_or(Rect::ZERO)
         } else {
             viewport
         };

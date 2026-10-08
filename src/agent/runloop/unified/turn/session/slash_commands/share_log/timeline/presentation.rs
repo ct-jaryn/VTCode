@@ -17,7 +17,7 @@ use serde_json::Value;
 use vtcode_core::core::threads::ThreadEventRecord;
 use vtcode_core::exec::events::{
     CommandExecutionStatus, HarnessEventKind, McpToolCallStatus, PatchApplyStatus, ThreadCompletionSubtype,
-    ThreadEvent, ThreadItem, ThreadItemDetails, ToolCallStatus, Usage,
+    ThreadEvent, ThreadItem, ThreadItemDetails, ToolCallStatus, ToolOutcome, Usage,
 };
 
 pub(super) fn timeline_rows_from_thread_events(records: &[ThreadEventRecord]) -> Vec<TimelineRow> {
@@ -343,6 +343,21 @@ pub(super) fn timeline_row_from_item(
 ) -> TimelineRow {
     let detail_json = pretty_json_string(&record.event);
     match &item.details {
+        ThreadItemDetails::Decision(d) => timeline_row(
+            record.sequence,
+            TIMELINE_SOURCE_THREAD_EVENTS,
+            event_type,
+            Some("decision"),
+            "decision",
+            Some(default_status),
+            record.turn_id.as_deref(),
+            record.submission_id.as_ref().map(|v| v.as_str()),
+            d.summary.clone(),
+            "Agent-reported public rationale".into(),
+            d.rationale.clone(),
+            detail_json,
+            false,
+        ),
         ThreadItemDetails::AgentMessage(message) => timeline_row(
             record.sequence,
             TIMELINE_SOURCE_THREAD_EVENTS,
@@ -419,7 +434,11 @@ pub(super) fn timeline_row_from_item(
             )
         }
         ThreadItemDetails::ToolInvocation(tool) => {
-            let status = tool_status_label(&tool.status);
+            let status = if tool.status == ToolCallStatus::Failed && tool.outcome == Some(ToolOutcome::Cancelled) {
+                "cancelled"
+            } else {
+                tool_status_label(&tool.status)
+            };
             let tool_name = super::super::canonical_tool_name(&tool.tool_name);
             let mut body = String::new();
             if let Some(arguments) = &tool.arguments {
@@ -445,7 +464,16 @@ pub(super) fn timeline_row_from_item(
             )
         }
         ThreadItemDetails::ToolOutput(tool_output) => {
-            let status = tool_status_label(&tool_output.status);
+            let status = if tool_output.status == ToolCallStatus::Failed
+                && tool_output.exit_code.is_none()
+                && tool_output.spool_path.is_none()
+                && tool_output.output
+                    == crate::agent::runloop::unified::turn::turn_loop::UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT
+            {
+                "not_executed"
+            } else {
+                tool_status_label(&tool_output.status)
+            };
             let mut body = String::new();
             if let Some(tool_call_id) = &tool_output.tool_call_id {
                 let _ = writeln!(&mut body, "Tool call id: {tool_call_id}");
@@ -550,7 +578,7 @@ pub(super) fn timeline_row_from_item(
             event_type,
             Some("harness"),
             "harness",
-            Some(harness_status_label(&event.event)),
+            Some(event.status.as_deref().unwrap_or_else(|| harness_status_label(&event.event))),
             record.turn_id.as_deref(),
             record.submission_id.as_ref().map(|value| value.as_str()),
             harness_title(&event.event).to_string(),
@@ -948,11 +976,13 @@ fn harness_title(event: &HarnessEventKind) -> &'static str {
         HarnessEventKind::SessionToolLimitIncreased => "Session tool limit increased",
         HarnessEventKind::ToolLoopLimitIncreased => "Tool loop limit increased",
         HarnessEventKind::BackgroundSubprocessCompleted => "Background subprocess completed",
+        HarnessEventKind::DelegatedAgentStatus => "Delegated agent status",
     }
 }
 
 fn harness_status_label(event: &HarnessEventKind) -> &'static str {
     match event {
+        HarnessEventKind::DelegatedAgentStatus => "observed",
         HarnessEventKind::PlanningCompleted
         | HarnessEventKind::EvaluationPassed
         | HarnessEventKind::VerificationPassed

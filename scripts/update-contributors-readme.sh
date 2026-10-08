@@ -210,7 +210,7 @@ import os
 readme_path = os.environ["README"]
 marker_start = os.environ["MARKER_START"]
 marker_end = os.environ["MARKER_END"]
-html = os.environ["HTML"]
+html = "<!-- markdownlint-disable MD013 -->\n" + os.environ["HTML"] + "\n<!-- markdownlint-enable MD013 -->"
 
 with open(readme_path) as f:
     content = f.read()

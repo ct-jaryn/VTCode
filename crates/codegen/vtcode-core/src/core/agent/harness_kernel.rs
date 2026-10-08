@@ -131,7 +131,9 @@ pub use crate::core::agent::hash_utils::{
     hash_tool_definitions, hash_value, low_signal_attempt_key, stable_system_prefix_hash,
 };
 pub use crate::core::agent::request_plan::{HarnessRequestPlan, HarnessRequestPlanInput, build_harness_request_plan};
-pub use crate::core::agent::result_reducers::{reduce_tool_result, strip_tui_display_fields};
+pub use crate::core::agent::result_reducers::{
+    project_model_tool_result, reduce_tool_result, strip_tui_display_fields,
+};
 pub use crate::core::agent::tool_batching::{
     FallbackRecommendation, FallbackStep, PreparedToolBatch, PreparedToolBatchKind, PreparedToolCall,
     is_parallel_safe_tool_batch,

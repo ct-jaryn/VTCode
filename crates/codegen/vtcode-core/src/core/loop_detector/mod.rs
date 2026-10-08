@@ -40,14 +40,14 @@ const SLIDING_WINDOW_MAX_REPEATS: usize = 3;
 /// evade per-tool limits. Fires a hard stop when exhausted.
 ///
 /// Also referenced by `prompts::harness_limits` to advertise the budget in the
-/// system prompt -- keep both in sync.
+/// system prompt; harness_limits imports this const, so there is no second copy.
 pub(crate) const MAX_TOTAL_READONLY_CALLS: usize = 30;
 
 /// Subagent-specific read-only budget. Subagents should do focused work and
 /// need less exploration headroom than the main agent.
 ///
 /// Also referenced by `subagents::config` to state the budget in writable
-/// child instructions -- keep both in sync.
+/// child instructions; config imports this const, so there is no second copy.
 pub(crate) const SUBAGENT_MAX_TOTAL_READONLY_CALLS: usize = 20;
 
 /// Navigation streak thresholds -- warning and hard stop.

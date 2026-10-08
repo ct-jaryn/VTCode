@@ -181,6 +181,7 @@ struct SessionLayout {
 impl Widget for &mut SessionWidget<'_> {
     #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.session.set_progress_area(None);
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -338,13 +339,20 @@ impl<'a> SessionWidget<'a> {
     }
 
     fn render_footer(&mut self, area: Rect, buf: &mut Buffer, mode: LayoutMode) {
-        // Git status is displayed in the header metadata. Do not mirror it in
-        // the footer; the footer should contain only transient activity text.
-        let left_status = self
-            .session
-            .status_left_text()
-            .filter(|status| !status.trim_start().starts_with("git:"))
-            .unwrap_or("");
+        let left_status = if self.session.progress_row_visible() {
+            self.session.progress_footer_status_text()
+        } else {
+            self.session
+                .status_left_text()
+                .filter(|status| !status.trim_start().starts_with("git:"))
+        }
+        .unwrap_or_else(|| {
+            if self.session.thinking_spinner.is_active && !self.session.progress_row_visible() {
+                "Thinking"
+            } else {
+                ""
+            }
+        });
         let right_status = self.session.status_right_text().unwrap_or("");
 
         // Blocked/recovery detection combines the first-class activity state
@@ -383,9 +391,16 @@ impl<'a> SessionWidget<'a> {
             .hint(hint)
             .mode(mode);
 
-        if self.session.thinking_spinner.is_active {
+        if self.session.appearance.should_animate_progress_status()
+            && self.session.thinking_spinner.is_active
+            && !self.session.progress_row_visible()
+        {
             footer = footer.spinner(self.session.thinking_spinner.current_frame());
-        } else if self.session.activity_state.is_stage() && self.session.is_shimmer_active() {
+        } else if self.session.appearance.should_animate_progress_status()
+            && self.session.activity_state.is_stage()
+            && self.session.is_shimmer_active()
+            && !self.session.progress_row_visible()
+        {
             footer = footer.spinner(pulse_spinner_frame_for_phase(self.session.shimmer_state.phase()));
         }
 
@@ -428,6 +443,31 @@ mod tests {
             text: text.to_string(),
             style: Arc::new(InlineTextStyle::default()),
         }
+    }
+
+    #[test]
+    fn compatibility_footer_keeps_git_status_while_transcript_owns_progress() {
+        use vtcode_commons::ui_protocol::{ActivityState, ProgressOperation, ProgressPhase, ProgressUpdate};
+
+        let mut session = Session::new(InlineTheme::default(), None, 24);
+        session.handle_command(InlineCommand::SetConfiguredInputStatus {
+            left: Some("topic/footer*".to_owned()),
+            right: Some("10:30".to_owned()),
+        });
+        session.handle_command(InlineCommand::SetActivityState(ActivityState::Building));
+        session.handle_command(InlineCommand::UpdateProgress(ProgressUpdate::Begin {
+            operation: ProgressOperation::start(),
+            phase: ProgressPhase::WaitingForModel,
+        }));
+        let area = Rect::new(0, 0, 120, 24);
+        let mut buf = Buffer::empty(area);
+        session.render_progress(Rect::new(0, 0, 120, 1), &mut buf);
+        SessionWidget::new(&mut session).render_footer(Rect::new(0, 1, 120, 4), &mut buf, LayoutMode::Wide);
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert_eq!(text.matches("Waiting for model").count(), 1, "{text}");
+        assert!(text.contains("topic/footer*"), "{text}");
+        assert!(text.contains("10:30"), "{text}");
+        assert!(!text.contains("Building..."), "{text}");
     }
 
     #[test]
@@ -474,5 +514,40 @@ mod tests {
 
         session.appearance.screen_reader_mode = true;
         assert_eq!(footer_shimmer_phase(&session), None);
+    }
+    #[test]
+    fn thinking_surfaces_respect_accessibility_policy_and_preserve_labels() {
+        for (reduce_motion, keep_animation, screen_reader, animated) in [
+            (false, false, false, true),
+            (true, false, false, false),
+            (true, true, false, true),
+            (false, true, true, false),
+            (true, true, true, false),
+        ] {
+            for configured in [None, Some("Custom status")] {
+                let mut session = Session::new(InlineTheme::default(), None, 12);
+                session.input_status_left = configured.map(str::to_string);
+                session.appearance.reduce_motion_mode = reduce_motion;
+                session.appearance.reduce_motion_keep_progress_animation = keep_animation;
+                session.appearance.screen_reader_mode = screen_reader;
+                session.thinking_spinner.start();
+                let area = Rect::new(0, 0, 100, 2);
+                let mut buf = Buffer::empty(area);
+                SessionWidget::new(&mut session).render_footer(area, &mut buf, LayoutMode::Standard);
+                let footer: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+                let composer = session
+                    .render_input_status_line(100)
+                    .unwrap()
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                for (text, expected_spinner) in [(&footer, animated), (&composer, animated && configured.is_none())] {
+                    assert!(text.contains(configured.unwrap_or("Thinking")), "{text}");
+                    let has_braille = text.chars().any(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch));
+                    assert_eq!(has_braille, expected_spinner);
+                }
+            }
+        }
     }
 }

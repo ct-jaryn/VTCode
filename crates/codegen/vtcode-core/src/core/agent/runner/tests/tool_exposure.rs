@@ -6,6 +6,80 @@
 use super::*;
 
 #[tokio::test]
+async fn headless_planning_prompt_preserves_canonical_contract_at_both_densities() {
+    use crate::config::types::{ShellPromptProfile, SystemPromptMode};
+    use crate::prompts::system::*;
+
+    for mode in [
+        SystemPromptMode::Default,
+        SystemPromptMode::Minimal,
+        SystemPromptMode::Lightweight,
+        SystemPromptMode::Specialized,
+    ] {
+        for environment in [false, true] {
+            for budget in [100_000, 1] {
+                let temp = TempDir::new().expect("workspace");
+                let mut config = VTCodeConfig::default();
+                config.agent.system_prompt_mode = mode;
+                config.agent.include_temporal_context = false;
+                config.agent.include_working_directory = environment;
+                config.agent.instruction_max_bytes = 0;
+                config.agent.shell_prompt_profile = ShellPromptProfile::UnixLike;
+                config.agent.max_system_prompt_tokens = budget;
+                config.agent.trim_system_prompt = false;
+                config.tools.profile = ToolProfile::AdvancedVtCode;
+                let mut runner = Box::pin(AgentRunner::new_with_bootstrap(
+                    AgentType::Single,
+                    ModelId::default(),
+                    "test-key".to_string(),
+                    temp.path().to_path_buf(),
+                    "thread-planning-contract".to_string(),
+                    RunnerSettings { reasoning_effort: None, verbosity: None },
+                    None,
+                    ThreadBootstrap::new(None),
+                    Some(config),
+                    None,
+                ))
+                .await
+                .expect("runner");
+                runner.provider_client = Box::new(RecordingQueuedProvider::new(Vec::new()));
+                runner.tool_registry.enable_planning();
+                let bundle = runner
+                    .build_validated_runtime_prompt_bundle(false)
+                    .await
+                    .expect("planning prompt bundle");
+                let prompt = bundle.request_envelope.system_prompt();
+                for line in [
+                    PLANNING_WORKFLOW_PLAN_PERSISTENCE_POLICY_LINE,
+                    PLANNING_WORKFLOW_PLAN_QUALITY_LINE,
+                    PLANNING_WORKFLOW_RESEARCH_SCOPE_LINE,
+                    PLANNING_WORKFLOW_PLAN_POLICY_LINE,
+                ] {
+                    assert_eq!(prompt.matches(line).count(), 1, "{mode:?}, environment={environment}, budget={budget}");
+                }
+                assert_eq!(prompt.matches("## Active Tools").count(), 1);
+                assert_eq!(prompt.matches("## Environment").count(), usize::from(environment));
+                assert!(prompt.contains(PLANNING_WORKFLOW_NO_REQUEST_USER_INPUT_POLICY_LINE));
+                for duplicate in [
+                    "Monitor the available planning tool-loop budget",
+                    "Every implementation step in the final plan must",
+                    "emit only one `<proposed_plan>` block",
+                    "Stop research when the plan is specified or the budget is near",
+                ] {
+                    assert!(!prompt.contains(duplicate));
+                }
+                assert_eq!(prompt.contains("- Planning is read-only."), budget == 1);
+                let rebuilt = runner
+                    .build_validated_runtime_prompt_bundle(false)
+                    .await
+                    .expect("rebuilt bundle");
+                assert_eq!(prompt, rebuilt.request_envelope.system_prompt());
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn full_auto_allowlist_retains_explicit_internal_tool_without_advertising_it() {
     let temp = TempDir::new().expect("tempdir");
     let mut runner = Box::pin(AgentRunner::new_with_bootstrap(

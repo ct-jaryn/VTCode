@@ -128,6 +128,9 @@ pub(super) fn draw_selection_ui(
                     {
                         lines.push(Line::from(Span::styled(format!("    {description}"), styles::DESCRIPTION)));
                     }
+                    // Shared rhythm: one blank separator row between entries so
+                    // dense standalone pickers match the core modal lists.
+                    lines.push(Line::default());
                     items.push(ListItem::new(lines));
                 }
             }

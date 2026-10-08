@@ -208,7 +208,6 @@ const REQUEST_HISTORY_CANCELLATION_RESULT: &str =
 #[derive(Debug)]
 struct RequestToolBatch {
     assistant_index: usize,
-    call_ids: Vec<String>,
     matched_calls: Vec<bool>,
     result_indices: Vec<usize>,
 }
@@ -240,7 +239,7 @@ impl RequestHistoryAnalysis {
 
 fn analyze_request_history(messages: &[Message]) -> RequestHistoryAnalysis {
     let mut analysis = RequestHistoryAnalysis::default();
-    let mut calls_by_id: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    let mut calls_by_id: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
 
     for (message_index, message) in messages.iter().enumerate() {
         if message.role != crate::llm::provider::MessageRole::Assistant {
@@ -252,18 +251,16 @@ fn analyze_request_history(messages: &[Message]) -> RequestHistoryAnalysis {
         };
 
         let batch_index = analysis.batches.len();
-        let call_ids = tool_calls.iter().map(|call| call.id.clone()).collect::<Vec<_>>();
-        let matched_calls = vec![false; call_ids.len()];
+        let matched_calls = vec![false; tool_calls.len()];
         analysis.batch_by_assistant_index.insert(message_index, batch_index);
         analysis.batches.push(RequestToolBatch {
             assistant_index: message_index,
-            call_ids,
             matched_calls,
             result_indices: Vec::new(),
         });
 
         for (call_index, call) in tool_calls.iter().enumerate() {
-            calls_by_id.entry(call.id.clone()).or_default().push((batch_index, call_index));
+            calls_by_id.entry(call.id.as_str()).or_default().push((batch_index, call_index));
         }
     }
 
@@ -329,7 +326,6 @@ pub fn normalize_history_for_request_shared(messages: Arc<Vec<Message>>) -> Arc<
         return messages;
     }
 
-    let messages = Arc::unwrap_or_clone(messages);
     let mut normalized = Vec::with_capacity(messages.len());
     for (message_index, message) in messages.iter().enumerate() {
         if analysis.invalid_result_indices.contains(&message_index)
@@ -348,10 +344,10 @@ pub fn normalize_history_for_request_shared(messages: Arc<Vec<Message>>) -> Arc<
         for &result_index in &batch.result_indices {
             normalized.push(messages[result_index].clone());
         }
-        for (call_id, matched) in batch.call_ids.iter().zip(&batch.matched_calls) {
+        for (call, matched) in message.tool_calls.iter().flatten().zip(&batch.matched_calls) {
             if !matched {
                 normalized
-                    .push(Message::tool_response(call_id.clone(), REQUEST_HISTORY_CANCELLATION_RESULT.to_owned()));
+                    .push(Message::tool_response(call.id.clone(), REQUEST_HISTORY_CANCELLATION_RESULT.to_owned()));
             }
         }
     }
@@ -360,8 +356,8 @@ pub fn normalize_history_for_request_shared(messages: Arc<Vec<Message>>) -> Arc<
 }
 
 /// Compatibility wrapper for callers that own a slice rather than shared
-/// request history. The shared implementation keeps the production Arc path
-/// allocation-free for clean histories; this wrapper retains the historical
+/// request history. The shared implementation avoids cloning clean message
+/// histories; this wrapper retains the historical
 /// owned return type for small slice-based callers and tests.
 pub fn normalize_history_for_request(messages: &[Message]) -> Vec<Message> {
     Arc::unwrap_or_clone(normalize_history_for_request_shared(Arc::new(messages.to_vec())))
@@ -791,6 +787,74 @@ mod tests {
         let normalized = normalize_history_for_request_shared(Arc::clone(&messages));
 
         assert!(Arc::ptr_eq(&messages, &normalized));
+    }
+
+    #[test]
+    fn request_normalization_reused_ids_match_causally_preceding_batches() {
+        let messages = Arc::new(vec![
+            make_tool_response("reused", "early result"),
+            make_tool_call("reused", "read_file"),
+            make_tool_response("reused", "first result"),
+            make_tool_call("reused", "write_file"),
+            Message::user("interleaved".to_string()),
+            make_tool_response("reused", "second result"),
+            make_tool_response("reused", "duplicate result"),
+        ]);
+        let normalized = normalize_history_for_request_shared(Arc::clone(&messages));
+        assert_eq!(
+            normalized.as_ref(),
+            &vec![
+                make_tool_call("reused", "read_file"),
+                make_tool_response("reused", "first result"),
+                make_tool_call("reused", "write_file"),
+                make_tool_response("reused", "second result"),
+                Message::user("interleaved".to_string()),
+            ]
+        );
+        assert_eq!(messages.len(), 7);
+        assert_eq!(messages[0].content.as_text(), "early result");
+    }
+
+    #[test]
+    fn request_normalization_shared_repairs_asymmetric_batch_without_mutating_source() {
+        let messages = Arc::new(vec![
+            Message::assistant_with_tools(
+                "three calls".to_string(),
+                ["call_a", "call_b", "call_c"]
+                    .into_iter()
+                    .map(|id| {
+                        crate::llm::provider::ToolCall::function(
+                            id.to_string(),
+                            "read_file".to_string(),
+                            "{}".to_string(),
+                        )
+                    })
+                    .collect(),
+            ),
+            Message::user("interleaved request".to_string()),
+            make_tool_response("call_b", "result B"),
+            make_tool_response("call_a", "result A"),
+            make_tool_response("call_b", "duplicate B"),
+        ]);
+        let source_before = messages.as_ref().clone();
+
+        let normalized = normalize_history_for_request_shared(Arc::clone(&messages));
+
+        assert!(!Arc::ptr_eq(&messages, &normalized));
+        assert_eq!(normalized.len(), 5);
+        assert_eq!(normalized[0], source_before[0]);
+        assert_eq!(normalized[1], make_tool_response("call_b", "result B"));
+        assert_eq!(normalized[2], make_tool_response("call_a", "result A"));
+        assert_eq!(normalized[3].role, MessageRole::Tool);
+        assert_eq!(normalized[3].tool_call_id.as_deref(), Some("call_c"));
+        assert_eq!(
+            normalized[3].content.as_text(),
+            "canceled: no tool result was recorded; this bounded placeholder preserves the tool-call protocol."
+        );
+        assert_eq!(normalized[4], Message::user("interleaved request".to_string()));
+        assert_eq!(messages.as_ref(), &source_before);
+        let repeated = normalize_history_for_request_shared(Arc::clone(&normalized));
+        assert!(Arc::ptr_eq(&normalized, &repeated));
     }
 
     #[test]

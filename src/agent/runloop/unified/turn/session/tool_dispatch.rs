@@ -13,6 +13,7 @@ use crate::agent::runloop::unified::turn::session::direct_tool_completion::{
 };
 use crate::agent::runloop::unified::turn::session::interaction_loop::{InteractionLoopContext, InteractionOutcome};
 use crate::agent::runloop::unified::turn::tool_outcomes::handlers::{ToolOutcomeContext, handle_single_tool_call};
+use vtcode_commons::formatting::{strip_optional_word_prefix, trim_wrapping_quotes_and_punctuation};
 use vtcode_config::SubagentSpec;
 use vtcode_core::command_safety::shell_parser::parse_shell_commands_tree_sitter;
 use vtcode_core::config::constants::tools;
@@ -479,37 +480,6 @@ fn normalize_file_operation_path(input: &str) -> String {
     normalized = strip_optional_word_prefix(normalized, "from");
     normalized = normalized.strip_prefix('@').unwrap_or(normalized);
     trim_wrapping_quotes_and_punctuation(normalized).to_string()
-}
-
-fn strip_optional_word_prefix<'a>(input: &'a str, word: &str) -> &'a str {
-    let Some(prefix) = input.get(..word.len()) else {
-        return input;
-    };
-    if !prefix.eq_ignore_ascii_case(word) {
-        return input;
-    }
-    let remainder = &input[word.len()..];
-    if remainder.chars().next().is_some_and(char::is_whitespace) {
-        remainder.trim_start()
-    } else {
-        input
-    }
-}
-
-fn trim_wrapping_quotes_and_punctuation(target: &str) -> &str {
-    let mut normalized = target.trim();
-    loop {
-        let previous = normalized;
-        normalized = normalized.trim();
-        normalized = normalized.strip_prefix('"').unwrap_or(normalized);
-        normalized = normalized.strip_suffix('"').unwrap_or(normalized);
-        normalized = normalized.strip_prefix('\'').unwrap_or(normalized);
-        normalized = normalized.strip_suffix('\'').unwrap_or(normalized);
-        normalized = normalized.trim_end_matches(['.', ',', ';', '!', '?']).trim();
-        if normalized == previous {
-            return normalized;
-        }
-    }
 }
 
 fn normalize_direct_tool_mentions(input: &str, workspace_root: &Path) -> String {

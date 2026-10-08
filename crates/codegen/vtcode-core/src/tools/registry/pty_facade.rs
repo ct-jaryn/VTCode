@@ -54,10 +54,23 @@ impl ToolRegistry {
         self.exec_sessions.terminate_all_sessions_async()
     }
 
+    /// Exit-path variant: terminates every exec session with `Immediate` PTY
+    /// semantics (group SIGKILL, no SIGTERM grace window) so user-initiated
+    /// exit is not parked ~600 ms per live PTY session.
+    pub fn terminate_all_exec_sessions_for_exit_async(&self) -> impl Future<Output = Result<()>> + '_ {
+        self.exec_sessions.terminate_all_sessions_for_exit_async()
+    }
+
     /// Inline-delegating wrapper that terminates only foreground exec sessions
     /// after a turn interruption, preserving user-owned background sessions.
     pub fn terminate_active_exec_sessions_async(&self) -> impl Future<Output = Result<()>> + '_ {
         self.exec_sessions.terminate_active_sessions_async()
+    }
+
+    /// Exit-path variant of [`Self::terminate_active_exec_sessions_async`]
+    /// using `Immediate` PTY termination.
+    pub fn terminate_active_exec_sessions_for_exit_async(&self) -> impl Future<Output = Result<()>> + '_ {
+        self.exec_sessions.terminate_active_sessions_for_exit_async()
     }
 
     pub fn exec_session_manager(&self) -> ExecSessionManager {

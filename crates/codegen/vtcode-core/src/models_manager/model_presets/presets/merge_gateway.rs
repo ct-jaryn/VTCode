@@ -127,20 +127,6 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             false,
         ),
         (
-            models::merge_gateway::META_MUSE_SPARK_1_1,
-            "Muse Spark 1.1 (Merge Gateway)",
-            "Meta Muse Spark 1.1 through Merge Gateway",
-            1_000_000,
-            false,
-        ),
-        (
-            models::merge_gateway::META_MUSE_SPARK_1_3,
-            "Muse Spark 1.3 (Merge Gateway)",
-            "Meta Muse Spark 1.3 through Merge Gateway",
-            1_000_000,
-            false,
-        ),
-        (
             models::merge_gateway::ZAI_GLM_5_3_FLASH,
             "GLM-5.3 Flash (Merge Gateway)",
             "Z.AI GLM-5.3 Flash through Merge Gateway",
@@ -201,6 +187,27 @@ pub(crate) fn merge_gateway_presets() -> Vec<ModelPreset> {
             "GPT-6 Luna (Merge Gateway)",
             "OpenAI GPT-6 Luna through Merge Gateway",
             1_050_000,
+            false,
+        ),
+        (
+            models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO,
+            "MiMo V2.6 Pro (Merge Gateway)",
+            "Xiaomi MiMo V2.6 Pro through Merge Gateway",
+            1_048_576,
+            false,
+        ),
+        (
+            models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH,
+            "MiMo V2.6 Flash (Merge Gateway)",
+            "Xiaomi MiMo V2.6 Flash through Merge Gateway",
+            1_048_576,
+            false,
+        ),
+        (
+            models::merge_gateway::MISTRAL_LARGE_4,
+            "Mistral Large 4 (Merge Gateway)",
+            "Mistral Large 4 open-weight MoE flagship with 1M context through Merge Gateway",
+            1_000_000,
             false,
         ),
     ]

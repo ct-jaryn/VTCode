@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 
 use crate::config::types::SystemPromptMode;
-use crate::prompts::runtime_guidance::{RUNTIME_GUIDANCE_MAX_ESTIMATED_TOKENS, runtime_guidance_section};
+use crate::prompts::runtime_guidance::{RUNTIME_GUIDANCE_MAX_ESTIMATED_TOKENS, RUNTIME_GUIDANCE_SECTION};
 use crate::prompts::system::{
     CONTRACT_HEADER, DEFAULT_OPERATING_PROFILE_DELTA, DEFAULT_SPECIFIC_LINES, LIGHTWEIGHT_OPERATING_PROFILE_DELTA,
     MINIMAL_OPERATING_PROFILE_DELTA, MINIMAL_SPECIFIC_LINES, PROMPT_INTRO, PROMPT_ROLE_PARAGRAPH, PROMPT_TITLE,
@@ -32,9 +32,8 @@ static DEFAULT_LIGHTWEIGHT_PROMPT: OnceLock<String> = OnceLock::new();
 static DEFAULT_SPECIALIZED_PROMPT: OnceLock<String> = OnceLock::new();
 
 fn append_runtime_guidance(prompt: &mut String) {
-    let guidance = runtime_guidance_section();
-    assert!(estimate_tokens(guidance) <= RUNTIME_GUIDANCE_MAX_ESTIMATED_TOKENS);
-    prompt.push_str(guidance);
+    assert!(estimate_tokens(RUNTIME_GUIDANCE_SECTION) <= RUNTIME_GUIDANCE_MAX_ESTIMATED_TOKENS);
+    prompt.push_str(RUNTIME_GUIDANCE_SECTION);
     prompt.push('\n');
 }
 

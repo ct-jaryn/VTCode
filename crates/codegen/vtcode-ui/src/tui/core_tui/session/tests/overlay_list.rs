@@ -510,10 +510,10 @@ fn inline_modal_height_budgets_list_divider_without_search() {
     use super::super::render::split_inline_modal_area;
 
     let mut session = Session::new(InlineTheme::default(), None, 30);
-    // Sixteen two-line items saturate the 20-row multiline cap, so the exact
+    // Sixteen three-line items saturate the 20-row multiline cap, so the exact
     // height below is sensitive to the divider row: 1 instructions +
-    // 20 list (16 items × 2 rows, capped) + 1 divider + 0 summary + 3 title
-    // chrome = 25.
+    // 20 list (16 items × title/subtitle/gap, capped) + 1 divider + 0 summary
+    // + 3 title chrome = 25.
     let items = (0..16)
         .map(|index| InlineListItem {
             title: format!("Option {index}"),
@@ -541,8 +541,8 @@ fn plan_approval_modal_height_hugs_wrapped_header_without_gap() {
     // Plan-approval header: 6 raw lines where the Summary wraps to 2 visual
     // rows at 80 columns, so the wrapped instruction estimate is 7 rows
     // (not the raw count of 6). Expected height: 7 instructions + 1 divider
-    // + 8 list (4 items × title/subtitle) + 1 footer-hint summary + 3 title
-    // chrome = 20. Any blank gap or clipped summary changes this height.
+    // + 12 list (4 items × title/subtitle/gap) + 1 footer-hint summary
+    // + 3 title chrome = 24. Any blank gap or clipped summary changes this height.
     let lines = vec![
         "A plan is ready to execute. Would you like to proceed?",
         "Summary: Fix vtcode analyze so it runs non-interactively with auto-allowed tools",
@@ -587,7 +587,7 @@ fn plan_approval_modal_height_hugs_wrapped_header_without_gap() {
     let area = Rect::new(0, 0, 80, 40);
     let (_transcript_area, modal_area) = split_inline_modal_area(&session, area);
     let modal_area = modal_area.expect("plan modal should claim a bottom panel area");
-    assert_eq!(modal_area.height, 20, "plan modal must hug wrapped content with no blank gap");
+    assert_eq!(modal_area.height, 24, "plan modal must hug wrapped content with no blank gap");
 }
 
 #[test]

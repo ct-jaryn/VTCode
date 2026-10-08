@@ -53,9 +53,21 @@ fn stream_chunks(session: &mut AppSession, chunks: usize) {
 }
 
 #[hotpath::measure]
+fn fill_link_transcript(session: &mut AppSession, count: usize) {
+    for index in 0..count {
+        session.handle_command(InlineCommand::AppendLine {
+            kind: InlineMessageKind::Agent,
+            segments: vec![segment(format!(
+                "line {index}: inspect /tmp/project/src/file_{index}.rs:42 or https://example.com/item/{index}"
+            ))],
+        });
+    }
+}
+
+#[hotpath::measure]
 fn render_frames(session: &mut AppSession, terminal: &mut Terminal<TestBackend>, frames: usize) {
     for _ in 0..frames {
-        let _ = terminal.draw(|frame| session.render(frame));
+        let _ = terminal.draw(|frame| session.render(frame)).expect("render fixture frame");
     }
 }
 
@@ -89,6 +101,8 @@ fn main_workload() {
 
     // Eviction path: push past the transcript cap.
     fill_transcript(&mut session, 4_000);
+    render_frames(&mut session, &mut terminal, 40);
+    fill_link_transcript(&mut session, 1_000);
     render_frames(&mut session, &mut terminal, 40);
 }
 

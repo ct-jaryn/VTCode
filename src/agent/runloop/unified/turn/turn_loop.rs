@@ -7,6 +7,7 @@
 //! - Verify: `cargo check -p vtcode && cargo test -p vtcode --bin vtcode turn_loop`
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use crate::agent::runloop::welcome::SessionBootstrap;
 use anyhow::Result;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::timeout;
 use vtcode_core::acp::ToolPermissionCache;
 use vtcode_core::config::loader::VTCodeConfig;
 use vtcode_core::core::agent::events::{tool_invocation_completed_event, tool_output_completed_event};
@@ -23,7 +25,7 @@ use vtcode_core::core::agent::refusal;
 use vtcode_core::core::agent::runtime::RuntimeSteering;
 use vtcode_core::core::decision_tracker::DecisionTracker;
 use vtcode_core::core::trajectory::TrajectoryLogger;
-use vtcode_core::exec::events::{ToolCallStatus, Usage as HarnessUsage, tool_outcome_from_status};
+use vtcode_core::exec::events::{ToolCallStatus, ToolOutcome, Usage as HarnessUsage};
 use vtcode_core::hooks::LifecycleHookEngine;
 use vtcode_core::llm::provider as uni;
 use vtcode_core::tools::{ApprovalRecorder, ToolRegistry, ToolResultCache};
@@ -37,7 +39,9 @@ use crate::agent::runloop::unified::inline_events::harness::{
 };
 use crate::agent::runloop::unified::planning_workflow::maybe_handle_planning_exit_trigger;
 use crate::agent::runloop::unified::planning_workflow_state::PlanningWorkflowSessionState;
-use crate::agent::runloop::unified::run_loop_context::{HarnessTurnState, RunLoopContext, TurnPhase};
+use crate::agent::runloop::unified::run_loop_context::{
+    HarnessTurnState, RunLoopContext, TurnPhase, budget_exhaustion_cause,
+};
 use crate::agent::runloop::unified::tool_call_safety::ToolCallSafetyValidator;
 use crate::agent::runloop::unified::turn::context::TurnLoopResult;
 use crate::agent::runloop::unified::turn::turn_loop_helpers::{
@@ -103,6 +107,12 @@ const RECOVERY_SYNTHESIS_MAX_TOKENS: u32 = 4096;
 /// forces the user to nudge "continue". The extra pass only fires when the
 /// model keeps emitting tool calls during a tool-free recovery window.
 const MAX_RECOVERY_RETRIES: u8 = 3;
+/// Outer budget for terminating exec sessions during turn-level Exit/Cancelled
+/// teardown. With `Immediate` PTY mode a healthy close is milliseconds; the cap
+/// only fires on a wedged backend close. On timeout the session-end backstop
+/// re-runs (2 s cap) and the OS reaps any remainder at process exit — never
+/// park the fullscreen TUI waiting for a child.
+const TURN_EXIT_EXEC_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 /// Hard cap on consecutive assistant text-only responses. Without this, the
 /// recovery / continuation logic can loop forever when the model has already
 /// produced a substantive final answer but the system keeps re-prompting it
@@ -122,7 +132,8 @@ pub(crate) const MAX_ASSISTANT_TEXT_RESPONSES_PER_TURN: u32 = 2;
 /// pipeline (rejected pre-flight, dropped from a batch, or interrupted when
 /// the turn ended). Teardown emits it so the session log carries a terminal
 /// `tool_output` instead of a dangling `item.started`.
-const UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT: &str = "Tool call ended when the turn finished before it could execute.";
+pub(crate) const UNDISPATCHED_TOOL_CALL_CLOSURE_TEXT: &str =
+    "Tool call ended when the turn finished before it could execute.";
 pub(crate) const ASSISTANT_TEXT_RESPONSE_CAP_REASON: &str =
     "Turn blocked after repeated assistant responses reached the safety cap; the latest response was preserved.";
 pub(crate) const PENDING_VERIFICATION_BLOCK_REASON: &str =
@@ -254,6 +265,19 @@ pub(crate) fn completed_fallback_reason(planning_active: bool) -> &'static str {
         COMPLETED_TURN_FALLBACK_REASON
     }
 }
+
+fn completed_recovery_fallback_reason(planning_active: bool, state: &HarnessTurnState) -> String {
+    match state.budget_recovery_reason() {
+        Some(cause) => format!("{cause}. {}", completed_fallback_reason(planning_active)),
+        None => completed_fallback_reason(planning_active).to_string(),
+    }
+}
+
+pub(crate) fn budget_recovery_final_response(planning_active: bool, state: &HarnessTurnState) -> Option<String> {
+    state
+        .budget_recovery_reason()
+        .map(|_| format_blocked_turn_final_response(&completed_recovery_fallback_reason(planning_active, state)))
+}
 const COMPLETED_TURN_NO_RESPONSE_REASON: &str =
     "Turn ended without a harness-visible final assistant response, so successful completion could not be confirmed.";
 const PLAN_RECOVERY_EXHAUSTED_REASON: &str = "Approved-plan execution stopped after recovery was exhausted. The approved plan and task checklist were retained; retry from the pending step.";
@@ -357,6 +381,11 @@ pub(crate) fn format_blocked_turn_final_response(reason: &str) -> String {
         pending_verification_final_response()
     } else if reason.contains(POST_TOOL_CONTEXT_COMPACTION_FAILED_REASON) {
         CONTEXT_CAPACITY_FINAL_RESPONSE.to_string()
+    } else if budget_exhaustion_cause(reason).is_some() {
+        format!(
+            "The turn stopped: {}. Continue from the retained conversation and pending task state; reuse gathered evidence and report remaining work and verification explicitly.",
+            reason_clause(reason)
+        )
     } else if reason.contains("tool-call limit")
         || reason.contains("Recovery tool-call limit")
         || reason.contains("Blocked tool-call limit")
@@ -469,12 +498,14 @@ fn ensure_completed_turn_response(
     let mut response_was_fallback = ctx.harness_state.final_response_was_fallback();
     let final_text = latest_final_assistant_response(working_history, turn_history_start_len);
 
-    let final_text = if let Some(final_text) = final_text {
+    let mut final_text = if let Some(final_text) = final_text {
         final_text
     } else {
         response_was_fallback = true;
         let fallback = if ctx.is_planning_active() {
             PLANNING_COMPLETED_FALLBACK_RESPONSE.to_string()
+        } else if ctx.harness_state.budget_recovery_reason().is_some() {
+            format_blocked_turn_final_response(&completed_recovery_fallback_reason(false, ctx.harness_state))
         } else {
             COMPLETED_TURN_FALLBACK_RESPONSE.to_string()
         };
@@ -482,6 +513,44 @@ fn ensure_completed_turn_response(
             .push(uni::Message::assistant(fallback.clone()).with_phase(Some(uni::AssistantPhase::FinalAnswer)));
         fallback
     };
+
+    // Preserve best-effort prose and planning drafts, but publish the runtime
+    // cause with their fallback. Genuine model synthesis remains untouched.
+    if response_was_fallback
+        && let Some(cause) = ctx.harness_state.budget_recovery_reason()
+        && !final_text.contains(cause)
+        && !final_text.contains(&reason_clause(cause))
+    {
+        let notice = format_blocked_turn_final_response(&completed_recovery_fallback_reason(
+            ctx.is_planning_active(),
+            ctx.harness_state,
+        ));
+        let previous_text = final_text;
+        let retained_text = previous_text
+            .strip_prefix(RECOVERY_SYNTHESIS_FALLBACK_FINAL_ANSWER)
+            .or_else(|| previous_text.strip_prefix(COMPLETED_TURN_FALLBACK_RESPONSE))
+            .unwrap_or(&previous_text)
+            .trim();
+        final_text = if retained_text.is_empty() {
+            notice
+        } else {
+            format!("{notice}\n\n{retained_text}")
+        };
+        if let Some(message) = working_history
+            .get_mut(turn_history_start_len..)
+            .unwrap_or_default()
+            .iter_mut()
+            .rev()
+            .find(|message| {
+                message.role == uni::MessageRole::Assistant
+                    && message.tool_calls.is_none()
+                    && message.phase != Some(uni::AssistantPhase::Commentary)
+                    && message.content.as_text().trim() == previous_text
+            })
+        {
+            message.content = uni::MessageContent::Text(final_text.clone());
+        }
+    }
 
     let _ = publish_final_assistant_response(ctx, &final_text)?;
 
@@ -986,6 +1055,22 @@ pub(crate) async fn run_turn_loop(
             ctx.safety_validator.set_limits(max_per_turn, max_per_session);
         }
 
+        // The settings application and Build↔Plan mode switch above are the
+        // only points that can change the request identity mid-iteration:
+        // nothing after this line mutates `config.model`, the active primary
+        // agent, or the live config, so derive the effective model, context
+        // budget, and provider identity once and reuse them for the planning
+        // exit, budget check, compaction, and telemetry below. `vt_cfg` is
+        // re-read where needed: it borrows `ctx`, which is taken `&mut` by
+        // the tool-loop-limit handler and request-context construction.
+        let active_model = resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active());
+        let context_budget = vtcode_core::compaction::effective_context_budget(
+            effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+            ctx.provider_client.as_ref(),
+            &active_model,
+        );
+        let provider_name = ctx.provider_client.name().to_string();
+
         let transition = maybe_handle_planning_exit_trigger(
             ctx.renderer,
             ctx.tool_registry,
@@ -1000,13 +1085,7 @@ pub(crate) async fn run_turn_loop(
                 vt_cfg: effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
                 skip_confirmations: ctx.skip_confirmations,
                 full_auto: ctx.full_auto,
-                context_usage_percent: ctx.context_manager.context_usage_percent(
-                    vtcode_core::compaction::effective_context_budget(
-                        effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
-                        ctx.provider_client.as_ref(),
-                        &resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active()),
-                    ),
-                ),
+                context_usage_percent: ctx.context_manager.context_usage_percent(context_budget),
                 telemetry: crate::agent::runloop::unified::planning_workflow::PlanApprovalTelemetryContext {
                     emitter: ctx.harness_emitter,
                     thread_id: &ctx.harness_state.run_id.0,
@@ -1027,16 +1106,22 @@ pub(crate) async fn run_turn_loop(
             ToolLoopLimitAction::Proceed => {}
             ToolLoopLimitAction::ContinueLoop => continue,
             ToolLoopLimitAction::BreakLoop => {
+                result = TurnLoopResult::Blocked {
+                    reason: Some(format!(
+                        "Tool loop budget exhausted ({step_count}/{current_max_tool_loops}); no additional synthesis pass is available. The current plan and task state were retained."
+                    )),
+                };
                 break;
             }
         }
 
-        let active_model = resolve_effective_request_model(&ctx.config.model, ctx.active_primary_agent.active());
+        // Shared config view for the budget check and compaction decisions
+        // below; the borrow ends before the request context is constructed.
+        let vt_cfg = effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg);
         // A configured monetary budget is an enforcement contract. Validate
         // pricing before any compaction path because native compaction can
         // itself dispatch a provider request.
-        if let Some(max_budget_usd) =
-            effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg).and_then(|cfg| cfg.agent.harness.max_budget_usd)
+        if let Some(max_budget_usd) = vt_cfg.and_then(|cfg| cfg.agent.harness.max_budget_usd)
             && let Err(error) = vtcode_core::llm::usage_cost::require_budget_pricing(
                 ctx.provider_client.name(),
                 &active_model,
@@ -1070,7 +1155,7 @@ pub(crate) async fn run_turn_loop(
                     &harness_snapshot.session_id,
                     &ctx.harness_state.run_id.0,
                     &ctx.config.workspace,
-                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                    vt_cfg,
                     ctx.lifecycle_hooks,
                     ctx.harness_emitter,
                 ),
@@ -1082,6 +1167,7 @@ pub(crate) async fn run_turn_loop(
             let recovery_elapsed = progress.finish();
             match recovery_result {
                 Ok(Some(outcome)) => {
+                    repeated_tool_attempts.clear_navigation_evidence();
                     let label = crate::agent::runloop::unified::turn::compaction::format_compacted_summary(
                         outcome.original_len,
                         outcome.compacted_len,
@@ -1123,9 +1209,7 @@ pub(crate) async fn run_turn_loop(
         } else {
             tracing::info!(
                 model = %active_model,
-                context_budget = vtcode_core::compaction::effective_context_budget(
-                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg), ctx.provider_client.as_ref(), &active_model,
-                ),
+                context_budget,
                 prompt_tokens = ctx.context_manager.current_token_usage(),
                 "Resolved per-turn context budget denominator"
             );
@@ -1134,11 +1218,10 @@ pub(crate) async fn run_turn_loop(
             // when disabled, or when suppressed; starting a spinner
             // unconditionally would flicker every turn.
             let auto_start = Instant::now();
-            let auto_compaction_allowed = effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg)
-                .is_some_and(|cfg| cfg.agent.harness.auto_compaction_enabled)
+            let auto_compaction_allowed = vt_cfg.is_some_and(|cfg| cfg.agent.harness.auto_compaction_enabled)
                 && ctx.session_stats.auto_compact_suppressed == vtcode_core::compaction::SUPPRESS_NONE;
             let auto_threshold = crate::agent::runloop::unified::turn::compaction::effective_compaction_threshold(
-                effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                vt_cfg,
                 ctx.provider_client.as_ref(),
                 &active_model,
             );
@@ -1158,7 +1241,7 @@ pub(crate) async fn run_turn_loop(
                     &harness_snapshot.session_id,
                     &ctx.harness_state.run_id.0,
                     &ctx.config.workspace,
-                    effective_vt_cfg(ctx.vt_cfg, &ctx.live_vt_cfg),
+                    vt_cfg,
                     ctx.lifecycle_hooks,
                     ctx.harness_emitter,
                 ),
@@ -1175,6 +1258,7 @@ pub(crate) async fn run_turn_loop(
                 .unwrap_or_else(|| auto_start.elapsed());
             match auto_result {
                 Ok(Some(outcome)) => {
+                    repeated_tool_attempts.clear_navigation_evidence();
                     turn_history_start_len = outcome.compacted_len;
                     tracing::info!(
                         original_len = outcome.original_len,
@@ -1278,10 +1362,8 @@ pub(crate) async fn run_turn_loop(
 
         // Execute the LLM request
         turn_processing_ctx.set_phase(TurnPhase::Requesting);
-        let active_model = resolve_effective_request_model(
-            &turn_processing_ctx.config.model,
-            turn_processing_ctx.active_primary_agent.active(),
-        );
+        // `active_model` is the per-iteration resolution from above; the
+        // proactive guards between there and here cannot change the model.
         let recovery_pass = turn_processing_ctx.consume_recovery_pass();
 
         let tool_free_recovery = recovery_pass && turn_processing_ctx.recovery_is_tool_free();
@@ -1290,10 +1372,9 @@ pub(crate) async fn run_turn_loop(
         // Cache-gap advisory (Phase E1): warn once per gap when the user
         // paused long enough for the provider prompt cache to have expired,
         // so this request may unexpectedly re-pay full input cost.
-        let cache_gap_provider_name = turn_processing_ctx.provider_client.name().to_string();
         if let Some(threshold) = turn_processing_ctx
             .vt_cfg
-            .and_then(|cfg| cfg.prompt_cache.gap_threshold_secs(&cache_gap_provider_name))
+            .and_then(|cfg| cfg.prompt_cache.gap_threshold_secs(&provider_name))
         {
             let threshold = Duration::from_secs(threshold);
             if turn_processing_ctx.session_stats.total_usage().cached_input_tokens > 0
@@ -1448,10 +1529,15 @@ pub(crate) async fn run_turn_loop(
         let response_usage = response.usage.clone();
         // Usage normalization and pricing must follow the provider instance
         // that will serve the request. Configuration may contain an alias or
-        // an inferred route, while the provider trait is authoritative.
-        let provider_name = turn_processing_ctx.provider_client.name().to_string();
+        // an inferred route, while the provider trait is authoritative. The
+        // per-iteration `provider_name` binding is that provider's identity.
         accumulate_turn_usage(&provider_name, &mut turn_usage, &response_usage);
         turn_processing_ctx.session_stats.record_usage(&provider_name, &response_usage);
+        // Record prompt pressure immediately so mid-turn readers (e.g. the
+        // plan-approval modal's `Context: N% used` subtitle) see the current
+        // response's prompt tokens instead of the previous turn's stale value.
+        // The later `update_token_usage` before continue/break is idempotent.
+        turn_processing_ctx.context_manager.update_token_usage(&response_usage);
         // SEV-style prompt-cache health: a sustained hit-rate collapse warns
         // once per session instead of silently re-paying full input cost.
         if let Some(message) = turn_processing_ctx
@@ -1976,7 +2062,7 @@ pub(crate) async fn run_turn_loop(
     };
     if completed_turn_requires_final_response(&result, primary_agent_handoff) {
         if final_response_was_fallback {
-            let reason = completed_fallback_reason(ctx.is_planning_active());
+            let reason = completed_recovery_fallback_reason(ctx.is_planning_active(), ctx.harness_state);
             // Diagnostic for false-Blocked reports (e.g. simple requests ending
             // with COMPLETED_TURN_FALLBACK_REASON despite a visible answer):
             // records whether a final was present in this turn's slice and on
@@ -2100,14 +2186,18 @@ async fn finalize_turn(
             "turn handoff metric"
         );
     }
-    if matches!(result, TurnLoopResult::Cancelled)
-        && let Err(err) = ctx.tool_registry.terminate_active_exec_sessions_async().await
-    {
-        tracing::warn!(error = %err, "Failed to terminate active exec sessions after turn cancellation");
-    } else if matches!(result, TurnLoopResult::Exit)
-        && let Err(err) = ctx.tool_registry.terminate_all_exec_sessions_async().await
-    {
-        tracing::warn!(error = %err, "Failed to terminate all exec sessions after turn exit");
+    if matches!(result, TurnLoopResult::Cancelled) {
+        terminate_exec_sessions_bounded(
+            ctx.tool_registry.terminate_active_exec_sessions_for_exit_async(),
+            "active exec sessions after turn cancellation",
+        )
+        .await;
+    } else if matches!(result, TurnLoopResult::Exit) {
+        terminate_exec_sessions_bounded(
+            ctx.tool_registry.terminate_all_exec_sessions_for_exit_async(),
+            "all exec sessions after turn exit",
+        )
+        .await;
     }
     if let Some(emitter) = ctx.harness_emitter {
         // Exit is a graceful user-initiated action, not a failure
@@ -2169,6 +2259,7 @@ async fn finalize_turn(
                     ctx.harness_state.blocked_tool_calls,
                 ));
             let blocked_event = vtcode_core::exec::events::TurnBlockedEvent {
+                completed_at: None,
                 message: message.clone(),
                 last_tool,
                 blocked_streak,
@@ -2205,7 +2296,7 @@ async fn finalize_turn(
                 None,
                 raw_id,
                 failed.clone(),
-                tool_outcome_from_status(&failed),
+                ToolOutcome::Cancelled,
             ));
             let _ = emitter.emit(tool_output_completed_event(
                 streamed.item_id,
@@ -2225,6 +2316,18 @@ async fn finalize_turn(
         result,
     )
     .await;
+}
+
+/// Terminate exec sessions during turn-level Exit/Cancelled teardown, bounded
+/// by [`TURN_EXIT_EXEC_SHUTDOWN_TIMEOUT`]. A timeout only skips waiting: the
+/// session-end backstop re-runs the sweep and the OS reaps any remainder at
+/// process exit.
+async fn terminate_exec_sessions_bounded(termination: impl Future<Output = Result<()>>, phase: &str) {
+    match timeout(TURN_EXIT_EXEC_SHUTDOWN_TIMEOUT, termination).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => tracing::warn!(error = %err, "Failed to terminate {phase}"),
+        Err(_elapsed) => tracing::warn!("timed out terminating {phase}; continuing teardown"),
+    }
 }
 
 #[cfg(test)]

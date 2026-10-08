@@ -877,7 +877,7 @@ pub(crate) fn split_shell_segments(command: &str) -> Result<Vec<String>> {
                             }
                         }
                         bail!(
-                            "multi-line shell commands are not allowed; use file tools (write_file/apply_patch) for multi-line content instead of heredocs"
+                            "multi-line shell commands are not allowed; write the content with `apply_patch` instead of a heredoc"
                         );
                     }
                     '|' | '&' => {

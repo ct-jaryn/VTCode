@@ -46,6 +46,13 @@ const WORKFLOW_FILE_OPENER: &str = "file_opener";
 
 pub(crate) async fn handle_new_session(ctx: SlashCommandContext<'_>) -> Result<SlashCommandControl> {
     ctx.renderer.line(MessageStyle::Info, "Starting new session...")?;
+    // Instant feedback before the teardown + re-bootstrap gap: the fresh
+    // prompt can take seconds to rebuild (registry + hydrate + MCP), so
+    // paint the transition state now. Otherwise `/new` looks untriggered
+    // while the old transcript sits frozen through teardown.
+    ctx.handle
+        .set_activity_state(vtcode_commons::ui_protocol::ActivityState::PreparingFreshExecutionThread);
+    ctx.handle.force_redraw();
     Ok(SlashCommandControl::BreakWithReason(SessionEndReason::NewSession))
 }
 

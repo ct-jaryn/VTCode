@@ -1679,12 +1679,12 @@ mod tests {
         **Capabilities**\n\
         - Agent runtime: interactive TUI, slash commands, streaming, `ask`/`exec` CLI, session resume\n\
         - Coding tools: safe file ops, ripgrep search, fuzzy discovery, code intelligence, project indexing, terminal execution\n\
-        - Extensibility: Agent Skills, MCP client/server, lifecycle hooks, subagents, custom providers, Zed ACP, VS Code, Claude Code\n\
+        - Extensibility: Agent Skills, MCP client/server, lifecycle hooks, subagents, custom providers, Zed ACP, Claude Code\n\
         - Model providers: 21+ LLMs (Anthropic, OpenAI, Gemini, OpenRouter, Ollama, LM Studio, etc.)\n\
         - Safety: restricted shell sandbox, tool guardrails, subprocess isolation, full audit logging\n\
         - Protocols: Open Responses, Agent2Agent (A2A), ATIF, Anthropic Messages API\n\n\
         **Default model**: MiMo V2.6 Pro (Xiaomi), 1M-token context (`mimo-v2.6-pro`).\n\n\
-        **Other top-level dirs**: `docs/`, `plans/`, `rules/`, `examples/`, `tests/`, `evals/`, `fuzz/`, `scripts/`, `extensions/vscode-extension/`, `extensions/zed-extension/`, `crates/codegen/xtask/`, `homebrew/`.\n\n\
+        **Other top-level dirs**: `docs/`, `plans/`, `rules/`, `examples/`, `tests/`, `evals/`, `fuzz/`, `scripts/`, `crates/codegen/xtask/`, `homebrew/`.\n\n\
         Quick start:\n\
         ```shell\n\
         curl -fsSL https://raw.githubusercontent.com/vinhnx/vtcode/main/scripts/install.sh | bash\n\

@@ -14,6 +14,9 @@ pub(crate) enum WriteStdinDispatch {
     Write,
     Poll,
     Wait,
+    Inspect,
+    Terminate,
+    Close,
 }
 
 impl WriteStdinDispatch {
@@ -23,18 +26,31 @@ impl WriteStdinDispatch {
             Self::Write => "write",
             Self::Poll => "poll",
             Self::Wait => "wait",
+            Self::Inspect => "inspect",
+            Self::Terminate => "terminate",
+            Self::Close => "close",
         }
     }
 }
 
 pub(crate) fn write_stdin_dispatch(args: &Value) -> Result<WriteStdinDispatch, &'static str> {
     let payload = args.as_object().ok_or("write_stdin requires a JSON object")?;
-    if payload
-        .get("action")
-        .and_then(Value::as_str)
-        .is_some_and(|action| action.eq_ignore_ascii_case("wait"))
-    {
-        return Ok(WriteStdinDispatch::Wait);
+    if let Some(action) = payload.get("action") {
+        let action = action.as_str().ok_or("write_stdin action must be a string")?;
+        match action.to_ascii_lowercase().as_str() {
+            "wait" => return Ok(WriteStdinDispatch::Wait),
+            "inspect" => return Ok(WriteStdinDispatch::Inspect),
+            "terminate" => return Ok(WriteStdinDispatch::Terminate),
+            "close" => return Ok(WriteStdinDispatch::Close),
+            "poll" => {
+                if payload.get("chars").is_some_and(|chars| chars.as_str() != Some("")) {
+                    return Err("write_stdin poll cannot send chars");
+                }
+                return Ok(WriteStdinDispatch::Poll);
+            }
+            "write" => {}
+            _ => return Err("write_stdin action must be write, poll, wait, inspect, terminate, or close"),
+        }
     }
     let chars = payload
         .get("chars")
@@ -306,6 +322,30 @@ pub fn raw_command_text(args: &Value) -> Option<String> {
 
     let indexed = parse_indexed_command_parts(payload).ok().flatten()?;
     Some(shell_words::join(indexed.iter().map(String::as_str)))
+}
+
+/// Complete static-classification candidate, including the quoted argv suffix
+/// that execution appends to shell text. Conflicting raw overrides cannot prove
+/// one invocation, so callers must fail closed instead of treating it as a read
+/// or verifier. Dynamic syntax and command options still need normal validation.
+pub(crate) fn shell_command_text_with_args(args: &Value) -> Option<String> {
+    let mut command = raw_command_text(args)?;
+    if args
+        .get("raw_command")
+        .and_then(Value::as_str)
+        .is_some_and(|raw| raw != command)
+    {
+        return None;
+    }
+    if let Some(arguments) = args.get("args") {
+        let arguments = arguments.as_array()?;
+        let suffix_words = arguments.iter().map(Value::as_str).collect::<Option<Vec<_>>>()?;
+        if !suffix_words.is_empty() {
+            command.push(' ');
+            command.push_str(&shell_words::join(suffix_words));
+        }
+    }
+    Some(command)
 }
 
 /// Returns whether a shell command contains syntax whose meaning depends on
@@ -796,26 +836,115 @@ fn has_unsafe_awk_options(arguments: &[String]) -> bool {
 }
 
 /// Return whether an `awk` program can write files, pipe into commands,
-/// execute them, or load external code. `>` (unless the `>=` comparison)
-/// and bare `|` (unless the `||` operator) are output redirection and
-/// command pipes; `system()` runs shell commands; `@` invokes gawk indirect
-/// calls (`@func()`) and directives (`@include`, `@load`), which can execute
-/// or load arbitrary code — including a `system` name smuggled via `-v`.
-/// String and regex literals are not distinguished from code: a literal
-/// containing `>`, `|`, or `@` fails closed as a possible write instead
-/// of risking a missed redirection. Bare `>` comparisons (`$3>100`) and `|`
-/// alternations (`/a|b/`) therefore stay mutating by design.
+/// execute them, or load external code. `>` (unless the `>=` comparison) and
+/// bare `|` (unless the `||` operator) are output redirection and command
+/// pipes; `system()` runs shell commands; `@` invokes gawk indirect calls
+/// (`@func()`) and directives (`@include`, `@load`), which can execute or load
+/// arbitrary code — including a `system` name smuggled via `-v`.
+///
+/// Double-quoted string literals are scanned as data: a quoted `"|"` passed to
+/// `index()` is a literal, not a command pipe, so the read-only shape
+/// `awk '... index(rest,"|") ...' file` is not misclassified. To keep this
+/// safe the scanner distinguishes string literals, regex literals (`/.../`),
+/// and division using awk's operand-vs-operator rule, so a quote *inside* a
+/// regex (`/"/`, `/a"b/`) can never desync string tracking and hide a pipe.
+/// `@` and `system()` fail closed everywhere — including inside string and
+/// regex literals — and `>`/`|`/`@` inside regex literals stay mutating, so the
+/// pinned `/a|b/` and `"a@b"` shapes remain conservative.
 fn awk_program_may_write(program: &str) -> bool {
     let chars = program.chars().collect::<Vec<_>>();
     let mut index = 0;
+    // Whether the previous significant token can end an operand. This decides
+    // whether `/` opens a regex literal or is a division operator.
+    let mut prev_operand = false;
     while index < chars.len() {
         let character = chars[index];
+        if character.is_whitespace() {
+            index += 1;
+            continue;
+        }
+        if character == '"' {
+            index += 1;
+            let mut terminated = false;
+            while index < chars.len() {
+                let inner = chars[index];
+                if inner == '\\' {
+                    index += 2;
+                    continue;
+                }
+                if inner == '"' {
+                    index += 1;
+                    terminated = true;
+                    break;
+                }
+                // `@`/`system()` fail closed even inside a literal; `>`/`|`
+                // are literal data here and are skipped.
+                if inner == '@' {
+                    return true;
+                }
+                if (inner == 's' || inner == 'S') && awk_calls_system(&chars, index) {
+                    return true;
+                }
+                index += 1;
+            }
+            if !terminated {
+                return true;
+            }
+            prev_operand = true;
+            continue;
+        }
+        if character == '/' && !prev_operand {
+            // Regex literal. Quotes are regex content, not string delimiters,
+            // so they cannot desync string parsing; `>`/`|`/`@` inside still
+            // fail closed, matching the pinned `/a|b/` policy.
+            index += 1;
+            let mut terminated = false;
+            while index < chars.len() {
+                let inner = chars[index];
+                if inner == '\\' {
+                    index += 2;
+                    continue;
+                }
+                if inner == '/' {
+                    index += 1;
+                    terminated = true;
+                    break;
+                }
+                if inner == '@' {
+                    return true;
+                }
+                if inner == '>' {
+                    if chars.get(index + 1) == Some(&'=') {
+                        index += 2;
+                        continue;
+                    }
+                    return true;
+                }
+                if inner == '|' {
+                    if chars.get(index + 1) == Some(&'|') {
+                        index += 2;
+                        continue;
+                    }
+                    return true;
+                }
+                index += 1;
+            }
+            if !terminated {
+                return true;
+            }
+            prev_operand = true;
+            continue;
+        }
         if character == '@' {
+            return true;
+        }
+        if (character == 's' || character == 'S') && awk_calls_system(&chars, index) {
             return true;
         }
         if character == '>' {
             if chars.get(index + 1) == Some(&'=') {
                 index += 2;
+                prev_operand = false;
                 continue;
             }
             return true;
@@ -823,16 +952,62 @@ fn awk_program_may_write(program: &str) -> bool {
         if character == '|' {
             if chars.get(index + 1) == Some(&'|') {
                 index += 2;
+                prev_operand = false;
                 continue;
             }
             return true;
         }
-        if (character == 's' || character == 'S') && awk_calls_system(&chars, index) {
-            return true;
+        if character == '/' {
+            // Division: an operand precedes it.
+            prev_operand = false;
+            index += 1;
+            continue;
         }
+        if character.is_ascii_alphanumeric() || character == '_' {
+            let start = index;
+            while index < chars.len() && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
+                index += 1;
+            }
+            let word: String = chars[start..index].iter().collect();
+            prev_operand = !is_awk_keyword(&word);
+            continue;
+        }
+        if character == ')' || character == ']' || character == '$' {
+            prev_operand = true;
+            index += 1;
+            continue;
+        }
+        prev_operand = false;
         index += 1;
     }
     false
+}
+
+/// Awk keywords that do not end an operand, so a following `/` opens a regex
+/// literal (`print /re/`) rather than being a division operator. Kept minimal
+/// and conservative: an unlisted keyword is treated as an operand, which at
+/// worst misreads a regex as division — still fail-closed, because regex
+/// contents are then scanned as top-level code and any `>`/`|`/`@` is caught.
+fn is_awk_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "if" | "else"
+            | "while"
+            | "for"
+            | "do"
+            | "break"
+            | "continue"
+            | "next"
+            | "nextfile"
+            | "exit"
+            | "return"
+            | "delete"
+            | "in"
+            | "getline"
+            | "print"
+            | "printf"
+            | "function"
+    )
 }
 
 /// Return whether `chars[start..]` invokes awk's `system()` builtin: the
@@ -861,212 +1036,6 @@ fn awk_calls_system(chars: &[char], start: usize) -> bool {
 
 fn is_awk_ident_char(character: char) -> bool {
     character.is_ascii_alphanumeric() || character == '_'
-}
-
-fn has_unsafe_readonly_options_in_command(command: &str) -> bool {
-    let Ok(commands) = crate::command_safety::shell_parser::parse_shell_commands_tree_sitter(command) else {
-        return true;
-    };
-    if commands.is_empty() {
-        return true;
-    }
-
-    commands.into_iter().any(|command| {
-        let mut words = Vec::new();
-        for word in command {
-            let Ok(tokens) = shell_words::split(&word) else {
-                return true;
-            };
-            words.extend(tokens);
-        }
-        has_unsafe_readonly_options(&words)
-    })
-}
-
-/// Returns true if the raw command string appears to be a safe read-only
-/// inspection command. It checks for shell write operators, process
-/// substitutions, and common destructive subcommands/flags.
-///
-/// This is intentionally conservative: a command that does anything suspicious
-/// is treated as mutating so it does not get silently cached or parallelized.
-pub fn is_readonly_command_string(args: &Value) -> bool {
-    let Some(command) = raw_command_text(args) else {
-        return false;
-    };
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    if contains_dynamic_shell_syntax(trimmed) {
-        return false;
-    }
-
-    // Deny shell operators that produce side effects or hide them.
-    // Matches: >, >>, >|, <(, >(, ;, ||, $() backticks handled below.
-    // `&&` is allowed when every segment passes the same safety checks
-    // (no redirections, substitutions, or destructive commands) — see
-    // `is_readonly_chained_segments` in `readonly.rs` for the per-segment
-    // allow-list verification. This lets plan-mode run harmless exploration
-    // like `ls -la && echo '---' && ls -la crates/` (checkpoint turn_726:
-    // the `&&` rejection blocked all chained read-only inspection in plan
-    // mode, forcing the model to fall back to `request_user_input` which was
-    // also denied, dead-ending the turn).
-    // Pipelines are allowed here but validated segment-by-segment by the caller.
-    // `2>&1` merely merges stderr into stdout (no file is written), so it is
-    // stripped before scanning for write redirections — plan mode must not
-    // reject `cargo check 2>&1 | head -c 4000` style inspection.
-    let without_stderr_merge = trimmed.replace("2>&1", "");
-    if without_stderr_merge.contains('>')
-        || without_stderr_merge.contains("<(")
-        || without_stderr_merge.contains(';')
-        || without_stderr_merge.contains("||")
-    {
-        return false;
-    }
-
-    // Deny command substitution and process redirection that can run arbitrary code.
-    // Check each `&&`-separated segment individually so a substitution hidden in
-    // one segment is still caught.
-    let chain_segments: Vec<&str> = trimmed.split("&&").map(str::trim).collect();
-    for segment in &chain_segments {
-        if segment.contains("$(") || segment.contains('`') || segment.contains("$((") {
-            return false;
-        }
-    }
-
-    // Deny common destructive commands outright, regardless of flags.
-    // Check the full command (catches destructive commands in any segment) AND
-    // each segment individually (catches segment-starting destructive commands).
-    let lower = trimmed.to_ascii_lowercase();
-    if has_unsafe_readonly_options_in_command(trimmed) {
-        return false;
-    }
-    for destructive in [
-        " rm ",
-        "rm ",
-        " shred ",
-        "shred ",
-        " truncate ",
-        "truncate ",
-        " tee ",
-        "tee ",
-        " mv ",
-        "mv ",
-        " cp ",
-        "cp ",
-        " install ",
-        "install ",
-        " chmod ",
-        "chmod ",
-        " chown ",
-        "chown ",
-        " chattr ",
-        "chattr ",
-        " mkfs ",
-        "mkfs",
-        " dd ",
-        "dd ",
-        " wipe ",
-        "wipe ",
-        " srm ",
-        "srm ",
-        " rm\t",
-        "shred\t",
-        "truncate\t",
-        "tee\t",
-        "mv\t",
-        "cp\t",
-    ] {
-        if lower.contains(destructive) {
-            return false;
-        }
-    }
-    if lower.starts_with("rm ")
-        || lower.starts_with("shred ")
-        || lower.starts_with("truncate ")
-        || lower.starts_with("tee ")
-        || lower.starts_with("mv ")
-        || lower.starts_with("cp ")
-        || lower.starts_with("install ")
-        || lower.starts_with("chmod ")
-        || lower.starts_with("chown ")
-        || lower.starts_with("chattr ")
-        || lower.starts_with("mkfs")
-        || lower.starts_with("dd ")
-        || lower.starts_with("wipe ")
-        || lower.starts_with("srm ")
-    {
-        return false;
-    }
-
-    // Also check each `&&`-separated segment for destructive commands that
-    // start at the beginning of a segment (e.g. `ls -la && rm foo.txt`).
-    for segment in &chain_segments {
-        let seg_lower = segment.to_ascii_lowercase();
-        if seg_lower.starts_with("rm ")
-            || seg_lower.starts_with("shred ")
-            || seg_lower.starts_with("truncate ")
-            || seg_lower.starts_with("tee ")
-            || seg_lower.starts_with("mv ")
-            || seg_lower.starts_with("cp ")
-            || seg_lower.starts_with("install ")
-            || seg_lower.starts_with("chmod ")
-            || seg_lower.starts_with("chown ")
-            || seg_lower.starts_with("chattr ")
-            || seg_lower.starts_with("mkfs")
-            || seg_lower.starts_with("dd ")
-            || seg_lower.starts_with("wipe ")
-            || seg_lower.starts_with("srm ")
-        {
-            return false;
-        }
-    }
-
-    // Deny in-place editing commands (sed -i/--in-place, perl -i, ruby -i) which modify files
-    // despite being in the read-only allow-list.
-    if lower.contains("perl ") && lower.contains(" -i") {
-        return false;
-    }
-    if lower.contains("ruby ") && lower.contains(" -i") {
-        return false;
-    }
-
-    // Deny destructive `find` flags before we allow `find` as read-only.
-    if lower.contains("find ") {
-        for destructive_flag in [
-            " -delete",
-            "-delete ",
-            "\t-delete",
-            " -exec rm",
-            "-exec rm",
-            " -exec shred",
-            "-exec shred",
-            " -exec chmod",
-            "-exec chmod",
-            " -exec chown",
-            "-exec chown",
-            " -exec truncate",
-            "-exec truncate",
-            " -exec tee",
-            "-exec tee",
-            " -exec mv",
-            "-exec mv",
-            " -exec cp",
-            "-exec cp",
-            " -exec install",
-            "-exec install",
-            " -execdd",
-            " -exec bash",
-            "-exec bash",
-        ] {
-            if lower.contains(destructive_flag) {
-                return false;
-            }
-        }
-    }
-
-    true
 }
 
 pub fn normalize_shell_args(args: &Value) -> Result<Value, &'static str> {
@@ -1121,7 +1090,7 @@ mod tests {
     use super::{
         WriteStdinDispatch, command_session_missing_required_args, command_session_requires_command_safety,
         command_text, command_words, contains_dynamic_shell_syntax, environment_prefix_has_injection_keys,
-        extract_command_text_with_key, has_indexed_command_parts, interactive_input_text, is_readonly_command_string,
+        extract_command_text_with_key, has_indexed_command_parts, interactive_input_text,
         normalize_indexed_command_args, normalize_shell_args, normalized_command_value, parse_indexed_command_parts,
         raw_command_text, session_id_text, session_id_text_from_payload, working_dir_text,
         working_dir_text_from_payload, write_stdin_dispatch,
@@ -1246,6 +1215,21 @@ mod tests {
     fn write_stdin_dispatch_requires_public_chars() {
         assert_eq!(write_stdin_dispatch(&json!({"input": "status\n"})), Err("write_stdin requires string chars"));
         assert_eq!(write_stdin_dispatch(&json!({"chars": 1})), Err("write_stdin requires string chars"));
+    }
+
+    #[test]
+    fn write_stdin_dispatch_validates_control_actions() {
+        for (action, expected) in [
+            ("inspect", WriteStdinDispatch::Inspect),
+            ("terminate", WriteStdinDispatch::Terminate),
+            ("close", WriteStdinDispatch::Close),
+            ("poll", WriteStdinDispatch::Poll),
+        ] {
+            assert_eq!(write_stdin_dispatch(&json!({"action": action})), Ok(expected));
+        }
+        assert!(write_stdin_dispatch(&json!({"action": "typo", "chars": "echo unsafe\n"})).is_err());
+        assert!(write_stdin_dispatch(&json!({"action": "poll", "chars": "echo unsafe\n"})).is_err());
+        assert!(write_stdin_dispatch(&json!({"action": 1, "chars": ""})).is_err());
     }
 
     #[test]
@@ -1418,127 +1402,6 @@ mod tests {
         // Unset is not an assignment.
         assert!(!environment_prefix_has_injection_keys(&words("env -u GIT_CONFIG_COUNT git status")));
         assert!(!environment_prefix_has_injection_keys(&words("git status")));
-    }
-
-    #[test]
-    fn is_readonly_command_string_allows_inspection_commands() {
-        for cmd in [
-            "diff a.rs b.rs",
-            "find . -type f -name '*.rs'",
-            "wc -l src/main.rs",
-            "grep -rn 'todo' src",
-            "head -50 src/lib.rs",
-            "sort src/words.txt | uniq",
-        ] {
-            assert!(is_readonly_command_string(&json!({"command": cmd})), "expected '{cmd}' to be read-only");
-        }
-    }
-
-    #[test]
-    fn is_readonly_command_string_allows_pipelines() {
-        // Pipelines are allowed here; the caller is responsible for checking each
-        // segment against an allow-list of safe commands.
-        assert!(is_readonly_command_string(&json!({"command": "diff a b | wc -l"})));
-        assert!(is_readonly_command_string(&json!({"command": "grep x src | sort | uniq"})));
-    }
-
-    #[test]
-    fn is_readonly_command_string_allows_stderr_merge() {
-        // `2>&1` merges streams without writing a file; real redirections stay rejected.
-        assert!(is_readonly_command_string(&json!({"command": "cargo check 2>&1 | head -c 4000"})));
-        assert!(!is_readonly_command_string(&json!({"command": "cargo check 2>&1 > out.txt"})));
-        assert!(!is_readonly_command_string(&json!({"command": "ls 2> errors.txt"})));
-    }
-
-    #[test]
-    fn is_readonly_command_string_allows_and_chains() {
-        // `&&`-chained read-only commands are allowed when every segment is
-        // safe (no redirections, substitutions, or destructive commands).
-        // The per-segment allow-list check is handled by the caller via
-        // `is_readonly_chained_segments` (checkpoint turn_726).
-        assert!(is_readonly_command_string(&json!({"command": "ls -la && echo '---' && ls -la crates/"})));
-        assert!(is_readonly_command_string(&json!({"command": "pwd && ls src/"})));
-        assert!(is_readonly_command_string(&json!({"command": "true && cat foo.txt"})));
-    }
-
-    #[test]
-    fn is_readonly_command_string_rejects_destructive_and_chains() {
-        // Destructive commands in `&&` chains are still rejected.
-        assert!(!is_readonly_command_string(&json!({"command": "ls -la && rm foo.txt"})));
-        assert!(!is_readonly_command_string(&json!({"command": "true && mv a b"})));
-        assert!(!is_readonly_command_string(&json!({"command": "cat x && cp a b"})));
-        // Substitutions in any `&&` segment are still rejected.
-        assert!(!is_readonly_command_string(&json!({"command": "ls && echo $(date)"})));
-    }
-
-    #[test]
-    fn is_readonly_command_string_rejects_redirections_and_substitutions() {
-        for cmd in [
-            "cat a.txt > b.txt",
-            "grep x src >> out.txt",
-            "git diff --output=out.txt",
-            "git diff '--output=out.txt'",
-            "git diff -o out.txt",
-            "git diff -oout.txt",
-            "git log --output=out.txt",
-            "git -c diff.external=sh diff",
-            // `git -C <dir> <read-only sub>` is intentionally admitted now:
-            // the redirect only changes which repository is read, while the
-            // subcommand allow-list still gates the call. Config and helper
-            // redirects below stay rejected.
-            "git --git-dir=.evil-git diff",
-            "git --exec-path=.evil-git diff",
-            "find . -fprint output.txt",
-            "find . -fprintf output.txt '%p'",
-            "rg --hostname-bin sh pattern",
-            "rg --search-zip pattern",
-            "rg -z pattern",
-            "sed --in-place= README.md",
-            "sort -o out.txt README.md",
-            "sort --compress-program=sh README.md",
-            "date -s now",
-            "awk -i inplace '{print}' README.md",
-            "awk -v f=system 'BEGIN{@f(\"id\")}' README.md",
-            "awk '@include \"x.awk\"' README.md",
-            "sed -n 's/a/b/e' README.md",
-            "fd --exec sh -c 'touch out'",
-            "tree -o out.txt",
-            "ast-grep -r 'README.md'",
-            "sed -n -fmalicious.sed -e '1p' src/main.rs",
-            "sed -I '' 's/a/b/' src/main.rs",
-            "sed -n '1p\nw leaked.txt' src/main.rs",
-            "echo $(date)",
-            "echo `date`",
-            "cat <(echo hi)",
-            "cat >(echo hi)",
-            "true && rm a.txt",
-        ] {
-            assert!(!is_readonly_command_string(&json!({"command": cmd})), "expected '{cmd}' to be rejected");
-        }
-
-        assert!(is_readonly_command_string(&json!({
-            "command": "echo 'git diff --output=out.txt'"
-        })));
-    }
-
-    #[test]
-    fn is_readonly_command_string_rejects_destructive_commands() {
-        for cmd in [
-            "rm a.txt",
-            "find . -type f -delete",
-            "find . -name '*.tmp' -exec rm {} \\;",
-            "shred a.txt",
-            "mv a.txt b.txt",
-        ] {
-            assert!(!is_readonly_command_string(&json!({"command": cmd})), "expected '{cmd}' to be rejected");
-        }
-    }
-
-    #[test]
-    fn is_readonly_command_string_rejects_spliced_find_exec() {
-        assert!(!is_readonly_command_string(&json!({
-            "command": "find src -maxdepth 0 -exe$''c touch /tmp/VT_BYPASS_POC {} +"
-        })));
     }
 
     #[test]

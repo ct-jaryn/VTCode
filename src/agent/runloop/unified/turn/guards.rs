@@ -1468,6 +1468,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retained_search_results_converge_before_the_loop_budget() {
+        let mut backing = TestTurnProcessingBacking::new(32).await;
+        let mut ctx = backing.turn_processing_context();
+        let mut tracker = LoopTracker::new();
+        let hit = ToolPipelineOutcome::from_status(ToolExecutionStatus::Success {
+            output: json!({"results":[{"result_type":"text","path":"README.md","line":10,"snippet":"## Overview"}]}),
+            stdout: None,
+            modified_files: vec![],
+            command_success: true,
+        });
+        for step in 0..4 {
+            update_repetition_tracker(
+                &mut tracker,
+                &hit,
+                tool_names::CODE_SEARCH,
+                &json!({"query":format!("query{step}"),"path":"README.md"}),
+            );
+            let outcome = super::handle_turn_balancer(&mut ctx, step + 1, &mut tracker, 60, 3).await;
+            assert!(matches!(outcome, TurnHandlerOutcome::Continue));
+            assert_eq!(ctx.is_recovery_active(), step == 3);
+        }
+        assert!(ctx.recovery_reason().unwrap().contains("low-signal"));
+        assert!(!tracker.verification_is_pending());
+        assert_eq!(tracker.fix_edits_remaining, 0);
+    }
+
+    #[tokio::test]
     async fn execution_total_low_signal_guard_trips_at_threshold() {
         // Diverse empty searches (a new query each time) never trip the
         // per-family fast-path; the execution-mode total guard converges the

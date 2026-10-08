@@ -24,7 +24,8 @@ use crate::tools::handlers::task_tracking::{
     TASK_ITEMS_DESCRIPTION, TaskCounts, TaskItemInput, TaskStepMetadata, TaskTrackingStatus, TaskTreeNode,
     append_notes, append_notes_section, append_task_step_metadata, compact_task_tree_view, is_bulk_sync_update,
     metadata_from_input, normalize_optional_text, normalize_string_items, parse_marked_status_prefix,
-    parse_status_prefix, validate_action_index_fields, validate_task_item_inputs, validate_update_shape,
+    parse_status_prefix, task_files_property_schema, task_items_array_schema, task_status_property_schema,
+    task_verify_property_schema, validate_action_index_fields, validate_task_item_inputs, validate_update_shape,
 };
 use crate::utils::file_utils::{ensure_dir_exists, read_file_with_context, write_file_with_context};
 use anyhow::{Context, Result, bail};
@@ -432,40 +433,7 @@ fn standard_task_tracker_parameter_schema() -> Value {
                 "type": "string",
                 "description": "Title for the checklist (used with 'create')."
             },
-            "items": {
-                "type": "array",
-                "items": {
-                    "anyOf": [
-                        { "type": "string" },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "description": { "type": "string" },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed", "blocked"]
-                                },
-                                "files": {
-                                    "type": "array",
-                                    "items": { "type": "string" }
-                                },
-                                "outcome": { "type": "string" },
-                                "verify": {
-                                    "anyOf": [
-                                        { "type": "string" },
-                                        {
-                                            "type": "array",
-                                            "items": { "type": "string" }
-                                        }
-                                    ]
-                                }
-                            },
-                            "required": ["description"]
-                        }
-                    ]
-                },
-                "description": TASK_ITEMS_DESCRIPTION
-            },
+            "items": task_items_array_schema(TASK_ITEMS_DESCRIPTION),
             "index": {
                 "type": "integer",
                 "minimum": 0,
@@ -476,34 +444,17 @@ fn standard_task_tracker_parameter_schema() -> Value {
                 "pattern": "^[1-9][0-9]*$",
                 "description": "Action=update only: positive flat index path for compatibility (example: '2'). Hierarchical paths are accepted only by Planning workflow."
             },
-            "status": {
-                "type": "string",
-                "enum": ["pending", "in_progress", "completed", "blocked"],
-                "description": "New status for the item (used with single-item 'update')."
-            },
+            "status": task_status_property_schema("New status for the item (used with single-item 'update')."),
             "description": {
                 "type": "string",
                 "description": "Description for a new item (used with 'add')."
             },
-            "files": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Optional file paths associated with a single add/update item."
-            },
+            "files": task_files_property_schema("Optional file paths associated with a single add/update item."),
             "outcome": {
                 "type": "string",
                 "description": "Optional expected outcome associated with a single add/update item."
             },
-            "verify": {
-                "anyOf": [
-                    { "type": "string" },
-                    {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    }
-                ],
-                "description": "Optional verification command or commands associated with a single add/update item."
-            },
+            "verify": task_verify_property_schema("Optional verification command or commands associated with a single add/update item."),
             "parent_index_path": {
                 "type": "string",
                 "description": "Optional parent path for add in Planning workflow (example: '2')."
@@ -616,6 +567,38 @@ pub(crate) fn task_tracker_parameter_schema_for_workflow(planning_active: bool) 
     } else {
         standard_task_tracker_parameter_schema()
     }
+}
+
+/// Model-facing correction for `task_tracker` shape failures.
+///
+/// The schema uses conditional (`if`/`then`/`not`) rules, so a bare
+/// "required fields" hint is not enough: `create` forbids `index`/`index_path`,
+/// `update` needs exactly one shape, and `add`/`list` have their own shapes.
+/// Without this, a `create` bundled with update fields fails with a generic
+/// root error and the model retries blindly.
+///
+/// Note: the schema only *forbids* `index`/`index_path` on
+/// `create`/`list`/`add`; other single-item fields (`status`, `description`,
+/// `files`, `outcome`, `verify`) are ignored by those actions, not rejected.
+/// The wording below matches that enforced contract: it forbids only what the
+/// schema forbids and recommends (not requires) the minimal shapes.
+pub const TASK_TRACKER_ARGUMENT_CORRECTION: &str = "Invalid task_tracker shape. For create, index/index_path are forbidden (prefer title/items + optional notes); action='update' needs index|index_path + status OR items for bulk sync; action='add' needs description; action='list' takes no index fields. Fix the named field(s) and retry once.";
+
+/// Whether a `task_tracker` schema error is a shape error (conditional
+/// `if`/`then`/`not`, `anyOf`/`oneOf`, missing required, fallback) rather
+/// than a single-field value error (`enum`, `type`, `const`, ...). The shape
+/// correction above only helps the former; appending it to a bad-enum error
+/// would point the model at the wrong axis.
+pub(crate) fn is_task_tracker_shape_error(error_msg: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "must not include",
+        "does not match any allowed shape",
+        "matches more than one allowed shape",
+        "is forbidden by schema",
+        "missing required property",
+        "failed validation (schema",
+    ];
+    MARKERS.iter().any(|marker| error_msg.contains(marker))
 }
 
 impl TaskTrackerTool {

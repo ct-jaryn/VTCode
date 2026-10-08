@@ -123,6 +123,7 @@ async fn focused_exec_session_does_not_capture_slash_commands() {
             "command": "read line; printf received",
             "tty": false,
             "background": true,
+            "stdin": true,
             "yield_time_ms": 250,
         }))
         .await
@@ -1531,6 +1532,7 @@ fn other_name(command: &InlineCommand) -> &'static str {
         InlineCommand::Inline { .. } => "Inline",
         InlineCommand::ReplaceLast { .. } => "ReplaceLast",
         InlineCommand::RecordToolOutput { .. } => "RecordToolOutput",
+        InlineCommand::FocusTranscriptReview { .. } => "FocusTranscriptReview",
         InlineCommand::AppendToolOutputLine { .. } => "AppendToolOutputLine",
         InlineCommand::AppendCompactActivity(_) => "AppendCompactActivity",
         InlineCommand::RecordDiffReview(_) => "RecordDiffReview",
@@ -1542,7 +1544,9 @@ fn other_name(command: &InlineCommand) -> &'static str {
         InlineCommand::SetMessageLabels { .. } => "SetMessageLabels",
         InlineCommand::SetHeaderContext { .. } => "SetHeaderContext",
         InlineCommand::SetInputStatus { .. } => "SetInputStatus",
+        InlineCommand::SetConfiguredInputStatus { .. } => "SetConfiguredInputStatus",
         InlineCommand::SetActivityState(_) => "SetActivityState",
+        InlineCommand::UpdateProgress(_) => "UpdateProgress",
         InlineCommand::SetTerminalTitleItems { .. } => "SetTerminalTitleItems",
         InlineCommand::SetTerminalTitleThreadLabel { .. } => "SetTerminalTitleThreadLabel",
         InlineCommand::SetTerminalTitleGitBranch { .. } => "SetTerminalTitleGitBranch",

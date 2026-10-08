@@ -132,12 +132,18 @@ pub(super) fn split_contents_for_cache(contents: &[Content], prefix_len: usize) 
 }
 
 /// True when a Gemini API error indicates the cached name is gone.
+///
+/// A 404 means the cached resource itself is gone. A 400 only counts when
+/// the body names `cachedContent`: a generic "not found" on a 400 (for
+/// example `Tool use with function 'x' not found`) is an unrelated
+/// invalid-argument error and must neither discard the live cache slot nor
+/// spend an uncached retry that fails identically.
 pub(super) fn is_stale_cache_error(status: u16, body: &str) -> bool {
-    if status != 404 && status != 400 {
-        return false;
-    }
     let lower = body.to_ascii_lowercase();
-    lower.contains("cachedcontent") || lower.contains("not_found") || lower.contains("not found")
+    if lower.contains("cachedcontent") {
+        return status == 400 || status == 404;
+    }
+    status == 404 && (lower.contains("not_found") || lower.contains("not found"))
 }
 
 #[cfg(test)]
@@ -198,7 +204,23 @@ mod tests {
     fn stale_cache_error_matches_404_not_found() {
         assert!(is_stale_cache_error(404, "Cached content not found"));
         assert!(is_stale_cache_error(400, "cachedContent name is invalid"));
+        assert!(is_stale_cache_error(404, r#"{"error":{"status":"NOT_FOUND"}}"#));
+        assert!(is_stale_cache_error(
+            404,
+            r#"{"error":{"code":404,"message":"CachedContent not found","status":"NOT_FOUND"}}"#
+        ));
         assert!(!is_stale_cache_error(500, "internal"));
+    }
+
+    #[test]
+    fn stale_cache_error_400_requires_the_cache_resource_in_the_body() {
+        // A generic "not found" on a 400 is an unrelated invalid-argument
+        // error (e.g. unknown function name); it must not discard the live
+        // cache slot or spend an uncached retry.
+        assert!(!is_stale_cache_error(400, "Tool use with function 'get_weather' not found"));
+        assert!(!is_stale_cache_error(400, "Invalid request: unsupported generationConfig field"));
+        // Naming the cache resource still counts on a 400.
+        assert!(is_stale_cache_error(400, "cachedContent TTL is invalid"));
     }
 
     #[test]

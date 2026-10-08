@@ -22,7 +22,6 @@ pub(super) async fn route_outcome(
         | SlashCommandOutcome::StartModelSelection
         | SlashCommandOutcome::StartModePalette
         | SlashCommandOutcome::SelectPrimaryAgent { .. }
-        | SlashCommandOutcome::ToggleIdeContext
         | SlashCommandOutcome::ToggleVimMode { .. }
         | SlashCommandOutcome::InitializeWorkspace { .. }
         | SlashCommandOutcome::ShowSettings
@@ -38,6 +37,7 @@ pub(super) async fn route_outcome(
         | SlashCommandOutcome::ShowJobsPanel
         | SlashCommandOutcome::ShowStatus
         | SlashCommandOutcome::ShowTranscriptStats
+        | SlashCommandOutcome::Explain { .. }
         | SlashCommandOutcome::ExportTranscript { .. }
         | SlashCommandOutcome::ShowWebmcpStatus
         | SlashCommandOutcome::ShowWebmcpHelp
@@ -99,7 +99,6 @@ async fn route_ui_and_settings_outcome(
         SlashCommandOutcome::SelectPrimaryAgent { name } => {
             handlers::handle_select_primary_agent_from_slash(ctx, &name).await
         }
-        SlashCommandOutcome::ToggleIdeContext => handlers::handle_toggle_ide_context(ctx).await,
         SlashCommandOutcome::ToggleVimMode { enable } => handlers::handle_toggle_vim_mode(ctx, enable).await,
         SlashCommandOutcome::InitializeWorkspace { force } => handlers::handle_initialize_workspace(ctx, force).await,
         SlashCommandOutcome::ShowSettings => handlers::handle_show_settings(ctx).await,
@@ -121,6 +120,7 @@ async fn route_runtime_outcome(
         SlashCommandOutcome::ClearScreen => handlers::handle_clear_screen(ctx).await,
         SlashCommandOutcome::ClearConversation => handlers::handle_clear_conversation(ctx).await,
         SlashCommandOutcome::ShowTranscriptStats => handlers::handle_show_transcript_stats(ctx).await,
+        SlashCommandOutcome::Explain { args } => super::explain::handle_explain(ctx, &args).await,
         SlashCommandOutcome::ExportTranscript { path } => handlers::handle_export_transcript(ctx, path).await,
         SlashCommandOutcome::CompactConversation { command } => {
             handlers::handle_compact_conversation(ctx, command).await

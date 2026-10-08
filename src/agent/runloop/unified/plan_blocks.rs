@@ -877,6 +877,26 @@ mod tests {
     }
 
     #[test]
+    fn chunked_canonical_policy_echo_preserves_only_the_actual_plan() {
+        let policy = vtcode_core::prompts::system::PLANNING_WORKFLOW_PLAN_PERSISTENCE_POLICY_LINE;
+        let plan = "## Summary\nUpdate the parser.\n## Implementation Steps\n1. Fix boundary -> files: [src/parser.rs] -> verify: [cargo check]";
+        let response = format!("{policy}\n<proposed_plan>\n{plan}\n</proposed_plan>");
+        for chunk_size in [1, 7, 31] {
+            let mut parser = ProposedPlanStreamParser::new();
+            let mut visible = String::new();
+            for chunk in response.as_bytes().chunks(chunk_size) {
+                visible.push_str(&parser.consume(std::str::from_utf8(chunk).expect("ASCII fixture")));
+            }
+            let extraction = parser.finish();
+            visible.push_str(&extraction.stripped_text);
+            assert!(visible.trim().is_empty(), "policy and markup must stay suppressed");
+            assert_eq!(extraction.plan_text.as_deref(), Some(plan));
+            assert!(!parser.has_unclosed_plan_block());
+        }
+        assert!(has_exactly_one_proposed_plan_block(&strip_plan_persistence_policy_line(&response)));
+    }
+
+    #[test]
     fn display_preparation_strips_plan_wrappers_and_preserves_structure() {
         let raw = "<proposed_plan>\nSummary: Fix scrolling.\n\n1. Locate modal -> files: [src/modal.rs] -> verify: [cargo check]\n\nTest Cases and Validation:\n\n• Down reaches the final item.\n\nAssumptions and Defaults:\n\n• Paths are stale.\n</proposed_plan>";
         let (display, warnings) = prepare_plan_markdown_for_display(raw);

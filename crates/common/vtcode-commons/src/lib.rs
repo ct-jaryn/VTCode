@@ -42,6 +42,8 @@ pub mod http;
 pub mod image;
 pub mod interjection;
 pub mod interner;
+pub mod json_extract;
+pub mod line_framing;
 pub mod llm;
 pub mod lr_map;
 pub mod memory;
@@ -58,6 +60,7 @@ pub mod reference;
 pub mod retry;
 pub mod runtime_diagnostics;
 pub mod sanitizer;
+pub mod search;
 pub mod serde_helpers;
 pub mod slug;
 #[doc(hidden)]
@@ -115,6 +118,7 @@ pub use task_guard::TaskGuard;
 pub use telemetry::{NoopTelemetry, TelemetrySink};
 pub use tokens::{estimate_tokens, truncate_to_tokens};
 pub use unicode::{UNICODE_MONITOR, UnicodeMonitor, UnicodeValidationContext};
+pub use validation::{EmptyCollectionError, NonEmptySlice, NonEmptyString, NonEmptyVec};
 pub use vtcode_paths::{
     MigrationEntry, MigrationFailure, MigrationReport, MigrationSkip, MigrationSkipReason, VtCodePaths,
 };

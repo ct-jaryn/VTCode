@@ -364,20 +364,6 @@ model_id_table! {
         display: "Inkling (Merge Gateway)",
         description: "Thinking Machines Inkling accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
-    MergeGatewayMetaMuseSpark11 {
-        provider: MergeGateway,
-        id: models::merge_gateway::META_MUSE_SPARK_1_1,
-        parse: [models::merge_gateway::META_MUSE_SPARK_1_1],
-        display: "Muse Spark 1.1 (Merge Gateway)",
-        description: "Meta Muse Spark 1.1 accessed through Merge Gateway's OpenAI-compatible endpoint",
-    },
-    MergeGatewayMetaMuseSpark13 {
-        provider: MergeGateway,
-        id: models::merge_gateway::META_MUSE_SPARK_1_3,
-        parse: [models::merge_gateway::META_MUSE_SPARK_1_3],
-        display: "Muse Spark 1.3 (Merge Gateway)",
-        description: "Meta Muse Spark 1.3 accessed through Merge Gateway's OpenAI-compatible endpoint",
-    },
     MergeGatewayZaiGlm53Flash {
         provider: MergeGateway,
         id: models::merge_gateway::ZAI_GLM_5_3_FLASH,
@@ -462,6 +448,27 @@ model_id_table! {
         display: "Claude Fable 5.1 (Merge Gateway)",
         description: "Anthropic Claude Fable 5.1 accessed through Merge Gateway's OpenAI-compatible endpoint",
     },
+    MergeGatewayXiaomimimoMimoV26Pro {
+        provider: MergeGateway,
+        id: models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO,
+        parse: [models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_PRO],
+        display: "MiMo V2.6 Pro (Merge Gateway)",
+        description: "Xiaomi MiMo V2.6 Pro flagship reasoning model accessed through Merge Gateway",
+    },
+    MergeGatewayXiaomimimoMimoV26Flash {
+        provider: MergeGateway,
+        id: models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH,
+        parse: [models::merge_gateway::XIAOMIMIMO_MIMO_V2_6_FLASH],
+        display: "MiMo V2.6 Flash (Merge Gateway)",
+        description: "Xiaomi MiMo V2.6 Flash efficient reasoning model accessed through Merge Gateway",
+    },
+    MergeGatewayMistralLarge4 {
+        provider: MergeGateway,
+        id: models::merge_gateway::MISTRAL_LARGE_4,
+        parse: [models::merge_gateway::MISTRAL_LARGE_4],
+        display: "Mistral Large 4 (Merge Gateway)",
+        description: "Mistral Large 4 open-weight MoE flagship with 1M context accessed through Merge Gateway",
+    },
     // Mistral models
     MistralLarge3 {
         provider: Mistral,
@@ -469,6 +476,13 @@ model_id_table! {
         parse: [models::mistral::MISTRAL_LARGE_3],
         display: "Mistral Large 3",
         description: "State-of-the-art open-weight general-purpose multimodal model with Mixture-of-Experts architecture",
+    },
+    MistralLarge4 {
+        provider: Mistral,
+        id: models::mistral::MISTRAL_LARGE_4,
+        parse: [models::mistral::MISTRAL_LARGE_4, "mistral-large-2610", "mistral-large-4-0"],
+        display: "Mistral Large 4",
+        description: "Open-weight MoE flagship (49B active / 1.05T total) with 1M context and multimodal support",
     },
     // Hugging Face models
     HuggingFaceOpenAIGptOss20b {
@@ -837,7 +851,6 @@ mod tests {
                     | ModelId::MergeGatewayAnthropicClaudeSonnet5
                     | ModelId::MergeGatewayAnthropicClaudeSonnet55
                     | ModelId::MergeGatewayGoogleGemini38Flash
-                    | ModelId::MergeGatewayMetaMuseSpark13
                     | ModelId::MergeGatewayOpenAIGpt6Astra
                     | ModelId::MergeGatewayOpenAIGpt6Sol
                     | ModelId::MergeGatewayOpenAIGpt61Sol
@@ -887,6 +900,9 @@ mod tests {
             (models::GPT, ModelId::GPT56Sol),
             (models::openai::GPT_5_6_SOL, ModelId::GPT56Sol),
             (models::CLAUDE_SONNET_5, ModelId::ClaudeSonnet5),
+            (models::mistral::MISTRAL_LARGE_4, ModelId::MistralLarge4),
+            ("mistral-large-2610", ModelId::MistralLarge4),
+            ("mistral-large-4-0", ModelId::MistralLarge4),
         ];
         for (alias, expected) in cases {
             let parsed = ModelId::from_str(alias).unwrap_or_else(|err| panic!("alias {alias} failed to parse: {err}"));

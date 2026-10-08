@@ -79,7 +79,7 @@ fn handle_init_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashC
 #[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]
 fn handle_config_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashCommandOutcome> {
     const USAGE: &str =
-        "Usage: /config [memory|permissions|model|ide|tasks|jobs|log|subprocess|notify|checkup|<path>|reset]";
+        "Usage: /config [memory|permissions|model|tasks|jobs|log|subprocess|notify|checkup|<path>|reset]";
     let trimmed = args.trim();
     if trimmed.is_empty() {
         return Ok(SlashCommandOutcome::ShowSettings);
@@ -118,7 +118,6 @@ fn handle_config_command(args: &str, renderer: &mut AnsiRenderer) -> Result<Slas
             }
             Ok(SlashCommandOutcome::ShowSettingsAtPath { path: command.to_string() })
         }
-        "ide" => handle_ide_command(rest, renderer),
         "tasks" => handle_tasks_command(rest, renderer),
         "jobs" => handle_jobs_command(rest, renderer),
         "log" => handle_log_command(rest, renderer),
@@ -441,14 +440,6 @@ fn handle_jobs_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashC
     Ok(SlashCommandOutcome::ShowJobsPanel)
 }
 
-fn handle_ide_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashCommandOutcome> {
-    if !args.is_empty() {
-        renderer.line(MessageStyle::Error, "Usage: /ide")?;
-        return Ok(SlashCommandOutcome::Handled);
-    }
-    Ok(SlashCommandOutcome::ToggleIdeContext)
-}
-
 #[allow(dead_code, reason = "Intentional compatibility, platform, or test-only suppression.")]
 fn handle_terminal_setup_command(args: &str, renderer: &mut AnsiRenderer) -> Result<SlashCommandOutcome> {
     match args.trim().to_ascii_lowercase().as_str() {
@@ -565,6 +556,7 @@ pub(in crate::agent::runloop::slash_commands) async fn execute_built_in_command_
         "title" => handle_title_command(args, renderer),
         "clear" => handle_clear_command(args, renderer),
         "transcript" => handle_transcript_command(args, renderer),
+        "explain" => Ok(SlashCommandOutcome::Explain { args: args.to_owned() }),
         "compact" | "context" => handle_compact_command(args, renderer),
         "copy" => handle_copy_command(args, renderer),
         "status" => Ok(SlashCommandOutcome::ShowStatus),

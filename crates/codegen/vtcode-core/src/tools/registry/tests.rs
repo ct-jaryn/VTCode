@@ -22,6 +22,206 @@ use tempfile::TempDir;
 use vtcode_commons::canonicalize;
 
 const CUSTOM_TOOL_NAME: &str = "custom_test_tool";
+
+#[tokio::test]
+async fn public_decision_requires_canonical_task_and_validates_even_without_evidence() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf()).await;
+    let args = json!({"summary":"Reuse existing parser","rationale":"Preserve validated input handling"});
+    assert!(registry.record_decision_executor(args.clone()).await.is_err());
+    registry.set_harness_task(Some("task-test".into()));
+    assert!(registry.record_decision_executor(args.clone()).await.is_err());
+    let called = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&called);
+    registry.set_decision_evidence_validator(Arc::new(move |task, ids| {
+        assert_eq!(task, "task-test");
+        assert!(ids.is_empty());
+        observed.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }));
+    assert_eq!(registry.record_decision_executor(args.clone()).await?["recorded"], true);
+    assert_eq!(called.load(Ordering::SeqCst), 1);
+    let mut budgeted_args = args.clone();
+    budgeted_args["max_output_tokens"] = json!(100);
+    assert_eq!(registry.execute_tool(tools::RECORD_DECISION, budgeted_args.clone()).await?["recorded"], true);
+    assert_eq!(called.load(Ordering::SeqCst), 2);
+    budgeted_args["max_output_tokens"] = json!(0);
+    assert!(registry.execute_tool(tools::RECORD_DECISION, budgeted_args).await.is_err());
+    assert_eq!(called.load(Ordering::SeqCst), 2);
+    registry.set_tool_policy(tools::RECORD_DECISION, ToolPolicy::Deny).await?;
+    assert!(registry.execute_tool(tools::RECORD_DECISION, args.clone()).await.is_err());
+    assert_eq!(called.load(Ordering::SeqCst), 2);
+    registry.set_tool_policy(tools::RECORD_DECISION, ToolPolicy::Allow).await?;
+    registry.set_harness_task(Some("next-task".into()));
+    let observed = Arc::clone(&called);
+    registry.set_decision_evidence_validator(Arc::new(move |task, _| {
+        assert_eq!(task, "next-task");
+        observed.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { anyhow::bail!("canonical persistence failed") })
+    }));
+    let failed = registry.execute_tool(tools::RECORD_DECISION, args).await?;
+    assert!(failed.get("error").is_some(), "{failed}");
+    assert_eq!(called.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_exec_policy_is_not_a_lost_execution_result() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    let mut commands = registry.commands_config();
+    commands.deny_list.push("rustc".to_string());
+    registry.apply_commands_config(&commands);
+    let response = registry
+        .execute_tool(tools::EXEC_COMMAND, json!({"cmd": "rustc --version"}))
+        .await?;
+    assert_eq!(response["error"]["error_type"], "PolicyViolation");
+    assert!(response.get("exit_code").is_none());
+    assert!(registry.in_progress_exec_sessions(32).await.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn filtered_verifier_reports_checker_and_filter_failures_without_masking() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    fs::create_dir(temp_dir.path().join("scripts"))?;
+    for (checker_exit, filter, expected_exit, raw_alias) in [
+        (7, "grep README", 7, false),
+        (0, "grep README", 0, false),
+        (0, "grep missing-pattern", 1, false),
+        (0, "grep -E '['", 2, false),
+        (7, "grep README", 7, true),
+        (0, "grep README", 0, true),
+    ] {
+        fs::write(
+            temp_dir.path().join("scripts/check_markdown.py"),
+            format!(
+                "import sys\nprint('README: asymmetric evidence')\nprint('unrelated evidence')\nsys.exit({checker_exit})\n"
+            ),
+        )?;
+        let command = format!("python3 scripts/check_markdown.py 2>&1 | {filter}");
+        let mut args = json!({"cmd":command, "yield_time_ms":1000});
+        if raw_alias {
+            args["raw_command"] = json!(command);
+        }
+        let result = registry.execute_tool(tools::EXEC_COMMAND, args).await?;
+        assert_eq!(result["exit_code"], expected_exit, "{result}");
+        let output = result["output"].as_str().unwrap();
+        assert!(!output.contains("unrelated evidence"), "{output}");
+        assert_eq!(output.contains("README: asymmetric evidence"), filter == "grep README", "{output}");
+    }
+    let mut commands = registry.commands_config();
+    commands.deny_list.push("python3".into());
+    registry.apply_commands_config(&commands);
+    let denied = registry
+        .execute_tool(tools::EXEC_COMMAND, json!({"cmd":"python3 scripts/check_markdown.py | grep README"}))
+        .await?;
+    assert_eq!(denied["error"]["error_type"], "PolicyViolation");
+    assert!(denied.get("exit_code").is_none());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_pipe_stdin_defaults_to_eof_and_opt_in_accepts_input() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    let eof = registry
+        .execute_tool(
+            tools::EXEC_COMMAND,
+            json!({
+                "cmd": "if read value; then printf 'unexpected:%s' \"$value\"; else printf 'stdin-eof'; fi",
+                "shell": "/bin/sh", "yield_time_ms": 1000,
+            }),
+        )
+        .await?;
+    assert_eq!(eof["exit_code"], 0);
+    assert!(eof["output"].as_str().unwrap().contains("stdin-eof"));
+
+    let active = registry
+        .execute_tool(
+            tools::EXEC_COMMAND,
+            json!({
+                "cmd": "read value; printf 'received:%s' \"$value\"",
+                "shell": "/bin/sh", "stdin": true, "yield_time_ms": 250,
+            }),
+        )
+        .await?;
+    assert!(active.get("exit_code").is_none());
+    let session_id = active["session_id"].as_str().unwrap();
+    let written = registry
+        .execute_tool(
+            tools::WRITE_STDIN,
+            json!({
+                "session_id": session_id, "chars": "hello\n", "yield_time_ms": 1000,
+            }),
+        )
+        .await?;
+    assert_eq!(written["exit_code"], 0);
+    assert!(written["output"].as_str().unwrap().contains("received:hello"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_session_controls_inspect_terminate_and_close() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+    let active = registry
+        .execute_tool(
+            tools::EXEC_COMMAND,
+            json!({
+                "cmd": "printf 'retained-evidence\\n'; sleep 60", "shell": "/bin/sh",
+                "background": true, "yield_time_ms": 250,
+            }),
+        )
+        .await?;
+    let session_id = active["session_id"].as_str().unwrap();
+    let inspection = registry
+        .execute_tool(
+            tools::WRITE_STDIN,
+            json!({
+                "session_id": session_id, "action": "inspect",
+            }),
+        )
+        .await?;
+    assert_eq!(inspection["content_type"], "exec_inspect");
+    let terminated = registry
+        .execute_tool(
+            tools::WRITE_STDIN,
+            json!({
+                "session_id": session_id, "action": "terminate", "yield_time_ms": 1000,
+            }),
+        )
+        .await?;
+    assert!(terminated.get("exit_code").is_some(), "{terminated}");
+    let closed = registry
+        .execute_tool(
+            tools::WRITE_STDIN,
+            json!({
+                "session_id": session_id, "action": "close",
+            }),
+        )
+        .await?;
+    assert_eq!(closed["success"], true);
+    assert!(registry.exec_sessions.snapshot_session(session_id).await.is_err());
+    let missing = registry
+        .execute_tool(
+            tools::WRITE_STDIN,
+            json!({
+                "session_id": session_id, "action": "close",
+            }),
+        )
+        .await?;
+    assert!(missing["error"]["message"].as_str().unwrap().contains("not found"));
+    Ok(())
+}
 const SLOW_TIMEOUT_TOOL_NAME: &str = "slow_timeout_test_tool";
 const REENTRANT_TOOL_NAME: &str = "reentrant_guard_test_tool";
 const MUTUAL_REENTRANT_TOOL_A: &str = "mutual_reentrant_tool_a";
@@ -201,6 +401,7 @@ async fn public_tool_projections_stay_in_sync() -> Result<()> {
             tools::EXEC_COMMAND.to_string(),
             tools::WRITE_STDIN.to_string(),
             tools::SEARCH_TOOLS.to_string(),
+            tools::RECORD_DECISION.to_string(),
         ]
     );
     for removed_tool in [
@@ -983,6 +1184,61 @@ async fn command_session_inspect_distinguishes_empty_and_closed_sessions() -> Re
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn command_session_wait_returns_partial_output_when_session_closes_mid_wait() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+    registry.allow_all_tools().await?;
+
+    // The fixture emits output three times over ~600ms, so the wait loop's
+    // 50ms drain cycle provably buffers it long before the fixture closes
+    // the session — the same concurrent-removal actor as a TUI force-cancel
+    // closing a foreground session under an in-flight wait.
+    registry
+        .exec_sessions
+        .create_pipe_session(
+            "run-mid-wait-close".into(),
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "for i in 1 2 3; do echo mid-wait-output; sleep 0.2; done; sleep 30".into(),
+            ],
+            temp_dir.path().to_path_buf(),
+            Default::default(),
+        )
+        .await?;
+
+    let (close_side, wait_side) = tokio::join!(
+        async {
+            // 2s leaves a 30x+ margin over the fixture's last emission on a
+            // loaded CI runner while keeping the test fast (wait deadline
+            // is 30s, so the close always lands mid-wait).
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+            registry.close_exec_session("run-mid-wait-close").await?;
+            anyhow::Ok(())
+        },
+        registry.execute_harness_command_session(json!({
+            "action": "wait",
+            "s": "run-mid-wait-close",
+            "wait_timeout_seconds": 30,
+        }))
+    );
+    close_side.expect("close side must succeed");
+
+    // join! completes only when both sides settle: the wait either observes
+    // the mid-wait close or runs out its own deadline.
+    let response = wait_side.expect("a session closed mid-wait must return its buffered output, not an error");
+    let output = response["output"].as_str().unwrap_or_default();
+    assert!(output.contains("mid-wait-output"), "output buffered before the close must survive: {response}");
+    assert!(
+        output.contains("closed while waiting"),
+        "the response must disclose that the capture is partial: {response}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn mutating_tools_clear_recent_read_reuse_history() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
@@ -1202,6 +1458,66 @@ async fn preflight_task_tracker_schema_tracks_planning_state() -> Result<()> {
     let error_text = error.to_string();
     assert!(error_text.contains("Invalid arguments for tool 'task_tracker'"));
     assert!(error_text.contains("index"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn preflight_task_tracker_create_rejects_update_fields_actionably() -> Result<()> {
+    // Regression for session-vtcode-20261005T085022Z: a `create` bundled with
+    // `index`/`index_path`/`status` previously failed with a bare
+    // `field '(root)' failed validation: {...}` dump. It must name the
+    // forbidden fields and point at the action-aware correction.
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+
+    let error = registry
+        .preflight_validate_call(
+            tools::TASK_TRACKER,
+            &json!({
+                "action": "create",
+                "title": "README improvement plan",
+                "items": ["Review README structure"],
+                "index_path": "1",
+                "index": 1,
+                "status": "completed",
+                "description": ""
+            }),
+        )
+        .expect_err("create must reject index/index_path");
+    let error_text = error.to_string();
+    assert!(error_text.contains("Invalid arguments for tool 'task_tracker'"), "{error_text}");
+    assert!(error_text.contains("must not include"), "{error_text}");
+    assert!(error_text.contains("\"index\""), "{error_text}");
+    assert!(error_text.contains("\"index_path\""), "{error_text}");
+    assert!(!error_text.contains("failed validation: {\"action\""), "{error_text}");
+    assert!(error_text.contains("For create, index/index_path are forbidden"), "{error_text}");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn preflight_task_tracker_value_error_omits_shape_correction() -> Result<()> {
+    // A single-field value error (bad enum) must not carry the shape
+    // correction: telling the model to remove index fields would point at
+    // the wrong axis. The enum message alone must identify the field.
+    let temp_dir = TempDir::new()?;
+    let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
+
+    let error = registry
+        .preflight_validate_call(
+            tools::TASK_TRACKER,
+            &json!({
+                "action": "update",
+                "index": 1,
+                "status": "done"
+            }),
+        )
+        .expect_err("bad status enum must fail");
+    let error_text = error.to_string();
+    assert!(error_text.contains("is not one of the allowed enum"), "{error_text}");
+    assert!(error_text.contains("/status"), "{error_text}");
+    assert!(!error_text.contains("For create, index/index_path are forbidden"), "{error_text}");
 
     Ok(())
 }
@@ -2441,13 +2757,20 @@ async fn apply_patch_payload_correction_is_concrete_and_preserves_aliases() -> R
     let temp_dir = TempDir::new()?;
     let registry = ToolRegistry::new(temp_dir.path().to_path_buf()).await;
     registry.allow_all_tools().await?;
-    for args in [json!({}), json!({"input": 42}), json!({"patch": []}), json!(null)] {
+    for args in [
+        json!({}),
+        json!({"input": 42}),
+        json!({"patch": []}),
+        json!(null),
+        json!({"cmd":"*** Begin Patch\n*** Add File: created.txt\n+wrong field\n*** End Patch\n"}),
+    ] {
         let error = registry
             .preflight_validate_call(tools::APPLY_PATCH, &args)
             .expect_err("invalid payload");
         let message = error.to_string();
         assert!(message.contains(r#"{"input":"*** Begin Patch\n"#), "{message}");
         assert!(message.contains("retry once"), "{message}");
+        assert!(!message.contains("Missing required argument: patch"), "{message}");
         assert!(!temp_dir.path().join("created.txt").exists());
     }
     for (index, field) in ["input", "patch"].into_iter().enumerate() {

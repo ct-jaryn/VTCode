@@ -435,17 +435,6 @@ fn header_omits_auto_permission_badge() {
 }
 
 #[test]
-fn header_meta_line_excludes_editor_context() {
-    let mut session = fresh_session();
-    session.header_context.editor_context = Some("File: src/main.rs · Rust · Sel 120-148".to_string());
-
-    let line = session.header_meta_line();
-    let summary = line_text(&line);
-
-    assert!(!summary.contains("File: src/main.rs"));
-}
-
-#[test]
 fn header_title_line_shows_model_context_window() {
     let mut session = fresh_session();
     session.header_context.provider = format!("{}Anthropic", ui::HEADER_PROVIDER_PREFIX);
@@ -772,4 +761,174 @@ fn header_hides_blocked_badge_without_blocked_signals() {
 
     let text = header_line_text(&mut session);
     assert!(!text.contains("Blocked"), "header should not show blocked badge, got: {text}");
+}
+
+#[test]
+fn mode_pill_absent_without_primary_agent() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent { name: None, color: None });
+
+    let rendered = session
+        .render_input_status_line(VIEW_WIDTH)
+        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+        .unwrap_or_default();
+
+    assert!(!rendered.contains("•"), "modeless status line should not show a mode pill, got: {rendered}");
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("   ".to_string()),
+        color: Some("build".to_string()),
+    });
+    let blank = session
+        .render_input_status_line(VIEW_WIDTH)
+        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+        .unwrap_or_default();
+    assert!(!blank.contains("•"), "blank mode name should not show a mode pill, got: {blank}");
+}
+
+#[test]
+fn mode_pill_shows_build_and_plan_distinctly() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+    let build_line = session.render_input_status_line(VIEW_WIDTH).expect("mode pill status line");
+    let build_text: String = build_line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(build_text.contains("• Build"), "unexpected status: {build_text}");
+    let build_fg = build_line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref().contains("• Build"))
+        .expect("build pill span")
+        .style
+        .fg;
+
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("plan".to_string()),
+        color: Some("plan".to_string()),
+    });
+    let plan_line = session.render_input_status_line(VIEW_WIDTH).expect("mode pill status line");
+    let plan_text: String = plan_line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(plan_text.contains("• Plan"), "unexpected status: {plan_text}");
+    assert!(!plan_text.contains("• Build"), "stale mode pill, got: {plan_text}");
+    let plan_fg = plan_line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref().contains("• Plan"))
+        .expect("plan pill span")
+        .style
+        .fg;
+
+    assert!(build_fg.is_some() && plan_fg.is_some(), "mode pill must carry a concrete color");
+    assert_ne!(build_fg, plan_fg, "build and plan pills must be visually distinct");
+}
+
+#[test]
+fn mode_pill_falls_back_for_unknown_color_token() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("custom".to_string()),
+        color: Some("not-a-color".to_string()),
+    });
+
+    let line = session.render_input_status_line(VIEW_WIDTH).expect("mode pill status line");
+    let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(text.contains("• Custom"), "unexpected status: {text}");
+    let fg = line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref().contains("• Custom"))
+        .expect("custom pill span")
+        .style
+        .fg;
+    assert!(fg.is_some(), "unknown color token must fall back to a concrete color");
+}
+
+#[test]
+fn mode_pill_coexists_with_right_status() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetInputStatus {
+        left: None,
+        right: Some("84% context left".to_string()),
+    });
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("auto".to_string()),
+        color: Some("auto".to_string()),
+    });
+
+    let rendered = session
+        .render_input_status_line(VIEW_WIDTH)
+        .expect("mode pill status line")
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(rendered.contains("• Auto"), "missing mode pill, got: {rendered}");
+    assert!(rendered.contains("84% context left"), "mode pill must not clobber right status, got: {rendered}");
+}
+
+#[test]
+fn mode_adds_no_input_border_chrome() {
+    let mut session = fresh_session();
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+
+    // The composer stays borderless and compact in every mode: no titles, no
+    // extra border rows. Only shell (`!`) and subagent badges add chrome.
+    assert_eq!(session.shell_mode_border_title(), None);
+    assert!(session.active_subagent_input_title().is_none());
+    assert_eq!(session.input_block_extra_height(), 0);
+}
+
+#[test]
+fn hidden_header_init_sequence_shows_agent_with_provider_model_and_effort() {
+    // Regression for the missing top-right summary: init must push
+    // `SetHeaderContext` (provider/model/effort) before `SetPrimaryAgent`.
+    // Asymmetric values so a missing piece fails distinctly.
+    let mut session = fresh_session();
+    session.appearance.hide_header = true;
+    session.apply_transcript_width(VIEW_WIDTH);
+
+    let mut context = session.header_context.clone();
+    context.provider = format!("{}moonshot", ui::HEADER_PROVIDER_PREFIX);
+    context.model = format!("{}kimi-k2.6", ui::HEADER_MODEL_PREFIX);
+    context.reasoning = format!("{}high", ui::HEADER_REASONING_PREFIX);
+    context.primary_agent = None;
+    session.handle_command(InlineCommand::SetHeaderContext { context: Box::new(context) });
+    session.handle_command(InlineCommand::SetPrimaryAgent {
+        name: Some("build".to_string()),
+        color: Some("build".to_string()),
+    });
+
+    let line = header_line_text(&mut session);
+    assert!(line.contains("Build"), "missing agent badge, got: {line}");
+    assert!(line.contains("Moonshot"), "missing provider, got: {line}");
+    assert!(line.contains("Kimi-K2"), "missing model, got: {line}");
+    assert!(line.contains("high"), "missing reasoning effort, got: {line}");
+}
+
+#[test]
+fn hidden_header_preserves_agent_when_context_refreshes_after_agent() {
+    // Post-hydration path pushes agent first, then a context refresh with
+    // `primary_agent: None` must not clobber it.
+    let mut session = fresh_session();
+    session.appearance.hide_header = true;
+    session.apply_transcript_width(VIEW_WIDTH);
+    session.handle_command(InlineCommand::SetPrimaryAgent { name: Some("duck".to_string()), color: None });
+
+    let mut context = session.header_context.clone();
+    context.provider = format!("{}mimo", ui::HEADER_PROVIDER_PREFIX);
+    context.model = format!("{}mimo-v2.6-pro", ui::HEADER_MODEL_PREFIX);
+    context.reasoning = format!("{}low", ui::HEADER_REASONING_PREFIX);
+    context.primary_agent = None;
+    session.handle_command(InlineCommand::SetHeaderContext { context: Box::new(context) });
+
+    let line = header_line_text(&mut session);
+    assert!(line.contains("Duck"), "agent must survive context refresh, got: {line}");
+    assert!(line.contains("Mimo Mimo-V2.6-Pro"), "missing provider/model, got: {line}");
+    assert!(line.contains("low"), "missing reasoning effort, got: {line}");
 }

@@ -182,6 +182,9 @@ async fn execute_llm_request_with_options_impl(
     ctx.renderer
         .set_reasoning_visible(resolve_reasoning_visibility(ctx.vt_cfg, turn_snapshot.capabilities.reasoning));
     let mut use_streaming = turn_snapshot.capabilities.streaming;
+    ctx.handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::PreparingContext);
+    let assembly_started_at = Instant::now();
     let initial_request = build_turn_request(
         ctx,
         step_count,
@@ -192,6 +195,8 @@ async fn execute_llm_request_with_options_impl(
         use_streaming,
     )
     .await?;
+    tracing::debug!(target: "vtcode.response_latency", operation_id = ctx.handle.current_progress_operation().map(|op| op.id()),
+        request_assembly_ms = assembly_started_at.elapsed().as_secs_f64() * 1000.0, step = step_count, "request assembled");
     let mut request = initial_request.request;
     let has_tools = initial_request.has_tools;
     let runtime_tools = initial_request.runtime_tools;
@@ -220,6 +225,8 @@ async fn execute_llm_request_with_options_impl(
     while attempt < max_retries {
         attempts_made = attempt + 1;
         if attempt > 0 {
+            ctx.handle
+                .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::Retrying);
             use crate::agent::runloop::unified::turn::turn_helpers::calculate_backoff;
             // Use category-aware backoff: rate limits get longer base delays,
             // timeouts get moderate delays, network errors use standard exponential.
@@ -276,6 +283,10 @@ async fn execute_llm_request_with_options_impl(
         }
         task::yield_now().await;
         let attempt_started_at = Instant::now();
+        ctx.handle
+            .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::WaitingForModel);
+        tracing::debug!(target: "vtcode.response_latency", operation_id = ctx.handle.current_progress_operation().map(|op| op.id()),
+            step = step_count, attempt = attempt + 1, "provider dispatched");
 
         #[cfg(debug_assertions)]
         {
@@ -325,7 +336,18 @@ async fn execute_llm_request_with_options_impl(
                         ))
                     }),
             };
-            let mut progress = |event: StreamProgressEvent| stream_bridge.on_progress(event);
+            let progress_handle = ctx.handle.clone();
+            let progress_operation = ctx.handle.current_progress_operation();
+            let mut latency =
+                streaming::ResponseLatency::new(progress_operation, attempt_started_at, step_count, attempt + 1);
+            let mut progress = |event: StreamProgressEvent| {
+                let phase = latency.observe(&event);
+                if let Some(operation) = progress_operation {
+                    progress_handle
+                        .update_progress(vtcode_commons::ui_protocol::ProgressUpdate::Phase { operation, phase });
+                }
+                stream_bridge.on_progress(event);
+            };
             let stream_result = if turn_snapshot.provider_name == vtcode_core::copilot::COPILOT_PROVIDER_KEY {
                 let mut runtime_host = CopilotRuntimeHost::new(
                     ctx.tool_registry,
@@ -472,6 +494,16 @@ async fn execute_llm_request_with_options_impl(
             }
         };
         let attempt_elapsed = attempt_started_at.elapsed();
+        if !use_streaming && let Ok((response, _)) = &step_result {
+            let operation = ctx.handle.current_progress_operation();
+            let mut latency = streaming::ResponseLatency::new(operation, attempt_started_at, step_count, attempt + 1);
+            latency.observe(&StreamProgressEvent::ProviderActivity);
+            // Non-streaming text is rendered later by response handling.
+            if response.content.as_deref().is_some_and(|content| !content.trim().is_empty()) {
+                ctx.handle
+                    .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::ReceivingResponse);
+            }
+        }
         match &step_result {
             Ok((response, _)) => {
                 ctx.telemetry
@@ -739,7 +771,7 @@ async fn execute_llm_request_with_options_impl(
         let cached_prompt_tokens = usage.cached_prompt_tokens.unwrap_or(0);
         let cache_read_tokens = usage.cache_read_tokens_or_fallback();
         let cache_creation_tokens = usage.cache_creation_tokens_or_zero();
-        let cache_hit_ratio = usage.cache_hit_rate().unwrap_or(0.0) / 100.0;
+        let cache_hit_ratio = metrics::prompt_cache_hit_ratio(ctx.provider_client.name(), usage);
         let record = PromptCacheMetricsRecord {
             kind: "prompt_cache_metrics",
             turn: step_count,

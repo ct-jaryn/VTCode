@@ -36,6 +36,7 @@ uuid = { workspace = true, features = ["v4"] }
 vtcode-commons = { workspace = true }
 vtcode-diff = { workspace = true, features = ["serde"] }
 vtcode-exec-events = { workspace = true }
+vtcode-memory = { workspace = true }
 vtcode-safety = { workspace = true }
 
 [dev-dependencies]

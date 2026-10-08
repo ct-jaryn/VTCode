@@ -174,7 +174,11 @@ impl Session {
         match status {
             TerminalTitleStatus::Ready => None,
             TerminalTitleStatus::ActionRequired => Some("!".to_string()),
-            TerminalTitleStatus::Thinking => Some(self.thinking_spinner.current_frame().to_string()),
+            TerminalTitleStatus::Thinking => Some(if self.appearance.should_animate_progress_status() {
+                self.thinking_spinner.current_frame().to_string()
+            } else {
+                status.label().to_string()
+            }),
             TerminalTitleStatus::Working | TerminalTitleStatus::Waiting | TerminalTitleStatus::Undoing => {
                 Some("...".to_string())
             }
@@ -336,15 +340,7 @@ fn is_stripped_terminal_title_char(ch: char) -> bool {
 }
 
 fn truncate_title(title: &str) -> String {
-    const ELLIPSIS: &str = crate::design::constants::ELLIPSIS_ASCII;
-    let char_count = title.chars().count();
-    if char_count <= MAX_TITLE_LENGTH {
-        return title.to_string();
-    }
-
-    let keep = MAX_TITLE_LENGTH.saturating_sub(ELLIPSIS.chars().count());
-    let truncated = title.chars().take(keep).collect::<String>();
-    format!("{truncated}{ELLIPSIS}")
+    vtcode_commons::formatting::truncate_within(title, MAX_TITLE_LENGTH, crate::design::constants::ELLIPSIS_ASCII)
 }
 
 fn normalize_title_part(value: &str) -> String {
@@ -510,5 +506,23 @@ mod tests {
             terminal_title_sequence(&sanitized),
             "\u{1b}]1;alpha ]0;bad beta\u{7}\u{1b}]2;alpha ]0;bad beta\u{7}"
         );
+    }
+    #[test]
+    fn thinking_title_respects_accessibility_policy() {
+        for (reduced, keep_animation, screen_reader, expected) in [
+            (false, false, false, "⠋ demo-project"),
+            (true, false, false, "Thinking demo-project"),
+            (true, true, false, "⠋ demo-project"),
+            (false, true, true, "Thinking demo-project"),
+            (true, true, true, "Thinking demo-project"),
+        ] {
+            let mut session = session_for_title_tests();
+            session.set_workspace_root(Some(std::path::PathBuf::from("/tmp/demo-project")));
+            session.thinking_spinner.start();
+            session.appearance.reduce_motion_mode = reduced;
+            session.appearance.reduce_motion_keep_progress_animation = keep_animation;
+            session.appearance.screen_reader_mode = screen_reader;
+            assert_eq!(session.render_terminal_title().as_deref(), Some(expected));
+        }
     }
 }

@@ -410,6 +410,8 @@ async fn numeric_hunk_headers_do_not_trigger_semantic_fallback() {
     assert!(!original_error.contains("semantic"), "{original_error}");
     assert!(!original_error.contains("usable symbol"), "{original_error}");
     let message = error_message(&result);
+    // Typed context-mismatch failure, not a semantic-anchor diagnosis.
+    assert!(message.contains("Patch context mismatch"), "{message}");
     assert!(!message.contains("semantic anchor"), "{message}");
     assert!(!message.contains("usable symbol"), "{message}");
     assert_eq!(fs::read_to_string(&source).unwrap(), original_source);

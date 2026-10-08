@@ -89,55 +89,9 @@ where
     if let Ok(parsed) = serde_json::from_str::<T>(trimmed) {
         return Ok(parsed);
     }
-    extract_first_json_block(trimmed)
+    vtcode_commons::json_extract::first_json_block(trimmed)
         .and_then(|json_block| serde_json::from_str::<T>(json_block).ok())
         .with_context(|| format!("failed to parse {context} response"))
-}
-
-fn extract_first_json_block(text: &str) -> Option<&str> {
-    let (start, opening) = text.char_indices().find(|(_, ch)| matches!(ch, '{' | '['))?;
-    let mut stack = vec![opening];
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, ch) in text[start + opening.len_utf8()..].char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '{' | '[' => stack.push(ch),
-            '}' => {
-                if stack.pop() != Some('{') {
-                    return None;
-                }
-                if stack.is_empty() {
-                    let end = start + opening.len_utf8() + offset + ch.len_utf8();
-                    return Some(&text[start..end]);
-                }
-            }
-            ']' => {
-                if stack.pop() != Some('[') {
-                    return None;
-                }
-                if stack.is_empty() {
-                    let end = start + opening.len_utf8() + offset + ch.len_utf8();
-                    return Some(&text[start..end]);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
 }
 
 pub(crate) async fn classify_facts_strict(

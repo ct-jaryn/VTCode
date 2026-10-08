@@ -12,10 +12,21 @@ use super::execution_history::HarnessContextSnapshot;
 /// Thread-safe context for harness execution.
 ///
 /// Tracks session and task IDs across tool invocations.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HarnessContext {
     session_id: Arc<ArcSwap<String>>,
     task_id: Arc<ArcSwapOption<String>>,
+    pub(super) decision_validator:
+        Arc<parking_lot::RwLock<Option<crate::core::agent::events::DecisionEvidenceValidator>>>,
+}
+
+impl std::fmt::Debug for HarnessContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HarnessContext")
+            .field("session_id", &self.session_id())
+            .field("task_id", &self.task_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for HarnessContext {
@@ -28,6 +39,7 @@ impl Default for HarnessContext {
         Self {
             session_id: Arc::new(ArcSwap::from_pointee(session_id)),
             task_id: Arc::new(ArcSwapOption::empty()),
+            decision_validator: Arc::default(),
         }
     }
 }
@@ -38,6 +50,7 @@ impl HarnessContext {
         Self {
             session_id: Arc::new(ArcSwap::from_pointee(session_id.into())),
             task_id: Arc::new(ArcSwapOption::empty()),
+            decision_validator: Arc::default(),
         }
     }
 

@@ -701,6 +701,16 @@ async fn dispatch_request(
     let operation = async {
         match request {
             BridgeRequest::Pair { .. } => Err(WebmcpError::Unauthorized),
+            BridgeRequest::ExplanationGet { scope, offset, .. } => {
+                serde_json::to_value(dispatch.adapter.explanation_get(scope, offset).await?).map_err(WebmcpError::from)
+            }
+            BridgeRequest::ExplanationEvidence { reference, offset, .. } => {
+                serde_json::to_value(dispatch.adapter.explanation_evidence(reference, offset).await?)
+                    .map_err(WebmcpError::from)
+            }
+            BridgeRequest::ExplanationNavigate { reference, .. } => {
+                Ok(serde_json::json!({"focused": dispatch.adapter.explanation_navigate(reference).await?}))
+            }
             BridgeRequest::Status { .. } => {
                 let runtime = dispatch.adapter.status().await?;
                 serde_json::to_value(StatusPayload {
@@ -919,6 +929,86 @@ mod tests {
     use super::*;
     use crate::FilesystemWorkspace;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn explanation_requests_require_origin_bound_tokens_and_report_unsupported() {
+        let temp = TempDir::new().expect("workspace");
+        let adapter = Arc::new(FilesystemWorkspace::new(temp.path(), [], false).await.expect("adapter"));
+        let origin = "https://example.test";
+        let server = WebmcpServer::new(
+            adapter,
+            WebmcpServerConfig {
+                allowed_origins: vec![origin.to_owned(), "https://other.test".to_owned()],
+                ..Default::default()
+            },
+        )
+        .expect("server");
+        let pairing = server.begin_pairing_for_origin(origin).expect("pairing");
+        let session = server
+            .state
+            .pairing
+            .pair(pairing.code(), origin)
+            .expect("authenticated session");
+        let token = session.token().to_owned();
+        let reference = vtcode_memory::explanation::EvidenceRef {
+            session_id: "session".into(),
+            offset: 0,
+            length: 1,
+            digest: "0".repeat(64),
+            item_id: None,
+        };
+        let requests = [
+            BridgeRequest::ExplanationGet {
+                request_id: "get".into(),
+                token: token.clone(),
+                scope: vtcode_memory::explanation::ExplanationScope::Task,
+                offset: 0,
+            },
+            BridgeRequest::ExplanationEvidence {
+                request_id: "evidence".into(),
+                token: token.clone(),
+                reference: reference.clone(),
+                offset: 0,
+            },
+            BridgeRequest::ExplanationNavigate {
+                request_id: "navigate".into(),
+                token: token.clone(),
+                reference,
+            },
+        ];
+        for request in &requests {
+            let dispatch = || Arc::clone(&server.state.dispatch);
+            assert!(matches!(
+                dispatch_request(dispatch(), origin.into(), "wrong-token".into(), request.clone()).await,
+                Err(WebmcpError::Unauthorized)
+            ));
+            let error = dispatch_request(dispatch(), origin.into(), token.clone(), request.clone())
+                .await
+                .expect_err("headless adapter does not provide explanations");
+            assert!(matches!(error, WebmcpError::Unsupported(_)));
+            assert_eq!(response_for_error("operation", error).error.expect("error payload").code, "unsupported");
+        }
+        assert!(matches!(
+            dispatch_request(
+                Arc::clone(&server.state.dispatch),
+                "https://other.test".into(),
+                token.clone(),
+                requests[0].clone()
+            )
+            .await,
+            Err(WebmcpError::Unauthorized)
+        ));
+        for request in requests {
+            assert!(matches!(
+                dispatch_request(Arc::clone(&server.state.dispatch), origin.into(), token.clone(), request).await,
+                Err(WebmcpError::Unauthorized)
+            ));
+        }
+        let status = server.state.adapter.status().await.expect("status");
+        assert!(!status.explanations_available);
+        assert!(!status.turns_available);
+        assert!(std::fs::read_dir(temp.path()).expect("workspace files").next().is_none());
+    }
 
     #[tokio::test]
     async fn server_requires_explicit_origins_and_remote_flags() {

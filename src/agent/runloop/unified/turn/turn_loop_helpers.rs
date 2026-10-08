@@ -30,7 +30,11 @@ pub(super) struct PrecomputedTurnConfig {
 }
 
 const UNLIMITED_TOOL_LOOPS: usize = usize::MAX;
-const TOOL_LOOP_LIMIT_RECOVERY_REASON: &str = "Tool loop budget exhausted before a final response. Tools are disabled for one bounded synthesis pass; answer from the completed tool outputs and state any incomplete work explicitly.";
+fn tool_loop_limit_recovery_reason(limit: usize) -> String {
+    format!(
+        "Tool loop budget exhausted before a final response ({limit}/{limit}). Tools are disabled for one bounded synthesis pass; answer from the completed tool outputs and state any incomplete work explicitly."
+    )
+}
 
 /// Initialize the loop allowance for a turn that is executing an approved
 /// plan. The allowance is applied at turn initialization only; later
@@ -421,7 +425,7 @@ fn arm_tool_loop_synthesis_recovery(harness_state: &mut HarnessTurnState, curren
     // `activate_recovery` only arms from the `Inactive` phase and reports
     // whether it did, so a pending/in-flight pass never widens the loop
     // allowance here.
-    if !harness_state.activate_recovery(TOOL_LOOP_LIMIT_RECOVERY_REASON) {
+    if !harness_state.activate_recovery(tool_loop_limit_recovery_reason(*current_max_tool_loops)) {
         return false;
     }
 
@@ -833,6 +837,8 @@ pub(super) async fn maybe_handle_tool_loop_limit(
     let planning_active = ctx.is_planning_active();
     if planning_active {
         ctx.plan_session.mark_budget_exhausted();
+        ctx.harness_state
+            .activate_recovery(tool_loop_limit_recovery_reason(*current_max_tool_loops));
         ctx.harness_state.switch_to_tool_free_recovery();
         *current_max_tool_loops = UNLIMITED_TOOL_LOOPS;
         display_status(
@@ -941,13 +947,12 @@ pub(super) async fn maybe_handle_tool_loop_limit(
 #[cfg(test)]
 mod tests {
     use super::{
-        TOOL_LOOP_LIMIT_RECOVERY_REASON, ToolLoopGrantSource, UNLIMITED_TOOL_LOOPS,
-        apply_mode_switch_remaining_tool_call_floor, apply_mode_switch_remaining_tool_loop_floor,
-        arm_tool_loop_synthesis_recovery, auto_tool_loop_grant_increment, clamp_tool_loop_increment,
-        effective_max_tool_calls_for_approved_plan_execution, effective_max_tool_calls_for_turn, extract_turn_config,
-        handle_steering_messages, initial_tool_loop_limit, is_internal_harness_follow_up,
-        is_stale_approved_plan_pause_response, resolve_safety_tool_call_limits, resolve_tool_loop_limit,
-        tool_loop_grant_source, tool_loop_hard_cap,
+        ToolLoopGrantSource, UNLIMITED_TOOL_LOOPS, apply_mode_switch_remaining_tool_call_floor,
+        apply_mode_switch_remaining_tool_loop_floor, arm_tool_loop_synthesis_recovery, auto_tool_loop_grant_increment,
+        clamp_tool_loop_increment, effective_max_tool_calls_for_approved_plan_execution,
+        effective_max_tool_calls_for_turn, extract_turn_config, handle_steering_messages, initial_tool_loop_limit,
+        is_internal_harness_follow_up, is_stale_approved_plan_pause_response, resolve_safety_tool_call_limits,
+        resolve_tool_loop_limit, tool_loop_grant_source, tool_loop_hard_cap, tool_loop_limit_recovery_reason,
     };
     use crate::agent::runloop::unified::planning_workflow::{
         PlanningIntent, detect_enter_planning_intent, detect_planning_intent,
@@ -1255,13 +1260,45 @@ mod tests {
         assert_eq!(loop_limit, UNLIMITED_TOOL_LOOPS);
         assert!(state.is_recovery_active());
         assert!(state.recovery_is_tool_free());
-        assert_eq!(state.recovery_reason(), Some(TOOL_LOOP_LIMIT_RECOVERY_REASON));
+        assert_eq!(state.recovery_reason(), Some(tool_loop_limit_recovery_reason(40).as_str()));
 
         // The recovery request is the only pass added by this transition.
         assert!(!arm_tool_loop_synthesis_recovery(&mut state, &mut loop_limit));
         assert!(state.consume_recovery_pass());
         assert!(state.finish_recovery_pass());
         assert!(!arm_tool_loop_synthesis_recovery(&mut state, &mut loop_limit));
+    }
+
+    #[tokio::test]
+    async fn planning_loop_exhaustion_retains_limit_and_hard_cap_stays_terminal() {
+        let mut planning = TestTurnProcessingBacking::new(4).await;
+        planning.activate_planning_for_test();
+        let mut limit = 7;
+        let mut ctx = planning.turn_loop_context();
+        assert!(matches!(
+            super::maybe_handle_tool_loop_limit(&mut ctx, 7, &mut limit).await.unwrap(),
+            super::ToolLoopLimitAction::ContinueLoop
+        ));
+        assert_eq!(limit, UNLIMITED_TOOL_LOOPS);
+        assert_eq!(
+            ctx.harness_state.budget_recovery_reason(),
+            Some("Tool loop budget exhausted before a final response (7/7)")
+        );
+        assert!(ctx.harness_state.recovery_is_tool_free());
+
+        let mut build = TestTurnProcessingBacking::new(4).await;
+        let mut cfg = VTCodeConfig::default();
+        cfg.tools.max_tool_loops = 5;
+        build.set_vt_cfg_for_test(cfg);
+        let cap = tool_loop_hard_cap(5, false);
+        let mut limit = cap;
+        let mut ctx = build.turn_loop_context();
+        assert!(matches!(
+            super::maybe_handle_tool_loop_limit(&mut ctx, cap, &mut limit).await.unwrap(),
+            super::ToolLoopLimitAction::BreakLoop
+        ));
+        assert_eq!(limit, cap);
+        assert!(!ctx.harness_state.is_recovery_active());
     }
 
     #[test]
@@ -1301,7 +1338,7 @@ mod tests {
         super::restore_fresh_turn_tool_guidance(&mut history, false);
         super::restore_fresh_turn_tool_guidance(&mut history, false);
         assert_eq!(history.len(), restored_len, "already superseded restrictions must not duplicate guidance");
-        history.push(Message::system(TOOL_LOOP_LIMIT_RECOVERY_REASON.to_owned()));
+        history.push(Message::system(tool_loop_limit_recovery_reason(60)));
         history.push(Message::user("Retry after the new recovery".to_owned()));
         super::restore_fresh_turn_tool_guidance(&mut history, true);
         assert_eq!(history.len(), restored_len + 2, "active recovery still takes precedence");
@@ -1341,7 +1378,7 @@ mod tests {
         use vtcode_core::llm::provider::Message;
 
         for directive in [
-            TOOL_LOOP_LIMIT_RECOVERY_REASON.to_owned(),
+            tool_loop_limit_recovery_reason(60),
             ToolBudgetExhaustion { used: 4, max: 4, remaining: 0 }.synthesis_directive_message(),
             ToolWallClockExhaustion { max_secs: 600 }.synthesis_directive_message(),
             POST_TOOL_RECOVERY_REASON.to_owned(),

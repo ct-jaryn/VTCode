@@ -352,7 +352,13 @@ pub(super) async fn drive_terminal<B: Backend, S: TuiSessionDriver>(
         // Update terminal title based on current activity state
         session.update_terminal_title();
 
-        if session.thinking_spinner_active() || session.is_running_activity() || session.has_status_spinner() {
+        // Keep active-rate ticks while animations or transient expiries are
+        // pending, independently of recent user input. Input, commands (new
+        // messages), and crossterm events already render immediately in the
+        // same wakeup; ticks only drive spinner/shimmer frames (80/33ms),
+        // drag auto-scroll steps (50ms), and expiry cleanup. A truly idle
+        // session therefore rests at the low upkeep rate instead of polling.
+        if session.needs_animation_tick() {
             event_channels.record_input();
         }
 

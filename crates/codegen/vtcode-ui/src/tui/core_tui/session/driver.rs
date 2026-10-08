@@ -28,6 +28,10 @@ impl TuiSessionDriver for Session {
         self.handle_tick();
     }
 
+    fn needs_animation_tick(&self) -> bool {
+        self.needs_animation_tick()
+    }
+
     fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
         self.render(frame);
     }

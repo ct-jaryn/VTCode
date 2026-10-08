@@ -11,6 +11,164 @@ use vtcode_core::config::ToolDisplayMode;
 use vtcode_core::tools::registry::ToolExecutionError;
 
 #[tokio::test]
+async fn parallel_reads_persist_actual_outcomes_and_consume_streamed_items() {
+    assert_parallel_read_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn cancelled_parallel_reads_persist_terminal_events_while_draining() {
+    assert_parallel_read_lifecycle(true).await;
+}
+
+struct ParallelReadCase {
+    call_id: &'static str,
+    args: serde_json::Value,
+    status: &'static str,
+    exit_code: Option<i64>,
+}
+
+async fn assert_parallel_read_lifecycle(cancelled: bool) {
+    use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
+    use crate::agent::runloop::unified::run_loop_context::StreamedToolCallItem;
+    use crate::agent::runloop::unified::turn::context::TurnLoopResult;
+    use vtcode_core::core::agent::events::tool_started_event;
+
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().expect("sample workspace").to_path_buf();
+    let emitter = HarnessEventEmitter::new_async(&workspace, "parallel-outcomes", None)
+        .await
+        .expect("canonical emitter");
+    let read_cases = [
+        ParallelReadCase {
+            call_id: "parallel_read",
+            args: json!({"cmd":"sed -n '1p' sample.txt", "workdir":workspace}),
+            status: "completed",
+            exit_code: Some(0),
+        },
+        ParallelReadCase {
+            call_id: "parallel_no_match",
+            args: json!({"cmd":"grep 'absent-pattern' sample.txt", "workdir":workspace}),
+            status: "completed",
+            exit_code: Some(1),
+        },
+    ];
+    for case in &read_cases {
+        cache_tool_permission(&mut backing, tool_names::EXEC_COMMAND, &case.args, PermissionGrant::Permanent).await;
+    }
+    backing.harness_state.remember_streamed_tool_call_items([(
+        "parallel_read".to_string(),
+        StreamedToolCallItem {
+            item_id: "streamed-read".to_string(),
+            tool_name: tool_names::EXEC_COMMAND.to_string(),
+        },
+    )]);
+    emitter
+        .emit(tool_started_event(
+            "streamed-read".to_string(),
+            tool_names::EXEC_COMMAND,
+            Some(&read_cases[0].args),
+            Some("parallel_read"),
+        ))
+        .expect("streamed start");
+    let calls = read_cases
+        .iter()
+        .map(|case| {
+            PreparedAssistantToolCall::new(uni::ToolCall::function(
+                case.call_id.to_string(),
+                tool_names::EXEC_COMMAND.to_string(),
+                serde_json::to_string(&case.args).expect("arguments"),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut repeated_tool_attempts = LoopTracker::new();
+    let mut turn_modified_files = BTreeSet::new();
+    {
+        let mut ctx = backing.turn_processing_context();
+        ctx.full_auto = true;
+        ctx.harness_emitter = Some(&emitter);
+        if cancelled {
+            ctx.ctrl_c_state.request_local_cancel();
+            ctx.ctrl_c_notify.notify_one();
+        }
+        let mut outcome_ctx = ToolOutcomeContext {
+            ctx: &mut ctx,
+            repeated_tool_attempts: &mut repeated_tool_attempts,
+            turn_modified_files: &mut turn_modified_files,
+        };
+        let outcome = handle_tool_calls(&mut outcome_ctx, &calls).await.expect("parallel reads");
+        if cancelled {
+            assert!(matches!(outcome, Some(TurnHandlerOutcome::Break(TurnLoopResult::Cancelled))));
+        } else {
+            assert!(outcome.is_none());
+        }
+        assert!(
+            ctx.harness_state.take_all_streamed_tool_call_item_ids().is_empty(),
+            "turn teardown must not close executed calls again"
+        );
+        if !cancelled {
+            for case in &read_cases {
+                let response = ctx
+                    .working_history
+                    .iter()
+                    .find(|message| message.tool_call_id.as_deref() == Some(case.call_id))
+                    .expect("provider tool response");
+                assert!(!response.content.as_text().contains("before it could execute"));
+            }
+        }
+    }
+    emitter.finish().await.expect("persist canonical events");
+    let persisted = std::fs::read_to_string(workspace.join(".vtcode/sessions/parallel-outcomes/events.jsonl"))
+        .expect("canonical events");
+    let events = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event JSON"))
+        .collect::<Vec<_>>();
+    for case in &read_cases {
+        let call_id = case.call_id;
+        let status = if cancelled { "failed" } else { case.status };
+        let exit_code = if cancelled { None } else { case.exit_code };
+        let matching = events
+            .iter()
+            .filter(|record| record["event"]["item"]["tool_call_id"] == call_id)
+            .map(|record| &record["event"])
+            .collect::<Vec<_>>();
+        let starts = matching
+            .iter()
+            .filter(|event| event["type"] == "item.started")
+            .collect::<Vec<_>>();
+        assert_eq!(starts.len(), 1, "one invocation start for {call_id}");
+        let completions = matching
+            .iter()
+            .filter(|event| event["type"] == "item.completed")
+            .collect::<Vec<_>>();
+        assert_eq!(completions.len(), 2, "invocation and output completion for {call_id}");
+        let invocation = completions
+            .iter()
+            .find(|event| event["item"]["type"] == "tool_invocation")
+            .expect("invocation completion");
+        assert_eq!(invocation["item"]["id"], starts[0]["item"]["id"]);
+        assert_eq!(invocation["item"]["status"], status);
+        let output = completions
+            .iter()
+            .find(|event| event["item"]["type"] == "tool_output")
+            .expect("output completion");
+        assert_eq!(output["item"]["status"], status);
+        assert_eq!(output["item"]["exit_code"].as_i64(), exit_code);
+        if call_id == "parallel_read" {
+            assert_eq!(invocation["item"]["id"], "streamed-read");
+        }
+        let output_text = output["item"]["output"].as_str().expect("output text");
+        if cancelled {
+            assert!(output_text.contains("Tool execution cancelled"));
+        } else if call_id == "parallel_read" {
+            assert!(output_text.contains("hello"));
+        }
+    }
+    assert_eq!(persisted.matches("tool_latency_recorded").count(), 2, "one terminal observation per call");
+}
+
+#[tokio::test]
 async fn blocked_tool_call_guard_emits_tool_and_system_messages() {
     let mut backing = TestContextBacking::new(4).await;
     let mut ctx = backing.turn_processing_context();
@@ -774,6 +932,22 @@ fn dynamic_find_preflight_feedback_names_safe_static_alternatives() {
     assert!(correction.contains("Do not retry"));
 }
 
+#[test]
+fn policy_preflight_feedback_does_not_recommend_json_repair() {
+    let security = preflight_schema_correction(
+        tool_names::EXEC_COMMAND,
+        "Command security check failed: Command injection pattern detected",
+    );
+    assert!(security.contains("security policy"));
+    assert!(!security.contains("matching the declared schema"));
+    assert!(security.contains("Do not retry"));
+    let planning = preflight_schema_correction(tool_names::EXEC_COMMAND, "tool denied by planning workflow");
+    assert!(planning.contains("command -v"));
+    assert!(planning.contains("defer unknown scripts"));
+    let malformed = preflight_schema_correction(tool_names::EXEC_COMMAND, "Invalid arguments: missing cmd");
+    assert!(malformed.contains("matching the declared schema"));
+}
+
 #[tokio::test]
 async fn planning_preflight_recovery_requires_plan_artifact() {
     let mut backing = TestContextBacking::new(4).await;
@@ -958,6 +1132,19 @@ async fn validate_tool_call_blocks_when_wall_clock_budget_exhausted() {
             .await
             .expect("validate second wall-clock-exhausted tool call");
     assert!(matches!(second, ValidationResult::Blocked));
+    let stub = ctx
+        .working_history
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("wall_clock_exhausted_2"))
+        .expect("wall-clock rejection response");
+    let payload: serde_json::Value = serde_json::from_str(&stub.content.as_text()).unwrap();
+    assert!(
+        payload["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("Synthesize your final answer now")
+    );
+    assert!(!stub.content.as_text().contains("alternative tool"));
     let policy_violation_count = ctx
         .working_history
         .iter()
@@ -1072,8 +1259,16 @@ async fn recovery_skip_step_pushes_structured_tool_message() {
 
 #[tokio::test]
 async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
+    use crate::agent::runloop::unified::inline_events::harness::HarnessEventEmitter;
+    use crate::agent::runloop::unified::run_loop_context::StreamedToolCallItem;
+    use vtcode_core::core::agent::events::tool_started_event;
+
     let mut backing = TestContextBacking::new(4).await;
     backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    let emitter = HarnessEventEmitter::new_async(&workspace, "cached-read-lifecycle", None)
+        .await
+        .unwrap();
     let args = json!({
         "path": backing.sample_file.to_string_lossy()
     });
@@ -1081,6 +1276,7 @@ async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
     let mut repeated_tool_attempts = LoopTracker::new();
     let mut turn_modified_files = BTreeSet::new();
     let mut tp_ctx = backing.turn_processing_context();
+    tp_ctx.harness_emitter = Some(&emitter);
     let mut outcome_ctx = ToolOutcomeContext {
         ctx: &mut tp_ctx,
         repeated_tool_attempts: &mut repeated_tool_attempts,
@@ -1109,11 +1305,30 @@ async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
             .is_some()
     );
 
-    let second = handle_single_tool_call(&mut outcome_ctx, "read_twice", tool_names::READ_FILE, args)
+    outcome_ctx.ctx.harness_state.remember_streamed_tool_call_items([(
+        "read_twice".to_owned(),
+        StreamedToolCallItem {
+            item_id: "streamed-cached-read".to_owned(),
+            tool_name: tool_names::READ_FILE.to_owned(),
+        },
+    )]);
+    emitter
+        .emit(tool_started_event(
+            "streamed-cached-read".to_owned(),
+            tool_names::READ_FILE,
+            Some(&args),
+            Some("read_twice"),
+        ))
+        .unwrap();
+    let second = handle_single_tool_call(&mut outcome_ctx, "read_twice", tool_names::READ_FILE, args.clone())
         .await
         .expect("duplicate readonly call should be reused");
 
     assert!(second.is_none());
+    assert!(
+        outcome_ctx.ctx.harness_state.take_all_streamed_tool_call_item_ids().is_empty(),
+        "cached reads must not be cancelled by teardown"
+    );
     assert_eq!(outcome_ctx.ctx.harness_state.tool_calls, 1);
     assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), 1);
     assert_eq!(
@@ -1124,6 +1339,31 @@ async fn repeated_identical_readonly_call_in_same_turn_reuses_recent_result() {
             .reused_results,
         1
     );
+    emitter.finish().await.unwrap();
+    let persisted =
+        std::fs::read_to_string(workspace.join(".vtcode/sessions/cached-read-lifecycle/events.jsonl")).unwrap();
+    let events = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let completions = events
+        .iter()
+        .map(|record| &record["event"])
+        .filter(|event| event["type"] == "item.completed" && event["item"]["tool_call_id"] == "read_twice")
+        .collect::<Vec<_>>();
+    assert_eq!(completions.len(), 2, "one cached invocation and output completion");
+    let invocation = completions
+        .iter()
+        .find(|event| event["item"]["type"] == "tool_invocation")
+        .unwrap();
+    assert_eq!(invocation["item"]["id"], "streamed-cached-read");
+    assert_eq!(invocation["item"]["status"], "completed");
+    assert_eq!(invocation["item"]["outcome"], "success");
+    assert_eq!(invocation["item"]["arguments"], args);
+    let output = completions.iter().find(|event| event["item"]["type"] == "tool_output").unwrap();
+    assert_eq!(output["item"]["status"], "completed");
+    assert!(output["item"]["output"].as_str().unwrap().contains("hello"));
+    assert!(!output["item"]["output"].as_str().unwrap().contains("before it could execute"));
     assert!(
         outcome_ctx
             .ctx
@@ -1265,6 +1505,380 @@ async fn repeated_identical_slice_read_trips_read_family_cap() {
             .iter()
             .any(|message| { message.content.as_text().contains("repeated_read_family") })
     );
+}
+
+#[tokio::test]
+async fn intermittent_path_cap_rejections_allow_progress_but_consecutive_retries_trip_fuse() {
+    for productive in [true, false] {
+        let mut backing = TestContextBacking::new(64).await;
+        backing.select_build_primary_agent();
+        let sample = backing.sample_file.clone();
+        let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+continued after read cap\n*** End Patch\n"});
+        cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &patch, PermissionGrant::Permanent).await;
+        let mut tracker = LoopTracker::new();
+        let mut modified = BTreeSet::new();
+        let mut ctx = backing.turn_processing_context();
+        let cap = max_consecutive_blocked_tool_calls_per_turn(&ctx);
+        for _ in 0..6 {
+            ctx.harness_state
+                .record_file_read_path_call(sample.to_string_lossy().into_owned());
+        }
+        let mut outcome_ctx = ToolOutcomeContext {
+            ctx: &mut ctx,
+            repeated_tool_attempts: &mut tracker,
+            turn_modified_files: &mut modified,
+        };
+        let attempts = if productive { cap * 2 + 1 } else { cap + 1 };
+        for index in 1..=attempts {
+            let before = outcome_ctx.ctx.tool_registry.execution_history_len();
+            handle_single_tool_call(
+                &mut outcome_ctx,
+                &format!("capped_{index}"),
+                tool_names::READ_FILE,
+                json!({"path":sample, "offset":index, "limit":1}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), before, "capped reads cannot execute");
+            if productive {
+                let other = sample.with_file_name(format!("other_{index}.txt"));
+                std::fs::write(&other, format!("distinct evidence {index}\n")).unwrap();
+                handle_single_tool_call(
+                    &mut outcome_ctx,
+                    &format!("progress_{index}"),
+                    tool_names::READ_FILE,
+                    json!({"path":other, "offset":1, "limit":1}),
+                )
+                .await
+                .unwrap();
+                assert!(outcome_ctx.ctx.tool_registry.execution_history_len() > before);
+                assert!(!outcome_ctx.ctx.harness_state.blocked_tool_recovery_pending());
+            }
+        }
+        assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+        assert_eq!(
+            outcome_ctx.ctx.harness_state.blocked_tool_recovery_pending() || outcome_ctx.ctx.is_recovery_active(),
+            !productive,
+        );
+        if productive {
+            handle_single_tool_call(&mut outcome_ctx, "continue_patch", tool_names::APPLY_PATCH, patch)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(sample).unwrap(), "continued after read cap\n");
+        } else {
+            assert_eq!(outcome_ctx.ctx.harness_state.consecutive_blocked_tool_calls, cap + 1);
+            assert_eq!(std::fs::read_to_string(sample).unwrap(), "hello\n");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn concentrated_search_coaching_keeps_distinct_queries_available() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    let content = ('A'..='G').map(|letter| format!("unique_fact_{letter}\n")).collect::<String>();
+    std::fs::write(workspace.join("README.md"), content).unwrap();
+    let args = json!({"query":"unique_fact_A","path":"README.md","result_types":["text"]});
+    cache_tool_permission(&mut backing, tool_names::CODE_SEARCH, &args, PermissionGrant::Permanent).await;
+    let mut tracker = LoopTracker::new();
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for (index, letter) in ('A'..='G').enumerate() {
+        let id = format!("focused_{letter}");
+        let mut args = args.clone();
+        args["query"] = json!(format!("unique_fact_{letter}"));
+        let call = PreparedAssistantToolCall::new(uni::ToolCall::function(
+            id.clone(),
+            tool_names::CODE_SEARCH.to_string(),
+            serde_json::to_string(&args).unwrap(),
+        ));
+        assert!(handle_tool_calls(&mut outcome_ctx, &[call]).await.unwrap().is_none());
+        let history = &outcome_ctx.ctx.working_history;
+        let output = history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(&id))
+            .unwrap()
+            .content
+            .as_text();
+        let payload: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(payload["returned"], 1, "expected a distinct line for {letter}: {output}");
+        let notices = history
+            .iter()
+            .filter(|message| message.content.as_text().contains("Several searches have concentrated"))
+            .count();
+        assert_eq!(notices, usize::from(index >= 5));
+        assert_eq!(outcome_ctx.repeated_tool_attempts.low_signal_tool_calls, 0);
+        assert!(!outcome_ctx.ctx.is_recovery_active());
+    }
+    assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn redundant_sed_coaching_keeps_edits_and_verification_available() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    std::fs::write(&backing.sample_file, "alpha\nbeta\ngamma\n").unwrap();
+    std::fs::create_dir(workspace.join("scripts")).unwrap();
+    std::fs::write(workspace.join("scripts/check_markdown.py"), "print('verified')\n").unwrap();
+    let first = json!({"cmd":"sed -n '1,3p' sample.txt", "workdir":workspace});
+    let repeated = json!({"cmd":"sed -n '2p' sample.txt", "workdir":workspace});
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-beta\n+delta\n*** End Patch\n"});
+    let verifier = json!({"cmd":"python3 scripts/check_markdown.py", "workdir":workspace});
+    for (name, args) in [
+        (tool_names::EXEC_COMMAND, &first),
+        (tool_names::EXEC_COMMAND, &repeated),
+        (tool_names::APPLY_PATCH, &patch),
+        (tool_names::EXEC_COMMAND, &verifier),
+    ] {
+        cache_tool_permission(&mut backing, name, args, PermissionGrant::Permanent).await;
+    }
+    let mut tracker = LoopTracker::new();
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for (id, args) in [("first_read", first), ("retained_read", repeated.clone())] {
+        let call = PreparedAssistantToolCall::new(uni::ToolCall::function(
+            id.to_string(),
+            tool_names::EXEC_COMMAND.to_string(),
+            serde_json::to_string(&args).unwrap(),
+        ));
+        assert!(handle_tool_calls(&mut outcome_ctx, &[call]).await.unwrap().is_none());
+    }
+    let history = &outcome_ctx.ctx.working_history;
+    let evidence_index = history
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("retained_read"))
+        .unwrap();
+    let notice_index = history
+        .iter()
+        .position(|m| m.content.as_text().contains("This inspection returned only text evidence"))
+        .unwrap();
+    assert!(evidence_index < notice_index);
+    assert_eq!(outcome_ctx.repeated_tool_attempts.low_signal_tool_calls, 1);
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 0);
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "useful_edit", tool_names::APPLY_PATCH, patch)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "changed_read", tool_names::EXEC_COMMAND, repeated)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read_to_string(workspace.join("sample.txt")).unwrap(), "alpha\ndelta\ngamma\n");
+    assert_eq!(outcome_ctx.repeated_tool_attempts.low_signal_tool_calls, 1, "the changed read is productive");
+    outcome_ctx.repeated_tool_attempts.mark_verification_pending();
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "verify_continuation", tool_names::EXEC_COMMAND, verifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn masked_checker_feedback_is_bounded_and_standalone_verification_continues_loop() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    std::fs::create_dir(workspace.join("scripts")).unwrap();
+    let checker = workspace.join("scripts/check_markdown.py");
+    std::fs::write(&checker, "import sys, time, pathlib\nwhile not pathlib.Path('release-checker').exists(): time.sleep(0.01)\nprint('README: checker failed')\nsys.exit(7)\n").unwrap();
+    let masked = json!({"cmd":"python3 scripts/check_markdown.py; echo \"lint exit: $?\"", "workdir":workspace, "yield_time_ms":250});
+    let standalone = json!({"cmd":"python3 scripts/check_markdown.py", "workdir":workspace});
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+continued after verification\n*** End Patch\n"});
+    for (name, args) in [
+        (tool_names::EXEC_COMMAND, &masked),
+        (tool_names::EXEC_COMMAND, &standalone),
+        (tool_names::WRITE_STDIN, &json!({"session_id":"placeholder", "chars":""})),
+        (tool_names::APPLY_PATCH, &patch),
+    ] {
+        cache_tool_permission(&mut backing, name, args, PermissionGrant::Permanent).await;
+    }
+    let mut tracker = LoopTracker::new();
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for index in 0..2 {
+        let mut call_id = format!("masked_checker_{index}");
+        let call = PreparedAssistantToolCall::new(uni::ToolCall::function(
+            call_id.clone(),
+            tool_names::EXEC_COMMAND.to_string(),
+            serde_json::to_string(&masked).unwrap(),
+        ));
+        assert!(handle_tool_calls(&mut outcome_ctx, &[call]).await.unwrap().is_none());
+        let output = outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(&call_id))
+            .unwrap()
+            .content
+            .as_text();
+        if index == 0 {
+            let running: serde_json::Value = serde_json::from_str(&output).unwrap();
+            std::fs::write(workspace.join("release-checker"), "release").unwrap();
+            assert!(running.get("exit_code").is_none());
+            assert!(running["next_wait_args"]["session_id"].is_string(), "expected a running session: {running}");
+            assert!(!outcome_ctx.repeated_tool_attempts.piped_verification_notice_pending);
+            assert!(
+                !outcome_ctx
+                    .ctx
+                    .working_history
+                    .iter()
+                    .any(|message| message.content.as_text().contains("Verification was not recorded because"))
+            );
+            call_id = "masked_checker_poll".to_string();
+            let poll = PreparedAssistantToolCall::new(uni::ToolCall::function(
+                call_id.clone(),
+                tool_names::WRITE_STDIN.to_string(),
+                serde_json::to_string(&json!({"session_id":running["next_wait_args"]["session_id"], "action":"wait", "wait_timeout_seconds":10}))
+                    .unwrap(),
+            ));
+            assert!(handle_tool_calls(&mut outcome_ctx, &[poll]).await.unwrap().is_none());
+        }
+        let output = outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(&call_id))
+            .unwrap()
+            .content
+            .as_text();
+        assert!(output.contains("lint exit: 7"), "the checker must really have failed: {output}");
+        let payload: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(payload["exit_code"], 0, "the final echo masks the checker's failure");
+        let notice_count = outcome_ctx
+            .ctx
+            .working_history
+            .iter()
+            .filter(|message| {
+                message.role == uni::MessageRole::System
+                    && message.content.as_text().contains("Verification was not recorded because")
+            })
+            .count();
+        assert_eq!(notice_count, 1, "repeated completed calls must not repeat coaching");
+        if index == 0 {
+            let history = &outcome_ctx.ctx.working_history;
+            let output_index = history
+                .iter()
+                .position(|message| message.tool_call_id.as_deref() == Some(&call_id))
+                .unwrap();
+            let notice_index = history
+                .iter()
+                .position(|message| {
+                    message.role == uni::MessageRole::System
+                        && message.content.as_text().contains("Verification was not recorded because")
+                })
+                .unwrap();
+            assert!(output_index < notice_index, "coaching must follow the tool's evidence");
+        }
+        assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+        assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 0);
+    }
+    std::fs::write(&checker, "print('README: checker passed')\n").unwrap();
+    outcome_ctx.repeated_tool_attempts.mark_verification_pending();
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "standalone_checker", tool_names::EXEC_COMMAND, standalone)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!outcome_ctx.repeated_tool_attempts.verification_is_pending());
+    assert!(
+        handle_single_tool_call(&mut outcome_ctx, "verified_edit", tool_names::APPLY_PATCH, patch)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read_to_string(workspace.join("sample.txt")).unwrap(), "continued after verification\n");
+    assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    assert!(!outcome_ctx.ctx.is_recovery_active());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn filtered_verifier_failure_grants_repair_and_success_continues_loop() {
+    let mut backing = TestContextBacking::new(12).await;
+    backing.select_build_primary_agent();
+    let workspace = backing.sample_file.parent().unwrap().to_path_buf();
+    std::fs::create_dir(workspace.join("scripts")).unwrap();
+    let checker = workspace.join("scripts/check_markdown.py");
+    let command = "python3 scripts/check_markdown.py 2>&1 | grep";
+    let args = json!({"cmd":command, "raw_command":command, "args":["README"], "workdir":workspace});
+    cache_tool_permission(&mut backing, tool_names::EXEC_COMMAND, &args, PermissionGrant::Permanent).await;
+    let patch = json!({"input":"*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+verified continuation\n*** End Patch\n"});
+    cache_tool_permission(&mut backing, tool_names::APPLY_PATCH, &patch, PermissionGrant::Permanent).await;
+    let mut tracker = LoopTracker::with_verification_snapshot((true, 0));
+    let mut modified = BTreeSet::new();
+    let mut ctx = backing.turn_processing_context();
+    let mut outcome_ctx = ToolOutcomeContext {
+        ctx: &mut ctx,
+        repeated_tool_attempts: &mut tracker,
+        turn_modified_files: &mut modified,
+    };
+    for (exit, pending) in [(7, true), (0, false)] {
+        std::fs::write(
+            &checker,
+            format!("import sys\nprint('README: checker output')\nprint('unrelated output')\nsys.exit({exit})\n"),
+        )
+        .unwrap();
+        let start = outcome_ctx.ctx.working_history.len();
+        handle_single_tool_call(
+            &mut outcome_ctx,
+            &format!("filtered_check_{exit}"),
+            tool_names::EXEC_COMMAND,
+            args.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome_ctx.repeated_tool_attempts.verification_is_pending(), pending);
+        let output = outcome_ctx.ctx.working_history[start..]
+            .iter()
+            .filter(|message| message.role == uni::MessageRole::Tool)
+            .map(|message| message.content.as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("README: checker output"), "{output}");
+        assert!(!output.contains("unrelated output"), "filter must be preserved: {output}");
+        if pending {
+            assert_eq!(outcome_ctx.repeated_tool_attempts.fix_edits_remaining, 2);
+        }
+        assert_eq!(outcome_ctx.ctx.harness_state.blocked_tool_calls, 0);
+    }
+    handle_single_tool_call(&mut outcome_ctx, "after_filtered_verification", tool_names::APPLY_PATCH, patch)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(workspace.join("sample.txt")).unwrap(), "verified continuation\n");
+    assert!(!outcome_ctx.ctx.is_recovery_active());
 }
 
 #[tokio::test]
@@ -1582,6 +2196,29 @@ async fn end_to_end_blocked_calls_do_not_burn_budget_before_valid_call() {
     assert!(outcome_ctx.ctx.working_history.iter().any(|message| {
         message.role == uni::MessageRole::Tool && message.content.as_text().contains("exceeded max tool calls per turn")
     }));
+    let second_exhausted = validate_tool_call(
+        outcome_ctx.ctx,
+        "exhausted_stub",
+        tool_names::READ_FILE,
+        &json!({"path": valid_file.to_string_lossy()}),
+    )
+    .await
+    .expect("second budget rejection");
+    assert!(matches!(second_exhausted, ValidationResult::Blocked));
+    let stub = outcome_ctx
+        .ctx
+        .working_history
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("exhausted_stub"))
+        .expect("tool-call budget rejection response");
+    let payload: serde_json::Value = serde_json::from_str(&stub.content.as_text()).unwrap();
+    assert!(
+        payload["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("Synthesize your final answer now")
+    );
+    assert!(!stub.content.as_text().contains("narrower scope"));
 }
 
 #[tokio::test]
@@ -2268,6 +2905,10 @@ async fn patch_context_mismatch_gets_one_fresh_read_after_path_cap_then_correcte
 fn patch_preflight_correction_names_canonical_json_input() {
     for (name, error) in [
         (tool_names::APPLY_PATCH, "Missing required argument: input"),
+        (
+            tool_names::APPLY_PATCH,
+            "Tool preflight validation failed for 'apply_patch': Missing required argument: patch",
+        ),
         (tool_names::EXEC_COMMAND, "apply_patch is a tool, not a shell executable"),
     ] {
         let correction = preflight_schema_correction(name, error);
@@ -2315,6 +2956,14 @@ async fn patch_context_mismatch_allows_one_uncached_shell_range_after_six_reads(
             .tool_registry
             .has_patch_recovery_read(tool_names::EXEC_COMMAND, &args)
     );
+    // Cached identical reads can already be at the family boundary when a
+    // mismatch asks for this same slice again. The one fresh read covers both caps.
+    for _ in 0..3 {
+        outcome_ctx
+            .ctx
+            .harness_state
+            .record_file_read_family_call(format!("unified_exec::read::{sample_path}::off=1::lim=1"));
+    }
     let start = outcome_ctx.ctx.working_history.len();
     handle_single_tool_call(&mut outcome_ctx, "fresh_shell_range", tool_names::EXEC_COMMAND, args.clone())
         .await
@@ -2381,7 +3030,7 @@ async fn patch_recovery_path_cap_exception_is_reserved_before_batch_execution() 
         )
         .await
         .expect("second batch admission");
-        assert!(matches!(second, ValidationResult::Blocked), "prior reads: {prior_reads}");
+        assert!(matches!(second, ValidationResult::ReadCapBlocked), "prior reads: {prior_reads}");
         assert_eq!(outcome_ctx.ctx.tool_registry.execution_history_len(), history_len);
         assert!(
             outcome_ctx

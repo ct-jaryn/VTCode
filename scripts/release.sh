@@ -23,6 +23,9 @@ source "$SCRIPT_DIR/release-assets.sh"
 # Shared macOS Developer ID signing and notarization helpers.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/macos-release-signing.sh"
+# Changelog formatting and shared commit classification.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/release-changelog.sh"
 
 # Temporary file to store release notes
 RELEASE_NOTES_FILE=$(mktemp)
@@ -57,91 +60,6 @@ package_release_archive() {
 	fi
 }
 
-# Get GitHub username from commit author email
-get_github_username() {
-	local email=$1
-	# Common email-to-username mappings
-	case "$email" in
-	vinhnguyen*) echo "vinhnx" ;;
-	noreply@vtcode.com) echo "vtcode-release-bot" ;;
-	*@users.noreply.github.com)
-		local username="${email%%@*}"
-		# Handle GitHub ID format: 123456+username
-		if [[ "$username" == *+* ]]; then
-			username="${username##*+}"
-		fi
-		echo "$username"
-		;;
-	*)
-		# Extract username from email (before @)
-		local username="${email%%@*}"
-		echo "$username"
-		;;
-	esac
-}
-
-# Add @username tags to changelog entries
-add_username_tags() {
-	local changelog=$1
-	local commits_range=$2
-
-	# Create a temporary file to store the mapping of commit hashes to usernames
-	local temp_mapping_file
-	temp_mapping_file=$(mktemp)
-
-	# Populate the mapping - use a subshell to avoid variable scoping issues
-	(
-		git log "$commits_range" --no-merges --pretty=format:"%h|%ae"
-	) | while IFS= read -r line; do
-		if [[ -n "$line" ]]; then
-			local hash author_email
-			hash=$(echo "$line" | cut -d'|' -f1)
-			author_email=$(echo "$line" | cut -d'|' -f2)
-			local username
-			username=$(get_github_username "$author_email")
-			echo "$hash|$username"
-		fi
-	done >"$temp_mapping_file"
-
-	# Process changelog and add @username tags
-	local result=""
-	while IFS= read -r entry; do
-		# Extract commit hash from entry (format: "... (commit_hash)")
-		if [[ $entry =~ \(([a-f0-9]+)\)$ ]]; then
-			local full_hash="${BASH_REMATCH[1]}"
-			# Find username from the temporary file
-			local username=""
-			local found=0
-
-			while IFS= read -r mapping_line; do
-				if [[ -n "$mapping_line" && $found -eq 0 ]]; then
-					local map_hash map_username
-					map_hash=$(echo "$mapping_line" | cut -d'|' -f1)
-					map_username=$(echo "$mapping_line" | cut -d'|' -f2)
-					# Check if the full hash starts with the map hash (to match short vs full hashes)
-					if [[ ${full_hash} == ${map_hash}* || ${map_hash} == ${full_hash}* ]]; then
-						username="$map_username"
-						found=1
-					fi
-				fi
-			done <"$temp_mapping_file"
-
-			if [[ -n "$username" ]]; then
-				# Append @username to the entry if not already present
-				if [[ $entry != *"@$username"* ]]; then
-					entry="$entry (@$username)"
-				fi
-			fi
-		fi
-		result+="$entry"$'\n'
-	done <<<"$changelog"
-
-	# Clean up
-	rm -f "$temp_mapping_file"
-
-	echo "${result%$'\n'}"
-}
-
 show_usage() {
 	cat <<'USAGE'
 Usage: ./scripts/release.sh [version|level] [options]
@@ -160,6 +78,11 @@ Options:
   --skip-crates       Skip the crates.io publish handoff
   --skip-binaries     Skip building and uploading binaries (and Homebrew update)
   --skip-docs         Skip docs.rs rebuild trigger
+  --skip-release      Resume finalization for an already-tagged release: skip
+                      the local sanity build, cargo-release (version/tag/push),
+                      and the CI trigger, but still run Steps 4-6 (collect
+                      binaries, upload assets, Homebrew). Use with an explicit
+                      version, e.g. `./scripts/release.sh 0.171.5 --skip-release`.
   --full-ci           Use GitHub Actions for ALL platforms (including macOS)
                       Default: builds macOS locally, CI for Linux/Windows
   --ci-only           Trigger CI for Linux/Windows only (skip local macOS build)
@@ -184,239 +107,6 @@ Cost Optimization:
 USAGE
 }
 
-# Parse commit type from conventional commit message
-parse_commit_type() {
-	local message="$1"
-	# Extract type from conventional commit format: type(scope): message or type: message
-	# Use sed to extract the type prefix
-	local type
-	type=$(echo "$message" | sed -E 's/^([a-z]+)(\([^)]+\))?:.*/\1/')
-	if [[ "$type" == "$message" ]]; then
-		echo "other"
-	else
-		echo "$type"
-	fi
-}
-
-# Get prefix indicator for commit type (text-based, no emoji)
-get_type_prefix() {
-	local type="$1"
-	case "$type" in
-	feat) echo "[FEAT]" ;;
-	fix) echo "[FIX]" ;;
-	perf) echo "[PERF]" ;;
-	refactor) echo "[REFACTOR]" ;;
-	docs) echo "[DOCS]" ;;
-	test) echo "[TEST]" ;;
-	build) echo "[BUILD]" ;;
-	ci) echo "[CI]" ;;
-	chore) echo "[CHORE]" ;;
-	security) echo "[SECURITY]" ;;
-	deps) echo "[DEPS]" ;;
-	*) echo "" ;;
-	esac
-}
-
-# Get human-readable title for commit type
-get_type_title() {
-	local type="$1"
-	case "$type" in
-	feat) echo "Features" ;;
-	fix) echo "Bug Fixes" ;;
-	perf) echo "Performance" ;;
-	refactor) echo "Refactors" ;;
-	docs) echo "Documentation" ;;
-	test) echo "Tests" ;;
-	build) echo "Build" ;;
-	ci) echo "CI" ;;
-	chore) echo "Chores" ;;
-	security) echo "Security" ;;
-	deps) echo "Dependencies" ;;
-	*) echo "Other" ;;
-	esac
-}
-
-# Clean commit message by removing the type prefix
-clean_commit_message() {
-	local message="$1"
-	# Remove conventional commit prefix (type(scope): or type:)
-	echo "$message" | sed -E 's/^[a-z]+(\([^)]+\))?:[[:space:]]*//'
-}
-
-# Collect unique contributors from a commit range
-generate_contributors_section() {
-	local commits_range="$1"
-	local contributors=""
-	local seen_usernames=""
-
-	while IFS= read -r author_email; do
-		[[ -z "$author_email" ]] && continue
-		local username
-		username=$(get_github_username "$author_email")
-		[[ -z "$username" || "$username" == "vtcode-release-bot" ]] && continue
-
-		# Deduplicate (bash 3.2 compatible)
-		if [[ "$seen_usernames" != *"|${username}|"* ]]; then
-			seen_usernames="${seen_usernames}|${username}|"
-			if [[ -n "$contributors" ]]; then
-				contributors="${contributors}, @${username}"
-			else
-				contributors="@${username}"
-			fi
-		fi
-	done < <(git log "$commits_range" --no-merges --pretty=format:"%ae")
-
-	if [[ -n "$contributors" ]]; then
-		echo "### Contributors"$'\n'
-		echo "$contributors"
-	fi
-}
-
-# Group commits by type and generate structured changelog
-# Produces a Highlights section (Features, Bug Fixes, Documentation) followed by Other Changes,
-# inspired by the OpenAI Codex release format (https://github.com/openai/codex/releases)
-# Note: Uses simple arrays instead of associative arrays for bash 3.2 compatibility (macOS)
-generate_structured_changelog() {
-	local commits_range="$1"
-
-	# Highlight types shown at the top; everything else goes under "Other Changes"
-	local highlight_types="feat fix docs"
-	local other_types="perf refactor security test build ci deps chore other"
-
-	# Initialize storage for each type (using prefix variables instead of associative arrays)
-	local feat_commits=""
-	local fix_commits=""
-	local perf_commits=""
-	local refactor_commits=""
-	local security_commits=""
-	local docs_commits=""
-	local test_commits=""
-	local build_commits=""
-	local ci_commits=""
-	local deps_commits=""
-	local chore_commits=""
-	local other_commits=""
-
-	# Get commits with their hashes, subjects, and author emails in a single git log call
-	while IFS='|' read -r hash message author_email; do
-		[[ -z "$hash" ]] && continue
-
-		local type
-		type=$(parse_commit_type "$message")
-		local clean_msg
-		clean_msg=$(clean_commit_message "$message")
-
-		# Skip excluded patterns (case-insensitive via lowercased copy).
-		# Covers owner-only TODO churn ("Update TODO", "Update TODOs",
-		# "docs: update project TODO", "docs(todo): ...") which only touches
-		# docs/project/TODO.md.
-		local lower_msg
-		lower_msg=$(echo "$message" | tr '[:upper:]' '[:lower:]')
-		if [[ "$lower_msg" =~ (chore\(release\):|bump version|update version|version bump|release v[0-9]+\.[0-9]+\.[0-9]+|chore.*version|chore.*release|build.*version|update.*version.*number|bump.*version.*to|update homebrew|update changelog|update.*todo|docs\(todo\)|docs\(project\).*todo|^update project$) ]]; then
-			continue
-		fi
-
-		local username=""
-		if [[ -n "$author_email" ]]; then
-			username=$(get_github_username "$author_email")
-		fi
-
-		# Build entry
-		local entry="- $clean_msg ($hash)"
-		if [[ -n "$username" && "$username" != "vtcode-release-bot" ]]; then
-			entry="$entry (@$username)"
-		fi
-
-		# Add to appropriate group using prefix variables
-		case "$type" in
-		feat) feat_commits="${feat_commits}${entry}"$'\n' ;;
-		fix) fix_commits="${fix_commits}${entry}"$'\n' ;;
-		perf) perf_commits="${perf_commits}${entry}"$'\n' ;;
-		refactor) refactor_commits="${refactor_commits}${entry}"$'\n' ;;
-		security) security_commits="${security_commits}${entry}"$'\n' ;;
-		docs) docs_commits="${docs_commits}${entry}"$'\n' ;;
-		test) test_commits="${test_commits}${entry}"$'\n' ;;
-		build) build_commits="${build_commits}${entry}"$'\n' ;;
-		ci) ci_commits="${ci_commits}${entry}"$'\n' ;;
-		deps) deps_commits="${deps_commits}${entry}"$'\n' ;;
-		chore) chore_commits="${chore_commits}${entry}"$'\n' ;;
-		*) other_commits="${other_commits}${entry}"$'\n' ;;
-		esac
-	done < <(git log "$commits_range" --no-merges --pretty=format:"%h|%s|%ae")
-
-	# --- Build output with Highlights / Other Changes split ---
-	local output=""
-	local has_highlights=false
-	local has_other=false
-
-	# Highlights section (Features, Bug Fixes, Documentation)
-	output+="### Highlights"$'\n\n'
-
-	for type in $highlight_types; do
-		local commits=""
-		case "$type" in
-		feat) commits="$feat_commits" ;;
-		fix) commits="$fix_commits" ;;
-		docs) commits="$docs_commits" ;;
-		esac
-
-		if [[ -n "$commits" ]]; then
-			local title
-			title=$(get_type_title "$type")
-			output+="#### ${title}"$'\n\n'
-			output+="${commits}"$'\n'
-			has_highlights=true
-		fi
-	done
-
-	if [[ "$has_highlights" == false ]]; then
-		output+="*No highlighted changes*"$'\n\n'
-	fi
-
-	# Other Changes section (Performance, Refactors, Security, Tests, Build, CI, Deps, Chores, Other)
-	local other_output=""
-
-	for type in $other_types; do
-		local commits=""
-		case "$type" in
-		perf) commits="$perf_commits" ;;
-		refactor) commits="$refactor_commits" ;;
-		security) commits="$security_commits" ;;
-		test) commits="$test_commits" ;;
-		build) commits="$build_commits" ;;
-		ci) commits="$ci_commits" ;;
-		deps) commits="$deps_commits" ;;
-		chore) commits="$chore_commits" ;;
-		other) commits="$other_commits" ;;
-		esac
-
-		if [[ -n "$commits" ]]; then
-			local title
-			title=$(get_type_title "$type")
-			other_output+="#### ${title}"$'\n\n'
-			other_output+="${commits}"$'\n'
-			has_other=true
-		fi
-	done
-
-	if [[ "$has_other" == true ]]; then
-		output+="### Other Changes"$'\n\n'
-		output+="${other_output}"
-	fi
-
-	# Contributors section
-	local contributors_section
-	contributors_section=$(generate_contributors_section "$commits_range")
-	if [[ -n "$contributors_section" ]]; then
-		output+="${contributors_section}"$'\n'
-	fi
-
-	if [[ "$has_highlights" == false && "$has_other" == false ]]; then
-		output="*No significant changes*"$'\n'
-	fi
-
-	echo "$output"
-}
 
 # Changelog generation using git-cliff
 update_changelog_from_commits() {
@@ -511,20 +201,12 @@ update_changelog_from_commits() {
 				if grep -q "^## $version " CHANGELOG.md; then
 					print_warning "Version $version already exists in CHANGELOG.md, skipping update"
 				else
-					# Use git-cliff's generated content, insert after header
-					local header
-					header=$(head -n 4 CHANGELOG.md)
-					local remainder
-					remainder=$(tail -n +5 CHANGELOG.md)
-					{
-						printf '%s\n' "$header"
-						if [[ -n "$version_section" ]]; then
-							printf '%s\n' "$version_section"
-						else
-							printf '%s\n' "$changelog_content"
-						fi
-						printf '%s\n' "$remainder"
-					} >CHANGELOG.md
+					# Insert git-cliff's generated content above the newest version
+					if [[ -n "$version_section" ]]; then
+						insert_changelog_entry "$version_section"
+					else
+						insert_changelog_entry "$changelog_content"
+					fi
 				fi
 			else
 				# Create new changelog with git-cliff output
@@ -615,16 +297,8 @@ update_changelog_builtin() {
 		if grep -q "^## $version " CHANGELOG.md; then
 			print_warning "Version $version already exists in CHANGELOG.md, skipping update"
 		else
-			# Insert new entry after the header
-			local header
-			header=$(head -n 4 CHANGELOG.md)
-			local remainder
-			remainder=$(tail -n +5 CHANGELOG.md)
-			{
-				printf '%s\n' "$header"
-				printf '%b\n' "$changelog_entry"
-				printf '%s\n' "$remainder"
-			} >CHANGELOG.md
+			# Insert new entry above the newest version
+			insert_changelog_entry "$changelog_entry"
 		fi
 	else
 		{
@@ -867,6 +541,7 @@ main() {
 	local skip_crates=false
 	local skip_binaries=false
 	local skip_docs=false
+	local skip_release=false
 	local full_ci=false
 	local ci_only=false
 
@@ -906,6 +581,10 @@ main() {
 			;;
 		--skip-docs)
 			skip_docs=true
+			shift
+			;;
+		--skip-release)
+			skip_release=true
 			shift
 			;;
 		--full-ci)
@@ -1086,7 +765,10 @@ main() {
 	fi
 
 	# 1. Local Build (both macOS architectures for Homebrew, or current platform on Linux)
-	if [[ "$skip_binaries" == 'false' ]]; then
+	# Skipped under --skip-release: the irreversible version bump already happened,
+	# so the pre-bump sanity build has no purpose and Step 4 rebuilds the real
+	# artifacts anyway.
+	if [[ "$skip_binaries" == 'false' && "$skip_release" == 'false' ]]; then
 		if [[ "$dry_run" == 'true' ]]; then
 			print_info "Step 1 (dry-run): Would build binaries for x86_64-apple-darwin and aarch64-apple-darwin"
 		else
@@ -1104,9 +786,18 @@ main() {
 	# 3. Cargo Release (version, tag, and push only)
 	print_info "Step 3: Running cargo release (version, tag, and push only)..."
 
-	local command=(cargo release "$release_argument" --workspace --config release.toml --execute --no-confirm --no-publish)
+	# `--registry crates-io` is passed even though we never publish here (--no-publish).
+	# Without it, cargo-release unconditionally fetches every workspace crate's entry from
+	# the crates.io sparse index (to decide `ensure_owners`). For freshly published crates
+	# those index paths are slow/uncached at the CDN edge and cargo-release has no retry, so a
+	# single 30s timeout aborts the whole release. Naming a registry short-circuits that lookup
+	# (cargo-release's `CratesIoIndex::krate` returns early when a registry is set) and is safe
+	# because `--no-publish` means the registry is otherwise unused.
+	local command=(cargo release "$release_argument" --workspace --config release.toml --execute --no-confirm --no-publish --registry crates-io)
 
-	if [[ "$dry_run" == 'true' ]]; then
+	if [[ "$skip_release" == 'true' ]]; then
+		print_info "Skipping cargo release (--skip-release); keeping existing version and tag $next_version."
+	elif [[ "$dry_run" == 'true' ]]; then
 		print_info "Dry run - would run: ${command[*]}"
 	else
 		env CARGO_BUILD_RUSTC_WRAPPER= RUSTC_WRAPPER= "${command[@]}"
@@ -1120,7 +811,7 @@ main() {
 		exit 0
 	fi
 
-	if [[ "$skip_crates" == 'false' ]]; then
+	if [[ "$skip_crates" == 'false' && "$skip_release" == 'false' ]]; then
 		print_distribution "Publishing crates in dependency order..."
 		# Ensure publish script is executable (defensive against lost +x on fresh checkout or noexec FS)
 		if [[ ! -x "$SCRIPT_DIR/publish_extracted_crates.sh" ]]; then
@@ -1147,7 +838,9 @@ main() {
 	fi
 
 	# 3.5 Trigger CI for Linux and Windows builds
-	if [[ "$skip_binaries" == 'false' ]]; then
+	# Skipped under --skip-release: the CI run for this tag already exists and
+	# Step 4's fallback discovery reuses its successful artifacts.
+	if [[ "$skip_binaries" == 'false' && "$skip_release" == 'false' ]]; then
 		print_info "Step 3.5: Triggering CI for Linux and Windows builds..."
 
 		if [[ "$dry_run" == 'true' ]]; then

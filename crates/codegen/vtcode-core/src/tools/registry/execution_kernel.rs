@@ -8,6 +8,7 @@ use crate::tools::apply_patch::{UNIFIED_FILE_MAX_PAYLOAD_BYTES_ENV, effective_ma
 use crate::tools::error_messages::agent_execution;
 use crate::tools::names::canonical_tool_name;
 use crate::tools::registry::ToolCatalogSource;
+use crate::tools::tool_intent::ToolIntent;
 use crate::tools::validation::{commands, condensed_schema_hint, paths};
 use crate::utils::tool_name_parsing::MCP_QUALIFIED_TOOL_PREFIX;
 
@@ -76,6 +77,10 @@ pub struct ToolPreflightOutcome {
     pub readonly_classification: bool,
     pub parallel_safe_after_preflight: bool,
     pub effective_args: Value,
+    /// The intent classified on the validation args that become the executed
+    /// text. Consumers must reuse it instead of re-classifying, so planning
+    /// enforcement cannot disagree with `readonly_classification`.
+    pub intent: ToolIntent,
 }
 
 fn required_args_for_tool(tool_name: &str) -> &'static [&'static str] {
@@ -418,21 +423,14 @@ pub(super) fn normalize_tool_args<'a>(
         if shell_args != *normalized.as_ref() {
             normalized = std::borrow::Cow::Owned(shell_args);
         }
-        // Truthful verifier status: a truncation-only piped verifier
-        // (`cargo check 2>&1 | tail -N`) reports the truncator's exit status,
-        // which reads as "verified" on success even when the build failed.
-        // Elide pure `head`/`tail` tails so the executed command is the
-        // standalone verifier and the observed status is its own. Pure
-        // function of the args (idempotent: rewritten text has no pipe), so
-        // validation below and every later normalize pass agree on the text.
-        // Non-matching shapes (filtering tails, joins, array forms) return
-        // `None` and run as typed. Only the canonical `command` key is
-        // replaced; the caller's original `cmd`/`raw_command` spellings are
-        // left intact as the typed record.
-        if let Some(rewritten) = crate::tools::tool_intent::rewrite_truncation_only_verifier(normalized.as_ref())
-            && let Some(payload) = normalized.to_mut().as_object_mut()
+        // Share truthful-status normalization with gate accounting. Pure
+        // truncators are elided; static read-only filters retain their output
+        // under fail-closed pipefail. Safety and permissions still validate
+        // the resulting command. Preserve the original cmd as typed evidence.
+        if let std::borrow::Cow::Owned(executed) =
+            crate::tools::tool_intent::shell_args_as_executed(normalized_tool_name, normalized.as_ref())
         {
-            payload.insert("command".to_string(), Value::String(rewritten));
+            normalized = std::borrow::Cow::Owned(executed);
         }
     }
 
@@ -461,10 +459,10 @@ fn public_exec_validation_args(normalized_tool_name: &str, args: &Value) -> Resu
     // Same truthful-status rewrite as `normalize_tool_args` (see above):
     // `EXEC_COMMAND` normalizes here rather than there, so the hook must be
     // repeated to keep validation and execution agreed on one command text.
-    if let Some(rewritten) = crate::tools::tool_intent::rewrite_truncation_only_verifier(&exec_args)
-        && let Some(payload) = exec_args.as_object_mut()
+    if let std::borrow::Cow::Owned(executed) =
+        crate::tools::tool_intent::shell_args_as_executed(normalized_tool_name, &exec_args)
     {
-        payload.insert("command".to_string(), Value::String(rewritten));
+        exec_args = executed;
     }
     let payload = exec_args
         .as_object_mut()
@@ -757,6 +755,10 @@ pub(super) fn preflight_validate_resolved_call(
                 .unwrap_or_default();
             let patch_hint = if validation_tool_name == tool_names::APPLY_PATCH {
                 crate::tools::apply_patch::APPLY_PATCH_ARGUMENT_CORRECTION
+            } else if validation_tool_name == tool_names::TASK_TRACKER
+                && crate::tools::handlers::task_tracker::is_task_tracker_shape_error(&error_msg)
+            {
+                crate::tools::handlers::task_tracker::TASK_TRACKER_ARGUMENT_CORRECTION
             } else {
                 ""
             };
@@ -780,11 +782,13 @@ pub(super) fn preflight_validate_resolved_call(
     Ok(ToolPreflightOutcome {
         normalized_tool_name: routed_tool_name.clone(),
         readonly_classification,
-        parallel_safe_after_preflight: crate::tools::tool_intent::is_parallel_safe_call(
+        parallel_safe_after_preflight: crate::tools::tool_intent::is_parallel_safe_call_with_intent(
             &validation_tool_name,
             validation_args.as_ref(),
+            &intent,
         ),
         effective_args: effective_args.unwrap_or_else(|| validation_args.into_owned()),
+        intent,
     })
 }
 
@@ -833,7 +837,7 @@ mod tests {
     #[test]
     fn normalize_leaves_non_rewritable_pipelines_untouched() {
         for command in [
-            "cargo check | grep error",
+            "cargo check | grep error; true",
             "cargo check && rm -rf target | tail -5",
             "cargo check | tail -5; rm foo.txt",
             "rg -n 'pattern' src | head -20",
@@ -1289,6 +1293,25 @@ mod tests {
         assert_eq!(result.effective_args["tty"], true);
         assert!(result.readonly_classification);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn planning_preflight_rejects_mutating_suffixes_and_conflicting_raw_aliases() {
+        let (_temp, registry) = new_test_registry().await;
+        registry.enable_planning();
+        for args in [
+            json!({"cmd":"cargo check | sort", "args":["-o", "changed.txt"]}),
+            json!({"cmd":"cat README.md", "raw_command":"printf changed > changed.txt"}),
+        ] {
+            let error = preflight_validate_call(&registry, tool_names::EXEC_COMMAND, &args)
+                .expect_err("mutating invocation cannot acquire planning admission");
+            assert_eq!(error.to_string(), super::agent_execution::PLANNING_DENIED_CONTEXT);
+        }
+        let safe =
+            preflight_validate_call(&registry, tool_names::EXEC_COMMAND, &json!({"cmd":"sort", "args":["README.md"]}))
+                .expect("safe appended operands remain readable in planning");
+        assert!(safe.readonly_classification);
+        assert!(safe.parallel_safe_after_preflight);
     }
 
     #[tokio::test]

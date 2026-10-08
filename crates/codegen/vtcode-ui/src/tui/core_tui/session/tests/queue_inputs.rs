@@ -949,3 +949,47 @@ fn app_legacy_control_codes_match_cmd_line_editing() {
     assert!(clear.is_none());
     assert_eq!(session.core.input_manager.content(), "first\n\nthird");
 }
+
+#[test]
+fn modified_enter_preserves_command_drafts_and_literal_backslashes() {
+    for running in [false, true] {
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            for draft in ["/stop", "/plan", "/help", "/stop\\", "/plan\\", "/help\\", "literal\\"] {
+                let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+                if running {
+                    session.handle_command(InlineCommand::SetActivityState(ActivityState::Building));
+                }
+                session.input_manager.set_content(draft.to_string());
+                let event = session.process_key(KeyEvent::new(KeyCode::Enter, modifiers));
+                assert!(event.is_none(), "{draft} {modifiers:?} running={running}");
+                assert_eq!(session.input_manager.content(), format!("{draft}\n"));
+                assert!(session.queued_inputs.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn composer_enter_and_control_j_keep_existing_newline_and_submit_behavior() {
+    let mut session = Session::new(InlineTheme::default(), None, VIEW_ROWS);
+    session.input_manager.set_content("literal\\".to_string());
+    assert!(session.process_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+    assert_eq!(session.input_manager.content(), "literal\n");
+    session.input_manager.set_content("/help".to_string());
+    assert!(
+        session
+            .process_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+            .is_none()
+    );
+    assert_eq!(session.input_manager.content(), "/help\n");
+    for modifiers in [
+        KeyModifiers::NONE,
+        KeyModifiers::CONTROL,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ] {
+        session.input_manager.set_content("send this".to_string());
+        assert!(
+            matches!(session.process_key(KeyEvent::new(KeyCode::Enter, modifiers)), Some(InlineEvent::Submit(input)) if input.text == "send this")
+        );
+    }
+}

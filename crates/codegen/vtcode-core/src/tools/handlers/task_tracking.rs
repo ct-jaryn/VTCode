@@ -208,6 +208,94 @@ pub(crate) fn validate_action_index_fields(action: &str, index: Option<usize>, i
 
 pub(crate) const TASK_ITEMS_DESCRIPTION: &str = "Full checklist replacement for create or bulk update, not indexed updates. Send plain descriptions with [x]/[~]/[!]/[ ] status prefixes or actual objects with description and status; never JSON-encoded strings.";
 
+/// Shared status values for every task-tracker schema (standard + planning,
+/// top-level and nested item objects). Single source so a future status
+/// addition cannot drift between the planning on/off variants.
+pub(crate) const TASK_STATUS_VALUES: [&str; 4] = ["pending", "in_progress", "completed", "blocked"];
+
+/// Base `status` type schema without a description (callers add their own).
+pub(crate) fn task_status_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": TASK_STATUS_VALUES
+    })
+}
+
+/// Base `files` type schema without a description.
+pub(crate) fn task_files_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" }
+    })
+}
+
+/// Base `verify` type schema without a description (string or string list).
+pub(crate) fn task_verify_schema() -> Value {
+    json!({
+        "anyOf": [
+            { "type": "string" },
+            {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        ]
+    })
+}
+
+fn with_description(mut schema: Value, description: &str) -> Value {
+    if let Value::Object(map) = &mut schema {
+        map.insert("description".to_string(), Value::String(description.to_string()));
+    }
+    schema
+}
+
+/// Shared nested item-object schema (description + optional status/files/
+/// outcome/verify). Used inside the `items` array of both tracker schemas.
+pub(crate) fn task_item_object_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "description": { "type": "string" },
+            "status": task_status_schema(),
+            "files": task_files_schema(),
+            "outcome": { "type": "string" },
+            "verify": task_verify_schema()
+        },
+        "required": ["description"]
+    })
+}
+
+/// Shared `items` array schema with a caller-supplied description.
+pub(crate) fn task_items_array_schema(items_description: &str) -> Value {
+    with_description(
+        json!({
+            "type": "array",
+            "items": {
+                "anyOf": [
+                    { "type": "string" },
+                    task_item_object_schema()
+                ]
+            }
+        }),
+        items_description,
+    )
+}
+
+/// Top-level `status` property with its own description.
+pub(crate) fn task_status_property_schema(description: &str) -> Value {
+    with_description(task_status_schema(), description)
+}
+
+/// Top-level `files` property with its own description.
+pub(crate) fn task_files_property_schema(description: &str) -> Value {
+    with_description(task_files_schema(), description)
+}
+
+/// Top-level `verify` property with its own description.
+pub(crate) fn task_verify_property_schema(description: &str) -> Value {
+    with_description(task_verify_schema(), description)
+}
+
 /// Checklist replacement must not interpret encoded update commands as descriptions.
 pub(crate) fn validate_task_item_inputs(items: &[TaskItemInput]) -> Result<()> {
     for item in items {
@@ -914,5 +1002,50 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["display"], "  └ □ Add vtcode exec resume to the Commands section");
         assert_eq!(rows[0]["text"], "Add vtcode exec resume to the Commands section");
+    }
+
+    #[test]
+    fn shared_schema_helpers_stay_actionable_and_drift_free() {
+        assert_eq!(TASK_STATUS_VALUES, ["pending", "in_progress", "completed", "blocked"]);
+
+        let status = task_status_schema();
+        assert_eq!(status["type"], "string");
+        assert_eq!(status["enum"], json!(TASK_STATUS_VALUES));
+        assert!(status.get("description").is_none());
+
+        let with_desc = task_status_property_schema("New status.");
+        assert_eq!(with_desc["description"], "New status.");
+        assert_eq!(with_desc["enum"], json!(TASK_STATUS_VALUES));
+
+        // Asymmetric: plain string item vs structured item with metadata.
+        let items_schema = task_items_array_schema("Items desc.");
+        let validator = jsonschema::validator_for(&items_schema).expect("items schema is valid");
+        assert!(validator.validate(&json!(["plain step"])).is_ok());
+        assert!(
+            validator
+                .validate(&json!([{
+                    "description": "Structured step",
+                    "status": "in_progress",
+                    "files": ["src/a.rs"],
+                    "outcome": "Done",
+                    "verify": ["cargo check"],
+                }]))
+                .is_ok()
+        );
+        // Boundary: verify also accepts a bare string; missing description fails.
+        assert!(validator.validate(&json!([{"status": "completed"}])).is_err());
+        assert!(validator.validate(&json!([{"description": "Bad", "status": "done"}])).is_err());
+
+        assert_eq!(task_files_property_schema("F.")["description"], "F.");
+        assert_eq!(task_verify_property_schema("V.")["description"], "V.");
+    }
+
+    #[test]
+    fn shared_status_values_match_runtime_parser() {
+        use std::str::FromStr;
+        for status in TASK_STATUS_VALUES {
+            assert!(TaskTrackingStatus::from_str(status).is_ok(), "schema status {status:?} must parse");
+        }
+        assert!(TaskTrackingStatus::from_str("done").is_err());
     }
 }

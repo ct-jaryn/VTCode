@@ -337,7 +337,7 @@ impl Session {
     pub(crate) fn handle_tick(&mut self) {
         let animate_progress = self.appearance.should_animate_progress_status();
         self.step_drag_auto_scroll();
-        let mut animation_updated = false;
+        let mut animation_updated = self.progress.tick();
         if animate_progress && self.thinking_spinner.is_active && self.thinking_spinner.update() {
             animation_updated = true;
             // Refresh collapsed thinking summaries so the live spinner frame and
@@ -347,7 +347,8 @@ impl Session {
             // requested below via `animation_updated`.
             self.mark_thinking_run_starts_dirty();
         }
-        let shimmer_active = animate_progress && (self.is_shimmer_active() || self.background_status_shimmer_active());
+        let shimmer_active = animate_progress
+            && (self.is_shimmer_active() || self.background_status_shimmer_active() || self.progress.is_animated());
         if shimmer_active && self.shimmer_state.update() {
             animation_updated = true;
         }
@@ -371,6 +372,37 @@ impl Session {
         if animation_updated {
             self.render_state.request_redraw();
         }
+    }
+
+    /// Whether the event loop must keep ticking at the active rate.
+    ///
+    /// Event-driven rendering already draws input, commands (new messages),
+    /// and crossterm events immediately without waiting for a tick; ticks are
+    /// only needed while something animates or a transient deadline is armed.
+    /// The drive loop calls this every turn to extend active-mode ticking
+    /// independently of recent user input, so a truly idle session (no input,
+    /// no animation, no pending expiry) can rest at the low upkeep rate.
+    pub(crate) fn needs_animation_tick(&self) -> bool {
+        if self.progress.is_animated() && self.appearance.should_animate_progress_status() {
+            return true;
+        }
+        // Drag auto-scroll must keep stepping while the pointer rests at an edge.
+        if self.drag_auto_scroll.is_some() {
+            return true;
+        }
+        // Pending expiries need a future tick to clear promptly (scroll-steady
+        // 250ms, copy notification 2s).
+        if self.scroll_cursor_steady_until.is_some() || self.copy_notification_until.is_some() {
+            return true;
+        }
+        // Shimmer deactivation needs one final tick to repaint without shimmer.
+        if self.last_shimmer_active {
+            return true;
+        }
+        if !self.appearance.should_animate_progress_status() {
+            return false;
+        }
+        self.thinking_spinner.is_active || self.is_shimmer_active() || self.background_status_shimmer_active()
     }
 
     pub(crate) fn show_copy_notification(&mut self, char_count: usize) {

@@ -316,6 +316,22 @@ mod tests {
     }
 
     #[test]
+    fn mistral_presets_include_large_4_without_changing_default() {
+        let presets = presets::mistral_presets();
+        let large_4 = presets
+            .iter()
+            .find(|preset| preset.model == "mistral-large-4")
+            .expect("mistral large 4 preset");
+        assert_eq!(large_4.provider, Provider::Mistral);
+        assert!(!large_4.is_default);
+        assert!(large_4.show_in_picker);
+        assert_eq!(large_4.context_window, Some(1_000_000));
+
+        let default = presets.iter().find(|preset| preset.is_default).expect("mistral default preset");
+        assert_eq!(default.model, "mistral-large-2512");
+    }
+
+    #[test]
     fn moonshot_presets_exist_and_default_to_kimi_k3() {
         let presets = presets::moonshot_presets();
         assert_eq!(presets.len(), 1);
@@ -367,7 +383,7 @@ mod tests {
     #[test]
     fn merge_gateway_presets_expose_curated_routes_and_default() {
         let presets = presets::merge_gateway_presets();
-        assert_eq!(presets.len(), 24);
+        assert_eq!(presets.len(), 27);
         let default = presets
             .iter()
             .find(|preset| preset.is_default)

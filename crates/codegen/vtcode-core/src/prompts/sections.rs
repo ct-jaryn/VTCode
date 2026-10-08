@@ -12,7 +12,8 @@ pub(crate) fn find_prompt_section_bounds(
     fn is_section_header_line(line: &str, boundary_mode: SectionBoundaryMode) -> bool {
         let trimmed = line.trim();
         (trimmed.starts_with('[') && trimmed.ends_with(']'))
-            || matches!(boundary_mode, SectionBoundaryMode::BracketOrMarkdown) && trimmed.starts_with("## ")
+            || matches!(boundary_mode, SectionBoundaryMode::BracketOrMarkdown)
+                && (trimmed.starts_with("# ") || trimmed.starts_with("## "))
     }
 
     let mut offset = 0usize;
@@ -53,10 +54,21 @@ mod tests {
 
     #[test]
     fn bracket_only_mode_ignores_markdown_headings() {
-        let prompt = "Base\n[Harness Limits]\n- a\n## Environment\n- b\n";
+        let prompt = "Base\n[Harness Limits]\n- a\n# Planning\n- b\n## Environment\n- c\n[Next Section]\n- d\n";
         let bounds = find_prompt_section_bounds(prompt, "[Harness Limits]", SectionBoundaryMode::BracketOnly)
             .expect("section bounds");
 
-        assert_eq!(&prompt[bounds.0..bounds.1], "[Harness Limits]\n- a\n## Environment\n- b\n");
+        assert_eq!(&prompt[bounds.0..bounds.1], "[Harness Limits]\n- a\n# Planning\n- b\n## Environment\n- c\n");
+    }
+
+    #[test]
+    fn active_tools_boundary_preserves_following_planning_contract() {
+        let prompt = "Base\n## Active Tools\n- old\n# PLANNING WORKFLOW (READ-ONLY)\nKeep the plan.\n";
+        let (start, end) =
+            find_prompt_section_bounds(prompt, "## Active Tools", SectionBoundaryMode::BracketOrMarkdown)
+                .expect("section bounds");
+        let mut replaced = prompt.to_string();
+        replaced.replace_range(start..end, "## Active Tools\n- new\n");
+        assert_eq!(replaced, "Base\n## Active Tools\n- new\n# PLANNING WORKFLOW (READ-ONLY)\nKeep the plan.\n");
     }
 }

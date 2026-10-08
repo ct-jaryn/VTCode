@@ -61,8 +61,6 @@ impl ModelId {
             ModelId::MergeGatewayMinimaxH3,
             ModelId::MergeGatewayMoonshotKimiK3,
             ModelId::MergeGatewayThinkingMachinesInkling,
-            ModelId::MergeGatewayMetaMuseSpark11,
-            ModelId::MergeGatewayMetaMuseSpark13,
             ModelId::MergeGatewayZaiGlm53Flash,
             ModelId::MergeGatewayZaiGlm53Flashx,
             ModelId::MergeGatewayOpenAIGpt56Luna,
@@ -76,8 +74,12 @@ impl ModelId {
             ModelId::MergeGatewayOpenAIGpt6Sol,
             ModelId::MergeGatewayOpenAIGpt61Sol,
             ModelId::MergeGatewayOpenAIGpt6Luna,
+            ModelId::MergeGatewayXiaomimimoMimoV26Pro,
+            ModelId::MergeGatewayXiaomimimoMimoV26Flash,
+            ModelId::MergeGatewayMistralLarge4,
             // Mistral models
             ModelId::MistralLarge3,
+            ModelId::MistralLarge4,
             // Z.AI models
             ModelId::ZaiGlm53,
             ModelId::ZaiGlm53Flash,

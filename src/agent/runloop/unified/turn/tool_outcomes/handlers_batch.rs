@@ -8,7 +8,8 @@ use super::{
 };
 use crate::agent::runloop::unified::progress::ProgressReporter;
 use crate::agent::runloop::unified::tool_pipeline::{
-    emit_tool_outcome_observation, exec_settlement_mode_for_tool_call, execute_prevalidated_read_only_with_cache,
+    emit_tool_completion_for_status, emit_tool_outcome_observation, emit_tool_start_if_needed,
+    exec_settlement_mode_for_tool_call, execute_prevalidated_read_only_with_cache, resolve_harness_item_identity,
     run_tool_call_with_args,
 };
 use crate::agent::runloop::unified::turn::context::{
@@ -22,16 +23,25 @@ use crate::agent::runloop::unified::turn::tool_outcomes::helpers::{
 
 const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 4;
 
-/// Surface queued verification directives after the tool response lands.
+/// Surface queued loop directives after the tool response lands.
 /// `update_repetition_tracker` queues them when a pending gate's verifier
 /// result was lost (verifier-level Failure/Timeout, or a dead exec session)
-/// or when an admitted piped verifier succeeded (its exit status belongs to
-/// the pipeline tail and cannot clear the gate), so the model gets one
-/// diagnostic explanation of what the pending gate still requires.
-fn flush_verification_notices(
-    ctx: &mut TurnProcessingContext<'_>,
-    loop_tracker: &mut super::super::helpers::LoopTracker,
-) {
+/// or when a completed checker used an unverified shell form. The latter is
+/// one diagnostic per turn even when no verification gate is pending.
+fn flush_loop_notices(ctx: &mut TurnProcessingContext<'_>, loop_tracker: &mut super::super::helpers::LoopTracker) {
+    if loop_tracker.take_focused_search_notice() {
+        ctx.push_system_message("Several searches have concentrated on one file this turn. Reuse the gathered context and take the next concrete edit, verification, or synthesis step when it is sufficient. Search again only for a specific missing fact. This is coaching, not a read cap; distinct queries and tools remain available under existing limits.");
+    }
+    if loop_tracker.take_redundant_navigation_notice() {
+        const DIRECTIVE: &str = "This inspection returned only text evidence already gathered this turn. Reuse it to edit, verify, or synthesize; read only missing or changed ranges. Do not copy a capped file to another path to evade the cap. Tools remain available under the existing limits; this notice grants no permissions, verification credit, or repair edits.";
+        ctx.renderer
+            .line(
+                vtcode_core::utils::ansi::MessageStyle::Info,
+                "Inspection repeated retained evidence; continue from the existing context.",
+            )
+            .unwrap_or(());
+        ctx.push_system_message(DIRECTIVE);
+    }
     if loop_tracker.take_verification_result_lost_notice() {
         ctx.renderer
             .line(vtcode_core::utils::ansi::MessageStyle::Warning, VERIFICATION_RESULT_LOST_WARNING)
@@ -141,6 +151,18 @@ async fn terminate_group_exec_sessions_if_needed(
     }
 }
 
+async fn drain_parallel_group<F>(
+    registry: &vtcode_core::tools::registry::ToolRegistry,
+    execution_futures: &mut FuturesUnordered<F>,
+    group_has_exec_sessions: bool,
+    log_message: &str,
+) where
+    F: Future,
+{
+    terminate_group_exec_sessions_if_needed(registry, group_has_exec_sessions, log_message).await;
+    while execution_futures.next().await.is_some() {}
+}
+
 async fn interrupt_parallel_group<F>(
     registry: &vtcode_core::tools::registry::ToolRegistry,
     execution_futures: &mut FuturesUnordered<F>,
@@ -151,8 +173,7 @@ async fn interrupt_parallel_group<F>(
 where
     F: Future,
 {
-    terminate_group_exec_sessions_if_needed(registry, group_has_exec_sessions, log_message).await;
-    while execution_futures.next().await.is_some() {}
+    drain_parallel_group(registry, execution_futures, group_has_exec_sessions, log_message).await;
     TurnHandlerOutcome::Break(turn_result)
 }
 
@@ -188,6 +209,10 @@ async fn execute_parallel_group<'a, 'b>(
         .iter()
         .any(|validated_call| exec_session_tool_active(&validated_call.prepared.canonical_name));
 
+    t_ctx
+        .ctx
+        .handle
+        .set_progress_phase(vtcode_commons::ui_protocol::ProgressPhase::RunningTools);
     let mut execution_futures = FuturesUnordered::new();
     for validated_call in validated_calls {
         let registry = registry.clone();
@@ -198,6 +223,14 @@ async fn execute_parallel_group<'a, 'b>(
         let call_id = validated_call.call_id().to_string();
         let name = validated_call.prepared.canonical_name;
         let args = validated_call.prepared.effective_args;
+        let harness_emitter = t_ctx.ctx.harness_emitter;
+        let streamed_item = t_ctx.ctx.harness_state.take_streamed_tool_call_item_id(&call_id);
+        let already_started = streamed_item.is_some();
+        let harness_item_id = streamed_item
+            .map(|item| item.item_id)
+            .unwrap_or_else(|| resolve_harness_item_identity(&call_id).1);
+        let tool_started_emitted =
+            emit_tool_start_if_needed(harness_emitter, already_started, &harness_item_id, &call_id, &name, &args);
 
         let fut = async move {
             let start_time = std::time::Instant::now();
@@ -220,7 +253,24 @@ async fn execute_parallel_group<'a, 'b>(
                 true,
             )
             .await;
-            (call_id, name, args, status, start_time, circuit_before)
+            let mut outcome = crate::agent::runloop::unified::tool_pipeline::ToolPipelineOutcome::from_status(status);
+            if outcome.total_duration.is_zero() {
+                outcome.total_duration = start_time.elapsed();
+            }
+            // Emit inside the future so cancellation/early-return draining also
+            // closes every admitted call with its actual terminal result.
+            emit_tool_completion_for_status(
+                harness_emitter,
+                tool_started_emitted,
+                true,
+                &harness_item_id,
+                &call_id,
+                &name,
+                &args,
+                &outcome.status,
+            );
+            emit_tool_outcome_observation(harness_emitter, &name, &outcome);
+            (call_id, name, args, outcome, start_time, circuit_before)
         };
         execution_futures.push(fut);
     }
@@ -250,53 +300,45 @@ async fn execute_parallel_group<'a, 'b>(
             result = execution_futures.next() => result,
         };
 
-        let Some((call_id, name, args, status, start_time, circuit_before)) = next_result else {
+        let Some((call_id, name, args, outcome, start_time, circuit_before)) = next_result else {
             break;
         };
 
-        batch_tracker.record(&status);
+        batch_tracker.record(&outcome.status);
         record_circuit_transition(t_ctx.ctx, &name, circuit_before).await;
 
-        let mut outcome = crate::agent::runloop::unified::tool_pipeline::ToolPipelineOutcome::from_status(status);
-        if outcome.total_duration.is_zero() {
-            outcome.total_duration = start_time.elapsed();
-        }
-        emit_tool_outcome_observation(t_ctx.ctx.harness_emitter, &name, &outcome);
         if update_repetition_tracker(t_ctx.repeated_tool_attempts, &outcome, &name, &args) {
             // A failed verifier grants fix-up edits; give the model one
             // diagnostic explanation before the pending-verification text cap
             // re-applies instead of blocking the turn on the failure summary.
             t_ctx.ctx.harness_state.reset_assistant_text_response_streak();
-            flush_verification_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
         }
         t_ctx
             .ctx
             .session_stats
             .set_verification_snapshot(t_ctx.repeated_tool_attempts.verification_snapshot());
 
-        if let Some(outcome) = handle_tool_execution_result(t_ctx, call_id, &name, &args, &outcome, start_time).await? {
-            if matches!(
-                outcome,
-                TurnHandlerOutcome::Break(
-                    crate::agent::runloop::unified::turn::context::TurnLoopResult::Exit
-                        | crate::agent::runloop::unified::turn::context::TurnLoopResult::Cancelled
-                )
-            ) {
-                let turn_result = match outcome {
-                    TurnHandlerOutcome::Break(turn_result) => turn_result,
-                    TurnHandlerOutcome::Continue => {
-                        anyhow::bail!("Unexpected Continue outcome in break-matched handler")
-                    }
-                    TurnHandlerOutcome::SwitchPrimaryAgent(_) => {
-                        anyhow::bail!("Unexpected SwitchPrimaryAgent outcome in break-matched handler")
-                    }
-                    TurnHandlerOutcome::SwitchPrimaryAgentWithPolicy { .. } => {
-                        anyhow::bail!("Unexpected policy-bearing agent switch in break-matched handler")
-                    }
-                    TurnHandlerOutcome::BreakWithPolicy { .. } => {
-                        anyhow::bail!("Unexpected policy-bearing break in break-matched handler")
-                    }
-                };
+        let handler_outcome =
+            match handle_tool_execution_result(t_ctx, call_id, &name, &args, &outcome, start_time).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    drain_parallel_group(
+                        &registry,
+                        &mut execution_futures,
+                        group_has_exec_sessions,
+                        "Failed to terminate exec sessions after grouped tool post-processing failure",
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
+        flush_loop_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
+        if let Some(outcome) = handler_outcome {
+            if let TurnHandlerOutcome::Break(
+                turn_result @ (crate::agent::runloop::unified::turn::context::TurnLoopResult::Exit
+                | crate::agent::runloop::unified::turn::context::TurnLoopResult::Cancelled),
+            ) = outcome
+            {
                 return Ok(Some(
                     interrupt_parallel_group(
                         &registry,
@@ -316,6 +358,13 @@ async fn execute_parallel_group<'a, 'b>(
                 // recovery directive is appended.
                 continue;
             }
+            drain_parallel_group(
+                &registry,
+                &mut execution_futures,
+                group_has_exec_sessions,
+                "Failed to terminate exec sessions after grouped tool handoff",
+            )
+            .await;
             return Ok(Some(outcome));
         }
     }
@@ -603,7 +652,6 @@ async fn execute_and_handle_tool_call_inner<'a>(
         // A failed verifier grants fix-up edits; reset the text streak so the
         // model can diagnose the failure before the text cap re-applies.
         ctx.harness_state.reset_assistant_text_response_streak();
-        flush_verification_notices(ctx, repeated_tool_attempts);
     }
     ctx.session_stats
         .set_verification_snapshot(repeated_tool_attempts.verification_snapshot());
@@ -619,6 +667,7 @@ async fn execute_and_handle_tool_call_inner<'a>(
         tool_execution_start,
     )
     .await?;
+    flush_loop_notices(t_ctx.ctx, t_ctx.repeated_tool_attempts);
 
     Ok(outcome)
 }

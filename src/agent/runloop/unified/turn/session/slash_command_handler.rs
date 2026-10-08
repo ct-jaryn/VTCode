@@ -65,7 +65,6 @@ pub(crate) async fn handle_input_commands(
                         handle: ctx.handle,
                         session: ctx.session,
                         header_context: ctx.header_context,
-                        ide_context_bridge: ctx.ide_context_bridge,
                         config: ctx.config,
                         vt_cfg: ctx.vt_cfg,
                         provider_client: ctx.provider_client,

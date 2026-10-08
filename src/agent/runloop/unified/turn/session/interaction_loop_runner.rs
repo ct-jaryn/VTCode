@@ -32,10 +32,10 @@ use status_refresh::{StatusRefreshContext, StatusRefreshReason, StatusRefreshReq
 pub(crate) use support::handle_select_primary_agent;
 use support::{
     InlineLoopActionResolution, apply_live_theme_and_appearance, build_durable_scheduler_daemon,
-    build_user_message_content, extract_recent_follow_up_hint, fallback_args_preview,
-    refresh_ide_context_before_user_turn, replace_submitted_input_text, resolve_inline_loop_action, scheduler_enabled,
-    selected_model_supports_image_input, stalled_follow_up_recovery_prompt, stalled_verification_resume_directive,
-    submitted_images_are_unsupported, sync_mcp_approval_policy_for_context,
+    build_user_message_content, extract_recent_follow_up_hint, fallback_args_preview, replace_submitted_input_text,
+    resolve_inline_loop_action, scheduler_enabled, selected_model_supports_image_input,
+    stalled_follow_up_recovery_prompt, stalled_verification_resume_directive, submitted_images_are_unsupported,
+    sync_mcp_approval_policy_for_context,
 };
 use vtcode_config::loader::SimpleConfigWatcher;
 
@@ -376,6 +376,11 @@ pub(super) async fn run_interaction_loop_impl(
             continue;
         }
 
+        let submission_progress = ctx
+            .handle
+            .begin_progress(vtcode_commons::ui_protocol::ProgressPhase::PreparingContext);
+        tracing::debug!(target: "vtcode.response_latency", operation_id = submission_progress.operation().id(), "submission accepted");
+
         // A fresh submitted input starts a new turn. Clear any stale local cancel
         // latch left behind by a prior interrupted turn so permission modals and
         // the provider stream don't inherit a spurious "interrupted" state.
@@ -652,7 +657,6 @@ pub(super) async fn run_interaction_loop_impl(
         let input = submitted_input.text.as_str();
 
         let refined_content = build_user_message_content(ctx, &submitted_input).await;
-        refresh_ide_context_before_user_turn(ctx);
 
         display_user_message(ctx.renderer, input)?;
 
@@ -663,6 +667,7 @@ pub(super) async fn run_interaction_loop_impl(
 
         let prompt_message_index = ctx.conversation_history.len();
         ctx.conversation_history.push(user_message);
+        submission_progress.transfer();
         return Ok(InteractionOutcome::Continue {
             input: input.to_string(),
             prompt_message_index: Some(prompt_message_index),

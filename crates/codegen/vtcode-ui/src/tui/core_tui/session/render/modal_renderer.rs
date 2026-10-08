@@ -74,7 +74,7 @@ fn estimated_modal_instruction_rows(lines: &[String], content_width: usize) -> u
     rows.clamp(1, MAX_INLINE_INSTRUCTION_ROWS)
 }
 
-fn list_has_two_line_items(list: &ModalListState) -> bool {
+fn list_has_multiline_items(list: &ModalListState) -> bool {
     list.visible_indices.iter().any(|&index| {
         list.items
             .get(index)
@@ -83,7 +83,7 @@ fn list_has_two_line_items(list: &ModalListState) -> bool {
 }
 
 fn list_row_cap(list: &ModalListState) -> usize {
-    if list_has_two_line_items(list) {
+    if list_has_multiline_items(list) {
         ui::INLINE_LIST_MAX_ROWS_MULTILINE
     } else {
         ui::INLINE_LIST_MAX_ROWS
@@ -92,8 +92,8 @@ fn list_row_cap(list: &ModalListState) -> usize {
 
 fn list_desired_rows(list: &ModalListState) -> usize {
     // Count rendered rows, not items: each title costs one row, each subtitle
-    // costs a second row, headers reserve a blank separator above, and
-    // non-compact selectable rows reserve a trailing blank. Capped so large
+    // costs a second row, headers reserve a blank separator above, and every
+    // selectable row reserves a trailing blank. Capped so large
     // pickers still scroll instead of claiming the full viewport.
     let mut rows = 0usize;
     for (visible_index, &item_index) in list.visible_indices.iter().enumerate() {
@@ -111,7 +111,7 @@ fn list_desired_rows(list: &ModalListState) -> usize {
         if item.subtitle.as_ref().is_some_and(|subtitle| !subtitle.trim().is_empty()) {
             rows = rows.saturating_add(1);
         }
-        if !list.compact_rows() && item.selection.is_some() {
+        if item.selection.is_some() {
             rows = rows.saturating_add(1);
         }
     }
@@ -184,9 +184,9 @@ pub fn split_inline_modal_area(session: &Session, area: Rect) -> (Rect, Option<R
         wizard
             .steps
             .get(wizard.current_step)
-            .is_some_and(|step| list_has_two_line_items(&step.list))
+            .is_some_and(|step| list_has_multiline_items(&step.list))
     } else if let Some(modal) = session.modal_state() {
-        modal.list.as_ref().is_some_and(list_has_two_line_items)
+        modal.list.as_ref().is_some_and(list_has_multiline_items)
     } else {
         false
     };
@@ -310,7 +310,7 @@ pub(crate) fn clip_transcript_area(transcript_area: Rect, modal_area: Rect) -> R
 }
 
 pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
-    if area.width == 0 || area.height == 0 {
+    if !session.has_active_overlay() || area.width == 0 || area.height == 0 {
         session.set_modal_list_area(None);
         session.set_modal_text_areas(Vec::new());
         session.set_modal_link_targets(Vec::new());
@@ -319,6 +319,7 @@ pub fn render_modal(session: &mut Session, frame: &mut Frame<'_>, area: Rect) {
 
     let styles = modal_render_styles(session);
     let input_styles = input_styles_from_theme(&session.theme);
+    session.occlude_progress_feedback(area);
     render_modal_background(frame, area, styles.background);
     let link_style = session.styles.transcript_link_style().add_modifier(Modifier::UNDERLINED);
     let hovered_link_style = link_style.add_modifier(Modifier::BOLD);
@@ -579,168 +580,4 @@ fn remove_trailing_empty_tool_line(session: &mut Session) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tui::ui::tui::InlineTheme;
-    use ratatui::style::Color;
-
-    #[test]
-    fn modal_title_text_uses_modal_title_and_empty_default() {
-        let mut session = Session::new(InlineTheme::default(), None, 20);
-        assert_eq!(modal_title_text(&session), "");
-
-        session.show_modal("Config".to_owned(), vec![], None);
-        assert_eq!(modal_title_text(&session), "Config");
-    }
-
-    #[test]
-    fn modal_title_style_uses_explicit_chrome_color() {
-        let session = Session::new(InlineTheme::default(), None, 20);
-        let styles = modal_render_styles(&session);
-
-        assert_eq!(styles.title.fg, Some(Color::Indexed(ui::SAFE_ANSI_BRIGHT_CYAN)));
-        assert!(styles.title.bg.is_none());
-        assert_eq!(styles.border.fg, Some(Color::Indexed(ui::SAFE_ANSI_BRIGHT_CYAN)));
-        assert!(styles.title.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn modal_section_headers_use_chrome_color_on_base_background() {
-        let theme = InlineTheme {
-            foreground: Some(AnsiColorEnum::Ansi256(Ansi256Color(16))),
-            background: Some(AnsiColorEnum::Ansi256(Ansi256Color(231))),
-            primary: Some(AnsiColorEnum::Ansi256(Ansi256Color(117))),
-            ..InlineTheme::default()
-        };
-        let session = Session::new(theme, None, 20);
-        let styles = modal_render_styles(&session);
-
-        assert_eq!(styles.header.fg, Some(Color::Indexed(117)));
-        assert_eq!(styles.header.bg, Some(Color::Indexed(231)));
-        assert_eq!(styles.instruction_title.fg, Some(Color::Indexed(117)));
-        assert_eq!(styles.instruction_title.bg, Some(Color::Indexed(231)));
-        assert!(styles.header.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn modal_render_styles_keep_popup_text_readable_without_dim() {
-        let theme = InlineTheme {
-            foreground: Some(AnsiColorEnum::Ansi256(Ansi256Color(252))),
-            background: Some(AnsiColorEnum::Ansi256(Ansi256Color(235))),
-            secondary: Some(AnsiColorEnum::Ansi256(Ansi256Color(245))),
-            ..InlineTheme::default()
-        };
-        let session = Session::new(theme, None, 20);
-        let styles = modal_render_styles(&session);
-        let foreground = Some(Color::Indexed(252));
-        let muted = Some(Color::Indexed(245));
-
-        // The modal background must be modifier-free: ratatui's `Cell::set_style`
-        // only *inserts* modifiers, so a DIM painted as the area background
-        // sticks to every glyph later drawn inside the popup (the whole HITL
-        // approval popup used to render dimmed).
-        assert!(!styles.background.add_modifier.contains(Modifier::DIM));
-        assert_eq!(styles.background.fg, foreground);
-
-        // Body text and option titles stay at full foreground so every choice
-        // reads; emphasis comes from the selected row's highlight instead.
-        for (name, style) in [
-            ("selectable", styles.selectable),
-            ("instruction_body", styles.instruction_body),
-            ("header", styles.header),
-            ("title", styles.title),
-        ] {
-            assert!(!style.add_modifier.contains(Modifier::DIM), "{name} must not carry DIM: {style:?}");
-        }
-        assert_eq!(styles.selectable.fg, styles.background.fg);
-
-        // Secondary text recedes by explicit muted color, never by intensity.
-        for (name, style) in [
-            ("detail", styles.detail),
-            ("hint", styles.hint),
-            ("divider", styles.divider),
-            ("badge", styles.badge),
-        ] {
-            assert!(!style.add_modifier.contains(Modifier::DIM), "{name} must recede by color, got: {style:?}");
-            assert_eq!(style.fg, muted, "{name} needs the muted foreground token");
-        }
-    }
-
-    #[test]
-    fn floating_modal_area_uses_bottom_half_of_viewport() {
-        let area = floating_modal_area(Rect::new(3, 5, 80, 31));
-
-        assert_eq!(area, Rect::new(3, 21, 80, 15));
-    }
-
-    #[test]
-    fn floating_modal_area_uses_exact_half_for_even_height() {
-        let area = floating_modal_area(Rect::new(0, 0, 80, 30));
-
-        assert_eq!(area, Rect::new(0, 15, 80, 15));
-    }
-
-    #[test]
-    fn floating_modal_area_preserves_single_row_viewport() {
-        let area = floating_modal_area(Rect::new(0, 0, 80, 1));
-
-        assert_eq!(area, Rect::new(0, 0, 80, 1));
-    }
-
-    #[test]
-    fn clip_transcript_area_stops_at_overlapping_modal_top() {
-        let transcript = Rect::new(2, 5, 76, 18);
-        let modal = Rect::new(0, 14, 80, 10);
-
-        assert_eq!(clip_transcript_area(transcript, modal), Rect::new(2, 5, 76, 9));
-    }
-
-    #[test]
-    fn clip_transcript_area_preserves_non_overlapping_transcript() {
-        let transcript = Rect::new(2, 5, 76, 8);
-        let modal = Rect::new(0, 14, 80, 10);
-
-        assert_eq!(clip_transcript_area(transcript, modal), transcript);
-    }
-
-    #[test]
-    fn clip_transcript_area_handles_horizontal_non_overlap() {
-        let transcript = Rect::new(2, 5, 20, 18);
-        let modal = Rect::new(30, 14, 20, 10);
-
-        assert_eq!(clip_transcript_area(transcript, modal), transcript);
-    }
-
-    #[test]
-    fn estimated_instruction_rows_counts_short_lines_verbatim() {
-        let lines = vec!["Choose an option".to_string(), "Second line".to_string()];
-        assert_eq!(estimated_modal_instruction_rows(&lines, 78), 2);
-    }
-
-    #[test]
-    fn estimated_instruction_rows_wraps_long_summary() {
-        let long = format!("Summary: {}", "word ".repeat(30));
-        let rows = estimated_modal_instruction_rows(&[long], 78);
-        assert!(rows >= 2, "long summary must claim wrapped rows, got {rows}");
-    }
-
-    #[test]
-    fn estimated_instruction_rows_treats_empty_as_single_row() {
-        assert_eq!(estimated_modal_instruction_rows(&[], 78), 1);
-        assert_eq!(estimated_modal_instruction_rows(&["   ".to_string()], 78), 1);
-    }
-
-    #[test]
-    fn estimated_instruction_rows_clamps_to_viewport() {
-        let lines = vec!["word ".repeat(60); 10];
-        assert_eq!(estimated_modal_instruction_rows(&lines, 78), MAX_INLINE_INSTRUCTION_ROWS);
-    }
-
-    #[test]
-    fn clip_transcript_area_handles_zero_and_constrained_rectangles() {
-        assert_eq!(clip_transcript_area(Rect::new(0, 0, 0, 10), Rect::new(0, 0, 10, 10)), Rect::new(0, 0, 0, 10));
-        assert_eq!(clip_transcript_area(Rect::new(0, 0, 10, 0), Rect::new(0, 0, 10, 1)), Rect::new(0, 0, 10, 0));
-        assert_eq!(clip_transcript_area(Rect::new(0, 0, 10, 1), Rect::new(0, 0, 10, 1)), Rect::new(0, 0, 10, 0));
-        assert_eq!(clip_transcript_area(Rect::new(0, 0, 10, 1), Rect::new(0, 1, 10, 1)), Rect::new(0, 0, 10, 1));
-    }
-}
+mod tests;

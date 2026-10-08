@@ -310,7 +310,11 @@ impl<'a> InlineEventLoop<'a> {
         if let Some((source, image_count)) = interjection
             && matches!(&action, InlineLoopAction::Submit(_) | InlineLoopAction::SubmitPrompt(_))
         {
-            self.emit_interjected(source, image_count);
+            let text = match &action {
+                InlineLoopAction::Submit(input) | InlineLoopAction::SubmitPrompt(input) => Some(input.text.as_str()),
+                _ => None,
+            };
+            self.emit_interjected(source, image_count, text);
         }
         Ok(action)
     }
@@ -335,9 +339,10 @@ impl<'a> InlineEventLoop<'a> {
         input.attachments.iter().filter(|part| part.is_image()).count() as u32
     }
 
-    fn emit_interjected(&self, source: InterjectionSource, image_count: u32) {
+    fn emit_interjected(&self, source: InterjectionSource, image_count: u32, text: Option<&str>) {
         let Some(emitter) = self.harness_emitter else { return };
         let _ = emitter.emit(ThreadEvent::Interjected(InterjectedEvent {
+            text: text.map(|s| Box::new(s.to_owned())),
             source,
             image_count,
             redirect_kind: RedirectKind::Interjection,
@@ -350,7 +355,7 @@ impl<'a> InlineEventLoop<'a> {
         if queued.input.is_empty() {
             return Some(InlineLoopAction::Continue);
         }
-        self.emit_interjected(InterjectionSource::Queue, Self::count_images(&queued.input));
+        self.emit_interjected(InterjectionSource::Queue, Self::count_images(&queued.input), Some(&queued.input.text));
         Some(InlineLoopAction::SubmitQueued(queued))
     }
 

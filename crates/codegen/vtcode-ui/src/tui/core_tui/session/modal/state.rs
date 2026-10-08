@@ -85,7 +85,6 @@ pub struct ModalListState {
     filter_terms: Vec<String>,
     filter_query: Option<String>,
     viewport_rows: Option<u16>,
-    compact_rows: bool,
     density_behavior: ModalListDensityBehavior,
 }
 
@@ -237,7 +236,7 @@ impl ModalState {
 
         let previous_selection = list.current_selection();
         match key.code {
-            // Row density is fixed at construction (compact for subtitle lists);
+            // Row density is fixed at construction (comfortable for all lists);
             // swallow the legacy toggle chord so it never leaks into the
             // composer behind the modal.
             KeyCode::Char('d') | KeyCode::Char('D') if modifiers.alt => ModalListKeyResult::HandledNoRedraw,
@@ -591,12 +590,6 @@ impl ModalListState {
             })
             .collect();
         let total_selectable = converted.iter().filter(|item| item.selection.is_some()).count();
-        // Compact single-spacing is the default for subtitle lists: title plus
-        // dimmed subtitle with no blank separator row. Single-line lists render
-        // identically either way.
-        let compact_rows = converted
-            .iter()
-            .any(|item| item.subtitle.as_ref().is_some_and(|subtitle| !subtitle.trim().is_empty()));
         let density_behavior = Self::density_behavior_for_items(&converted);
         let mut modal_state = Self {
             visible_indices: (0..converted.len()).collect(),
@@ -606,7 +599,6 @@ impl ModalListState {
             filter_terms: Vec::new(),
             filter_query: None,
             viewport_rows: None,
-            compact_rows,
             density_behavior,
         };
         modal_state.select_initial(selected);
@@ -1114,10 +1106,6 @@ impl ModalListState {
 
     pub(super) fn total_selectable(&self) -> usize {
         self.total_selectable
-    }
-
-    pub(crate) fn compact_rows(&self) -> bool {
-        self.compact_rows
     }
 
     pub(super) fn non_filter_summary_text(&self, footer_hint: Option<&str>) -> Option<String> {

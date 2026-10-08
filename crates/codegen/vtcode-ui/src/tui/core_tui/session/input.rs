@@ -2,6 +2,7 @@ use super::{
     Action, PLACEHOLDER_COLOR, Session, measure_text_width, ratatui_color_from_ansi, ratatui_style_from_inline,
 };
 use crate::tui::config::constants::ui;
+use crate::tui::core_tui::blocked_status::is_git_status;
 use crate::tui::ui::tui::types::InlineTextStyle;
 use anstyle::{Color as AnsiColorEnum, Effects};
 use ratatui::{
@@ -9,6 +10,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Padding, Paragraph, Wrap},
 };
+use vtcode_commons::formatting::contains_ignore_ascii_case;
 
 /// Paint pre-wrapped lines into `area` without Paragraph wrapping.
 /// `base` is the Paragraph base style; span styles patch on top.
@@ -57,6 +59,13 @@ pub(super) struct InputRender {
     pub(super) text: Text<'static>,
     cursor_x: u16,
     cursor_y: u16,
+}
+
+#[derive(Default)]
+struct InputStatusLine {
+    line: Line<'static>,
+    background_hits: Vec<(u16, u16)>,
+    progress_columns: u16,
 }
 
 struct CompactInputPreview {
@@ -339,15 +348,18 @@ impl Session {
         }
 
         if let Some(status_area) = status_area {
-            let (status_line, background_hits) = self
-                .render_input_status_line_with_hit(status_area.width)
-                .unwrap_or((Line::default(), Vec::new()));
+            let status = self.build_input_status_line(status_area.width).unwrap_or_default();
             {
                 let buf = frame.buffer_mut();
                 buf.set_style(status_area, self.styles.default_style());
-                paint_pre_wrapped_line(&status_line, status_area, buf, self.styles.default_style());
+                paint_pre_wrapped_line(&status.line, status_area, buf, self.styles.default_style());
             }
-            let hits = background_hits
+            if status.progress_columns > 0 {
+                let feedback_area = Rect::new(status_area.x, status_area.y, status.progress_columns, 1);
+                self.set_progress_feedback_area(feedback_area.intersection(frame.area()));
+            }
+            let hits = status
+                .background_hits
                 .into_iter()
                 .map(|(start, end)| {
                     Rect::new(status_area.x.saturating_add(start), status_area.y, end.saturating_sub(start), 1)
@@ -966,15 +978,34 @@ impl Session {
     /// Status line plus column ranges (relative to the status area) of the
     /// clickable background indicator spans: the activity text and the
     /// `{key} background` hint only.
-    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub(crate) fn render_input_status_line_with_hit(&self, width: u16) -> Option<(Line<'static>, Vec<(u16, u16)>)> {
+        self.build_input_status_line(width)
+            .map(|status| (status.line, status.background_hits))
+    }
+
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
+    fn build_input_status_line(&self, width: u16) -> Option<InputStatusLine> {
         if width == 0 {
             return None;
         }
 
-        let mut left = self
-            .copy_notification_text()
-            .or_else(|| self.status_left_text().map(str::to_owned));
+        let copy_notification = self.copy_notification_text();
+        let progress_row_visible = self.progress_row_visible();
+        let showing_progress = copy_notification.is_none() && self.progress.is_active() && !progress_row_visible;
+        // The transcript owns progress when it fits. Keep the footer fallback
+        // for constrained layouts without repeating legacy foreground activity.
+        let mut left = copy_notification.or_else(|| {
+            if progress_row_visible {
+                self.progress_footer_status_text().map(str::to_owned)
+            } else {
+                self.progress.text().or_else(|| self.status_left_text().map(str::to_owned))
+            }
+        });
+        let progress_columns = if showing_progress {
+            left.as_deref().map(measure_text_width).unwrap_or_default()
+        } else {
+            0
+        };
         let right = self.status_right_text().map(str::to_string);
 
         if let Some(shell_hint) = self.shell_mode_status_hint() {
@@ -1007,11 +1038,13 @@ impl Session {
         };
 
         let scroll_indicator = self.build_scroll_indicator();
+        let mode_pill = self.primary_mode_pill();
 
         if left.is_none()
             && background_hint.is_none()
             && right.is_none()
             && scroll_indicator.is_none()
+            && mode_pill.is_none()
             && !self.thinking_spinner.is_active
         {
             return None;
@@ -1048,7 +1081,12 @@ impl Session {
         // Add left content (git status or shimmered activity)
         if let Some(left_value) = left.as_ref() {
             let before: u16 = spans.iter().map(|s| measure_text_width(&s.content)).sum();
-            if status_requires_shimmer(left_value) && self.appearance.should_animate_progress_status() {
+            if (if showing_progress {
+                self.progress.is_animated()
+            } else {
+                status_requires_shimmer(left_value)
+            }) && self.appearance.should_animate_progress_status()
+            {
                 spans.extend(shimmer_spans_with_style_at_phase(
                     left_value,
                     self.styles.accent_style().add_modifier(Modifier::DIM),
@@ -1066,9 +1104,11 @@ impl Session {
                     background_hits.push((start, end));
                 }
             }
-        } else if self.thinking_spinner.is_active {
-            spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
-            spans.push(Span::raw(" "));
+        } else if self.thinking_spinner.is_active && !progress_row_visible {
+            if self.appearance.should_animate_progress_status() {
+                spans.push(Span::styled(self.thinking_spinner.current_frame(), dim_style));
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled("Thinking", dim_style));
         }
 
@@ -1091,8 +1131,11 @@ impl Session {
             }
         }
 
-        // Build right side spans (scroll indicator + optional right content)
+        // Build right side spans (mode pill + scroll indicator + optional right content)
         let mut right_spans: Vec<Span<'static>> = Vec::new();
+        if let Some((label, style)) = mode_pill {
+            right_spans.push(Span::styled(label, style));
+        }
         if let Some(scroll) = &scroll_indicator {
             right_spans.push(Span::styled(scroll.clone(), dim_style));
         }
@@ -1138,7 +1181,11 @@ impl Session {
                 (start < clamped_end).then_some((start, clamped_end))
             })
             .collect::<Vec<_>>();
-        Some((line, hits))
+        Some(InputStatusLine {
+            line,
+            background_hits: hits,
+            progress_columns: progress_columns.min(content_width),
+        })
     }
 
     fn input_uses_shell_prefix(&self) -> bool {
@@ -1201,6 +1248,38 @@ impl Session {
         }?;
 
         Some(self.styles.accent_style().fg(color).add_modifier(Modifier::BOLD))
+    }
+
+    /// Trimmed primary agent mode name, driving the persistent mode border/pill.
+    fn primary_mode_name(&self) -> Option<&str> {
+        self.header_context
+            .primary_agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
+    /// Mode pill for the input status line, reusing the header badge color.
+    ///
+    /// Returns `None` when no primary agent name is set so the default
+    /// (modeless) status line is unchanged. The style resolves through the
+    /// shared design-system `agent_color_style`, keeping the four mode hues
+    /// distinct on both dark and light terminals.
+    /// Resolved primary-agent mode color, sharing the header badge source.
+    ///
+    /// Returns `None` when no mode name is set so modeless chrome is unchanged.
+    fn primary_mode_color(&self) -> Option<Color> {
+        self.primary_mode_name()?;
+        let fallback = self.theme.primary.map(ratatui_color_from_ansi).unwrap_or(Color::LightMagenta);
+        super::super::style::agent_color_style(self.header_context.primary_agent_color.as_deref(), fallback).fg
+    }
+
+    fn primary_mode_pill(&self) -> Option<(String, Style)> {
+        let name = self.primary_mode_name()?;
+        let color = self.primary_mode_color()?;
+        let label = super::header::primary_agent_header_label(Some(name));
+        let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+        Some((format!("• {label}"), style))
     }
 
     fn shell_mode_status_hint(&self) -> Option<&'static str> {
@@ -1534,10 +1613,16 @@ fn is_spinner_frame(indicator: &str) -> bool {
 
 pub(crate) fn status_requires_shimmer(text: &str) -> bool {
     // Case-insensitive contains without allocating a lowercased String.
-    // This function is called up to 3× per TUI tick (10 Hz idle, 60 Hz active)
-    // from is_running_activity / has_status_spinner / is_shimmer_active, so
+    // This function is called up to 3× per TUI tick (4 Hz upkeep when idle,
+    // 60 Hz while interacting or animating) from is_running_activity /
+    // has_status_spinner / is_shimmer_active, so
     // avoiding the per-call String allocation matters.
     let trimmed = text.trim();
+    // Git branch names may contain activity words. Recognize the existing
+    // labelled and compact Git formats before interpreting free-form status.
+    if is_git_status(trimmed) {
+        return false;
+    }
     let needles = [
         "running command:",
         "running tool:",
@@ -1561,7 +1646,7 @@ pub(crate) fn status_requires_shimmer(text: &str) -> bool {
         "ctrl+c",
         "/stop to stop",
     ];
-    if needles.iter().any(|needle| contains_ascii_ci(trimmed, needle)) {
+    if needles.iter().any(|needle| contains_ignore_ascii_case(trimmed, needle)) {
         return true;
     }
     let Some((indicator, rest)) = trimmed.split_once(' ') else {
@@ -1571,23 +1656,6 @@ pub(crate) fn status_requires_shimmer(text: &str) -> bool {
         return false;
     }
     is_spinner_frame(indicator)
-}
-
-/// Case-insensitive ASCII substring search without allocation.
-/// Compares byte windows of `haystack` against `needle` using
-/// `eq_ignore_ascii_case`, avoiding the `to_ascii_lowercase()` String.
-fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    if needle_bytes.is_empty() {
-        return true;
-    }
-    if needle_bytes.len() > haystack_bytes.len() {
-        return false;
-    }
-    haystack_bytes
-        .windows(needle_bytes.len())
-        .any(|window| window.eq_ignore_ascii_case(needle_bytes))
 }
 
 /// Data structure for input widget rendering

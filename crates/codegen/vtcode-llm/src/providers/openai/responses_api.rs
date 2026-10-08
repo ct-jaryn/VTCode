@@ -6,9 +6,9 @@ use crate::provider::{
 use crate::providers::common::append_normalized_reasoning_detail_items;
 use crate::providers::openai::types::{InstructionSegmentKind, MAX_COMPLETION_TOKENS_FIELD, OpenAIResponsesPayload};
 use crate::providers::shared::{
-    collect_tool_references_from_tool_search_output, function_output_value_from_message_content,
-    parse_cache_write_tokens_from_usage, parse_cached_prompt_tokens_from_usage,
-    tool_result_content_from_message_content,
+    RESPONSES_COMPLETION_TOKEN_KEYS, RESPONSES_PROMPT_TOKEN_KEYS, collect_tool_references_from_tool_search_output,
+    function_output_value_from_message_content, parse_cache_write_tokens_from_usage,
+    parse_cached_prompt_tokens_from_usage, tool_result_content_from_message_content, usage_u32_from_keys,
 };
 use hashbrown::HashMap;
 use serde_json::{Value, json};
@@ -422,23 +422,9 @@ pub(crate) fn parse_responses_payload(
         let cache_creation_tokens = parse_cache_write_tokens_from_usage(usage_value, include_cached_prompt_metrics);
 
         Usage {
-            prompt_tokens: usage_value
-                .get("input_tokens")
-                .or_else(|| usage_value.get("prompt_tokens"))
-                .and_then(|pt| pt.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(0),
-            completion_tokens: usage_value
-                .get("output_tokens")
-                .or_else(|| usage_value.get("completion_tokens"))
-                .and_then(|ct| ct.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(0),
-            total_tokens: usage_value
-                .get("total_tokens")
-                .and_then(|tt| tt.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(0),
+            prompt_tokens: usage_u32_from_keys(usage_value, RESPONSES_PROMPT_TOKEN_KEYS),
+            completion_tokens: usage_u32_from_keys(usage_value, RESPONSES_COMPLETION_TOKEN_KEYS),
+            total_tokens: usage_u32_from_keys(usage_value, &["total_tokens"]),
             cached_prompt_tokens,
             cache_creation_tokens,
             cache_read_tokens: None,

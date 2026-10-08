@@ -265,6 +265,7 @@ impl ModelId {
                 | ModelId::MergeGatewayZaiGlm53Flashx
                 | ModelId::HuggingFaceGlm53FlashTogether
                 | ModelId::MiMoV26Flash
+                | ModelId::MergeGatewayXiaomimimoMimoV26Flash
         )
     }
 
@@ -298,6 +299,7 @@ impl ModelId {
                 | ModelId::MergeGatewayZaiGlm53Flashx
                 | ModelId::HuggingFaceGlm53FlashTogether
                 | ModelId::VercelDeepseekFlash
+                | ModelId::MergeGatewayXiaomimimoMimoV26Flash
         )
     }
 
@@ -327,6 +329,7 @@ impl ModelId {
                 | ModelId::ClaudeFable51
                 | ModelId::ClaudeOpus5
                 | ModelId::ClaudeOpus55
+                | ModelId::MistralLarge4
                 | ModelId::OpenCodeGoGlm53
                 | ModelId::MiMoV26Pro
                 | ModelId::MiMoV26ProUltraspeed
@@ -335,7 +338,6 @@ impl ModelId {
                 | ModelId::VercelDeepseekFlash
                 | ModelId::MetaMuseSpark13
                 | ModelId::MetaMuseSpark13Contributor
-                | ModelId::MergeGatewayMetaMuseSpark13
                 | ModelId::ZaiGlm53
                 | ModelId::ZaiGlm53Flash
                 | ModelId::ZaiGlm53Flashx
@@ -354,6 +356,9 @@ impl ModelId {
                 | ModelId::MergeGatewayXaiGrok46
                 | ModelId::MergeGatewayXaiGrok47
                 | ModelId::VercelSpacexaiGrok47
+                | ModelId::MergeGatewayXiaomimimoMimoV26Pro
+                | ModelId::MergeGatewayXiaomimimoMimoV26Flash
+                | ModelId::MergeGatewayMistralLarge4
         )
     }
 
@@ -402,6 +407,9 @@ impl ModelId {
             ModelId::ClaudeOpus55 => "5.5",
             // DeepSeek generations
             ModelId::DeepSeekFlash => "4",
+            // Mistral generations
+            ModelId::MistralLarge3 => "3",
+            ModelId::MistralLarge4 => "4",
             ModelId::MergeGatewayDeepseekFlash => "4.1",
             ModelId::MetaMuseSpark11 => "Muse-Spark-1.1",
             ModelId::MetaMuseSpark13 | ModelId::MetaMuseSpark13Contributor => "Muse-Spark-1.3",
@@ -417,6 +425,8 @@ impl ModelId {
             ModelId::OpenCodeGoGpt56Luna => "5.6-luna",
             ModelId::OpenCodeGoKimiK3 => "k3",
             ModelId::MiMoV26Pro | ModelId::MiMoV26Flash | ModelId::MiMoV26ProUltraspeed => "v2.6",
+            ModelId::MergeGatewayXiaomimimoMimoV26Pro | ModelId::MergeGatewayXiaomimimoMimoV26Flash => "v2.6",
+            ModelId::MergeGatewayMistralLarge4 => "4",
             ModelId::OpenCodeGoMinimaxM3 => "m3",
             ModelId::OllamaGptOss20b => "oss",
             ModelId::OllamaGptOss20bCloud => "oss-cloud",
@@ -456,8 +466,6 @@ impl ModelId {
             ModelId::MergeGatewayAnthropicClaudeHaiku4520251001 => "4.5",
             ModelId::MergeGatewayMinimaxH3 => "H3",
             ModelId::MergeGatewayThinkingMachinesInkling => "Inkling",
-            ModelId::MergeGatewayMetaMuseSpark11 => "Muse-Spark-1.1",
-            ModelId::MergeGatewayMetaMuseSpark13 => "Muse-Spark-1.3",
             ModelId::MergeGatewayOpenAIGpt56Luna
             | ModelId::MergeGatewayOpenAIGpt56Sol
             | ModelId::MergeGatewayOpenAIGpt56Terra => "5.6",

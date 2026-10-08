@@ -44,7 +44,8 @@ impl Session {
         }
 
         // Clear streaming state on turn completion (status cleared)
-        if let InlineCommand::SetInputStatus { left, right } = &command
+        if let InlineCommand::SetInputStatus { left, right } | InlineCommand::SetConfiguredInputStatus { left, right } =
+            &command
             && self.is_streaming_final_answer
             && left.is_none()
             && right.is_none()
@@ -101,14 +102,22 @@ impl Session {
                 self.invalidate_header_cache();
             }
             InlineCommand::SetInputStatus { left, right } => {
-                self.input_status_left = left;
-                self.input_status_right = right;
-                if self.thinking_spinner.is_active {
-                    self.thinking_spinner.stop();
+                self.apply_input_status(left, right);
+            }
+            InlineCommand::SetConfiguredInputStatus { left, right } => {
+                self.footer_context_status = left
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned);
+                self.apply_input_status(left, right);
+            }
+            InlineCommand::UpdateProgress(update) => {
+                if self.progress.apply(update) {
+                    self.request_transcript_clear();
+                } else {
+                    command_needs_redraw = false;
                 }
-                // The blocked/recovery badge is part of the cached header and
-                // can be derived from either status field.
-                self.invalidate_header_cache();
             }
             InlineCommand::SetActivityState(state) => {
                 self.activity_state = state;
@@ -276,6 +285,16 @@ impl Session {
         if command_needs_redraw {
             self.mark_visual_dirty();
         }
+    }
+
+    fn apply_input_status(&mut self, left: Option<String>, right: Option<String>) {
+        self.input_status_left = left;
+        self.input_status_right = right;
+        if self.thinking_spinner.is_active {
+            self.thinking_spinner.stop();
+        }
+        // The blocked/recovery badge can be derived from either status field.
+        self.invalidate_header_cache();
     }
 
     /// Apply an unsolicited terminal color-scheme report (Contour VT extension,
